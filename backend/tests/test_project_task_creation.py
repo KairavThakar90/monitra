@@ -118,3 +118,51 @@ class TestUnassignedTask(unittest.TestCase):
 
         # One scalar() call only: the project lookup in _project.
         self.assertEqual(db.scalar.call_count, 1)
+
+
+class ProjectMembershipRoleTests(unittest.TestCase):
+    """Who may be a *member* of a project, as opposed to its leader.
+
+    Creating a project used to require every selected member to be
+    ``role_name == "employee"``, while ``ProjectMemberService.add_members``
+    accepted any active user in the organization. The same action therefore
+    succeeded or failed depending only on whether it was done in the create
+    drawer or afterwards, and the drawer answered
+    "Selected employees have an invalid role." for a perfectly valid choice.
+    """
+
+    @staticmethod
+    def _db_returning(users):
+        db = MagicMock()
+        db.scalars.return_value.all.return_value = users
+        return db
+
+    def test_a_non_employee_may_be_a_project_member(self):
+        members = [
+            _user(role="hr", user_id=2),
+            _user(role="leader", user_id=3),
+            _user(role="administrator", user_id=4),
+        ]
+        resolved = ProjectManagementService._users(
+            self._db_returning(members), _user(), [2, 3, 4], None, "employees"
+        )
+        self.assertEqual([item.id for item in resolved], [2, 3, 4])
+
+    def test_a_role_restriction_is_still_enforced_when_one_is_given(self):
+        # The leader slot still passes a role set, and it must keep rejecting.
+        with self.assertRaises(HTTPException) as caught:
+            ProjectManagementService._users(
+                self._db_returning([_user(role="employee", user_id=2)]),
+                _user(), [2], {"leader"}, "leader",
+            )
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertIn("invalid role", caught.exception.detail)
+
+    def test_someone_outside_the_organization_is_still_refused(self):
+        # Widening the role check must not weaken the membership check.
+        with self.assertRaises(HTTPException) as caught:
+            ProjectManagementService._users(
+                self._db_returning([]), _user(), [99], None, "employees"
+            )
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertIn("do not belong to this organization", caught.exception.detail)
