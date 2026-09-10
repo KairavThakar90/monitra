@@ -322,6 +322,28 @@ class StaffingIsNotScopedTests(unittest.TestCase):
         assignable_employees(None, _leader(), db)
         db.scalars.assert_called_once()
 
+    def test_the_picker_offers_every_role_the_write_path_accepts(self):
+        """The picker must not be narrower than the endpoint behind it.
+
+        ``ProjectMemberService.add_members`` attaches any *active user in the
+        organization* and checks no role at all, so a leader, an HR member or an
+        admin is a perfectly valid project member. This picker used to filter on
+        ``role_name == "employee"``, so those people could not be chosen -- the
+        supported action showed up to the user as "the app won't let me add
+        them". The scoping this query must keep is the organization and the
+        active flag; the role is not its business.
+        """
+        db = MagicMock()
+        db.scalars.return_value.all.return_value = []
+        assignable_employees(None, _admin(), db)
+        # Only the WHERE clause is the subject here -- `role_name` appears in
+        # every SELECT of this model as a column, which says nothing about
+        # filtering.
+        where_clause = str(db.scalars.call_args[0][0]).split("WHERE", 1)[1]
+        self.assertNotIn("role_name", where_clause)
+        self.assertIn("organization_id", where_clause)
+        self.assertIn("is_active", where_clause)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -172,9 +172,20 @@ changes only.
    and smoke-tested in CI only — which now also means the macOS *update* path
    (mount the DMG, replace the bundle, relaunch) has never run on a real Mac.
 3. **CI secrets for release registration.** `MONITRA_API_BASE_URL` and
-   `MONITRA_RELEASE_TOKEN`, held by an account with `manage_desktop_releases`.
-   Without them the release job skips registration and says so; the artifacts and
-   the GitHub release are unaffected.
+   `MONITRA_RELEASE_CREDENTIAL` — a **service credential**: a long-lived API key
+   belonging to an account whose role is `release_bot` and whose entire authority
+   is `manage_desktop_releases`. Without them the release job skips registration
+   and says so; the artifacts and the GitHub release are unaffected.
+
+   This replaced (2026-09-10) a sign-in at `/auth/dev-login` with an email and a
+   password. That route returns 404 whenever `ENV=production`, so the old
+   arrangement held the whole deployment in development mode to keep one build
+   step working — a bad trade, and the reason the mechanism changed. A bearer
+   *token* was not an option either: an access token is valid for thirty minutes,
+   so one stored in a repository secret is dead long before the next release.
+   The key does not expire, the account behind it has no password at all, and
+   revoking the key closes the only door into it. See
+   `backend/app/services/service_credential.py`.
 4. **A first real end-to-end update.** The update lifecycle is covered by tests
    and both soaks, but no build has yet been installed, superseded and updated on
    a real machine. That is the pilot-ring step, and it should happen on a signed

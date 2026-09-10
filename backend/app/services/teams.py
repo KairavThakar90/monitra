@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.project_status import ProjectStatus, TaskStatus
+from app.core.permissions import LEADER_ROLE_NAMES
 from app.models.task import Task
 from app.models.user import User
 from app.services.member_scope import is_team_scoped, visible_member_ids
@@ -37,7 +38,7 @@ class TeamsService:
         # leader may not read.
         if is_team_scoped(user) and leader_id != user.id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Leader not found.")
-        leader = db.scalar(select(User).where(User.id == leader_id, User.organization_id == user.organization_id, User.is_active.is_(True), User.role_name.in_(["admin", "leader", "project_leader"])))
+        leader = db.scalar(select(User).where(User.id == leader_id, User.organization_id == user.organization_id, User.is_active.is_(True), User.role_name.in_(LEADER_ROLE_NAMES)))
         if not leader:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Leader not found.")
         return leader
@@ -57,8 +58,14 @@ class TeamsService:
         # they lead, and those projects. Counting the organization here while
         # the list below shows one team is the exact "right on one screen, wrong
         # on the next" split `member_scope` exists to prevent.
-        leader_filters = [User.organization_id == org, User.is_active.is_(True), User.role_name.in_(["admin", "leader", "project_leader"])]
-        employee_filters = [User.organization_id == org, User.is_active.is_(True), User.role_name == "employee"]
+        # The two people tiles are a *partition* of the active directory: every
+        # member is counted in exactly one of them. "Team Members" used to count
+        # `role_name == "employee"` alone, which left HR — and any manager — in
+        # neither tile, so the two numbers silently failed to add up to the
+        # member directory and the screen under-reported the organization.
+        leader_roles = LEADER_ROLE_NAMES
+        leader_filters = [User.organization_id == org, User.is_active.is_(True), User.role_name.in_(leader_roles)]
+        employee_filters = [User.organization_id == org, User.is_active.is_(True), User.role_name.not_in(leader_roles)]
         project_filters = [Project.organization_id == org, Project.status != "archived"]
         if is_team_scoped(user):
             leader_filters.append(User.id == user.id)
@@ -103,7 +110,7 @@ class TeamsService:
 
     @staticmethod
     def leaders(db: Session, user: User, page: int, limit: int, search: Optional[str]):
-        filters = [User.organization_id == user.organization_id, User.is_active.is_(True), User.role_name.in_(["admin", "leader", "project_leader"])]
+        filters = [User.organization_id == user.organization_id, User.is_active.is_(True), User.role_name.in_(LEADER_ROLE_NAMES)]
         if is_team_scoped(user):
             filters.append(User.id == user.id)
         if search and search.strip():

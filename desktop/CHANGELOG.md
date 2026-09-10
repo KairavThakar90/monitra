@@ -20,6 +20,30 @@ re-grant a permission.
 
 ## [Unreleased]
 
+## [1.1.1]
+
+The same Monitra as 1.1.0, rebuilt and published from the project's new home.
+Nothing about the application has changed: if 1.1.0 is working for you, there
+is no reason to hurry.
+
+### Changed
+
+- **Monitra is now built and distributed from a new repository.** The download
+  page, the in-app update check and the installers all point at the new
+  location. You do not have to do anything — updating to 1.1.1 moves you across
+  and every future update arrives from there.
+
+  1.1.0 remains downloadable from the old location and keeps working. It will
+  not, however, be offered any further updates, so installing 1.1.1 is what
+  keeps you on the update path.
+
+### Fixed
+
+- A build-server test incorrectly required a Windows-only input hook to start
+  on Linux, where Monitra does not run and no such hook exists. This failed the
+  correctness gate on every push without indicating any real fault. No change
+  to how Monitra behaves on Windows or macOS.
+
 ## [1.1.0]
 
 Monitra updates itself from this version onwards. Install it once; you will be

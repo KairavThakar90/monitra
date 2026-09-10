@@ -457,15 +457,24 @@ class RolePermissionTableTests(unittest.TestCase):
                 self.assertIn(role.value, ROLE_PERMISSIONS)
 
     def test_leader_roles_the_application_selects_on_have_a_permission_set(self):
-        # ProjectMemberService.LEADER_ROLES and the "admin"/"leader" filters in
+        # ProjectMemberService.LEADER_ROLES and the leader filters in
         # TeamsService assume these roles exist. login_exchange refuses any role
         # absent from ROLE_PERMISSIONS, so a role the app selects on but this
         # table omits is a 502 waiting to happen -- which is exactly what it was.
+        #
+        # The check is "resolves to a defined role", not "is a key", because
+        # those lists are expanded with `with_role_aliases` and so legitimately
+        # contain provider spellings like `administrator`. That spelling signs
+        # in fine -- login resolves it through the same alias table before
+        # looking the permissions up -- so requiring it to be a key would fail a
+        # role that works. Anything that neither is a key nor resolves to one
+        # still fails here, which is the 502 this guards against.
+        from app.core.permissions import resolve_role_alias
         from app.services.project_member import ProjectMemberService
 
         for role in ProjectMemberService.LEADER_ROLES | ProjectMemberService.ADMIN_ROLES:
             with self.subTest(role=role):
-                self.assertIn(role, ROLE_PERMISSIONS)
+                self.assertIn(resolve_role_alias(role), ROLE_PERMISSIONS)
 
     def test_a_leader_carries_the_authority_the_project_screens_expect(self):
         self.assertEqual(ROLE_PERMISSIONS["leader"], ROLE_PERMISSIONS["project_leader"])
@@ -605,6 +614,121 @@ class SsoTokenExchangeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(error.exception.status_code, 403)
         create_user.assert_not_called()
+
+    async def test_admins_stale_permission_map_is_rebuilt_on_sso_sign_in(self):
+        """The bug the web client showed as "admin can't add a project".
+
+        `user.permissions` is a cache of ROLE_PERMISSIONS. The credential path
+        re-derives it on every sign-in; single sign-on -- the only path the web
+        client has -- did not, so a row written before a permission existed kept
+        answering with the old map, and the UI, which gates every screen on it,
+        hid project creation and bounced the user off the member directory.
+        """
+        client = FakeSsoClient(_valid_validation_response(), _profile_response(roles=["admin"]))
+        user = MagicMock(id=7, organization_id=1, role_name="admin", is_active=True)
+        user.status = "active"
+        user.permissions = {"projects:view": True}
+        db = MagicMock()
+
+        with patch("app.services.external_auth_service.httpx.AsyncClient", return_value=client),              patch("app.services.auth.UserRepository.get_by_normalized_email", return_value=user),              patch("app.services.auth.create_access_token", return_value="sms-token"),              patch("app.services.auth.UserRead") as user_read,              patch("app.services.auth.TokenPair", return_value="token-pair"):
+            user_read.model_validate.return_value = "user-read"
+            await AuthService.sso_exchange(db, "provider.token.value")
+
+        self.assertEqual(user.permissions, {p: True for p in ROLE_PERMISSIONS["admin"]})
+        # The screens the user reported as missing are exactly these two.
+        self.assertTrue(user.permissions["projects:create"])
+        self.assertTrue(user.permissions["view_employees"])
+
+    async def test_wordpress_administrator_slug_resolves_to_the_admin_role(self):
+        """`administrator` is the slug the provider actually sends for an admin.
+
+        PROVIDER_ROLE_ALIASES already maps it, but the SSO path matched the raw
+        string against ROLE_PERMISSIONS, so it resolved to nothing: a new admin
+        was told no account exists, and an existing one kept a stale map.
+        """
+        client = FakeSsoClient(
+            _valid_validation_response(), _profile_response(roles=["administrator"])
+        )
+        user = MagicMock(id=7, organization_id=1, role_name="employee", is_active=True)
+        user.status = "active"
+        user.permissions = {p: True for p in ROLE_PERMISSIONS["employee"]}
+        db = MagicMock()
+
+        with patch("app.services.external_auth_service.httpx.AsyncClient", return_value=client),              patch("app.services.auth.UserRepository.get_by_normalized_email", return_value=user),              patch("app.services.auth.create_access_token", return_value="sms-token"),              patch("app.services.auth.UserRead") as user_read,              patch("app.services.auth.TokenPair", return_value="token-pair"):
+            user_read.model_validate.return_value = "user-read"
+            await AuthService.sso_exchange(db, "provider.token.value")
+
+        self.assertEqual(user.role_name, "admin")
+        self.assertEqual(user.permissions, {p: True for p in ROLE_PERMISSIONS["admin"]})
+
+    async def test_unmapped_provider_role_does_not_demote_an_existing_user(self):
+        """A provider vocabulary change must not strip an existing account.
+
+        The credential path refuses a login whose role it cannot map. Doing that
+        here would lock a working user out of the web client entirely, so the
+        stored role stands -- and its permission map is still rebuilt from it.
+        """
+        client = FakeSsoClient(
+            _valid_validation_response(), _profile_response(roles=["subscriber"])
+        )
+        user = MagicMock(id=7, organization_id=1, role_name="admin", is_active=True)
+        user.status = "active"
+        user.permissions = {}
+        db = MagicMock()
+
+        with patch("app.services.external_auth_service.httpx.AsyncClient", return_value=client),              patch("app.services.auth.UserRepository.get_by_normalized_email", return_value=user),              patch("app.services.auth.create_access_token", return_value="sms-token"),              patch("app.services.auth.UserRead") as user_read,              patch("app.services.auth.TokenPair", return_value="token-pair"):
+            user_read.model_validate.return_value = "user-read"
+            await AuthService.sso_exchange(db, "provider.token.value")
+
+        self.assertEqual(user.role_name, "admin")
+        self.assertEqual(user.permissions, {p: True for p in ROLE_PERMISSIONS["admin"]})
+
+    async def test_a_row_stored_as_administrator_is_canonicalised_not_emptied(self):
+        """The live failure: `GET /projects` answering 403 for an admin.
+
+        `require_permission` reads the *database row*, not the token, so a row
+        whose `role_name` is the WordPress spelling `administrator` looks up
+        nothing in ROLE_PERMISSIONS -- that table is keyed on `admin`. Rebuilding
+        the map from the raw stored string would hand the account an empty map,
+        turning a stale-permissions bug into a total lockout: the login succeeds
+        and then every screen answers 403.
+        """
+        client = FakeSsoClient(_valid_validation_response(), _profile_response(roles=[]))
+        user = MagicMock(id=7, organization_id=1, role_name="administrator", is_active=True)
+        user.status = "active"
+        user.permissions = {}
+        db = MagicMock()
+
+        with patch("app.services.external_auth_service.httpx.AsyncClient", return_value=client),              patch("app.services.auth.UserRepository.get_by_normalized_email", return_value=user),              patch("app.services.auth.create_access_token", return_value="sms-token"),              patch("app.services.auth.UserRead") as user_read,              patch("app.services.auth.TokenPair", return_value="token-pair"):
+            user_read.model_validate.return_value = "user-read"
+            await AuthService.sso_exchange(db, "provider.token.value")
+
+        # Canonicalised, because every `role_name IN (...)` query in this app
+        # selects on the Monitra spellings.
+        self.assertEqual(user.role_name, "admin")
+        self.assertTrue(user.permissions["projects:view"])
+        self.assertTrue(user.permissions["projects:create"])
+        self.assertTrue(user.permissions["view_employees"])
+
+    async def test_a_role_that_resolves_to_nothing_leaves_the_stored_map_alone(self):
+        """An unknown role means "we don't know", never "no permissions".
+
+        Guessing an empty map here would silently strip an account whose role
+        this table simply has not been taught yet.
+        """
+        client = FakeSsoClient(_valid_validation_response(), _profile_response(roles=[]))
+        stored = {"projects:view": True, "tasks:view": True}
+        user = MagicMock(id=7, organization_id=1, role_name="editor", is_active=True)
+        user.status = "active"
+        user.permissions = dict(stored)
+        db = MagicMock()
+
+        with patch("app.services.external_auth_service.httpx.AsyncClient", return_value=client),              patch("app.services.auth.UserRepository.get_by_normalized_email", return_value=user),              patch("app.services.auth.create_access_token", return_value="sms-token"),              patch("app.services.auth.UserRead") as user_read,              patch("app.services.auth.TokenPair", return_value="token-pair"):
+            user_read.model_validate.return_value = "user-read"
+            await AuthService.sso_exchange(db, "provider.token.value")
+
+        self.assertEqual(user.role_name, "editor")
+        self.assertEqual(user.permissions, stored)
 
     async def test_deactivated_local_account_cannot_sign_in_through_sso(self):
         client = FakeSsoClient(_valid_validation_response(), _profile_response())

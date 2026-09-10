@@ -26,7 +26,7 @@ filename, which the build scripts derive, not in this constant.
 from __future__ import annotations
 
 #: Release version. The only line to edit when cutting a release.
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 #: Product name as shown to users, and as used for the executable,
 #: the installed folder, the .app bundle, and the Start Menu entry.

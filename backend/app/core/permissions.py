@@ -1,3 +1,5 @@
+from typing import Iterable
+
 # backend/app/core/permissions.py
 #
 # This table is the login gate: AuthService.login_exchange refuses any role that
@@ -203,6 +205,21 @@ ROLE_PERMISSIONS["project_leader"] = set(ROLE_PERMISSIONS["leader"])
 ROLE_PERMISSIONS["release_bot"] = {"manage_desktop_releases"}
 
 
+# Which roles may authenticate with a service credential (an API key) instead
+# of a password or a provider session.
+#
+# This is the hard cap on what an API key can ever be. `ServiceCredential`
+# stores no permissions of its own -- a key's authority is entirely the
+# account's -- so without this list, anyone who could insert a row could mint a
+# non-expiring key for an administrator and hold it forever. With it, a key
+# issued against any account outside this set is refused at authentication
+# time, whatever the row says.
+#
+# Adding a role here is granting a permanent, non-interactive credential to
+# everything that role can do. It is not a place to be generous.
+SERVICE_ROLE_NAMES = frozenset({"release_bot"})
+
+
 # Provider role slug -> Monitra role name.
 #
 # WordPress ships its own role vocabulary, and the provider passes those slugs
@@ -233,3 +250,39 @@ def resolve_role_alias(role: str) -> str:
     already a Monitra name (or is simply unknown) passes through untouched.
     """
     return PROVIDER_ROLE_ALIASES.get(role, role)
+
+
+def with_role_aliases(roles: Iterable[str]) -> list[str]:
+    """Every spelling a stored ``role_name`` may carry for these Monitra roles.
+
+    Role *lists* around this app -- who may lead a project, who counts as a
+    team leader, who may add project members -- are matched against
+    ``users.role_name`` with ``IN``. That column does not always hold the
+    canonical name: WordPress sends ``administrator`` for an admin, and rows
+    provisioned before ``PROVIDER_ROLE_ALIASES`` existed still carry it. Such a
+    row matches none of those lists, so a real administrator silently drops out
+    of the leader picker, out of the Team Leaders tile, and out of the check
+    that lets an admin staff a project.
+
+    ``resolve_role_alias`` answers the other direction -- one provider slug to
+    one Monitra name -- which is what the login paths need. This answers "which
+    stored spellings mean any of these roles", which is what a query needs.
+
+    Expanding the list is deliberately preferred over normalising the column in
+    the query: ``lower(role_name) IN (...)`` cannot use an index, and this runs
+    on every Teams page load.
+    """
+    targets = set(roles)
+    return sorted(
+        targets
+        | {slug for slug, target in PROVIDER_ROLE_ALIASES.items() if target in targets}
+    )
+
+
+#: Every stored spelling that means "leads projects".
+#:
+#: One list, used by the leader picker, the Team Leaders tile, the leader lookup
+#: and project creation, so a role cannot be assignable on one screen and
+#: unknown on the next. Expanded through the alias table, so a row saved as
+#: `administrator` is not silently dropped from any of them.
+LEADER_ROLE_NAMES = with_role_aliases(["admin", "leader", "project_leader"])

@@ -4,6 +4,7 @@ from typing import List
 from sqlalchemy import select, func, or_
 from app.models.project import Project
 from app.models.project_member import ProjectMember
+from app.core.permissions import with_role_aliases
 from app.models.user import User
 from app.repositories.project_member import ProjectMemberRepository
 from app.repositories.user import UserRepository
@@ -11,7 +12,10 @@ from app.services.project import ProjectService
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
 class ProjectMemberService:
-    ADMIN_ROLES = {"org_admin", "admin", "super_admin"}
+    #: Expanded through the alias table: an account stored as `administrator`
+    #: is an admin, and without this it was refused the right to staff a
+    #: project that its own role grants.
+    ADMIN_ROLES = set(with_role_aliases(["org_admin", "admin", "super_admin"]))
     LEADER_ROLES = {"leader", "project_leader"}
 
     @staticmethod
