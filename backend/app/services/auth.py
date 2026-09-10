@@ -579,14 +579,24 @@ class AuthService:
 
         user = UserRepository.get_by_normalized_email(db, email)
 
+        # The profile carries no permission_schema, so `user.roles` is the only
+        # source of a role here. It goes through the same resolver the
+        # credential path uses, which trims, lower-cases and maps provider slugs
+        # through PROVIDER_ROLE_ALIASES: an admin comes back from the provider
+        # as roles: ["administrator"], and matching that raw against
+        # ROLE_PERMISSIONS -- as this used to -- finds nothing. For a new
+        # identity that meant a 403 telling an administrator no account exists;
+        # for an existing one it meant the account kept whatever role and
+        # permission map its row already held.
+        role_name, role_source, candidates = _resolve_provider_role(profile, {})
+
         if user is None:
             # The provider profile carries no Hubstaff identity, organisation or
             # permission schema, so a role is only accepted when the provider's own
             # role names one this system already defines. Anything else is refused
             # rather than guessed - a fabricated role would silently grant or deny
             # access the provider never authorised.
-            provider_roles = profile.get("roles") if isinstance(profile.get("roles"), list) else []
-            role_name = next((str(r) for r in provider_roles if str(r) in ROLE_PERMISSIONS), None)
+            provider_roles = candidates
             if not role_name:
                 logger.error(
                     "AUTH_SSO_NO_LOCAL_ACCOUNT: No local user for %s and provider roles %s are not mapped",
@@ -635,5 +645,92 @@ class AuthService:
             logger.error("AUTH_SSO_INACTIVE_ACCOUNT: Local user %s is not active", user.id)
             raise HTTPException(status_code=403, detail="This account is not active")
 
+        AuthService._sync_role_and_permissions(db, user, role_name, role_source, candidates)
+
         logger.info("AUTH_SSO_SUCCESS: Provider token exchanged for a local session for user %s", user.id)
         return AuthService._issue_token_pair(db, user)
+
+    @staticmethod
+    def _sync_role_and_permissions(
+        db: Session,
+        user: User,
+        role_name: str | None,
+        role_source: str,
+        candidates: list[str],
+    ) -> None:
+        """Bring an existing user's role and permission map back in step.
+
+        `user.permissions` is a *cache* of ROLE_PERMISSIONS, not an independent
+        grant: every credential path re-derives it on the way through
+        (login_exchange, dev_login) precisely so that a row written before a
+        permission was added to the table cannot go on answering with a stale
+        map. The single sign-on path did not, and it is the only path the web
+        client has -- so an administrator whose row predated the current table
+        signed in on the web with whatever permissions were stored, and the UI,
+        which gates every screen on that map, hid project creation and bounced
+        them off the member directory while the same account worked on desktop.
+
+        The role itself is only rewritten when the provider named one, and it
+        is the resolver's answer, never a guess. When the provider named no
+        role this system defines the stored role stands -- refusing the login
+        outright, as the credential path does, would lock an existing user out
+        of the web client over a provider vocabulary change -- but the
+        permission map is still rebuilt from that stored role, which is what
+        repairs the stale cache.
+
+        The stored role goes through the same normaliser and alias table as a
+        provider role, because a row can hold a spelling ROLE_PERMISSIONS is not
+        keyed on -- `administrator` is exactly that, and rows carrying it exist
+        from before PROVIDER_ROLE_ALIASES was written. Looking that up raw finds
+        nothing, so rebuilding from it would replace a working administrator's
+        permissions with an empty map: the login would succeed and every screen
+        would then answer 403. A stored role that resolves to nothing at all is
+        therefore left completely alone -- an unknown role means this function
+        does not know what the map *should* be, and the one thing it must never
+        do is guess "none".
+        """
+        if role_name and role_name != user.role_name:
+            logger.info(
+                "AUTH_SSO_ROLE_SYNCED: user %s role %r -> %r from %s (candidates=%s)",
+                user.id, user.role_name, role_name, role_source, candidates,
+            )
+            user.role_name = role_name
+        elif not role_name and candidates:
+            logger.warning(
+                "AUTH_SSO_ROLE_UNSUPPORTED: provider role(s) %s for user %s match no Monitra "
+                "role; keeping stored role %r",
+                candidates, user.id, user.role_name,
+            )
+
+        effective_role = resolve_role_alias(_normalize_role(user.role_name) or "")
+        if effective_role not in ROLE_PERMISSIONS:
+            logger.error(
+                "AUTH_SSO_ROLE_UNKNOWN: user %s holds role %r, which resolves to no entry in "
+                "ROLE_PERMISSIONS; leaving the stored permission map untouched",
+                user.id, user.role_name,
+            )
+            return
+
+        resolved_permissions = {p: True for p in ROLE_PERMISSIONS[effective_role]}
+        if user.role_name == effective_role and user.permissions == resolved_permissions:
+            return
+
+        logger.info(
+            "AUTH_SSO_PERMISSIONS_REFRESHED: user %s permissions re-derived from role %r",
+            user.id, effective_role,
+        )
+        # Persist the canonical spelling too, so the next sign-in -- and every
+        # `role_name IN (...)` query elsewhere, which all select on the Monitra
+        # names -- sees the role this map was actually derived from.
+        user.role_name = effective_role
+        user.permissions = resolved_permissions
+        try:
+            # No refresh: every field written here was just derived locally, so
+            # there is nothing on the row for the database to tell us back.
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            logger.exception(
+                "AUTH_SSO_PERMISSION_SYNC_FAILED: could not persist permissions for user %s", user.id
+            )
+            raise HTTPException(status_code=500, detail="Unable to refresh account permissions")
