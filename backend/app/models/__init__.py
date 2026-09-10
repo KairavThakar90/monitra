@@ -19,6 +19,7 @@ from app.models.desktop_client_version import DesktopClientVersion
 from app.models.desktop_release import DesktopRelease
 from app.models.feedback_request import FeedbackRequest
 from app.models.sso_handoff_token import SsoHandoffToken
+from app.models.service_credential import ServiceCredential
 
 __all__ = [
     "Base",
@@ -42,4 +43,5 @@ __all__ = [
     "DesktopClientVersion",
     "FeedbackRequest",
     "SsoHandoffToken",
+    "ServiceCredential",
 ]

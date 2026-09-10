@@ -5,7 +5,7 @@ from app.schemas.user import UserRead, DevLoginRequest, LoginRequest, SsoTokenRe
 from app.schemas.token import LogoutRequest, RefreshRequest, SsoHandoffResponse, TokenPair
 from app.services.auth import AuthService
 from app.models.user import User
-from app.core.security import get_current_user
+from app.core.security import forbid_service_principal, get_current_user
 from app.core.config import settings
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -75,10 +75,13 @@ async def sso_token_login(payload: SsoTokenRequest, db: Session = Depends(get_db
         "is valid for seconds and can be redeemed only once; if it is missed or "
         "replayed the browser simply shows the login screen."
     ),
-    responses={401: {"description": "The desktop session is not valid"}},
+    responses={
+        401: {"description": "The desktop session is not valid"},
+        403: {"description": "A service credential cannot open an interactive session"},
+    },
 )
 def sso_handoff(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(forbid_service_principal),
     db: Session = Depends(get_db),
 ):
     token, expires_at = AuthService.issue_handoff_token(db, current_user)
@@ -123,7 +126,21 @@ def logout(payload: LogoutRequest, db: Session = Depends(get_db)):
 def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
-@router.post("/dev-login", response_model=TokenPair)
+@router.post(
+    "/dev-login",
+    response_model=TokenPair,
+    # Absent from the published schema in production as well as unreachable, so
+    # the API's own documentation stops advertising a route that is not there.
+    include_in_schema=settings.ENV != "production",
+    summary="Sign in against local credentials (non-production only)",
+    description=(
+        "Development and testing only. Returns 404 whenever `ENV=production`.\n\n"
+        "**Nothing automated may depend on this route.** The release pipeline "
+        "used to sign in here, which is why production could not be switched "
+        "to `ENV=production`; it now presents a service credential instead "
+        "(`app/services/service_credential.py`)."
+    ),
+)
 def dev_login(payload: DevLoginRequest, db: Session = Depends(get_db)):
     if settings.ENV == "production":
         raise HTTPException(status_code=404)

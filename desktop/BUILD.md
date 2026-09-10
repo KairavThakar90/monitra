@@ -452,6 +452,35 @@ falls back to an unsigned build when they are absent:
 `MACOS_CERTIFICATE` (base64 `.p12`), `MACOS_CERTIFICATE_PASSWORD`,
 `MACOS_KEYCHAIN_PASSWORD`, `MACOS_CODESIGN_IDENTITY`, `MACOS_NOTARY_PROFILE`.
 
+`MACOS_NOTARY_PROFILE` is **not** a CI secret. It is the name of a keychain
+profile created by `xcrun notarytool store-credentials`, which is a local,
+interactive step on a developer's Mac — the variable above, for local builds.
+A fresh runner has no such profile, so a secret holding that name would point
+`notarytool` at nothing. The workflow therefore creates the profile itself,
+under a fixed local name, from three Apple credentials:
+
+`MACOS_NOTARY_APPLE_ID` — an Apple ID enrolled in the Developer Program.
+`MACOS_NOTARY_TEAM_ID` — the ten-character team identifier.
+`MACOS_NOTARY_PASSWORD` — an **app-specific password** generated at
+appleid.apple.com, *not* the account password.
+
+Notarization is gated on `MACOS_CODESIGN_IDENTITY` as well, because signing is
+a prerequisite rather than an alternative: Gatekeeper rejects a
+notarized-but-unsigned bundle. With any of the four absent, the build produces
+an unsigned, un-notarized artifact and says so.
+
+When they are present, the job verifies the result on the artifact itself
+rather than trusting the build script's own report — `codesign --verify
+--deep --strict`, `stapler validate`, and `spctl --assess` on both the `.app`
+and each `.dmg`, which is the question a user's Mac actually asks. The build
+fails if Gatekeeper would refuse it.
+
+**This path has never executed.** No Apple credentials have been configured
+for this repository, so every macOS build to date is unsigned and
+un-notarized. The code is written and gated; it is not evidence. Treat macOS
+signing and notarization as unverified until a run with the credentials
+present has gone green and the verification step's output has been read.
+
 ---
 
 ## 12. Release process

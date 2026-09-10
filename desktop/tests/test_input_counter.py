@@ -116,12 +116,17 @@ def test_listener_start_failure_marks_unsupported_without_raising():
 
 
 @pytest.mark.skipif(
-    sys.platform == "darwin",
+    sys.platform != "win32",
     reason=(
-        "macOS counts input through a Quartz event tap, not pynput, and "
-        "creating one requires Input Monitoring permission that a CI runner "
-        "cannot grant. The macOS lifecycle is covered by "
-        "test_mac_input_tap.py; the degradation path is asserted below."
+        "Windows is the only platform where a real pynput listener is "
+        "expected to start unconditionally. macOS counts input through a "
+        "Quartz event tap, not pynput, and creating one requires Input "
+        "Monitoring permission that a CI runner cannot grant; the macOS "
+        "lifecycle is covered by test_mac_input_tap.py. Linux is not a "
+        "supported Monitra platform and the headless CI runner has no X "
+        "display, so pynput's X11 backend correctly refuses to start — "
+        "asserting True there tests the runner, not the product. The "
+        "degradation path every platform must honour is asserted below."
     ),
 )
 def test_real_listener_start_and_stop_on_this_platform():
@@ -151,7 +156,12 @@ def test_start_never_raises_and_stop_is_idempotent_on_any_platform():
     counter = InputEventCounter()
     started = counter.start()
     assert isinstance(started, bool)
-    assert counter.supported is started or started is False
+    # `supported` must agree with what start() answered, in both directions.
+    # This is the assertion that carries the contract on the platforms the
+    # Windows-only check above skips: a headless Linux CI runner, where
+    # pynput's X11 backend cannot attach, must report False *and* keep
+    # working, rather than raise or claim support it does not have.
+    assert counter.supported is started
     counter.stop()
     counter.stop()
     assert counter.snapshot_and_reset() == {
