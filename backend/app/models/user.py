@@ -15,6 +15,13 @@ Table(
 class User(Base):
     __tablename__ = 'users'
 
+    #: Not a column. Set to True only on the in-memory instance returned by
+    #: `ServiceCredentialService.authenticate`, so an endpoint can tell that
+    #: the caller is a machine holding an API key rather than a signed-in
+    #: person. It is a class default so every other code path reads False
+    #: without having to guess whether the attribute exists.
+    is_service_principal = False
+
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
     organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     hubstaff_user_id: Mapped[Optional[str]] = mapped_column(String, unique=True, nullable=True)

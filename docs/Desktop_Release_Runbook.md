@@ -170,11 +170,16 @@ or a Windows user stops being offered it while a Mac user is still handed it.
 
 Honest list, so nobody assumes otherwise:
 
-- **Code signing.** Nothing is signed. macOS CI is wired for it and needs only
-  the credentials; the Windows job has no signing step yet. Approved as a
-  production-release requirement, and it is the stated prerequisite in
-  `docs/Desktop_Update_Distribution_Decisions.md` §2 for publishing a release
-  to real users. Registering drafts and piloting them is fine meanwhile.
+- **Code signing.** Nothing is signed. **Both** CI jobs are now wired for it and
+  need only the credentials — the Windows job signs `Monitra.exe` and the
+  installer with `signtool` (RFC 3161 timestamped) before the checksums are
+  computed, and the macOS job imports a certificate and passes an identity and
+  notary profile to `build_macos.sh`. Each step is gated on its secret being
+  present, so with the secrets absent the build produces unsigned artifacts and
+  says so. Approved as a production-release requirement, and it is the stated
+  prerequisite in `docs/Desktop_Update_Distribution_Decisions.md` §2 for
+  publishing a release to real users. Registering drafts and piloting them is
+  fine meanwhile.
 - **Auto-update (Phase 1).** **Built** (2026-09-08) as the approved *prompted*
   update — see `background_services/update/` and the decision record. It is not
   yet safe to switch on for real users, for the signing reason above, and no
@@ -183,8 +188,64 @@ Honest list, so nobody assumes otherwise:
   smoke-tested in CI only, which now also covers the macOS *update* path.
   The first real-world macOS install will also be the first real test — the
   pilot ring matters more, not less, for that platform.
-- **CI secrets for release registration.** `MONITRA_API_BASE_URL` and
-  `MONITRA_RELEASE_TOKEN`, held by an account with `manage_desktop_releases`.
-  Without them the release job skips registration and says so; the artifacts
-  and the GitHub release are unaffected, and the rows can be registered by
-  re-running that step later.
+- **CI secrets for release registration.** `MONITRA_API_BASE_URL` plus
+  `MONITRA_RELEASE_CREDENTIAL`. Without these the release job skips
+  registration and says so; the artifacts and the GitHub release are
+  unaffected, and the rows can be registered by re-running that step later.
+  `MONITRA_RELEASE_TOKEN` is still honoured for registering a build by hand
+  from an existing session, and is unset in CI.
+
+- **The release account still has to be provisioned.** Nothing creates it
+  automatically. See §8.
+
+## 8. The release credential
+
+CI authenticates with a **service credential** — a long-lived API key belonging
+to a machine, presented as an ordinary bearer token. The account behind it holds
+the `release_bot` role, whose entire authority is `manage_desktop_releases`, and
+it has **no password at all**: the key is the only way in, and revoking it
+closes that door completely.
+
+Why not the two obvious alternatives:
+
+- **Not a password.** The password path is `POST /auth/dev-login`, which returns
+  404 whenever `ENV=production`. Registration used to go through it, which meant
+  the deployment had to stay in development mode to keep one build step working.
+  That is why this changed (2026-09-10); production can now run as production.
+- **Not an access token.** Those expire after thirty minutes, so one stored in a
+  repository secret is dead long before the next release.
+
+### Provisioning, rotating and revoking
+
+All of it goes through one script, run by a person against a named database:
+
+```bash
+cd backend
+python scripts/provision_release_credential.py show      # read-only
+python scripts/provision_release_credential.py issue --email <address>
+python scripts/provision_release_credential.py rotate --name github-actions-release
+python scripts/provision_release_credential.py revoke --key-id <id>
+```
+
+Every run prints which database it resolved before doing anything, and any run
+that writes refuses a target other than the development database unless
+`--i-am-sure` is passed. To act on production, export `DATABASE_URL` for that
+one command.
+
+The key is printed **once** and stored only as a SHA-256; nothing can read it
+back. Paste it straight into the repository secret `MONITRA_RELEASE_CREDENTIAL`.
+If it is lost, rotate — mint the replacement, update the secret, then revoke the
+old key, in that order, so no window exists in which a release cannot be
+registered.
+
+Each key has a non-secret `key_id` carried inside it. That is what logs, this
+runbook and `revoke` name; the secret half is never written down anywhere.
+
+### Verifying it end to end
+
+With a server running, `backend/scripts/smoke_release_credential.py` mints a
+key, registers and amends a release through the real API, checks that the same
+key is refused on the member directory, the employee list, the fleet view and
+the web-session handoff, checks that ordinary admin and employee sign-in still
+work, and revokes the key. Run it against a deployment in production mode to
+confirm the whole arrangement, including that `/auth/dev-login` is gone.

@@ -205,6 +205,21 @@ ROLE_PERMISSIONS["project_leader"] = set(ROLE_PERMISSIONS["leader"])
 ROLE_PERMISSIONS["release_bot"] = {"manage_desktop_releases"}
 
 
+# Which roles may authenticate with a service credential (an API key) instead
+# of a password or a provider session.
+#
+# This is the hard cap on what an API key can ever be. `ServiceCredential`
+# stores no permissions of its own -- a key's authority is entirely the
+# account's -- so without this list, anyone who could insert a row could mint a
+# non-expiring key for an administrator and hold it forever. With it, a key
+# issued against any account outside this set is refused at authentication
+# time, whatever the row says.
+#
+# Adding a role here is granting a permanent, non-interactive credential to
+# everything that role can do. It is not a place to be generous.
+SERVICE_ROLE_NAMES = frozenset({"release_bot"})
+
+
 # Provider role slug -> Monitra role name.
 #
 # WordPress ships its own role vocabulary, and the provider passes those slugs

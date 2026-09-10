@@ -221,125 +221,157 @@ if __name__ == "__main__":
 
 # ── The release credential ──────────────────────────────────────────────────
 #
-# CI authenticates as a dedicated account rather than carrying a bearer token,
-# because an access token is valid for thirty minutes and one stored in a
-# repository secret would be expired long before the next release. These tests
-# pin that behaviour: the credential in CI must be something that does not go
-# stale, and it must never be logged.
+# CI presents a service credential: a long-lived API key belonging to an
+# account whose only permission is `manage_desktop_releases`. It replaced a
+# sign-in with an email and a password, and the replacement matters for two
+# reasons worth pinning:
+#
+#   * the password path was `/auth/dev-login`, which is 404 whenever
+#     ENV=production -- so the old arrangement held the whole deployment in
+#     development mode to keep one build step working;
+#   * an access token expires after thirty minutes, so one stored in a
+#     repository secret is dead long before the next release.
+#
+# The key is sent as an ordinary bearer token, so there is no sign-in step here
+# at all any more.
 
 
-def test_credentials_are_exchanged_for_a_token_before_registering(monkeypatch, tmp_path):
-    signed_in = []
-    posted = []
+def _argv_for(monkeypatch, artifact):
+    monkeypatch.setattr(sys, "argv", [
+        "register_release.py", "--tag", f"v{version.VERSION}",
+        "--repo", "acme/monitra", "--artifacts", str(artifact),
+    ])
+
+
+def _artifact(tmp_path):
+    artifact = tmp_path / f"Monitra-Setup-{version.VERSION}.exe"
+    artifact.write_bytes(b"x")
+    return artifact
+
+
+def test_the_api_key_is_presented_as_it_is_with_no_sign_in(monkeypatch, tmp_path):
     monkeypatch.delenv("MONITRA_RELEASE_TOKEN", raising=False)
     monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
-    monkeypatch.setenv("MONITRA_RELEASE_EMAIL", "release-bot@monitra.invalid")
-    monkeypatch.setenv("MONITRA_RELEASE_PASSWORD", "s3cret")
-    monkeypatch.setattr(
-        reg, "sign_in",
-        lambda base, email, password: (
-            signed_in.append((base, email, password)), "fresh-token"
-        )[1],
-    )
-    monkeypatch.setattr(
-        reg, "post_release",
-        lambda base_url, token, payload: (posted.append(token), True)[1],
-    )
-
-    artifact = tmp_path / f"Monitra-Setup-{version.VERSION}.exe"
-    artifact.write_bytes(b"x")
-    monkeypatch.setattr(sys, "argv", [
-        "register_release.py", "--tag", f"v{version.VERSION}",
-        "--repo", "acme/monitra", "--artifacts", str(artifact),
-    ])
-
-    assert reg.main() == 0
-    assert signed_in == [("https://api.invalid", "release-bot@monitra.invalid", "s3cret")]
-    # The token used to register is the one just minted, never a stored one.
-    assert posted == ["fresh-token"]
-
-
-def test_an_explicit_token_is_still_honoured_without_signing_in(monkeypatch, tmp_path):
-    # A person registering a build by hand from a session they already have.
-    monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
-    monkeypatch.setenv("MONITRA_RELEASE_TOKEN", "already-have-one")
-    monkeypatch.setenv("MONITRA_RELEASE_EMAIL", "release-bot@monitra.invalid")
-    monkeypatch.setenv("MONITRA_RELEASE_PASSWORD", "s3cret")
-    monkeypatch.setattr(reg, "sign_in", lambda *a, **k: pytest.fail("must not sign in"))
+    monkeypatch.setenv("MONITRA_RELEASE_CREDENTIAL", "msk_abc123_secret")
     posted = []
     monkeypatch.setattr(
         reg, "post_release",
         lambda base_url, token, payload: (posted.append(token), True)[1],
     )
 
-    artifact = tmp_path / f"Monitra-Setup-{version.VERSION}.exe"
-    artifact.write_bytes(b"x")
-    monkeypatch.setattr(sys, "argv", [
-        "register_release.py", "--tag", f"v{version.VERSION}",
-        "--repo", "acme/monitra", "--artifacts", str(artifact),
-    ])
+    _argv_for(monkeypatch, _artifact(tmp_path))
+    assert reg.main() == 0
+    # Exactly the key from the environment: nothing was exchanged for it, so
+    # there is no sign-in round trip that can fail or expire.
+    assert posted == ["msk_abc123_secret"]
 
+
+def test_the_tool_cannot_sign_in_at_all(monkeypatch):
+    """There is no password path left to fall back to.
+
+    A sign-in helper here would be a way for the pipeline to start depending on
+    `/auth/dev-login` again, and that dependency is what pinned production to
+    ENV=development.
+    """
+    assert not hasattr(reg, "sign_in")
+
+
+def test_a_manual_token_is_still_honoured(monkeypatch, tmp_path):
+    # A person registering a build by hand from a session they already have.
+    # Unset in CI.
+    monkeypatch.delenv("MONITRA_RELEASE_CREDENTIAL", raising=False)
+    monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
+    monkeypatch.setenv("MONITRA_RELEASE_TOKEN", "already-have-one")
+    posted = []
+    monkeypatch.setattr(
+        reg, "post_release",
+        lambda base_url, token, payload: (posted.append(token), True)[1],
+    )
+
+    _argv_for(monkeypatch, _artifact(tmp_path))
     assert reg.main() == 0
     assert posted == ["already-have-one"]
 
 
-def test_an_email_without_a_password_is_not_a_credential(monkeypatch, tmp_path):
-    # Half a credential must skip registration exactly as no credential does,
-    # rather than attempting a sign-in that cannot succeed.
-    monkeypatch.delenv("MONITRA_RELEASE_TOKEN", raising=False)
-    monkeypatch.delenv("MONITRA_RELEASE_PASSWORD", raising=False)
+def test_the_api_key_wins_over_a_stale_manual_token(monkeypatch, tmp_path):
     monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
-    monkeypatch.setenv("MONITRA_RELEASE_EMAIL", "release-bot@monitra.invalid")
-    monkeypatch.setattr(reg, "sign_in", lambda *a, **k: pytest.fail("must not sign in"))
-
-    artifact = tmp_path / f"Monitra-Setup-{version.VERSION}.exe"
-    artifact.write_bytes(b"x")
-    monkeypatch.setattr(sys, "argv", [
-        "register_release.py", "--tag", f"v{version.VERSION}",
-        "--repo", "acme/monitra", "--artifacts", str(artifact),
-    ])
-
-    assert reg.main() == 0
-
-
-def test_a_failed_sign_in_registers_nothing_and_does_not_fail_the_build(
-    monkeypatch, tmp_path, capsys
-):
-    monkeypatch.delenv("MONITRA_RELEASE_TOKEN", raising=False)
-    monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
-    monkeypatch.setenv("MONITRA_RELEASE_EMAIL", "release-bot@monitra.invalid")
-    monkeypatch.setenv("MONITRA_RELEASE_PASSWORD", "wrong")
-    monkeypatch.setattr(reg, "sign_in", lambda *a, **k: None)
+    monkeypatch.setenv("MONITRA_RELEASE_TOKEN", "thirty-minutes-old")
+    monkeypatch.setenv("MONITRA_RELEASE_CREDENTIAL", "msk_abc123_secret")
+    posted = []
     monkeypatch.setattr(
         reg, "post_release",
-        lambda *a, **k: pytest.fail("must not register without a token"),
+        lambda base_url, token, payload: (posted.append(token), True)[1],
     )
 
-    artifact = tmp_path / f"Monitra-Setup-{version.VERSION}.exe"
-    artifact.write_bytes(b"x")
-    monkeypatch.setattr(sys, "argv", [
-        "register_release.py", "--tag", f"v{version.VERSION}",
-        "--repo", "acme/monitra", "--artifacts", str(artifact),
-    ])
+    _argv_for(monkeypatch, _artifact(tmp_path))
+    assert reg.main() == 0
+    assert posted == ["msk_abc123_secret"]
 
-    # The artifacts and the GitHub release are good either way.
+
+def test_no_credential_skips_registration_without_failing_the_build(
+    monkeypatch, tmp_path, capsys
+):
+    # A fork, or a repository that has not been given the secret, still
+    # produces perfectly good artifacts.
+    monkeypatch.delenv("MONITRA_RELEASE_CREDENTIAL", raising=False)
+    monkeypatch.delenv("MONITRA_RELEASE_TOKEN", raising=False)
+    monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
+    monkeypatch.setattr(
+        reg, "post_release",
+        lambda *a, **k: pytest.fail("must not register without a credential"),
+    )
+
+    _argv_for(monkeypatch, _artifact(tmp_path))
+    assert reg.main() == 0
+    assert "skipping backend registration" in capsys.readouterr().out
+
+
+def test_a_base_url_without_a_credential_registers_nothing(monkeypatch, tmp_path):
+    monkeypatch.delenv("MONITRA_API_BASE_URL", raising=False)
+    monkeypatch.setenv("MONITRA_RELEASE_CREDENTIAL", "msk_abc123_secret")
+    monkeypatch.setattr(
+        reg, "post_release",
+        lambda *a, **k: pytest.fail("must not register without a base url"),
+    )
+
+    _argv_for(monkeypatch, _artifact(tmp_path))
     assert reg.main() == 0
 
 
-def test_a_failed_sign_in_never_echoes_the_response_body(monkeypatch, capsys):
-    # Build logs are public on this repository. An auth failure reports its
-    # status code and nothing else.
+def test_a_refused_credential_is_reported_without_echoing_the_response(
+    monkeypatch, capsys
+):
+    """Build logs are public on this repository.
+
+    A refused credential reports its status code and what to do about it, and
+    never the body of the response or any part of the key.
+    """
     import urllib.error
 
     def explode(*a, **k):
         raise urllib.error.HTTPError(
-            "https://api.invalid/auth/dev-login", 401, "Unauthorized", {},
-            io.BytesIO(b'{"detail":"Invalid email or password"}'),
+            "https://api.invalid/desktop/releases", 401, "Unauthorized", {},
+            io.BytesIO(b'{"detail":"Not authenticated"}'),
         )
 
     monkeypatch.setattr(reg.urllib.request, "urlopen", explode)
-    assert reg.sign_in("https://api.invalid", "bot@monitra.invalid", "nope") is None
+    assert reg.post_release("https://api.invalid", "msk_abc123_secret", {}) is False
+
     output = capsys.readouterr()
     assert "401" in output.err
-    assert "Invalid email or password" not in output.err
-    assert "nope" not in output.err
+    assert "MONITRA_RELEASE_CREDENTIAL" in output.err
+    assert "Not authenticated" not in output.err
+    assert "msk_abc123_secret" not in output.err
+    assert "secret" not in output.err.replace("MONITRA_RELEASE_CREDENTIAL", "")
+
+
+def test_a_refused_credential_never_publishes_anything(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
+    monkeypatch.setenv("MONITRA_RELEASE_CREDENTIAL", "msk_abc123_secret")
+    monkeypatch.setattr(reg, "post_release", lambda *a, **k: False)
+
+    _argv_for(monkeypatch, _artifact(tmp_path))
+    # Registration failing does not fail the build: the artifacts and the
+    # GitHub release are good either way, and the step can be re-run.
+    assert reg.main() == 0
+    assert "0 artifact(s) registered" in capsys.readouterr().out
