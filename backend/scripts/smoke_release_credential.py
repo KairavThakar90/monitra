@@ -20,6 +20,22 @@ It refuses to touch anything but the development database unless
 ``--i-am-sure`` is passed, and every row it creates is removed by ``--cleanup``.
 The key it mints is revoked at the end of every run.
 
+Against a real deployment
+-------------------------
+
+    MONITRA_RELEASE_CREDENTIAL=<the key CI holds> \\
+        python scripts/smoke_release_credential.py \\
+        --base-url https://<deployment> --use-existing --i-am-sure
+
+``--use-existing`` tests the credential CI actually holds, mints nothing,
+revokes nothing, and deletes the release row it registers.
+
+The two human-authentication checks mint their own tokens, which only works
+when this machine holds the same ``JWT_SECRET_KEY`` as the deployment — and it
+must not. Against a real deployment they are reported as SKIP unless a genuine
+token is supplied in ``MONITRA_SMOKE_ADMIN_TOKEN`` /
+``MONITRA_SMOKE_EMPLOYEE_TOKEN``.
+
 Options:
     --base-url URL   API root (default http://127.0.0.1:8010)
     --cleanup        Delete this script's account, keys and releases, then exit.
@@ -99,6 +115,19 @@ def _create_smoke_account(db) -> User:
 #: provider returns `administrator`, which the alias table renames to `admin`
 #: at sign-in; both spellings therefore exist on real rows.
 ADMIN_ROLES = ("admin", "org_admin", "administrator")
+
+
+def _person_auth(env_name: str, user: User) -> tuple[dict, bool]:
+    """(header, was_minted_here) for a human principal.
+
+    Against a locally-run server, minting the token here is the whole
+    convenience. Against a real deployment it cannot work unless this machine
+    happens to hold the same JWT_SECRET_KEY — which it must not — so a real
+    token can be supplied instead through `env_name`.
+    """
+    supplied = os.environ.get(env_name, "").strip()
+    token = supplied or create_access_token({"user_id": user.id})
+    return {"Authorization": f"Bearer {token}"}, not supplied
 
 
 def _admins(db) -> list[User]:
@@ -280,18 +309,27 @@ def run(db, base_url: str, use_existing: bool = False) -> int:
             "no admin account in this database holds manage_desktop_releases",
         )
     else:
-        admin_auth = {
-            "Authorization": f"Bearer {create_access_token({'user_id': release_manager.id})}"
-        }
-        expect_status(
-            "an admin can read the release list",
-            client.get("/desktop/releases", headers=admin_auth), 200,
-        )
-        expect_status(
-            "an admin can still open a web session",
-            client.post("/auth/sso/handoff", headers=admin_auth),
-            200,
-        )
+        admin_auth, minted = _person_auth("MONITRA_SMOKE_ADMIN_TOKEN", release_manager)
+        probe = client.get("/desktop/releases", headers=admin_auth)
+        # A 401 on a token this script minted means the secrets differ, not
+        # that authentication is broken. Distinguishing the two is the
+        # difference between a useful report and a false alarm.
+        if minted and probe.status_code == 401:
+            print(
+                "  SKIP  ordinary admin authentication — this deployment signs "
+                "tokens with a different JWT_SECRET_KEY than this machine, so a "
+                "locally minted token cannot be used against it. Supply a real "
+                "one in MONITRA_SMOKE_ADMIN_TOKEN to check it here, or confirm "
+                "sign-in through the web client."
+            )
+            admin_auth = None
+        else:
+            expect_status("an admin can read the release list", probe, 200)
+            expect_status(
+                "an admin can still open a web session",
+                client.post("/auth/sso/handoff", headers=admin_auth),
+                200,
+            )
 
     # Not a failure of this arrangement, but worth surfacing: an admin-role
     # account whose stored permissions predate `manage_desktop_releases` cannot
@@ -318,13 +356,20 @@ def run(db, base_url: str, use_existing: bool = False) -> int:
     if employee is None:
         check("normal employee authentication", False, "no employee account in this database")
     else:
-        staff_auth = {"Authorization": f"Bearer {create_access_token({'user_id': employee.id})}"}
-        expect_status("an employee is authenticated", client.get("/auth/me", headers=staff_auth), 200)
-        expect_status(
-            "an employee cannot manage releases",
-            client.get("/desktop/releases", headers=staff_auth),
-            403,
-        )
+        staff_auth, minted = _person_auth("MONITRA_SMOKE_EMPLOYEE_TOKEN", employee)
+        identity = client.get("/auth/me", headers=staff_auth)
+        if minted and identity.status_code == 401:
+            print(
+                "  SKIP  ordinary employee authentication — same reason as "
+                "above (MONITRA_SMOKE_EMPLOYEE_TOKEN)."
+            )
+        else:
+            expect_status("an employee is authenticated", identity, 200)
+            expect_status(
+                "an employee cannot manage releases",
+                client.get("/desktop/releases", headers=staff_auth),
+                403,
+            )
 
     # ── Revocation actually closes the door ───────────────────────────────
     print("\nRevocation")
