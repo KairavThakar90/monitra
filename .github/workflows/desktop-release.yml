@@ -430,15 +430,17 @@ jobs:
         continue-on-error: true
         env:
           MONITRA_API_BASE_URL: ${{ secrets.MONITRA_API_BASE_URL }}
-          # The release account's own credentials. Not an access token: those
-          # expire after thirty minutes, so one stored here would be dead long
-          # before the next release. The account holds the `release_bot` role,
-          # whose entire authority is `manage_desktop_releases`.
-          MONITRA_RELEASE_EMAIL: ${{ secrets.MONITRA_RELEASE_EMAIL }}
-          MONITRA_RELEASE_PASSWORD: ${{ secrets.MONITRA_RELEASE_PASSWORD }}
-          # Still honoured, for registering a build by hand from an existing
-          # session. Unset in CI.
-          MONITRA_RELEASE_TOKEN: ${{ secrets.MONITRA_RELEASE_TOKEN }}
+          # A service credential: a long-lived API key belonging to a machine,
+          # not a person. It authenticates an account holding the `release_bot`
+          # role, whose entire authority is `manage_desktop_releases`, and that
+          # account has no password at all -- this key is its only credential.
+          #
+          # Not a password: the password path is `/auth/dev-login`, which is
+          # 404 whenever ENV=production, and no deployment should stay in
+          # development mode to keep a build step working.
+          # Not an access token: those expire after thirty minutes, so one
+          # stored here would be dead long before the next release.
+          MONITRA_RELEASE_CREDENTIAL: ${{ secrets.MONITRA_RELEASE_CREDENTIAL }}
         run: |
           python tools/register_release.py \
             --tag "${GITHUB_REF_NAME}" \

@@ -26,6 +26,20 @@ working the instant the release is published — which is the same moment the
 backend release is meant to be published. Deriving it keeps both halves in
 step without CI having to publish anything early.
 
+How it authenticates
+--------------------
+With a **service credential** — a long-lived API key held in the repository
+secret ``MONITRA_RELEASE_CREDENTIAL`` and sent as an ordinary bearer token. It
+belongs to an account whose role is `release_bot`, whose entire authority is
+`manage_desktop_releases`.
+
+This used to sign in at ``/auth/dev-login`` with an email and a password, which
+had two costs: the deployment had to keep ``ENV=development`` for that route to
+exist at all, and a password for a real account sat in CI. The key replaces
+both. It does not expire, so nothing is minted here and there is no sign-in
+step that can fail; the account behind it has no password at all, so the key is
+the only way in and revoking it closes the door completely.
+
 Failure here does not fail the build. The artifacts exist and the GitHub
 release exists either way; a backend that was unreachable for a minute should
 not turn a good build into a failed one, and the registration can be re-run.
@@ -113,47 +127,6 @@ def release_notes(version_string: str) -> Optional[str]:
     return body or None
 
 
-def sign_in(base_url: str, email: str, password: str) -> Optional[str]:
-    """Exchange the release account's credentials for a short-lived token.
-
-    Why credentials rather than a token in the CI secret: an access token is
-    valid for thirty minutes (`ACCESS_TOKEN_EXPIRE_MINUTES`), so one pasted
-    into a repository secret is dead long before the next release and every
-    registration would fail with a 401 nobody could explain. The credential
-    that lives in CI therefore has to be something that does not expire, and
-    the token is minted here, used immediately, and never stored.
-
-    The account behind it holds the `release_bot` role -- a single permission,
-    `manage_desktop_releases` -- so this credential can register and publish
-    releases and do nothing else at all.
-    """
-    request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/auth/dev-login",
-        data=json.dumps({"email": email, "password": password}).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": f"MonitraReleasePipeline/{version.VERSION}",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            token = json.loads(response.read().decode("utf-8")).get("access_token")
-            if not token:
-                print("sign-in succeeded but returned no access token", file=sys.stderr)
-                return None
-            return token
-    except urllib.error.HTTPError as exc:
-        # Deliberately does not echo the body: it is an auth failure, and the
-        # response to a bad credential is not something to widen in a public
-        # build log.
-        print(f"sign-in FAILED: HTTP {exc.code}", file=sys.stderr)
-        return None
-    except urllib.error.URLError as exc:
-        print(f"sign-in FAILED: {exc.reason}", file=sys.stderr)
-        return None
-
-
 def post_release(base_url: str, token: str, payload: dict) -> bool:
     """Register one artifact. Returns whether it is now registered."""
     request = urllib.request.Request(
@@ -176,6 +149,18 @@ def post_release(base_url: str, token: str, payload: dict) -> bool:
             # normal thing to do, and it must not look like a failure.
             print("  already registered; leaving it alone")
             return True
+        if exc.code in (401, 403):
+            # Named rather than dumped: the body of an auth failure is not
+            # something to widen into a public build log, and these two have a
+            # specific remedy.
+            print(
+                f"  FAILED: HTTP {exc.code} — the release credential was "
+                "refused. Check that MONITRA_RELEASE_CREDENTIAL holds a current, "
+                "unrevoked key (backend/scripts/provision_release_credential.py "
+                "show).",
+                file=sys.stderr,
+            )
+            return False
         body = exc.read().decode("utf-8", "replace")[:400]
         print(f"  FAILED: HTTP {exc.code} {body}", file=sys.stderr)
         return False
@@ -200,35 +185,24 @@ def main() -> int:
     args = parser.parse_args()
 
     base_url = os.environ.get("MONITRA_API_BASE_URL", "").strip()
-    token = os.environ.get("MONITRA_RELEASE_TOKEN", "").strip()
-    email = os.environ.get("MONITRA_RELEASE_EMAIL", "").strip()
-    password = os.environ.get("MONITRA_RELEASE_PASSWORD", "")
+    # The normal path: the service credential, presented as-is. It does not
+    # expire, so there is nothing to mint and no sign-in step to fail.
+    credential = os.environ.get("MONITRA_RELEASE_CREDENTIAL", "").strip()
+    # A person registering a build by hand from a session they already have.
+    # Unset in CI -- an access token is valid for thirty minutes, so one stored
+    # in a repository secret would be dead long before the next release.
+    token = credential or os.environ.get("MONITRA_RELEASE_TOKEN", "").strip()
 
-    if not base_url or not (token or (email and password)):
+    if not base_url or not token:
         # Not configured is not a failure: a fork, or a repository that has not
-        # been given the credentials, still produces perfectly good artifacts.
+        # been given the credential, still produces perfectly good artifacts.
         print(
             "MONITRA_API_BASE_URL and a release credential "
-            "(MONITRA_RELEASE_EMAIL + MONITRA_RELEASE_PASSWORD, or "
-            "MONITRA_RELEASE_TOKEN) are not set; skipping backend "
-            "registration.\nThe artifacts and the GitHub release are "
-            "unaffected."
+            "(MONITRA_RELEASE_CREDENTIAL, or MONITRA_RELEASE_TOKEN for a manual "
+            "run) are not set; skipping backend registration.\n"
+            "The artifacts and the GitHub release are unaffected."
         )
         return 0
-
-    if not token:
-        # The normal path. A ready-made token is still accepted so a person can
-        # register a build by hand from a session they already have, but it is
-        # not what CI uses -- see sign_in().
-        token = sign_in(base_url, email, password)
-        if not token:
-            print(
-                "Could not sign in as the release account; nothing was "
-                "registered. The artifacts and the GitHub release are "
-                "unaffected, and this step can be re-run.",
-                file=sys.stderr,
-            )
-            return 0
 
     expected = version.VERSION
     if args.tag.lstrip("v") != expected:

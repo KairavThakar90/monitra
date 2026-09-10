@@ -188,23 +188,64 @@ Honest list, so nobody assumes otherwise:
   smoke-tested in CI only, which now also covers the macOS *update* path.
   The first real-world macOS install will also be the first real test — the
   pilot ring matters more, not less, for that platform.
-- **CI secrets for release registration.** `MONITRA_API_BASE_URL` plus the
-  release account's own credentials, `MONITRA_RELEASE_EMAIL` and
-  `MONITRA_RELEASE_PASSWORD` — an account holding the `release_bot` role, whose
-  entire authority is `manage_desktop_releases`. Credentials rather than a
-  token because an access token expires after thirty minutes and one stored in
-  a repository secret would be dead long before the next release;
-  `register_release.py` mints a token per run and never stores it.
-  `MONITRA_RELEASE_TOKEN` is still honoured for registering a build by hand
-  from an existing session, and is unset in CI. Without these the release job
-  skips registration and says so; the artifacts and the GitHub release are
+- **CI secrets for release registration.** `MONITRA_API_BASE_URL` plus
+  `MONITRA_RELEASE_CREDENTIAL`. Without these the release job skips
+  registration and says so; the artifacts and the GitHub release are
   unaffected, and the rows can be registered by re-running that step later.
+  `MONITRA_RELEASE_TOKEN` is still honoured for registering a build by hand
+  from an existing session, and is unset in CI.
 
-- **The registration sign-in path depends on the deployment not declaring
-  itself production.** `register_release.py` authenticates through
-  `POST /auth/dev-login`, and `backend/app/api/auth.py` returns 404 for that
-  route whenever `settings.ENV == "production"`. The deployment at
-  `monitra-lvzq.vercel.app` currently runs with `ENV=development`, which is why
-  the path works today. Setting `ENV=production` there — correct in itself —
-  would break CI release registration until the release account is given a
-  sign-in route that survives it. Noted here so the two are changed together.
+- **The release account still has to be provisioned.** Nothing creates it
+  automatically. See §8.
+
+## 8. The release credential
+
+CI authenticates with a **service credential** — a long-lived API key belonging
+to a machine, presented as an ordinary bearer token. The account behind it holds
+the `release_bot` role, whose entire authority is `manage_desktop_releases`, and
+it has **no password at all**: the key is the only way in, and revoking it
+closes that door completely.
+
+Why not the two obvious alternatives:
+
+- **Not a password.** The password path is `POST /auth/dev-login`, which returns
+  404 whenever `ENV=production`. Registration used to go through it, which meant
+  the deployment had to stay in development mode to keep one build step working.
+  That is why this changed (2026-09-10); production can now run as production.
+- **Not an access token.** Those expire after thirty minutes, so one stored in a
+  repository secret is dead long before the next release.
+
+### Provisioning, rotating and revoking
+
+All of it goes through one script, run by a person against a named database:
+
+```bash
+cd backend
+python scripts/provision_release_credential.py show      # read-only
+python scripts/provision_release_credential.py issue --email <address>
+python scripts/provision_release_credential.py rotate --name github-actions-release
+python scripts/provision_release_credential.py revoke --key-id <id>
+```
+
+Every run prints which database it resolved before doing anything, and any run
+that writes refuses a target other than the development database unless
+`--i-am-sure` is passed. To act on production, export `DATABASE_URL` for that
+one command.
+
+The key is printed **once** and stored only as a SHA-256; nothing can read it
+back. Paste it straight into the repository secret `MONITRA_RELEASE_CREDENTIAL`.
+If it is lost, rotate — mint the replacement, update the secret, then revoke the
+old key, in that order, so no window exists in which a release cannot be
+registered.
+
+Each key has a non-secret `key_id` carried inside it. That is what logs, this
+runbook and `revoke` name; the secret half is never written down anywhere.
+
+### Verifying it end to end
+
+With a server running, `backend/scripts/smoke_release_credential.py` mints a
+key, registers and amends a release through the real API, checks that the same
+key is refused on the member directory, the employee list, the fleet view and
+the web-session handoff, checks that ordinary admin and employee sign-in still
+work, and revokes the key. Run it against a deployment in production mode to
+confirm the whole arrangement, including that `/auth/dev-login` is gone.
