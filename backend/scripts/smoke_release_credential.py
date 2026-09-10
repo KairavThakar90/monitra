@@ -95,6 +95,20 @@ def _create_smoke_account(db) -> User:
     return user
 
 
+#: Every spelling of "administrator" this deployment actually stores. The
+#: provider returns `administrator`, which the alias table renames to `admin`
+#: at sign-in; both spellings therefore exist on real rows.
+ADMIN_ROLES = ("admin", "org_admin", "administrator")
+
+
+def _admins(db) -> list[User]:
+    return list(db.scalars(
+        select(User)
+        .where(User.role_name.in_(ADMIN_ROLES), User.is_active.is_(True))
+        .order_by(User.id)
+    ).all())
+
+
 def _a_person(db, role_names: tuple[str, ...]) -> User | None:
     """Any active human account in one of these roles, to sign in as."""
     return db.scalar(
@@ -117,7 +131,15 @@ def cleanup(db) -> int:
     return 0
 
 
-def run(db, base_url: str) -> int:
+def run(db, base_url: str, use_existing: bool = False) -> int:
+    """Drive the checks. `use_existing` is the production shape of this run.
+
+    Against a real deployment there must be no second release account and no
+    disposable key: the credential under test is the one CI actually holds, it
+    is read from MONITRA_RELEASE_CREDENTIAL, and this script must not revoke it
+    on the way out. What it registers is still removed before it returns, so a
+    verified deployment is left exactly as it was found.
+    """
     client = httpx.Client(base_url=base_url, timeout=30.0)
 
     print(f"\nDatabase: {describe_url(get_database_url())}")
@@ -137,19 +159,33 @@ def run(db, base_url: str) -> int:
     )
     expect_status("/auth/dev-login unavailable in production", dev_login, 404)
 
-    # ── A credential, minted the way the provisioning script mints one ────
-    print("\nProvisioning")
-    user = _smoke_account(db) or _create_smoke_account(db)
-    # Any previous run's keys are retired before this one mints its own.
-    for stale in db.scalars(
-        select(ServiceCredential).where(
-            ServiceCredential.user_id == user.id,
-            ServiceCredential.revoked_at.is_(None),
+    # ── The credential under test ─────────────────────────────────────────
+    print("\nCredential")
+    if use_existing:
+        key = os.environ.get("MONITRA_RELEASE_CREDENTIAL", "").strip()
+        if not key:
+            print(
+                "--use-existing needs the credential in MONITRA_RELEASE_CREDENTIAL.",
+                file=sys.stderr,
+            )
+            return 2
+        row = None
+        check(
+            "using the credential CI holds (nothing minted)", True,
+            "read from MONITRA_RELEASE_CREDENTIAL",
         )
-    ).all():
-        ServiceCredentialService.revoke(db, stale.key_id)
-    key, row = ServiceCredentialService.issue(db, user, name=SMOKE_KEY_NAME)
-    check("a key was issued to the release account", True, f"key_id={row.key_id}")
+    else:
+        user = _smoke_account(db) or _create_smoke_account(db)
+        # Any previous run's keys are retired before this one mints its own.
+        for stale in db.scalars(
+            select(ServiceCredential).where(
+                ServiceCredential.user_id == user.id,
+                ServiceCredential.revoked_at.is_(None),
+            )
+        ).all():
+            ServiceCredentialService.revoke(db, stale.key_id)
+        key, row = ServiceCredentialService.issue(db, user, name=SMOKE_KEY_NAME)
+        check("a key was issued to the release account", True, f"key_id={row.key_id}")
     auth = {"Authorization": f"Bearer {key}"}
 
     # ── What it is for ────────────────────────────────────────────────────
@@ -227,19 +263,56 @@ def run(db, base_url: str) -> int:
 
     # ── People are unaffected ─────────────────────────────────────────────
     print("\nOrdinary authentication still works")
-    admin = _a_person(db, ("admin", "org_admin", "administrator"))
-    if admin is None:
-        check("normal admin authentication", False, "no admin account in this database")
+    admins = _admins(db)
+    # Deliberately the admin who actually *holds* the permission. Picking any
+    # admin conflates two different questions: "did this change break release
+    # management for people?" and "is that particular account's stored
+    # permission row up to date?". Only the first is this script's business.
+    release_manager = next(
+        (u for u in admins if (u.permissions or {}) and
+         isinstance(u.permissions, dict) and
+         u.permissions.get("manage_desktop_releases")),
+        None,
+    )
+    if release_manager is None:
+        check(
+            "normal admin authentication", False,
+            "no admin account in this database holds manage_desktop_releases",
+        )
     else:
-        admin_auth = {"Authorization": f"Bearer {create_access_token({'user_id': admin.id})}"}
+        admin_auth = {
+            "Authorization": f"Bearer {create_access_token({'user_id': release_manager.id})}"
+        }
         expect_status(
-            "an admin can read the release list", client.get("/desktop/releases", headers=admin_auth), 200
+            "an admin can read the release list",
+            client.get("/desktop/releases", headers=admin_auth), 200,
         )
         expect_status(
             "an admin can still open a web session",
             client.post("/auth/sso/handoff", headers=admin_auth),
             200,
         )
+
+    # Not a failure of this arrangement, but worth surfacing: an admin-role
+    # account whose stored permissions predate `manage_desktop_releases` cannot
+    # publish a release until its next sign-in refreshes them from the role
+    # table. Reported, never repaired -- rewriting somebody's permission row is
+    # not something a verification script gets to do.
+    stale = [
+        u for u in admins
+        if u is not release_manager
+        and not (isinstance(u.permissions, dict)
+                 and u.permissions.get("manage_desktop_releases"))
+    ]
+    if stale:
+        print(
+            f"  NOTE  {len(stale)} admin-role account(s) carry stale permission "
+            "rows and cannot manage releases until their next sign-in:"
+        )
+        for u in stale:
+            shape = type(u.permissions).__name__
+            size = len(u.permissions) if isinstance(u.permissions, (dict, list)) else 0
+            print(f"          id={u.id} role={u.role_name} permissions={shape}({size})")
 
     employee = _a_person(db, ("employee",))
     if employee is None:
@@ -255,15 +328,36 @@ def run(db, base_url: str) -> int:
 
     # ── Revocation actually closes the door ───────────────────────────────
     print("\nRevocation")
-    ServiceCredentialService.revoke(db, row.key_id)
-    expect_status(
-        "a revoked key is refused", client.get("/desktop/releases", headers=auth), 401
-    )
+    if row is not None:
+        ServiceCredentialService.revoke(db, row.key_id)
+        expect_status(
+            "a revoked key is refused", client.get("/desktop/releases", headers=auth), 401
+        )
+    else:
+        # The credential under test is the live one. Revoking it here would
+        # break the next release to prove a property the unit tests already
+        # pin, so this run does not touch it.
+        print("  SKIP  revoking the live credential (it is the one CI holds)")
     expect_status(
         "a forged key is refused",
         client.get("/desktop/releases", headers={"Authorization": "Bearer msk_deadbeef_forged"}),
         401,
     )
+
+    if use_existing:
+        # Leave the deployment as it was found: the row registered above was
+        # written only to prove the credential can write.
+        removed = db.execute(
+            delete(DesktopRelease).where(DesktopRelease.version == SMOKE_VERSION)
+        ).rowcount
+        db.commit()
+        check(
+            "the verification release row was removed again",
+            db.scalar(
+                select(DesktopRelease).where(DesktopRelease.version == SMOKE_VERSION)
+            ) is None,
+            f"deleted {removed}",
+        )
 
     client.close()
 
@@ -276,10 +370,11 @@ def run(db, base_url: str) -> int:
             print(f"  - {name}")
         return 1
     print("PASS — the release credential registers releases and reaches nothing else.")
-    print(
-        f"\nThe smoke release row ({SMOKE_VERSION}) is still in the database. "
-        "Remove it with --cleanup."
-    )
+    if not use_existing:
+        print(
+            f"\nThe smoke release row ({SMOKE_VERSION}) is still in the database. "
+            "Remove it with --cleanup."
+        )
     return 0
 
 
@@ -288,6 +383,13 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:8010")
     parser.add_argument("--cleanup", action="store_true")
     parser.add_argument("--i-am-sure", action="store_true")
+    parser.add_argument(
+        "--use-existing", action="store_true",
+        help="Test the credential in MONITRA_RELEASE_CREDENTIAL instead of "
+             "minting a disposable one. Creates no account, revokes nothing, "
+             "and removes the release row it registers. This is the mode to "
+             "use against a real deployment.",
+    )
     args = parser.parse_args()
 
     if not _is_development_target() and not args.i_am_sure:
@@ -301,7 +403,9 @@ def main() -> int:
 
     db = get_session_local()()
     try:
-        return cleanup(db) if args.cleanup else run(db, args.base_url.rstrip("/"))
+        if args.cleanup:
+            return cleanup(db)
+        return run(db, args.base_url.rstrip("/"), use_existing=args.use_existing)
     finally:
         db.close()
 
