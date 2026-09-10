@@ -17,7 +17,9 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
     description=(
         "Desktop and Swagger clients use this endpoint. The backend securely "
         "forwards the supplied credentials to the configured Hubstaff provider "
-        "login URL, provisions the local user when needed, and returns an SMS JWT."
+        "login URL, provisions the local user when needed, and returns an SMS JWT. "
+        "`login_for` names the client the session is for (`Desktop` or `Web`) and "
+        "is passed on to the provider; it defaults to `Desktop`."
     ),
     responses={
         401: {"description": "Provider rejected the supplied credentials"},
@@ -28,7 +30,9 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 )
 async def login(payload: LoginRequest, db: Session = Depends(get_db)):
     try:
-        return await AuthService.login_exchange(db, payload.username, payload.password)
+        return await AuthService.login_exchange(
+            db, payload.username, payload.password, payload.login_for
+        )
     except HTTPException as he:
         raise he
     except Exception as e:

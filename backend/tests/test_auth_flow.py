@@ -85,7 +85,11 @@ class AuthFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.post_args, (settings.WORDPRESS_LOGIN_URL,))
         self.assertEqual(
             client.post_kwargs["json"],
-            {"username": "user@example.com", "password": "provider-password"},
+            {
+                "username": "user@example.com",
+                "password": "provider-password",
+                "login_for": "Desktop",
+            },
         )
         headers = client.post_kwargs["headers"]
         self.assertEqual(headers["Accept"], "*/*")
@@ -96,6 +100,50 @@ class AuthFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(uuid.UUID(headers["Postman-Token"]), uuid.UUID)
         self.assertEqual(client.post_kwargs["timeout"].connect, settings.EXTERNAL_AUTH_CONNECT_TIMEOUT)
         self.assertEqual(client.post_kwargs["timeout"].read, settings.EXTERNAL_AUTH_READ_TIMEOUT)
+
+    async def test_login_for_is_forwarded_to_the_provider(self):
+        """The caller's `login_for` reaches the provider unchanged.
+
+        The provider payload is the only place this field is consumed, so a
+        parameter that is accepted at the edge but dropped on the way through
+        would look correct in Swagger and do nothing at all. This is the test
+        that catches that.
+        """
+        response = MagicMock(status_code=401)
+        client = CapturingAsyncClient(response)
+        db = MagicMock()
+
+        with patch("app.services.external_auth_service.httpx.AsyncClient", return_value=client):
+            with self.assertRaises(HTTPException):
+                await AuthService.login_exchange(
+                    db, "user@example.com", "provider-password", "Web"
+                )
+
+        self.assertEqual(client.post_kwargs["json"]["login_for"], "Web")
+
+    def test_login_request_defaults_login_for_to_desktop(self):
+        """Omitting `login_for` must keep the behaviour older clients rely on."""
+        from app.schemas.user import LoginRequest
+
+        request = LoginRequest(username="user@example.com", password="provider-password")
+        self.assertEqual(request.login_for, "Desktop")
+
+    def test_login_request_rejects_an_unknown_login_for(self):
+        """Only the values the provider understands are accepted.
+
+        `login_for` is forwarded to an external system, so an unrecognised value
+        is refused at the edge rather than passed upstream.
+        """
+        from pydantic import ValidationError
+
+        from app.schemas.user import LoginRequest
+
+        with self.assertRaises(ValidationError):
+            LoginRequest(
+                username="user@example.com",
+                password="provider-password",
+                login_for="Mobile",
+            )
 
     async def test_html_provider_403_is_reported_as_a_provider_block(self):
         response = MagicMock(status_code=403)

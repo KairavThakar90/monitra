@@ -8,7 +8,7 @@ import secrets
 import uuid
 import httpx
 from app.repositories.user import UserRepository
-from app.schemas.user import UserCreate, UserUpdate, UserRead
+from app.schemas.user import DEFAULT_LOGIN_FOR, LoginFor, UserCreate, UserUpdate, UserRead
 from app.schemas.token import TokenPair
 from app.core.security import create_access_token, generate_refresh_token, hash_token, verify_password
 from app.core.config import settings
@@ -256,11 +256,22 @@ class AuthService:
             logger.exception("Failed to revoke authentication session")
 
     @staticmethod
-    async def login_exchange(db: Session, username: str, password: str) -> TokenPair:
+    async def login_exchange(
+        db: Session,
+        username: str,
+        password: str,
+        login_for: LoginFor = DEFAULT_LOGIN_FOR,
+    ) -> TokenPair:
+        """Verify credentials with the provider and issue a local session.
+
+        `login_for` identifies the client the sign-in is for and is forwarded to
+        the provider. It changes nothing locally: the resolved role, permissions
+        and session window are the same whichever client asked.
+        """
         normalized_username = username.strip()
-        
+
         try:
-            wp_user = await ExternalAuthService.authenticate(username, password)
+            wp_user = await ExternalAuthService.authenticate(username, password, login_for)
         except HTTPException as he:
             logger.error("AUTH_LOGIN_FAILED: Authentication failed for user %s: %s", normalized_username, he.detail)
             raise he

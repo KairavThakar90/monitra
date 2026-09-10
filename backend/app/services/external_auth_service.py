@@ -6,6 +6,7 @@ import httpx
 import urllib3.util.ssl_
 from fastapi import HTTPException, status
 from app.core.config import settings
+from app.schemas.user import DEFAULT_LOGIN_FOR, LoginFor
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -29,14 +30,27 @@ class ExternalAuthService:
         return context
 
     @classmethod
-    async def authenticate(cls, username: str, password: str) -> dict:
+    async def authenticate(
+        cls,
+        username: str,
+        password: str,
+        login_for: LoginFor = DEFAULT_LOGIN_FOR,
+    ) -> dict:
         """
         Authenticate credentials against the external Pantheon service.
         Returns the user data dict on success.
         Raises HTTPException for controlled outcomes.
+
+        `login_for` tells the provider which client the sign-in is for. It is
+        constrained to the set `LoginFor` names, so nothing a caller invents
+        reaches the provider.
         """
         normalized_username = username.strip()
-        logger.info("AUTH_LOGIN_STARTED: Initiating login exchange for user: %s", normalized_username)
+        logger.info(
+            "AUTH_LOGIN_STARTED: Initiating login exchange for user: %s (login_for=%s)",
+            normalized_username,
+            login_for,
+        )
         
         url = settings.WORDPRESS_LOGIN_URL
         headers = {
@@ -47,7 +61,7 @@ class ExternalAuthService:
             "Postman-Token": str(uuid.uuid4()),
             "Accept-Encoding": ACCEPT_ENCODING,
         }
-        payload = {"username": normalized_username, "password": password}
+        payload = {"username": normalized_username, "password": password, "login_for": login_for}
         
         ssl_ctx = cls._create_ssl_context()
         
