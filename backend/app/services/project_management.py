@@ -17,6 +17,7 @@ from app.schemas.project_management import (
 )
 from app.services.member_scope import is_team_scoped
 from app.services.project_scope import may_view_project, visible_project_ids
+from app.core.permissions import LEADER_ROLE_NAMES
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
 PROJECT_STATUS_NAMES = {1: "active", 2: "pending", 3: "todo", 4: "completed"}
@@ -75,7 +76,7 @@ class ProjectManagementService:
         # Both spellings of the leader role, matching `TEAM_SCOPED_ROLES` --
         # a `project_leader` pinned as their own project's leader by `create`
         # must not then be rejected as an invalid role.
-        leader = ProjectManagementService._users(db, user, [leader_id], {"admin", "leader", "project_leader"}, "leader")[0]
+        leader = ProjectManagementService._users(db, user, [leader_id], set(LEADER_ROLE_NAMES), "leader")[0]
         employees = ProjectManagementService._users(db, user, employee_ids, {"employee"}, "employees")
         if deadline and deadline < date.today():
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Deadline cannot be in the past.")
