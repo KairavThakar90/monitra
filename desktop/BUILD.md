@@ -452,6 +452,30 @@ falls back to an unsigned build when they are absent:
 `MACOS_CERTIFICATE` (base64 `.p12`), `MACOS_CERTIFICATE_PASSWORD`,
 `MACOS_KEYCHAIN_PASSWORD`, `MACOS_CODESIGN_IDENTITY`, `MACOS_NOTARY_PROFILE`.
 
+**Signing in CI works today; notarization in CI does not yet.** The four
+signing secrets are enough on their own — the workflow imports the `.p12` into
+a keychain and `build_macos.sh` signs the `.app` and the `.dmg` with the
+identity. `MACOS_NOTARY_PROFILE` is different in kind: it is the *name of a
+keychain profile* created by `xcrun notarytool store-credentials`, which is a
+local, interactive setup step performed on a developer's Mac. A fresh CI
+runner has no such profile, so setting that secret to a name points
+`notarytool` at nothing and the submission fails.
+
+Making notarization work in CI needs one more step in the macOS job, before
+the build, creating the profile from Apple credentials held as secrets:
+
+```bash
+xcrun notarytool store-credentials "$MONITRA_NOTARY_PROFILE" \
+    --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+    --password "$APPLE_APP_SPECIFIC_PASSWORD"
+```
+
+which requires three further secrets — an Apple ID with the Developer Program,
+its team ID, and an app-specific password generated at appleid.apple.com
+(**not** the account password). That step is deliberately not added blind: it
+cannot be tested without real Apple credentials, and an untested signing path
+that appears to work is worse than one that is honestly absent.
+
 ---
 
 ## 12. Release process
