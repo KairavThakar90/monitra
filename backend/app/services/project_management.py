@@ -191,8 +191,25 @@ class ProjectManagementService:
             project = Project(organization_id=user.organization_id, project_name=payload.project_name, description=payload.description, status=ProjectManagementService._legacy_status(project_status, PROJECT_STATUS_NAMES, "project"), status_id=project_status.id, leader_id=leader.id, deadline=payload.deadline, billing_type=payload.billing_type.value, fixed_hours=payload.fixed_hours, is_billable=payload.billing_type == BillingType.fixed, created_by=user.id)
             db.add(project)
             db.flush()
+            # The project may already have members by the time the flush returns.
+            # Some databases carry a hand-added AFTER INSERT trigger on
+            # `projects` -- `trg_project_creator_member` -> `add_project_creator_
+            # as_member()` -- that inserts the creator into `project_members`.
+            # It is in no migration, so it exists in some deployments and not
+            # others: where it exists, adding the creator a second time violates
+            # `uq_project_member` and the whole request fails with a 500. That is
+            # the production failure -- an admin who selected themselves among the
+            # members (which "select all" does) could not create a project at all,
+            # while the same action worked locally against a database without the
+            # trigger. Reading back what is already there makes this correct
+            # whether or not the trigger is present, rather than correct only
+            # where it is absent.
+            existing_member_ids = set(db.scalars(select(ProjectMember.user_id).where(ProjectMember.project_id == project.id)).all())
             for employee in employees:
+                if employee.id in existing_member_ids:
+                    continue
                 db.add(ProjectMember(project_id=project.id, organization_id=user.organization_id, user_id=employee.id, created_by=user.id))
+                existing_member_ids.add(employee.id)
             # Matched on the normalised name, not on `name == "Todo"` and not on
             # a hardcoded id: a deployment seeded with "To Do" or with different
             # ids still finds its own Todo row instead of failing project

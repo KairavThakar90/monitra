@@ -70,11 +70,12 @@ class CreateProjectTests(unittest.TestCase):
         db = MagicMock()
         db.get.return_value = project_status
         leader = User(id=2, organization_id=1, role_name="project_leader", permissions={})
-        # In order: _users(leader), then the TaskStatus scan for the Todo row.
-        # _users(employees) returns early on an empty id list and never queries.
-        # Everything after is _detail_payload reading the project back; it has
-        # nothing to find, so an exhausted script answers with no rows.
-        answers = [[leader], [todo_status]]
+        # In order: _users(leader), the membership read-back after the flush,
+        # then the TaskStatus scan for the Todo row. _users(employees) returns
+        # early on an empty id list and never queries. Everything after is
+        # _detail_payload reading the project back; it has nothing to find, so
+        # an exhausted script answers with no rows.
+        answers = [[leader], [], [todo_status]]
         db.scalars.return_value.all.side_effect = lambda: answers.pop(0) if answers else []
         payload = ProjectCreate(
             project_name="Migration", status_id=project_status.id, leader_id=2,
