@@ -1,3 +1,4 @@
+import re
 from datetime import date
 from math import ceil
 from typing import Optional
@@ -20,8 +21,15 @@ from app.services.project_scope import may_view_project, visible_project_ids
 from app.core.permissions import LEADER_ROLE_NAMES
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
-PROJECT_STATUS_NAMES = {1: "active", 2: "pending", 3: "todo", 4: "completed"}
-TASK_STATUS_NAMES = {1: "todo", 2: "in_progress", 3: "completed"}
+# `projects.status` / `tasks.status` are the legacy string columns; `status_id`
+# is the real one. These map a status *row* onto its legacy string, keyed on the
+# row's own name rather than on its id: keying on the id meant a deployment whose
+# `project_statuses`/`task_statuses` rows were seeded with different ids than
+# migration b4f7c2d9e1a6 raised a bare KeyError -- a 500 on project creation, for
+# a database that is merely numbered differently. The keys are names normalised
+# by `_status_key`, so "To Do", "Todo" and "to do" are all the same status.
+PROJECT_STATUS_NAMES = {"active": "active", "pending": "pending", "todo": "todo", "completed": "completed"}
+TASK_STATUS_NAMES = {"todo": "todo", "inprogress": "in_progress", "completed": "completed"}
 DEFAULT_PROJECT_TASKS = (
     "Project Setup / Understanding",
     "Review Client Update",
@@ -56,6 +64,25 @@ class ProjectManagementService:
         if not item:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid {label} status ID.")
         return item
+
+    @staticmethod
+    def _status_key(name: str) -> str:
+        """A status name reduced to a comparison key: "In Progress" -> "inprogress"."""
+        return re.sub(r"[^a-z0-9]+", "", (name or "").lower())
+
+    @staticmethod
+    def _legacy_status(item, names: dict, label: str) -> str:
+        """The legacy `status` string for a status row.
+
+        A row whose name this code does not recognise is a 400, not a 500: the
+        caller asked for a status this deployment cannot store in the legacy
+        column, which is a bad request, and answering with an unrecognised
+        string would only fail again against the table's CHECK constraint.
+        """
+        legacy = names.get(ProjectManagementService._status_key(item.name))
+        if legacy is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid {label} status ID.")
+        return legacy
 
     @staticmethod
     def _users(db: Session, user: User, ids: list[int], role_names: Optional[set[str]], label: str) -> list[User]:
@@ -161,16 +188,21 @@ class ProjectManagementService:
         leader_id = user.id if is_team_scoped(user) else payload.leader_id
         project_status, leader, employees = ProjectManagementService._validate_project_fields(db, user, payload.status_id, leader_id, payload.employee_ids, payload.deadline, payload.billing_type, payload.fixed_hours)
         try:
-            project = Project(organization_id=user.organization_id, project_name=payload.project_name, description=payload.description, status=PROJECT_STATUS_NAMES[payload.status_id], status_id=project_status.id, leader_id=leader.id, deadline=payload.deadline, billing_type=payload.billing_type.value, fixed_hours=payload.fixed_hours, is_billable=payload.billing_type == BillingType.fixed, created_by=user.id)
+            project = Project(organization_id=user.organization_id, project_name=payload.project_name, description=payload.description, status=ProjectManagementService._legacy_status(project_status, PROJECT_STATUS_NAMES, "project"), status_id=project_status.id, leader_id=leader.id, deadline=payload.deadline, billing_type=payload.billing_type.value, fixed_hours=payload.fixed_hours, is_billable=payload.billing_type == BillingType.fixed, created_by=user.id)
             db.add(project)
             db.flush()
             for employee in employees:
                 db.add(ProjectMember(project_id=project.id, organization_id=user.organization_id, user_id=employee.id, created_by=user.id))
-            todo_status = db.scalar(select(TaskStatus).where(TaskStatus.name == "Todo"))
+            # Matched on the normalised name, not on `name == "Todo"` and not on
+            # a hardcoded id: a deployment seeded with "To Do" or with different
+            # ids still finds its own Todo row instead of failing project
+            # creation outright.
+            todo_status = next((item for item in db.scalars(select(TaskStatus)).all() if ProjectManagementService._status_key(item.name) == "todo"), None)
             if not todo_status:
                 raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Todo task status is not configured.")
+            todo_legacy = ProjectManagementService._legacy_status(todo_status, TASK_STATUS_NAMES, "task")
             for task_name in DEFAULT_PROJECT_TASKS:
-                db.add(Task(organization_id=user.organization_id, project_id=project.id, task_name=task_name, status=TASK_STATUS_NAMES[todo_status.id], status_id=todo_status.id, created_by=user.id))
+                db.add(Task(organization_id=user.organization_id, project_id=project.id, task_name=task_name, status=todo_legacy, status_id=todo_status.id, created_by=user.id))
             db.commit()
             db.refresh(project)
             return ProjectManagementService._detail_payload(db, project)
@@ -229,11 +261,11 @@ class ProjectManagementService:
         fixed_hours = values.get("fixed_hours", project.fixed_hours)
         if leader_id is None:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "leader_id is required.")
-        _, leader, employees = ProjectManagementService._validate_project_fields(db, user, status_id, leader_id, employee_ids if employee_ids is not None else [item.user_id for item in db.scalars(select(ProjectMember).where(ProjectMember.project_id == project.id)).all()], values.get("deadline", project.deadline), billing_type, fixed_hours)
+        project_status, leader, employees = ProjectManagementService._validate_project_fields(db, user, status_id, leader_id, employee_ids if employee_ids is not None else [item.user_id for item in db.scalars(select(ProjectMember).where(ProjectMember.project_id == project.id)).all()], values.get("deadline", project.deadline), billing_type, fixed_hours)
         if "project_name" in values: project.project_name = values["project_name"]
         if "description" in values: project.description = values["description"]
         project.status_id = status_id
-        project.status = PROJECT_STATUS_NAMES[status_id]
+        project.status = ProjectManagementService._legacy_status(project_status, PROJECT_STATUS_NAMES, "project")
         project.leader_id = leader.id
         if "deadline" in values: project.deadline = values["deadline"]
         project.billing_type = billing_type.value
@@ -291,7 +323,7 @@ class ProjectManagementService:
             if not assignee or assignee.role_name != "employee":
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "Task assignee must be an active employee in this organization.")
 
-        task = Task(organization_id=user.organization_id, project_id=project.id, task_name=payload.name, assignee_id=assignee.id if assignee else None, status_id=task_status.id, status=TASK_STATUS_NAMES[payload.status_id], created_by=user.id)
+        task = Task(organization_id=user.organization_id, project_id=project.id, task_name=payload.name, assignee_id=assignee.id if assignee else None, status_id=task_status.id, status=ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task"), created_by=user.id)
         db.add(task)
         db.flush()
         if assignee:
@@ -311,7 +343,7 @@ class ProjectManagementService:
         task_status = db.get(TaskStatus, task.status_id)
         if "status_id" in values:
             task_status = ProjectManagementService._status(db, TaskStatus, values["status_id"], "task")
-            task.status_id, task.status = task_status.id, TASK_STATUS_NAMES[task_status.id]
+            task.status_id, task.status = task_status.id, ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task")
         if "assignee_id" in values:
             member = db.scalar(select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == values["assignee_id"], ProjectMember.organization_id == user.organization_id))
             assignee = db.scalar(select(User).where(User.id == values["assignee_id"], User.organization_id == user.organization_id, User.is_active.is_(True)))
