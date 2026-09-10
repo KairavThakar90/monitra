@@ -170,11 +170,16 @@ or a Windows user stops being offered it while a Mac user is still handed it.
 
 Honest list, so nobody assumes otherwise:
 
-- **Code signing.** Nothing is signed. macOS CI is wired for it and needs only
-  the credentials; the Windows job has no signing step yet. Approved as a
-  production-release requirement, and it is the stated prerequisite in
-  `docs/Desktop_Update_Distribution_Decisions.md` §2 for publishing a release
-  to real users. Registering drafts and piloting them is fine meanwhile.
+- **Code signing.** Nothing is signed. **Both** CI jobs are now wired for it and
+  need only the credentials — the Windows job signs `Monitra.exe` and the
+  installer with `signtool` (RFC 3161 timestamped) before the checksums are
+  computed, and the macOS job imports a certificate and passes an identity and
+  notary profile to `build_macos.sh`. Each step is gated on its secret being
+  present, so with the secrets absent the build produces unsigned artifacts and
+  says so. Approved as a production-release requirement, and it is the stated
+  prerequisite in `docs/Desktop_Update_Distribution_Decisions.md` §2 for
+  publishing a release to real users. Registering drafts and piloting them is
+  fine meanwhile.
 - **Auto-update (Phase 1).** **Built** (2026-09-08) as the approved *prompted*
   update — see `background_services/update/` and the decision record. It is not
   yet safe to switch on for real users, for the signing reason above, and no
@@ -183,8 +188,23 @@ Honest list, so nobody assumes otherwise:
   smoke-tested in CI only, which now also covers the macOS *update* path.
   The first real-world macOS install will also be the first real test — the
   pilot ring matters more, not less, for that platform.
-- **CI secrets for release registration.** `MONITRA_API_BASE_URL` and
-  `MONITRA_RELEASE_TOKEN`, held by an account with `manage_desktop_releases`.
-  Without them the release job skips registration and says so; the artifacts
-  and the GitHub release are unaffected, and the rows can be registered by
-  re-running that step later.
+- **CI secrets for release registration.** `MONITRA_API_BASE_URL` plus the
+  release account's own credentials, `MONITRA_RELEASE_EMAIL` and
+  `MONITRA_RELEASE_PASSWORD` — an account holding the `release_bot` role, whose
+  entire authority is `manage_desktop_releases`. Credentials rather than a
+  token because an access token expires after thirty minutes and one stored in
+  a repository secret would be dead long before the next release;
+  `register_release.py` mints a token per run and never stores it.
+  `MONITRA_RELEASE_TOKEN` is still honoured for registering a build by hand
+  from an existing session, and is unset in CI. Without these the release job
+  skips registration and says so; the artifacts and the GitHub release are
+  unaffected, and the rows can be registered by re-running that step later.
+
+- **The registration sign-in path depends on the deployment not declaring
+  itself production.** `register_release.py` authenticates through
+  `POST /auth/dev-login`, and `backend/app/api/auth.py` returns 404 for that
+  route whenever `settings.ENV == "production"`. The deployment at
+  `monitra-lvzq.vercel.app` currently runs with `ENV=development`, which is why
+  the path works today. Setting `ENV=production` there — correct in itself —
+  would break CI release registration until the release account is given a
+  sign-in route that survives it. Noted here so the two are changed together.

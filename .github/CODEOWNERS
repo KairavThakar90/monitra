@@ -1,4 +1,4 @@
-# CODEOWNERS — review requirements for Monitra.
+﻿# CODEOWNERS â€” review requirements for Monitra.
 #
 # The desktop background runtime was rebuilt after a production-stability
 # audit. The paths below own application lifecycle, threading, storage
@@ -8,31 +8,32 @@
 # Before approving a change under desktop/core, desktop/background_services or
 # desktop/storage, check it against desktop/DO_NOT_DO.md.
 #
-# Replace the placeholder handles below with the real owning team.
+# Owner of record for the new home of this project. Add the wider team here as
+# it grows: a single owner means a single point of review failure.
 
-# ── Default ───────────────────────────────────────────────────────────────────
-*                                       @manthanstoretransform-creator
+# â”€â”€ Default â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+*                                       @KairavThakar90
 
-# ── Critical runtime infrastructure ───────────────────────────────────────────
+# â”€â”€ Critical runtime infrastructure â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Application lifecycle, service ownership, threading, structured logging.
-/desktop/core/                          @manthanstoretransform-creator
+/desktop/core/                          @KairavThakar90
 
 # Background services: network, sync, timer, activity, notifications, recovery.
-/desktop/background_services/           @manthanstoretransform-creator
+/desktop/background_services/           @KairavThakar90
 
 # The single controlled SQLite access layer.
-/desktop/storage/                       @manthanstoretransform-creator
+/desktop/storage/                       @KairavThakar90
 
 # Entry point: startup and shutdown ordering.
-/desktop/main.py                        @manthanstoretransform-creator
+/desktop/main.py                        @KairavThakar90
 
 # The repository API over local storage.
-/desktop/sync/local_cache.py            @manthanstoretransform-creator
+/desktop/sync/local_cache.py            @KairavThakar90
 
-# ── Guardrails ────────────────────────────────────────────────────────────────
+# â”€â”€ Guardrails â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Weakening these removes the protection, so they need the same review.
-/desktop/tools/check_architecture.py    @manthanstoretransform-creator
-/desktop/tests/soak/                    @manthanstoretransform-creator
-/desktop/ARCHITECTURE.md                @manthanstoretransform-creator
-/desktop/DO_NOT_DO.md                   @manthanstoretransform-creator
-/.github/workflows/desktop-stability.yml @manthanstoretransform-creator
+/desktop/tools/check_architecture.py    @KairavThakar90
+/desktop/tests/soak/                    @KairavThakar90
+/desktop/ARCHITECTURE.md                @KairavThakar90
+/desktop/DO_NOT_DO.md                   @KairavThakar90
+/.github/workflows/desktop-stability.yml @KairavThakar90
