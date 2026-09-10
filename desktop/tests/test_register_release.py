@@ -375,3 +375,126 @@ def test_a_refused_credential_never_publishes_anything(monkeypatch, tmp_path, ca
     # GitHub release are good either way, and the step can be re-run.
     assert reg.main() == 0
     assert "0 artifact(s) registered" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# What the run page is told.
+#
+# The failure this covers is not a crash: v1.1.1 was tagged, built, and its
+# installers published on GitHub, the "Register the release with the backend"
+# step showed a green tick, and the download page stayed empty. Every exit path
+# here returns 0 and the step is `continue-on-error`, so "registered four
+# artifacts" and "did nothing at all" looked identical. They must not.
+# ---------------------------------------------------------------------------
+
+def _artifact(tmp_path):
+    artifact = tmp_path / f"Monitra-Setup-{version.VERSION}.exe"
+    artifact.write_bytes(b"x")
+    return artifact
+
+
+def _run(monkeypatch, tmp_path):
+    artifact = _artifact(tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "register_release.py", "--tag", f"v{version.VERSION}",
+        "--repo", "acme/monitra", "--artifacts", str(artifact),
+    ])
+    return reg.main()
+
+
+def test_a_skipped_registration_warns_on_the_run_page(monkeypatch, tmp_path, capsys):
+    """The silent green tick that hid an empty download page."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.delenv("MONITRA_API_BASE_URL", raising=False)
+    monkeypatch.delenv("MONITRA_RELEASE_CREDENTIAL", raising=False)
+    monkeypatch.delenv("MONITRA_RELEASE_TOKEN", raising=False)
+
+    # Still not a failure -- a fork must keep building.
+    assert _run(monkeypatch, tmp_path) == 0
+
+    out = capsys.readouterr().out
+    assert "::warning::" in out
+    assert "SKIPPED" in out
+
+
+def test_a_successful_registration_says_the_rows_are_still_drafts(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid/api/v1")
+    monkeypatch.setenv("MONITRA_RELEASE_TOKEN", "token")
+    monkeypatch.setattr(reg, "post_release", lambda base_url, token, payload: True)
+
+    assert _run(monkeypatch, tmp_path) == 0
+
+    out = capsys.readouterr().out
+    assert "::notice::" in out
+    assert "DRAFTS" in out
+    # The distinction the green tick could not make.
+    assert "::warning::" not in out
+
+
+def test_a_failed_registration_warns_on_the_run_page(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid/api/v1")
+    monkeypatch.setenv("MONITRA_RELEASE_TOKEN", "token")
+    monkeypatch.setattr(reg, "post_release", lambda base_url, token, payload: False)
+
+    assert _run(monkeypatch, tmp_path) == 0
+
+    out = capsys.readouterr().out
+    assert "::warning::" in out
+    assert "INCOMPLETE" in out
+
+
+def test_a_mismatched_tag_is_an_error_annotation(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
+    monkeypatch.setenv("MONITRA_RELEASE_TOKEN", "token")
+    artifact = tmp_path / "Monitra-Setup-9.9.9.exe"
+    artifact.write_bytes(b"x")
+    monkeypatch.setattr(sys, "argv", [
+        "register_release.py", "--tag", "v9.9.9", "--repo", "acme/monitra",
+        "--artifacts", str(artifact),
+    ])
+
+    assert reg.main() == 1
+    assert "::error::" in capsys.readouterr().out
+
+
+def test_the_step_summary_records_what_happened(monkeypatch, tmp_path):
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.delenv("MONITRA_API_BASE_URL", raising=False)
+    monkeypatch.delenv("MONITRA_RELEASE_CREDENTIAL", raising=False)
+    monkeypatch.delenv("MONITRA_RELEASE_TOKEN", raising=False)
+
+    _run(monkeypatch, tmp_path)
+
+    assert "SKIPPED" in summary.read_text(encoding="utf-8")
+
+
+def test_an_unwritable_summary_never_fails_registration(monkeypatch, tmp_path):
+    """The summary is a convenience; losing it must not break a release."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    # A directory, so opening it for append raises OSError.
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path))
+    monkeypatch.delenv("MONITRA_API_BASE_URL", raising=False)
+    monkeypatch.delenv("MONITRA_RELEASE_CREDENTIAL", raising=False)
+    monkeypatch.delenv("MONITRA_RELEASE_TOKEN", raising=False)
+
+    assert _run(monkeypatch, tmp_path) == 0
+
+
+def test_nothing_is_annotated_outside_actions(monkeypatch, tmp_path, capsys):
+    """A person running this by hand gets plain output, not workflow commands."""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("MONITRA_API_BASE_URL", raising=False)
+    monkeypatch.delenv("MONITRA_RELEASE_CREDENTIAL", raising=False)
+    monkeypatch.delenv("MONITRA_RELEASE_TOKEN", raising=False)
+
+    assert _run(monkeypatch, tmp_path) == 0
+    assert "::" not in capsys.readouterr().out

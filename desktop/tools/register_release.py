@@ -169,6 +169,36 @@ def post_release(base_url: str, token: str, payload: dict) -> bool:
         return False
 
 
+def annotate(level: str, message: str) -> None:
+    """Surface an outcome on the GitHub Actions run page.
+
+    Every exit path in this script returns 0 on purpose, and the workflow step
+    is `continue-on-error` on top of that: a backend that was briefly
+    unreachable must not fail a good build. The cost was that "registered four
+    artifacts" and "did nothing at all" produced the same green tick, so a
+    release could be tagged, built and published on GitHub while the download
+    page stayed empty and nothing anywhere said why. This restores the
+    difference without making the step fail.
+
+    Outside Actions it is a no-op, so a manual run is unaffected.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    # A workflow command is one line: a newline would end the command and print
+    # the remainder as ordinary log output.
+    single_line = " ".join(message.split())
+    print(f"::{level}::{single_line}")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary:
+        return
+    try:
+        with open(summary, "a", encoding="utf-8") as handle:
+            handle.write(f"- **{level}**: {single_line}\n")
+    except OSError:
+        # The summary is a convenience. Losing it must not fail registration.
+        pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", required=True, help="Git tag, e.g. v1.2.0")
@@ -202,6 +232,12 @@ def main() -> int:
             "run) are not set; skipping backend registration.\n"
             "The artifacts and the GitHub release are unaffected."
         )
+        annotate(
+            "warning",
+            "Backend registration was SKIPPED: MONITRA_API_BASE_URL and/or a "
+            "release credential are not set on this repository. No release row "
+            "exists, so the download page will not offer this build.",
+        )
         return 0
 
     expected = version.VERSION
@@ -213,6 +249,11 @@ def main() -> int:
             f"tag {args.tag} does not match version.py ({expected}); refusing "
             "to register.",
             file=sys.stderr,
+        )
+        annotate(
+            "error",
+            f"Backend registration REFUSED: tag {args.tag} does not match "
+            f"version.py ({expected}). No release row was created.",
         )
         return 1
 
@@ -248,6 +289,13 @@ def main() -> int:
             failures += 1
 
     print(f"\n{registered} artifact(s) registered as drafts, {failures} failed.")
+    if not registered:
+        annotate(
+            "warning",
+            "Backend registration created NO release rows: none of the given "
+            "artifacts were registrable. The download page will not offer this "
+            "build.",
+        )
     if failures:
         # Reported, but not fatal: the build and the GitHub release are good,
         # and registration can be re-run without rebuilding anything.
@@ -256,10 +304,23 @@ def main() -> int:
             "remaining artifacts by hand, before publishing the release.",
             file=sys.stderr,
         )
+        annotate(
+            "warning",
+            f"Backend registration is INCOMPLETE: {failures} artifact(s) failed, "
+            f"{registered} succeeded. Re-run this step before publishing.",
+        )
     print(
         "\nNothing is live yet. Publish each release through "
         "POST /desktop/releases/{id}/publish once the build has been piloted."
     )
+    if registered:
+        # Said out loud because it is the step that gets forgotten: a registered
+        # release is a draft, and the download page serves published rows only.
+        annotate(
+            "notice",
+            f"{registered} artifact(s) registered as DRAFTS -- not downloadable "
+            "yet. Publish each through POST /desktop/releases/" "{id}/publish.",
+        )
     return 0
 
 
