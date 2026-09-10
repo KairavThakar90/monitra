@@ -268,13 +268,73 @@ jobs:
             -s -k "$KEYCHAIN_PASSWORD" build.keychain
           rm -f /tmp/certificate.p12
 
+      # Notarization needs a *keychain profile*, and a fresh runner has none.
+      # MACOS_NOTARY_PROFILE alone was never enough: it is only the name of a
+      # profile that `xcrun notarytool store-credentials` creates locally, so
+      # setting it on a runner pointed notarytool at nothing and the
+      # submission failed. The profile is created here instead, from the
+      # Apple credentials, into the same keychain the certificate was
+      # imported into and which the previous step left unlocked and default.
+      #
+      # The name is a fixed local constant, not a secret: it identifies a
+      # profile that lives for the length of this job and nothing else. The
+      # app-specific password is an Apple ID password scoped to notarization
+      # (generated at appleid.apple.com), never the account password, and it
+      # is passed through the environment so it is not visible in the log or
+      # in `ps`.
+      #
+      # Signing is a prerequisite, not an alternative: Gatekeeper rejects a
+      # notarized-but-unsigned bundle, so this is gated on the identity being
+      # configured too. With the credentials absent the build is unsigned and
+      # un-notarized and says so, exactly as before.
+      - name: Create the notarization profile
+        id: notary
+        env:
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+        if: ${{ env.MACOS_NOTARY_APPLE_ID != '' && env.MACOS_NOTARY_TEAM_ID != '' && env.MACOS_NOTARY_PASSWORD != '' && env.MACOS_CODESIGN_IDENTITY != '' }}
+        run: |
+          xcrun notarytool store-credentials "monitra-notary" \
+            --apple-id "$MACOS_NOTARY_APPLE_ID" \
+            --team-id "$MACOS_NOTARY_TEAM_ID" \
+            --password "$MACOS_NOTARY_PASSWORD"
+          echo "profile=monitra-notary" >> "$GITHUB_OUTPUT"
+          echo "Notarization profile created."
+
       - name: Build application and DMG
         env:
           MONITRA_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
-          MONITRA_NOTARY_PROFILE: ${{ secrets.MACOS_NOTARY_PROFILE }}
+          # Empty unless the step above ran, which is what build_macos.sh
+          # checks to decide whether to submit for notarization.
+          MONITRA_NOTARY_PROFILE: ${{ steps.notary.outputs.profile }}
         run: |
           chmod +x scripts/build_macos.sh
           ./scripts/build_macos.sh
+
+      # Independent confirmation, on the artifact itself, that what the build
+      # script reported actually holds. build_macos.sh already runs `stapler
+      # validate`; this asks the question a user's Mac asks -- would Gatekeeper
+      # open this -- and fails the build if the answer is no. A DMG that says
+      # it is notarized but is refused on first launch is the failure this
+      # catches, and it is not detectable any other way before a user hits it.
+      - name: Verify signature, notarization and Gatekeeper
+        if: ${{ steps.notary.outputs.profile != '' }}
+        run: |
+          set -euo pipefail
+          APP="dist/Monitra.app"
+          echo "== codesign =="
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign --display --verbose=4 "$APP" 2>&1 | grep -E 'Authority|TeamIdentifier|Timestamp'
+          echo "== Gatekeeper assessment of the .app =="
+          spctl --assess --type execute --verbose=4 "$APP"
+          for dmg in dist/Monitra-macOS-*.dmg; do
+            echo "== $dmg =="
+            xcrun stapler validate "$dmg"
+            spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+          done
+          echo "Signed, notarized, stapled and accepted by Gatekeeper."
 
       - name: Smoke-test the packaged application
         env:
