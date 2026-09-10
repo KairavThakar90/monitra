@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional, Dict, Any
+from typing import Literal, Optional, Dict, Any
 from datetime import datetime
 from app.core.validation import (
     Credential,
@@ -68,12 +68,29 @@ class UserUpdate(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+#: Which client a sign-in is being performed for. The value is forwarded to the
+#: provider verbatim, so the set is fixed here rather than accepting free text:
+#: the provider is an external system that interprets this field, and letting a
+#: caller put arbitrary text in a payload we send upstream is exactly the kind of
+#: unvalidated pass-through the validation rules exist to prevent.
+LoginFor = Literal["Desktop", "Web"]
+
+#: What a request that omits ``login_for`` means. Desktop, because that is where
+#: this endpoint's traffic comes from, and because an existing client that has
+#: not been updated must keep getting exactly the behaviour it has today.
+DEFAULT_LOGIN_FOR: LoginFor = "Desktop"
+
+
 class LoginRequest(BaseModel):
     """Credentials presented at sign-in.
 
     ``username`` accepts either a username or an email address — this
     deployment supports both — so it is held to plain-text rules rather than
     email rules.
+
+    ``login_for`` names the client the session is for and is passed on to the
+    provider. It is optional and defaults to ``"Desktop"`` so that clients
+    written against the earlier contract are unaffected.
 
     ``password`` uses ``Credential``, not ``Password``: it is being *presented*,
     not chosen. Enforcing the minimum-length policy here would lock out any
@@ -85,6 +102,7 @@ class LoginRequest(BaseModel):
 
     username: PlainText
     password: Credential
+    login_for: LoginFor = DEFAULT_LOGIN_FOR
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -92,6 +110,7 @@ class LoginRequest(BaseModel):
                 {
                     "username": "provider-user@example.com",
                     "password": "provider-password",
+                    "login_for": "Desktop",
                 }
             ]
         }
