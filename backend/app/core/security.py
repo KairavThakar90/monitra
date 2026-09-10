@@ -42,6 +42,22 @@ def get_current_user(
         )
     
     token = credentials.credentials
+
+    # Two kinds of bearer credential arrive here, and they are told apart by a
+    # prefix a JWT can never have. A service credential is a long-lived API key
+    # belonging to a machine (today: the release pipeline); everything else is
+    # an access token belonging to a person.
+    #
+    # The import is deliberately local: app.services.service_credential imports
+    # `hash_token` from this module, so importing it at module scope would be a
+    # cycle.
+    from app.services.service_credential import (
+        ServiceCredentialService, looks_like_service_key,
+    )
+
+    if looks_like_service_key(token):
+        return ServiceCredentialService.authenticate(db, token)
+
     try:
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         user_id = payload.get("user_id")
@@ -63,6 +79,24 @@ def get_current_user(
             detail="Not authenticated"
         )
     return user
+
+def forbid_service_principal(current_user: User = Depends(get_current_user)) -> User:
+    """Authenticate, but refuse a machine.
+
+    For the handful of endpoints whose whole purpose is to hand a *person* a
+    session — the desktop-to-web handoff mints a link that opens the web client
+    signed in. A CI key must not be able to turn itself into a browser session:
+    that would convert a credential scoped to one job into an interactive
+    login, which is precisely the escalation a service credential exists to
+    avoid.
+    """
+    if getattr(current_user, "is_service_principal", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="A service credential cannot open an interactive session.",
+        )
+    return current_user
+
 
 def require_permission(permission_name: str):
     def dependency(current_user: User = Depends(get_current_user)) -> User:
