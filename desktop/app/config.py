@@ -52,7 +52,7 @@ from dotenv import load_dotenv
 #: Note there is no /api/v1 suffix: backend/app/main.py registers the routers
 #: the desktop uses at the bare paths as well as under the prefix, and the
 #: desktop calls /auth/me, /projects, /time-entries directly.
-LIVE_API_BASE_URL = "https://staffmanagementsystembackend.vercel.app"
+LIVE_API_BASE_URL = "https://monitra-lvzq.vercel.app"
 
 #: The deployed web client. "Profile" opens this in the user's browser, handing
 #: it a single-use sign-in token so they land on the dashboard as themselves.

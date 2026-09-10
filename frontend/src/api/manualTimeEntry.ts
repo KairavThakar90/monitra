@@ -1,6 +1,6 @@
 import { formatApiError } from "./utils";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || "https://staffmanagementsystembackend.vercel.app/api/v1";
+const API_BASE_URL = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || "https://monitra-lvzq.vercel.app/api/v1";
 export interface ManualTimeEntryCreate {
   project_id: number;
   task_id: number;

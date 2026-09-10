@@ -1,4 +1,4 @@
-const DEFAULT_API_BASE_URL = "https://staffmanagementsystembackend.vercel.app/api/v1";
+const DEFAULT_API_BASE_URL = "https://monitra-lvzq.vercel.app/api/v1";
 
 const configuredApiBaseUrl = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL;
 

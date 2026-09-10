@@ -321,7 +321,7 @@ resolves configuration in this order, first hit wins per key:
 
 | `MONITRA_ENV` | Default backend |
 |---|---|
-| `production` (the default) | `https://staffmanagementsystembackend.vercel.app` |
+| `production` (the default) | `https://monitra-lvzq.vercel.app` |
 | `staging` | none — `SMS_API_BASE_URL` must be supplied |
 | `development` | `http://localhost:8000` |
 
