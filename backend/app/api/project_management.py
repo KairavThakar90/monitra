@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_user, require_permission
+from app.core.permissions import LEADER_ROLE_NAMES
 from app.models.project_status import ProjectStatus, TaskStatus
 from app.models.user import User
 from app.schemas.project_management import BillingType, ProjectCreate, ProjectListResponse, ProjectManagementMetadata, ProjectMetadataStatusRead, ProjectRead, ProjectUpdate, RoleRead, StatusRead, TaskCreate, TaskMetadataStatusRead, TaskRead, TaskUpdate
@@ -82,7 +83,7 @@ def assignable_leaders(search: Optional[str] = Query(None, max_length=100), user
     # the service then overrides.
     if is_team_scoped(user):
         return [{"id": user.id, "name": user.name, "email": user.email, "role": user.role_name}]
-    query = select(User).where(User.organization_id == user.organization_id, User.is_active.is_(True), User.role_name.in_(["admin", "leader", "project_leader"])).order_by(User.name)
+    query = select(User).where(User.organization_id == user.organization_id, User.is_active.is_(True), User.role_name.in_(LEADER_ROLE_NAMES)).order_by(User.name)
     if search:
         query = query.where(
             User.name.ilike(like_pattern(search), escape=LIKE_ESCAPE_CHARACTER)
@@ -90,9 +91,20 @@ def assignable_leaders(search: Optional[str] = Query(None, max_length=100), user
     return [{"id": item.id, "name": item.name, "email": item.email, "role": item.role_name} for item in db.scalars(query).all()]
 
 
-@router.get("/projects/assignable-employees", summary="List assignable project employees")
+@router.get("/projects/assignable-employees", summary="List assignable project members")
 def assignable_employees(search: Optional[str] = Query(None, max_length=100), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    query = select(User).where(User.organization_id == user.organization_id, User.is_active.is_(True), User.role_name == "employee").order_by(User.name)
+    # Every active member of the organization, whatever their role -- not just
+    # `employee`. `ProjectMemberService.add_members` accepts any active user in
+    # the organization and checks no role, so filtering to one role here made
+    # the picker stricter than the endpoint behind it: a leader, an HR member or
+    # an admin could be a project member, but there was no way to choose them.
+    # A client narrower than its backend turns a supported action into "the app
+    # won't let me do it", which is the failure docs/VALIDATION.md exists to
+    # prevent.
+    #
+    # The name stays `assignable-employees` because both clients call that path;
+    # renaming it would break them for a wording change.
+    query = select(User).where(User.organization_id == user.organization_id, User.is_active.is_(True)).order_by(User.name)
     if search:
         query = query.where(
             User.name.ilike(like_pattern(search), escape=LIKE_ESCAPE_CHARACTER)

@@ -94,6 +94,28 @@ const AssigneeSelector: React.FC<{
   const selectedMembers = (options || []).filter(o => (selectedIds || []).includes(o.id));
   const filteredOptions = (options || []).filter(o => (o.name || '').toLowerCase().includes(searchTerm.toLowerCase()));
 
+  /**
+   * "Select all" acts on what the search box is currently showing, not on the
+   * whole directory. Searching "dh" and clicking it selects the three people
+   * you can see; it must never quietly add the ninety you cannot. For the same
+   * reason the clear direction only removes the filtered ids -- someone you
+   * picked before typing a search stays picked.
+   */
+  const filteredIds = filteredOptions.map(o => o.id);
+  const currentIds = selectedIds || [];
+  const selectedFilteredCount = filteredIds.filter(id => currentIds.includes(id)).length;
+  const allFilteredSelected = filteredIds.length > 0 && selectedFilteredCount === filteredIds.length;
+
+  const toggleAllFiltered = () => {
+    if (allFilteredSelected) {
+      onChange(currentIds.filter(id => !filteredIds.includes(id)));
+    } else {
+      // Concatenate only what is missing, so a member already selected is not
+      // added twice -- the ids are sent to the backend as a membership list.
+      onChange([...currentIds, ...filteredIds.filter(id => !currentIds.includes(id))]);
+    }
+  };
+
   const getColor = (id: number) => {
     const colors = ['bg-blue-500', 'bg-rose-500', 'bg-emerald-500', 'bg-amber-500', 'bg-purple-500', 'bg-cyan-500'];
     return colors[id % colors.length];
@@ -143,6 +165,24 @@ const AssigneeSelector: React.FC<{
                 className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 outline-none transition focus:border-blue-500 focus:bg-white"
               />
             </div>
+            {filteredOptions.length > 0 && (
+              <label className="mb-2 flex cursor-pointer items-center justify-between gap-3 rounded-lg border-b border-slate-100 px-2 pb-2 hover:bg-slate-50 transition">
+                <span className="text-sm font-bold text-slate-700">
+                  {allFilteredSelected ? 'Clear all' : 'Select all'}
+                  <span className="ml-1 font-semibold text-slate-400">({filteredIds.length})</span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={allFilteredSelected}
+                  /* Indeterminate is not a React prop, so it is set on the node.
+                     Without it a part-selected list shows an empty box, which
+                     reads as "nothing here is selected". */
+                  ref={el => { if (el) el.indeterminate = selectedFilteredCount > 0 && !allFilteredSelected; }}
+                  onChange={toggleAllFiltered}
+                  className="h-4 w-4 shrink-0 rounded border-slate-300 text-blue-500 focus:ring-blue-500"
+                />
+              </label>
+            )}
             <div className="max-h-60 overflow-y-auto custom-scrollbar pr-1">
               {filteredOptions.length > 0 ? filteredOptions.map(emp => {
                 const isSelected = selectedIds.includes(emp.id);
@@ -282,6 +322,20 @@ export const AdminProjectManagement: React.FC = () => {
    * name and locked.
    */
   const leaderIsFixed = isTeamScoped(currentUser);
+  /**
+   * Creating a project is an administrator's act, so a leader is not offered
+   * it: they run the projects an admin sets up for them. Everything else on
+   * this screen stays -- a leader still opens it, reads their own projects and
+   * edits them.
+   *
+   * This hides an affordance; it does not enforce anything. The `leader` role
+   * still holds `projects:create`, so the backend would accept the request if
+   * it were made another way. Removing that permission is the enforcing change,
+   * and it is deliberately not made here: `AdminRoute` in App.tsx gates this
+   * whole screen on `projects:create`, so dropping it would bounce leaders off
+   * the page entirely rather than just hiding one button.
+   */
+  const canCreateProject = !isTeamScoped(currentUser);
   const [search, setSearch] = useState('');
   const [searchError, setSearchError] = useState<string | null>(null);
   const [filterStatusId, setFilterStatusId] = useState<number | null>(null);
@@ -569,12 +623,14 @@ export const AdminProjectManagement: React.FC = () => {
       actions={
           <div className="flex items-center gap-4">
             <InlineRefreshIndicator active={isRevalidating || isUpdatingProject} />
-            <button
-              onClick={openCreateDrawer}
-          className={`rounded-lg px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90 ${GRADIENT_CYAN_PURPLE}`}
-        >
-          + Create Project
-        </button>
+            {canCreateProject && (
+              <button
+                onClick={openCreateDrawer}
+                className={`rounded-lg px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90 ${GRADIENT_CYAN_PURPLE}`}
+              >
+                + Create Project
+              </button>
+            )}
           </div>
       }
     >

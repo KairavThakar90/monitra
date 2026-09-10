@@ -17,6 +17,7 @@ from app.schemas.project_management import (
 )
 from app.services.member_scope import is_team_scoped
 from app.services.project_scope import may_view_project, visible_project_ids
+from app.core.permissions import LEADER_ROLE_NAMES
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
 PROJECT_STATUS_NAMES = {1: "active", 2: "pending", 3: "todo", 4: "completed"}
@@ -57,16 +58,26 @@ class ProjectManagementService:
         return item
 
     @staticmethod
-    def _users(db: Session, user: User, ids: list[int], role_names: set[str], label: str) -> list[User]:
+    def _users(db: Session, user: User, ids: list[int], role_names: Optional[set[str]], label: str) -> list[User]:
+        """Resolve ids to active members of the caller's organization.
+
+        ``role_names`` of ``None`` means the role does not matter -- which is the
+        honest answer for project *membership*. Anyone in the organization can
+        work on a project, and ``ProjectMemberService.add_members`` has always
+        accepted any active user, so restricting it here made the same action
+        succeed or fail depending on whether it was done while creating the
+        project or afterwards.
+        """
         if not ids:
             return []
         users = list(db.scalars(select(User).where(User.id.in_(ids), User.organization_id == user.organization_id, User.is_active.is_(True))).all())
         found = {item.id: item for item in users}
         if len(found) != len(set(ids)):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"One or more selected {label} do not belong to this organization.")
-        invalid = [item.id for item in users if item.role_name not in role_names]
-        if invalid:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Selected {label} have an invalid role.")
+        if role_names is not None:
+            invalid = [item.id for item in users if item.role_name not in role_names]
+            if invalid:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Selected {label} have an invalid role.")
         return [found[item_id] for item_id in ids]
 
     @staticmethod
@@ -75,8 +86,12 @@ class ProjectManagementService:
         # Both spellings of the leader role, matching `TEAM_SCOPED_ROLES` --
         # a `project_leader` pinned as their own project's leader by `create`
         # must not then be rejected as an invalid role.
-        leader = ProjectManagementService._users(db, user, [leader_id], {"admin", "leader", "project_leader"}, "leader")[0]
-        employees = ProjectManagementService._users(db, user, employee_ids, {"employee"}, "employees")
+        leader = ProjectManagementService._users(db, user, [leader_id], set(LEADER_ROLE_NAMES), "leader")[0]
+        # No role restriction: a leader, an HR member or an admin is a perfectly
+        # valid project member, and the add-members endpoint accepts them. The
+        # leader above is still role-checked -- leading a project is a specific
+        # authority; working on one is not.
+        employees = ProjectManagementService._users(db, user, employee_ids, None, "employees")
         if deadline and deadline < date.today():
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Deadline cannot be in the past.")
         if billing_type == BillingType.fixed and fixed_hours is None:

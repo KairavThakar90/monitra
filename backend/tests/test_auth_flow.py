@@ -457,15 +457,24 @@ class RolePermissionTableTests(unittest.TestCase):
                 self.assertIn(role.value, ROLE_PERMISSIONS)
 
     def test_leader_roles_the_application_selects_on_have_a_permission_set(self):
-        # ProjectMemberService.LEADER_ROLES and the "admin"/"leader" filters in
+        # ProjectMemberService.LEADER_ROLES and the leader filters in
         # TeamsService assume these roles exist. login_exchange refuses any role
         # absent from ROLE_PERMISSIONS, so a role the app selects on but this
         # table omits is a 502 waiting to happen -- which is exactly what it was.
+        #
+        # The check is "resolves to a defined role", not "is a key", because
+        # those lists are expanded with `with_role_aliases` and so legitimately
+        # contain provider spellings like `administrator`. That spelling signs
+        # in fine -- login resolves it through the same alias table before
+        # looking the permissions up -- so requiring it to be a key would fail a
+        # role that works. Anything that neither is a key nor resolves to one
+        # still fails here, which is the 502 this guards against.
+        from app.core.permissions import resolve_role_alias
         from app.services.project_member import ProjectMemberService
 
         for role in ProjectMemberService.LEADER_ROLES | ProjectMemberService.ADMIN_ROLES:
             with self.subTest(role=role):
-                self.assertIn(role, ROLE_PERMISSIONS)
+                self.assertIn(resolve_role_alias(role), ROLE_PERMISSIONS)
 
     def test_a_leader_carries_the_authority_the_project_screens_expect(self):
         self.assertEqual(ROLE_PERMISSIONS["leader"], ROLE_PERMISSIONS["project_leader"])
