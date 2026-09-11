@@ -129,9 +129,6 @@ export const STATUS_LABELS: Record<FeedbackStatus, string> = {
   closed: 'Closed',
 };
 
-/** The status of a row after a successful update, for an optimistic-free refresh. */
-export const statusAfter = (action: FeedbackAction): FeedbackStatus => action;
-
 /** A row's display status, tolerating a server that sends something unmapped. */
 export const statusLabel = (item: Pick<Feedback, 'status'>) =>
   STATUS_LABELS[item.status] ?? item.status;

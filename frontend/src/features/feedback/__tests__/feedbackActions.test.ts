@@ -27,7 +27,6 @@ import {
   errorMessage,
   isActionComplete,
   statusLabel,
-  statusAfter,
   successMessage,
 } from '../feedbackActions';
 import type { FeedbackAction } from '../feedbackActions';
@@ -170,11 +169,6 @@ describe('errorMessage', () => {
 });
 
 describe('row state after an update', () => {
-  it('maps each action onto the status the server will report', () => {
-    expect(statusAfter('in_progress')).toBe('in_progress');
-    expect(statusAfter('resolved')).toBe('resolved');
-  });
-
   it('labels the workflow states the way the buttons are labelled', () => {
     expect(statusLabel({ status: 'new' })).toBe('New');
     expect(statusLabel({ status: 'in_progress' })).toBe(ACTION_LABELS.in_progress);
