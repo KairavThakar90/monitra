@@ -12,6 +12,8 @@ from app.schemas.feedback import (
     FeedbackItem,
     FeedbackListResponse,
     FeedbackRead,
+    FeedbackStatusUpdate,
+    FeedbackStatusUpdateResponse,
 )
 from app.services.feedback import FeedbackService
 
@@ -131,3 +133,46 @@ def get_feedback(
     db: Session = Depends(get_db),
 ):
     return FeedbackService.get_feedback(db, current_user, feedback_id)
+
+
+@router.patch(
+    "/{feedback_id}/status",
+    response_model=FeedbackStatusUpdateResponse,
+    summary="Mark feedback Working or Resolved, and notify the submitter (Admin only).",
+    description=(
+        "Moves one feedback through the support workflow and emails the person "
+        "who submitted it.\n\n"
+        "**Admin only.** HR and Leader may read every submission through `GET "
+        "/feedback` and are refused here with 403, as is any other role — this "
+        "gate is enforced server-side and does not depend on the dashboard "
+        "hiding the buttons.\n\n"
+        "**The recipient is not a parameter.** The request body carries a "
+        "status and nothing else; the address is resolved from the feedback "
+        "row's own submitter, server-side. There is no field a caller could "
+        "add to redirect the notification.\n\n"
+        "Allowed transitions are `new → in_progress`, `new → resolved` and "
+        "`in_progress → resolved`. Requesting the status the feedback is "
+        "already in succeeds, changes nothing and sends nothing — which is "
+        "what a double-click or a replayed request produces — and is reported "
+        "by `notification_queued: false`. Reopening a resolved feedback is "
+        "answered with 409.\n\n"
+        "The notification is queued, not sent inline: this response reports "
+        "whether the **status changed**, and mail delivery cannot alter it."
+    ),
+    responses={
+        403: {"description": "The caller is not an Admin."},
+        404: {"description": "No such feedback in this organization."},
+        409: {"description": "That status transition is not allowed."},
+        422: {"description": "`status` is not one of in_progress, resolved."},
+    },
+)
+def update_feedback_status(
+    feedback_id: int,
+    update: FeedbackStatusUpdate,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return FeedbackService.update_status(
+        db, current_user, feedback_id, update.status, background_tasks=background_tasks
+    )

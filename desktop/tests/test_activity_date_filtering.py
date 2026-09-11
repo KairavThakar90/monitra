@@ -184,13 +184,16 @@ def test_app_usage_falls_back_to_local_rows_when_the_backend_is_unreachable():
     api_client.get.side_effect = RuntimeError("offline")
     cache = MagicMock()
     cache.get_unsynced_app_usage_between.return_value = [
-        {"application_name": "Chrome", "duration_seconds": 3600},
+        {"application_name": "chrome", "duration_seconds": 3600},
     ]
 
     rows = build_app_usage_summary(api_client, cache, day=date(2026, 9, 8))
 
     assert len(rows) == 1
-    assert rows[0]["name"] == "Chrome"
+    # Resolved through the shared catalogue, so a pending local row and an
+    # already-uploaded one name the same browser the same way and merge into
+    # one line instead of appearing as two.
+    assert rows[0]["name"] == "Google Chrome"
     assert rows[0]["time_str"] == "1h"
 
 

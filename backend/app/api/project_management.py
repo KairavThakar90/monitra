@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user, require_permission
 from app.core.permissions import LEADER_ROLE_NAMES
-from app.models.project_status import ProjectStatus, TaskStatus
 from app.models.user import User
+from app.repositories.status_catalog import StatusCatalog
 from app.schemas.project_management import BillingType, ProjectCreate, ProjectListResponse, ProjectManagementMetadata, ProjectMetadataStatusRead, ProjectRead, ProjectUpdate, RoleRead, StatusRead, TaskCreate, TaskMetadataStatusRead, TaskRead, TaskUpdate
 from app.schemas.project_member import ProjectMembersAddRequest, ProjectMembersAddResponse, ProjectMemberRead, ProjectMemberUpdate, ProjectMembersListResponse
 from app.services.member_scope import is_team_scoped
@@ -29,19 +29,19 @@ def project_management_metadata(db: Session = Depends(get_db)):
     ]
     return ProjectManagementMetadata(
         roles=roles,
-        project_statuses=[ProjectMetadataStatusRead(id=item.id, project_status=item.name, color=item.color) for item in db.scalars(select(ProjectStatus).order_by(ProjectStatus.id)).all()],
-        task_statuses=[TaskMetadataStatusRead(id=item.id, task_status=item.name, color=item.color) for item in db.scalars(select(TaskStatus).order_by(TaskStatus.id)).all()],
+        project_statuses=[ProjectMetadataStatusRead(id=item.id, project_status=item.name, color=item.color) for item in StatusCatalog.project_statuses(db).values()],
+        task_statuses=[TaskMetadataStatusRead(id=item.id, task_status=item.name, color=item.color) for item in StatusCatalog.task_statuses(db).values()],
     )
 
 
 @router.get("/project-statuses", response_model=list[StatusRead], summary="List project statuses")
 def project_statuses(db: Session = Depends(get_db)):
-    return list(db.scalars(select(ProjectStatus).order_by(ProjectStatus.id)).all())
+    return list(StatusCatalog.project_statuses(db).values())
 
 
 @router.get("/task-statuses", response_model=list[StatusRead], summary="List task statuses")
 def task_statuses(db: Session = Depends(get_db)):
-    return list(db.scalars(select(TaskStatus).order_by(TaskStatus.id)).all())
+    return list(StatusCatalog.task_statuses(db).values())
 
 
 @router.post("/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_permission("projects:create"))], summary="Create a project")
@@ -50,8 +50,8 @@ def create_project(payload: ProjectCreate, user: User = Depends(get_current_user
 
 
 @router.get("/projects", response_model=ProjectListResponse, dependencies=[Depends(require_permission("projects:view"))], summary="List projects")
-def list_projects(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), search: Optional[str] = Query(None, max_length=100), status_id: Optional[int] = Query(None, gt=0), leader_id: Optional[int] = Query(None, gt=0), billing_type: Optional[BillingType] = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return ProjectManagementService.list(db, user, page, limit, search, status_id, leader_id, billing_type)
+def list_projects(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), search: Optional[str] = Query(None, max_length=100), status_id: Optional[int] = Query(None, gt=0), leader_id: Optional[int] = Query(None, gt=0), billing_type: Optional[BillingType] = None, include_tasks: bool = Query(True, description="Embed each project's tasks. Pass false when only the project itself is rendered; `task_count` stays correct and `tasks` comes back null."), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return ProjectManagementService.list(db, user, page, limit, search, status_id, leader_id, billing_type, include_tasks)
 
 
 @router.post("/projects/{project_id}/members", response_model=ProjectMembersAddResponse, status_code=status.HTTP_200_OK, tags=["Add New Member"], summary="Add members to an existing project")

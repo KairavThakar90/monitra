@@ -26,7 +26,7 @@ from PySide6.QtCore import Qt, QSize, QDate, QTimer, Signal
 from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCalendarWidget, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu,
-    QPushButton, QToolButton, QWidget, QWidgetAction
+    QPushButton, QSizePolicy, QToolButton, QWidget, QWidgetAction
 )
 
 from core.date_mode import DateMode, as_calendar_day, date_mode
@@ -49,6 +49,13 @@ log = get_logger("ui.topbar")
 #: is two comparisons — it starts no work and emits nothing unless the day has
 #: actually changed, which is the edge-triggered rule the runtime depends on.
 DAY_ROLLOVER_CHECK_MS = 60_000
+
+#: The task search field's width when the bar has room for it, and the width
+#: below which it stops being a usable search box. Between the two it absorbs
+#: whatever slack the bar has, so the buttons beside it keep their own widths
+#: at every window size instead of being pushed past the right edge.
+SEARCH_PREFERRED_WIDTH = 280
+SEARCH_MIN_WIDTH = 130
 
 
 def _format_date_win(d: date) -> str:
@@ -215,7 +222,19 @@ class TopBar(QFrame):
         self._search.setPlaceholderText("Search tasks...")
         # See the sidebar search: the same shared limit applies.
         self._search.setMaxLength(SEARCH_MAX_LENGTH)
-        self._search.setFixedSize(280, 34)
+        # Flexible, not fixed. At 280px rigid the bar's contents added up to
+        # more than the content area had at the window's own minimum width, so
+        # the controls to the right of it -- Add Task, Request, Refresh -- were
+        # pushed off the edge and could not be clicked at all. It keeps its
+        # preferred width whenever there is room and gives it back first when
+        # there is not, because it is the only control here that can be
+        # narrower and still be usable.
+        self._search.setFixedHeight(34)
+        self._search.setMinimumWidth(SEARCH_MIN_WIDTH)
+        self._search.setMaximumWidth(SEARCH_PREFERRED_WIDTH)
+        self._search.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         self._search.setClearButtonEnabled(True)
         icons.line_edit_icon_action(self._search, "search", TEXT_MUTED)
         self._search.textChanged.connect(self.search_changed.emit)

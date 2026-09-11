@@ -1,11 +1,12 @@
-"""The two events that produce an email, and the rules around each.
+"""The events that produce an email, and the rules around each.
 
-Both entry points here share one contract, and it is the important part: **they
-never raise into the caller, and they never affect the caller's outcome.** A
-user is provisioned whether or not they can be welcomed; feedback is saved
-whether or not Admin and HR can be told. Each returns the queued notification's
-id, or None, and the caller uses it only to schedule an immediate delivery
-attempt.
+Every entry point here shares one contract, and it is the important part:
+**they never raise into the caller, and they never affect the caller's
+outcome.** A user is provisioned whether or not they can be welcomed; feedback
+is saved whether or not Admin and HR can be told; a status change is committed
+whether or not the submitter can be told about it. Each returns the queued
+notification's id, or None, and the caller uses it only to schedule an
+immediate delivery attempt.
 
 That is enforced by construction — every path is inside a `try` that logs and
 returns None — rather than by each call site remembering to guard. Email is a
@@ -22,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.email_notification import (
-    TYPE_FEEDBACK, TYPE_RELEASE, TYPE_WELCOME,
+    TYPE_FEEDBACK, TYPE_FEEDBACK_STATUS, TYPE_RELEASE, TYPE_WELCOME,
 )
 from app.repositories.user import UserRepository
 from app.services.email import messages
@@ -53,6 +54,23 @@ def feedback_dedupe_key(feedback_id: int) -> str:
     therefore the same single email.
     """
     return f"feedback:{feedback_id}"
+
+
+def feedback_status_dedupe_key(feedback_id: int, status: str) -> str:
+    """The status update's identity: this feedback, in this state.
+
+    The status is part of the key, not a detail inside the payload, and that is
+    the whole duplicate-protection story for this workflow. Pressing Working
+    twice, a double-click that fires two requests, a browser refresh that
+    replays the last one, or two administrators acting on the same row at the
+    same moment all compute `feedback:17:in_progress` — one row, one email.
+    Moving the same feedback on to `resolved` computes a different key, so the
+    second, genuinely different event is still delivered.
+
+    Nothing in the key is a timestamp or a request identifier. Both would make
+    every press a distinct event, which is exactly the bug this prevents.
+    """
+    return f"feedback:{feedback_id}:{status}"
 
 
 def release_dedupe_key(version: str, user_id: int) -> str:
@@ -245,6 +263,81 @@ def queue_feedback_notification(db: Session, feedback, user) -> Optional[int]:
     except Exception:  # noqa: BLE001 - feedback is saved; the email is secondary
         logger.warning(
             "FEEDBACK_EMAIL_QUEUE_FAILED: feedback=%s",
+            getattr(feedback, "id", "?"), exc_info=True,
+        )
+        return None
+
+
+def queue_feedback_status_notification(db: Session, feedback, submitter) -> Optional[int]:
+    """Tell the submitter that their feedback is being worked on, or is resolved.
+
+    The outbound half of the feedback workflow, and the mirror image of
+    `queue_feedback_notification`: that one tells Admin and HR that something
+    arrived, this one tells the person who wrote it what happened to it.
+
+    **The recipient is `submitter`, and `submitter` comes from the feedback
+    row's own `user_id`.** The caller loads it by joining `users` to the
+    feedback inside the tenant scope — see
+    `FeedbackRepository.get_with_submitter_for_organization` — so there is no
+    argument anywhere on this path that a request could set to redirect the
+    mail. An administrator can choose *which feedback* to act on, and that
+    choice alone determines who is written to.
+
+    Called after the status change is committed, and it cannot undo it: like
+    every other entry point in this module it returns an id or None and never
+    raises. An administrator's click succeeds because the status changed; the
+    email is what follows from that, not what it depends on.
+    """
+    try:
+        recipients = resolve_user_recipient(getattr(submitter, "email", "") or "")
+        if not recipients:
+            logger.warning(
+                "FEEDBACK_STATUS_EMAIL_SKIPPED: feedback=%s user=%s "
+                "reason=submitter_has_no_usable_email",
+                feedback.id, getattr(submitter, "id", None),
+            )
+            return None
+
+        submitted_at = getattr(feedback, "created_at", None) or datetime.now(timezone.utc)
+        status = str(getattr(feedback, "status", "") or "")
+        payload: dict[str, Any] = {
+            # What the email shows, and nothing more. No message body: the
+            # person reading this wrote it, they do not need it read back to
+            # them, and a mailbox is a poor place to keep a second copy of it.
+            # No administrator's name either — who handled it is an internal
+            # detail of how the organisation works, and the update is from
+            # Monitra rather than from a named individual.
+            "feedback_id": feedback.id,
+            "user_id": getattr(submitter, "id", None),
+            "name": getattr(submitter, "name", None),
+            "category": getattr(feedback, "category", None),
+            "status": status,
+            "submitted_at": (
+                submitted_at.isoformat() if hasattr(submitted_at, "isoformat")
+                else str(submitted_at)
+            ),
+        }
+        row = EmailOutboxService.enqueue(
+            db,
+            notification_type=TYPE_FEEDBACK_STATUS,
+            dedupe_key=feedback_status_dedupe_key(feedback.id, status),
+            recipients=recipients,
+            subject=messages.feedback_status_subject(payload),
+            payload=payload,
+            organization_id=getattr(feedback, "organization_id", None),
+            user_id=getattr(submitter, "id", None),
+        )
+        if row is None:
+            return None
+        logger.info(
+            "FEEDBACK_STATUS_EMAIL_QUEUED: feedback=%s user=%s status=%s "
+            "notification=%s state=%s",
+            feedback.id, getattr(submitter, "id", None), status, row.id, row.status,
+        )
+        return row.id
+    except Exception:  # noqa: BLE001 - the status change is committed; the email is secondary
+        logger.warning(
+            "FEEDBACK_STATUS_EMAIL_QUEUE_FAILED: feedback=%s",
             getattr(feedback, "id", "?"), exc_info=True,
         )
         return None

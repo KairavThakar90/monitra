@@ -138,7 +138,8 @@ class ShapingTests(unittest.TestCase):
         row = SimpleNamespace(total_seconds=153900, avg_activity=71.3216, total_members=5, total_tasks=14)
         self.assertEqual(
             ReportsPageService._metrics(row),
-            {"total_hours": 42.75, "avg_activity": 71.32, "total_members": 5, "total_tasks": 14},
+            {"total_seconds": 153900, "total_hours": 42.75, "avg_activity": 71.32,
+             "total_members": 5, "total_tasks": 14},
         )
 
     def test_null_activity_stays_null_rather_than_becoming_zero(self):
@@ -147,16 +148,29 @@ class ShapingTests(unittest.TestCase):
 
     def test_page_math(self):
         self.assertEqual(
-            ReportsPageService._page([], 1, 20, 100),
-            {"items": [], "page": 1, "limit": 20, "total": 100, "pages": 5},
+            ReportsPageService._page([], 1, 20, 100, 154800.0),
+            {"items": [], "page": 1, "limit": 20, "total": 100, "pages": 5,
+             "total_seconds": 154800, "total_hours": 43.0},
         )
-        self.assertEqual(ReportsPageService._page([], 1, 20, 41)["pages"], 3)
-        self.assertEqual(ReportsPageService._page([], 1, 20, 0)["pages"], 0)
+        self.assertEqual(ReportsPageService._page([], 1, 20, 41, 0.0)["pages"], 3)
+        self.assertEqual(ReportsPageService._page([], 1, 20, 0, 0.0)["pages"], 0)
+
+    def test_a_page_reports_the_seconds_of_every_matching_row_not_just_the_page(self):
+        """The denominator a part-to-whole chart divides by.
+
+        Summing the visible rows would make every page add up to 100%, and
+        taking the summary strip's total instead is what drew every
+        unattributed second of the day as one unnamed slice on the App and
+        URL tabs.
+        """
+        page = ReportsPageService._page([], 2, 5, 87, 154800.0)
+        self.assertEqual(page["total_seconds"], 154800)
+        self.assertEqual(page["total_hours"], 43.0)
 
     def test_project_rows_are_named_with_project_fields(self):
         row = SimpleNamespace(id=12, name="Website Redesign", total_seconds=3600,
                               avg_activity=70.0, total_members=5, total_tasks=14)
-        with patch.object(ReportsPageRepository, "projects", return_value=([row], 1)):
+        with patch.object(ReportsPageRepository, "projects", return_value=([row], 1, 3600.0)):
             response = ReportsPageService.projects(None, _filters(), None, "total_hours", "desc", 1, 20)
         self.assertEqual(response["items"][0]["project_id"], 12)
         self.assertEqual(response["items"][0]["project_name"], "Website Redesign")
@@ -165,7 +179,7 @@ class ShapingTests(unittest.TestCase):
     def test_task_rows_report_one_task_each(self):
         row = SimpleNamespace(id=101, name="Implement Login API", total_seconds=30600,
                               avg_activity=76.21, total_members=2, total_tasks=1)
-        with patch.object(ReportsPageRepository, "tasks", return_value=([row], 1)):
+        with patch.object(ReportsPageRepository, "tasks", return_value=([row], 1, 30600.0)):
             response = ReportsPageService.tasks(None, _filters(), None, "total_hours", "desc", 1, 20)
         item = response["items"][0]
         self.assertEqual(item["task_id"], 101)
@@ -175,7 +189,7 @@ class ShapingTests(unittest.TestCase):
     def test_app_and_url_ids_are_usage_table_row_ids(self):
         app_row = SimpleNamespace(id=15, name="Google Chrome", total_seconds=3600,
                                   avg_activity=64.75, total_members=6, total_tasks=11)
-        with patch.object(ReportsPageRepository, "usage", return_value=([app_row], 1)) as usage:
+        with patch.object(ReportsPageRepository, "usage", return_value=([app_row], 1, 3600.0)) as usage:
             response = ReportsPageService.apps(None, _filters(), None, "total_hours", "desc", 1, 20)
         self.assertEqual(usage.call_args[0][2], "app")
         self.assertEqual(response["items"][0]["app_id"], 15)
@@ -183,7 +197,7 @@ class ShapingTests(unittest.TestCase):
 
         url_row = SimpleNamespace(id=32, name="https://github.com", total_seconds=3600,
                                   avg_activity=69.44, total_members=4, total_tasks=7)
-        with patch.object(ReportsPageRepository, "usage", return_value=([url_row], 1)) as usage:
+        with patch.object(ReportsPageRepository, "usage", return_value=([url_row], 1, 3600.0)) as usage:
             response = ReportsPageService.urls(None, _filters(), None, "total_hours", "desc", 1, 20)
         self.assertEqual(usage.call_args[0][2], "url")
         self.assertEqual(response["items"][0]["url_id"], 32)
@@ -305,7 +319,9 @@ class GroupedQuerySqlTests(unittest.TestCase):
 
         def execute(self, statement):
             self.statements.append(statement)
-            return SimpleNamespace(all=lambda: [], one=lambda: None)
+            # `_paginate` reads its row count and its scope-wide seconds out
+            # of one aggregate row, so `.one()` has to be a two-value row.
+            return SimpleNamespace(all=lambda: [], one=lambda: (0, 0.0))
 
         def scalar(self, statement):
             self.statements.append(statement)

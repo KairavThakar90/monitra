@@ -189,7 +189,10 @@ class ProjectRead(BaseModel):
 
 
 class ProjectListItem(ProjectRead):
-    tasks: list[TaskRead] = Field(default_factory=list)
+    #: `None` when the caller passed `include_tasks=false`, which is different
+    #: from `[]` ("this project has no tasks"). `task_count` is authoritative
+    #: either way, so a client that only shows the number never needs the rows.
+    tasks: Optional[list[TaskRead]] = None
     employee_count: int
     task_count: int
 

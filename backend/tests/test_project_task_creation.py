@@ -20,6 +20,10 @@ from app.models.task_assignee import TaskAssignee
 from app.models.user import User
 from app.schemas.project_management import TaskCreate
 from app.services.project_management import ProjectManagementService
+from tests.status_catalog_stub import rows, status_catalog
+
+#: The Todo row these tests create against, served through the status catalogue.
+TODO_STATUSES = rows((1, "Todo"))
 
 
 def _user(role="administrator", user_id=1):
@@ -54,10 +58,10 @@ class TestTaskAssigneeRule(unittest.TestCase):
     def _create(self, member, assignee, user=None):
         # _project, then the membership lookup, then the assignee lookup.
         self.db.scalar.side_effect = [_project(), member, assignee]
-        self.db.get.return_value = _task_status()
-        return ProjectManagementService.create_task(
-            self.db, user or _user(), 7, self.payload
-        )
+        with status_catalog(task_statuses=TODO_STATUSES):
+            return ProjectManagementService.create_task(
+                self.db, user or _user(), 7, self.payload
+            )
 
     def test_an_admin_cannot_be_the_assignee_even_as_a_project_member(self):
         """The exact production failure: the desktop self-assigned, so an
@@ -102,12 +106,12 @@ class TestUnassignedTask(unittest.TestCase):
     def test_a_task_with_no_assignee_is_created_unassigned(self):
         db = MagicMock()
         db.scalar.return_value = _project()
-        db.get.return_value = _task_status()
 
-        ProjectManagementService.create_task(
-            db, _user(role="administrator"), 7,
-            TaskCreate(name="Write the report", status_id=1),
-        )
+        with status_catalog(task_statuses=TODO_STATUSES):
+            ProjectManagementService.create_task(
+                db, _user(role="administrator"), 7,
+                TaskCreate(name="Write the report", status_id=1),
+            )
 
         added = [call.args[0] for call in db.add.call_args_list]
         tasks = [item for item in added if isinstance(item, Task)]
@@ -123,11 +127,11 @@ class TestUnassignedTask(unittest.TestCase):
         it is not run, so it cannot reject a task that names nobody."""
         db = MagicMock()
         db.scalar.return_value = _project()
-        db.get.return_value = _task_status()
 
-        ProjectManagementService.create_task(
-            db, _user(role="administrator"), 7, TaskCreate(name="Write the report", status_id=1)
-        )
+        with status_catalog(task_statuses=TODO_STATUSES):
+            ProjectManagementService.create_task(
+                db, _user(role="administrator"), 7, TaskCreate(name="Write the report", status_id=1)
+            )
 
         # One scalar() call only: the project lookup in _project.
         self.assertEqual(db.scalar.call_count, 1)

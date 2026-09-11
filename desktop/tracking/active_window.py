@@ -52,7 +52,13 @@ def _windows_active_window_details():
 
     hwnd = ctypes.windll.user32.GetForegroundWindow()
     if not hwnd:
-        return "Idle/System", "No Active Window", None, None, None
+        # No foreground window: a locked screen, a desktop with focus
+        # nowhere, or the instant between one window closing and the next
+        # taking focus. This used to be reported as an application called
+        # "Idle/System" with the window title "No Active Window", and both
+        # were stored and synced as though they were programs the user had
+        # been working in. There is no application here to name.
+        return None, None, None, None, None
 
     # Get Window Title
     length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
@@ -78,13 +84,23 @@ def _windows_active_window_details():
         ctypes.windll.kernel32.CloseHandle(h_process)
 
     if not app_name:
+        # OpenProcess/QueryFullProcessImageNameW was refused (a protected or
+        # elevated process). The window class is the last real OS-level
+        # identifier available for this window -- weaker than an executable
+        # name, but genuine, and `tracking/app_identity.py` will keep it
+        # verbatim so the record stays traceable. If even that is empty
+        # there is nothing left to name, and a placeholder is not an answer:
+        # "Unknown Application" used to be stored here as if it were a real
+        # program.
         buf = ctypes.create_unicode_buffer(260)
         ctypes.windll.user32.GetClassNameW(hwnd, buf, 260)
-        app_name = buf.value or "Unknown Application"
+        app_name = buf.value or None
+        if not app_name:
+            return None, window_title or None, None, pid_val, int(hwnd)
 
     clean_app_name = app_name[:-4] if app_name.lower().endswith(".exe") else app_name
 
-    return clean_app_name, window_title, exe_path, pid_val, int(hwnd)
+    return clean_app_name, window_title or None, exe_path, pid_val, int(hwnd)
 
 
 def _macos_active_window_details():
@@ -97,9 +113,11 @@ def _macos_active_window_details():
 
     app = NSWorkspace.sharedWorkspace().frontmostApplication()
     if app is None:
-        return "Idle/System", "No Active Window", None, None, None
+        # Nothing is frontmost. Same reasoning as the Windows branch: there
+        # is no application to name, so none is invented.
+        return None, None, None, None, None
 
-    app_name = app.localizedName() or "Unknown Application"
+    app_name = app.localizedName() or None
     pid_val = app.processIdentifier()
     bundle_url = app.bundleURL()
     exe_path = bundle_url.path() if bundle_url is not None else None
@@ -117,6 +135,9 @@ def _macos_active_window_details():
                 window_title = name
                 break
 
+    # The bundle path is the stronger identity and is returned even when the
+    # localized display name is missing -- `resolve_application` prefers it
+    # anyway, so a nameless-but-located application is still identifiable.
     return app_name, window_title or app_name, exe_path, pid_val, None
 
 

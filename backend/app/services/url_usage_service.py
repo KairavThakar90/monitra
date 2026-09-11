@@ -3,6 +3,7 @@ from fastapi import HTTPException, status
 from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse
+from app.core.activity_identity import canonical_domain
 from app.core.time_format import to_ist
 from app.models.user import User
 from app.models.time_entry_url_usage import TimeEntryUrlUsage
@@ -34,10 +35,19 @@ def same_ist_day(a: datetime, b: datetime) -> bool:
 def normalize_url(url_str: Optional[str], domain_fallback: str) -> Tuple[str, Optional[str]]:
     """
     Normalizes domain and URL string.
-    - Domain: lowercased, stripped.
+    - Domain: through ``canonical_domain``, the one definition the whole
+      system groups on -- lowercased, with a leading ``www.`` dropped.
     - URL: scheme and netloc lowercased, trailing slashes removed safely from non-root paths.
+
+    The domain is re-derived from the URL's own hostname where there is one,
+    because the address bar is the better authority than a separately
+    supplied field. That derivation used to lowercase and stop there, which
+    quietly undid the canonicalization ``URLUsageCreate`` had just applied:
+    a record for ``www.github.com`` was stored under that host while one for
+    ``github.com`` went to another row, and the site's time was split
+    between them. Both paths now end in the same function.
     """
-    clean_domain = domain_fallback.strip().lower() if domain_fallback else ""
+    clean_domain = canonical_domain(domain_fallback) or ""
 
     if not url_str or not url_str.strip():
         return clean_domain, None
@@ -51,7 +61,7 @@ def normalize_url(url_str: Optional[str], domain_fallback: str) -> Tuple[str, Op
 
         netloc = parsed.netloc.lower()
         # Extract hostname without port for domain if domain_fallback was generic
-        extracted_domain = parsed.hostname.lower() if parsed.hostname else clean_domain
+        extracted_domain = canonical_domain(parsed.hostname) or clean_domain
         if extracted_domain:
             clean_domain = extracted_domain
 

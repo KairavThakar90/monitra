@@ -108,6 +108,11 @@ class ReportsPageService:
     @staticmethod
     def _metrics(row) -> dict:
         return {
+            # Exact seconds alongside the rounded hours, so a caller computing
+            # a share divides like by like. A slice built from 2dp hours can
+            # exceed the exact scope total it is divided by -- the Projects
+            # ring showed a single project at 100.4%.
+            "total_seconds": int(row.total_seconds or 0),
             "total_hours": round(float(row.total_seconds or 0) / 3600, 2),
             "avg_activity": None if row.avg_activity is None else round(float(row.avg_activity), 2),
             "total_members": int(row.total_members or 0),
@@ -115,13 +120,23 @@ class ReportsPageService:
         }
 
     @staticmethod
-    def _page(items: list[dict], page: int, limit: int, total: int) -> dict:
+    def _page(items: list[dict], page: int, limit: int, total: int, total_seconds: float) -> dict:
+        """One page of report rows, plus what the whole result set holds.
+
+        ``total_seconds``/``total_hours`` describe every row the filters
+        matched, not the page. A part-to-whole chart has to divide by the
+        same measure its slices are drawn from, and on the App and URL tabs
+        that is not the summary strip's session time -- see
+        ``ReportsPageRepository._paginate``.
+        """
         return {
             "items": items,
             "page": page,
             "limit": limit,
             "total": total,
             "pages": ceil(total / limit) if total else 0,
+            "total_seconds": int(total_seconds),
+            "total_hours": round(total_seconds / 3600, 2),
         }
 
     # ---------------------------------------------------------------- endpoints
@@ -159,7 +174,7 @@ class ReportsPageService:
         }
 
     @staticmethod
-    def _entity_page(rows, total, page, limit, id_field, name_field) -> dict:
+    def _entity_page(rows, total, total_seconds, page, limit, id_field, name_field) -> dict:
         items = [
             {
                 id_field: row.id,
@@ -168,27 +183,27 @@ class ReportsPageService:
             }
             for row in rows
         ]
-        return ReportsPageService._page(items, page, limit, total)
+        return ReportsPageService._page(items, page, limit, total, total_seconds)
 
     @staticmethod
     def projects(db, filters, search, sort_by, sort_order, page, limit) -> dict:
-        rows, total = ReportsPageRepository.projects(db, filters, search, sort_by, sort_order, page, limit)
-        return ReportsPageService._entity_page(rows, total, page, limit, "project_id", "project_name")
+        rows, total, seconds = ReportsPageRepository.projects(db, filters, search, sort_by, sort_order, page, limit)
+        return ReportsPageService._entity_page(rows, total, seconds, page, limit, "project_id", "project_name")
 
     @staticmethod
     def tasks(db, filters, search, sort_by, sort_order, page, limit) -> dict:
-        rows, total = ReportsPageRepository.tasks(db, filters, search, sort_by, sort_order, page, limit)
+        rows, total, seconds = ReportsPageRepository.tasks(db, filters, search, sort_by, sort_order, page, limit)
         # total_tasks is COUNT(DISTINCT task_id) grouped by task_id, so it is
         # already 1 per row -- a task record is one task, never a count of its
         # tracking rows.
-        return ReportsPageService._entity_page(rows, total, page, limit, "task_id", "task_name")
+        return ReportsPageService._entity_page(rows, total, seconds, page, limit, "task_id", "task_name")
 
     @staticmethod
     def apps(db, filters, search, sort_by, sort_order, page, limit) -> dict:
-        rows, total = ReportsPageRepository.usage(db, filters, "app", search, sort_by, sort_order, page, limit)
-        return ReportsPageService._entity_page(rows, total, page, limit, "app_id", "app_name")
+        rows, total, seconds = ReportsPageRepository.usage(db, filters, "app", search, sort_by, sort_order, page, limit)
+        return ReportsPageService._entity_page(rows, total, seconds, page, limit, "app_id", "app_name")
 
     @staticmethod
     def urls(db, filters, search, sort_by, sort_order, page, limit) -> dict:
-        rows, total = ReportsPageRepository.usage(db, filters, "url", search, sort_by, sort_order, page, limit)
-        return ReportsPageService._entity_page(rows, total, page, limit, "url_id", "url_name")
+        rows, total, seconds = ReportsPageRepository.usage(db, filters, "url", search, sort_by, sort_order, page, limit)
+        return ReportsPageService._entity_page(rows, total, seconds, page, limit, "url_id", "url_name")

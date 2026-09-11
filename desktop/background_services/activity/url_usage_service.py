@@ -38,6 +38,10 @@ class UrlUsageService(LoopService):
         self._browser_manager = get_browser_manager()
 
         self._entry_id: Optional[int] = None
+        #: The timer session's stable key, so a browser session measured
+        #: before the backend issued an entry id can be adopted later rather
+        #: than discarded. See `AppUsageService` for the full reasoning.
+        self._client_op: Optional[str] = None
         self._tracking = False
 
         # Current URL session state
@@ -58,6 +62,7 @@ class UrlUsageService(LoopService):
 
     def start_tracker(self, session: Dict[str, Any]) -> None:
         self._entry_id = session.get("entry_id")
+        self._client_op = session.get("client_op")
         self._tracking = True
         self._reset_session()
         self._unavailable_reported.clear()
@@ -67,6 +72,16 @@ class UrlUsageService(LoopService):
     def bind_entry_id(self, entry_id: int) -> None:
         """Attribute in-progress URL sessions to a late-arriving entry id."""
         self._entry_id = entry_id
+        if self._client_op:
+            try:
+                adopted = self._cache.bind_url_usage_to_entry(self._client_op, entry_id)
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not bind buffered URL usage to entry %s", entry_id)
+            else:
+                if adopted:
+                    self.log.info(
+                        "bound %d buffered browser session(s) to entry %s", adopted, entry_id
+                    )
 
     def _observe_now(self) -> None:
         """Count the time up to this instant as observed.
@@ -88,6 +103,7 @@ class UrlUsageService(LoopService):
         self._flush_session()
         self._tracking = False
         self._entry_id = None
+        self._client_op = None
         self._reset_session()
         self.log.info("browser URL usage tracking stopped")
 
@@ -104,13 +120,18 @@ class UrlUsageService(LoopService):
         self._session_recorded_at = None
 
     def _flush_session(self) -> None:
+        # As in `AppUsageService._flush_segment`: a session with no entry id
+        # yet is still written, against this session's `client_op`, and
+        # adopted when the id arrives. Only one with neither is unattributable
+        # and therefore not written at all.
         if (
             self._session_start is None or
             self._last_observed is None or
-            self._entry_id is None or
             not self._current_browser or
             not self._current_domain
         ):
+            return
+        if self._entry_id is None and not self._client_op:
             return
 
         duration = int(self._last_observed - self._session_start)
@@ -141,6 +162,7 @@ class UrlUsageService(LoopService):
                         client_event_id if len(chunks) == 1
                         else f"{client_event_id}-d{index}"
                     ),
+                    client_op=self._client_op,
                 )
         except Exception:  # noqa: BLE001
             self.log.exception("could not persist browser URL usage session")
@@ -169,6 +191,8 @@ class UrlUsageService(LoopService):
         if self._entry_id is None:
             session = self.runtime.timer.active_session() or {}
             self._entry_id = session.get("entry_id")
+            if self._client_op is None:
+                self._client_op = session.get("client_op")
 
         app_name, window_title, _, _, hwnd = get_active_window_details()
         now = time.monotonic()

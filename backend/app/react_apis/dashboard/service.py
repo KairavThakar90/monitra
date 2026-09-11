@@ -89,7 +89,7 @@ class DashboardService:
 
     @staticmethod
     def top_projects(db, filters, search, sort_by, sort_order, page, limit) -> dict:
-        rows, total = ReportsPageRepository.projects(db, filters, search, sort_by, sort_order, page, limit)
+        rows, total, seconds = ReportsPageRepository.projects(db, filters, search, sort_by, sort_order, page, limit)
         items = [
             {
                 "project_id": row.id,
@@ -98,11 +98,11 @@ class DashboardService:
             }
             for row in rows
         ]
-        return ReportsPageService._page(items, page, limit, total)
+        return ReportsPageService._page(items, page, limit, total, seconds)
 
     @staticmethod
     def top_members(db, filters, search, sort_by, sort_order, page, limit) -> dict:
-        rows, total = ReportsPageRepository.members(db, filters, search, sort_by, sort_order, page, limit)
+        rows, total, seconds = ReportsPageRepository.members(db, filters, search, sort_by, sort_order, page, limit)
         items = [
             {
                 "member_id": row.id,
@@ -111,15 +111,19 @@ class DashboardService:
             }
             for row in rows
         ]
-        return ReportsPageService._page(items, page, limit, total)
+        return ReportsPageService._page(items, page, limit, total, seconds)
 
     @staticmethod
     def top_apps(db, filters, search, sort_by, sort_order, page, limit) -> dict:
-        rows, total = DashboardRepository.top_apps(db, filters, search, sort_by, sort_order, page, limit)
-        # The share each app holds is of the whole filtered scope, so the
-        # denominator comes from its own ungrouped query -- summing this page's
-        # rows would make every page add up to 100%.
-        total_app_seconds = DashboardRepository.total_app_seconds(db, filters, search)
+        # The share each app holds is of the whole filtered scope, not of the
+        # ranked page -- summing this page's rows would make every page add up
+        # to 100%. That scope-wide total now comes back from the same
+        # aggregate as the row count, so this no longer needs its own second
+        # query (`DashboardRepository.total_app_seconds`, kept for callers
+        # that have only the filters).
+        rows, total, total_app_seconds = DashboardRepository.top_apps(
+            db, filters, search, sort_by, sort_order, page, limit
+        )
         items = []
         for row in rows:
             seconds = float(row.total_seconds or 0)
@@ -131,7 +135,7 @@ class DashboardService:
                     round(seconds / total_app_seconds * 100, 2) if total_app_seconds else None
                 ),
             })
-        page_body = ReportsPageService._page(items, page, limit, total)
+        page_body = ReportsPageService._page(items, page, limit, total, total_app_seconds)
         page_body["total_app_hours"] = _hours(total_app_seconds)
         return page_body
 

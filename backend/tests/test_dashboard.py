@@ -41,7 +41,9 @@ class RecordingSession:
     def __init__(self, rows=None, one=None, scalar=0):
         self.statements = []
         self._rows = rows or []
-        self._one = one
+        # `_paginate` reads its row count and its scope-wide seconds out of
+        # one aggregate row, so the default `.one()` is a two-value row.
+        self._one = (0, 0.0) if one is None else one
         self._scalar = scalar
 
     def execute(self, statement):
@@ -162,7 +164,7 @@ class TopListTests(unittest.TestCase):
 
     def test_top_projects_shape(self):
         with patch.object(ReportsPageRepository, "projects",
-                          return_value=([self._row(12, "Mobile Time Tracker", 1765080, 65.8)], 47)):
+                          return_value=([self._row(12, "Mobile Time Tracker", 1765080, 65.8)], 47, 4_000_000.0)):
             result = DashboardService.top_projects(None, _filters(), None, "total_hours", "desc", 1, 10)
         self.assertEqual(result["items"][0], {
             "project_id": 12, "project_name": "Mobile Time Tracker",
@@ -172,7 +174,7 @@ class TopListTests(unittest.TestCase):
 
     def test_top_members_shape(self):
         with patch.object(ReportsPageRepository, "members",
-                          return_value=([self._row(102, "John Doe", 605880, 79.0)], 1)):
+                          return_value=([self._row(102, "John Doe", 605880, 79.0)], 1, 605880.0)):
             result = DashboardService.top_members(None, _filters(), None, "total_hours", "desc", 1, 10)
         self.assertEqual(result["items"][0], {
             "member_id": 102, "member_name": "John Doe",
@@ -190,8 +192,9 @@ class TopListTests(unittest.TestCase):
 class TopAppsTests(unittest.TestCase):
     def test_percentage_is_a_share_of_the_whole_scope_not_of_the_page(self):
         rows = [SimpleNamespace(id=15, name="Google Chrome", total_seconds=81000)]
-        with patch.object(DashboardRepository, "top_apps", return_value=(rows, 30)), \
-             patch.object(DashboardRepository, "total_app_seconds", return_value=249840.0):
+        # The scope-wide seconds arrive with the rows, out of the same
+        # aggregate as the row count -- no second query for the denominator.
+        with patch.object(DashboardRepository, "top_apps", return_value=(rows, 30, 249840.0)):
             result = DashboardService.top_apps(None, _filters(), None, "total_hours", "desc", 1, 10)
         item = result["items"][0]
         self.assertEqual(item["total_hours"], 22.5)
@@ -202,8 +205,7 @@ class TopAppsTests(unittest.TestCase):
 
     def test_no_app_usage_gives_null_percentages_rather_than_a_divide_by_zero(self):
         rows = [SimpleNamespace(id=1, name="chrome", total_seconds=0)]
-        with patch.object(DashboardRepository, "top_apps", return_value=(rows, 1)), \
-             patch.object(DashboardRepository, "total_app_seconds", return_value=0.0):
+        with patch.object(DashboardRepository, "top_apps", return_value=(rows, 1, 0.0)):
             result = DashboardService.top_apps(None, _filters(), None, "total_hours", "desc", 1, 10)
         self.assertIsNone(result["items"][0]["percentage"])
         self.assertEqual(result["total_app_hours"], 0.0)

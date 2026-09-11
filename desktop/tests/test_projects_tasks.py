@@ -36,7 +36,12 @@ class TestProjectsTasksIntegration(unittest.TestCase):
 
         projects = self.project_service.get_projects()
         
-        self.api_client.get.assert_called_once_with("/api/v1/projects?page=1&limit=20")
+        # include_tasks=false: this client fetches a project's tasks from
+        # /projects/{id}/tasks when one is selected and never reads the array
+        # embedded in the list.
+        self.api_client.get.assert_called_once_with(
+            "/api/v1/projects?page=1&limit=20&include_tasks=false"
+        )
         self.assertEqual(len(projects), 2)
         self.assertEqual(projects[0]["project_name"], "Test Project 1")
         self.assertEqual(projects[0]["status"]["name"], "Active")

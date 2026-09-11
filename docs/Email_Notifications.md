@@ -104,6 +104,32 @@ is correct: they are two distinct submissions. Idempotency is per *record*.
 (The desktop dialog also de-duplicates in flight, with a fixed task key, and
 disables the button — see `desktop/ui/feedback_dialog.py`.)
 
+### Feedback status — the outbound half of the same workflow
+
+Where the notification above tells Admin and HR that something arrived,
+`feedback_status` tells the person who wrote it what happened to it.
+`FeedbackService.update_status` commits the status change first and queues
+afterwards, for the same reason and with the same guarantee: a mail server that
+is down produces a log line and a feedback row in the state the administrator
+asked for, never a button that looks broken.
+
+**Admin only.** HR and Leader read every submission in the organization and
+change none of them; `PATCH /feedback/{id}/status` answers them 403. The
+recipient is never a request field — it is the user joined to the feedback row
+by `user_id`, loaded inside the tenant scope — so there is nothing a caller can
+send to redirect the mail.
+
+Unlike the submission notification, idempotency here is per *state* rather than
+per record. The key is `feedback:<id>:<status>`, so pressing Working twice, a
+double-click, a refresh or two administrators acting at once all collapse onto
+one row, while Working and Resolved remain two separately deliverable events.
+The service also returns early when the status is unchanged, so the second
+press does not reach the outbox at all.
+
+There is deliberately **no feature flag**. The welcome and release emails have
+one because they fire automatically; this one fires because an administrator
+pressed a button, and a flag would make that press silently do nothing.
+
 ---
 
 ## 4. Retry and failure
@@ -280,5 +306,14 @@ recorder.
 ```bash
 cd backend
 python -m pytest tests/ -q
-python -m alembic upgrade head
+python -m alembic upgrade b8e4d13a7c92
 ```
+
+> **Migrate by revision, not by `head`.** This repository currently has two
+> Alembic heads — `b8e4d13a7c92` (the email and feedback lineage) and
+> `f4a1b2c3d4e5`, an unrelated branch that has never been applied. While that
+> is true, `alembic upgrade head` fails with *"Multiple head revisions are
+> present"* and applies nothing, and `alembic upgrade heads` would walk **both**
+> branches — running `f4a1b2c3d4e5`'s `UPDATE users SET role_name` against the
+> target database as a side effect. Naming the revision applies exactly the
+> migrations this lineage needs and nothing else.

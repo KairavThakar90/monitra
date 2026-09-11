@@ -502,3 +502,64 @@ contains an "x". Found by running the extractor against the real browser
 windows open on a development machine.
 
 **Instead:** match on whole words (`\bkw\b`).
+
+### ❌ Do not store an application under whatever the OS happened to call it
+
+`get_active_window_info()` returned the executable's base name on Windows and
+`NSWorkspace.localizedName()` on macOS, and both went straight into
+`time_entry_app_usage.application_name`. So one product arrived under two
+spellings — `chrome` and `Google Chrome`, `Code` and `Visual Studio Code` —
+and each row held part of the time. Monitra itself was reported as an
+application called `python`. A report ranking the top five applications
+therefore ranked fragments, and the long tail of halves fell into the
+distribution chart's unnamed remainder.
+
+**Instead:** resolve the identity through `tracking/app_identity.py` before
+storing it. The executable path is preferred over the reported name (a binary
+is stable; a display name is localized), and the backend resolves again on
+ingest from a mirrored catalogue, so an un-upgraded client cannot keep writing
+a second spelling. The two catalogues are compared file-to-file by
+`tests/test_activity_classification.py`.
+
+### ❌ Do not invent an application name for a sample that identifies nothing
+
+With no foreground window, `_windows_active_window_details` returned the
+application `"Idle/System"` with the window title `"No Active Window"`; when
+the process query was refused it returned `"Unknown Application"`. All three
+were stored and synced as though they were programs somebody had used, and
+they are the same class of defect as the `unknown-domain` URL above.
+
+**Instead:** return `None` and record nothing. `resolve_application` reports
+`ClassificationStatus.UNKNOWN` with a reason, and `AppUsageService` closes the
+open segment and waits. An application that *is* identified but is not in the
+catalogue is a different case entirely: it keeps its real executable name,
+verbatim, so the row stays traceable to an actual program.
+
+### ❌ Do not give one measure's total to another measure's chart
+
+The Reports page drew its distribution ring from a tab's own rows but took the
+*whole* from the summary strip. On the Apps and URLs tabs those are different
+measures — the summary counts session time, the rows count separately measured
+application and browser time — so the leftover arc absorbed every second that
+application capture had never claimed to attribute. On real data it reached
+**94.5% of the chart**, labelled "Others", reading as though almost the whole
+month had been spent in an unnamed application.
+
+**Instead:** divide by the population the slices came from. Every ranked
+report page carries `total_seconds` for all matching rows, summed in the same
+aggregate as the row count. Where a usage tab genuinely covers less of the day
+than the timer did, report that gap as coverage, in words and seconds — do not
+let it hide inside a slice.
+
+### ❌ Do not drop measured activity because the entry id has not arrived yet
+
+`_flush_segment` returned early whenever `time_entry_id` was `None`, which is
+the whole of an offline session. Real, identified, measured application usage
+was discarded on every application switch, and the missing time then showed up
+as the gap the broken chart drew as "Others".
+
+**Instead:** write the row against the timer session's `client_op` and adopt
+it when the id arrives — the same shape `bind_screenshots_to_entry` already
+used for a capture taken before its entry existed. `get_pending_app_usage`
+withholds an unattributed row from the uploader rather than sending it
+nowhere.

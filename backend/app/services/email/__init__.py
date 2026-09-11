@@ -24,7 +24,8 @@ from app.services.email.recipients import (
     describe_feedback_recipients, resolve_feedback_recipients,
 )
 from app.services.email.workflows import (
-    feedback_dedupe_key, queue_feedback_notification,
+    feedback_dedupe_key, feedback_status_dedupe_key,
+    queue_feedback_notification, queue_feedback_status_notification,
     queue_release_announcements, queue_welcome_email, release_dedupe_key,
     welcome_dedupe_key,
 )
@@ -40,8 +41,10 @@ __all__ = [
     "describe_configuration",
     "describe_feedback_recipients",
     "feedback_dedupe_key",
+    "feedback_status_dedupe_key",
     "get_email_provider",
     "queue_feedback_notification",
+    "queue_feedback_status_notification",
     "queue_release_announcements",
     "queue_welcome_email",
     "release_dedupe_key",

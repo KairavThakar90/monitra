@@ -12,6 +12,7 @@ Coverage for the redesign's two new shared pieces:
 import os
 
 import pytest
+from PySide6.QtWidgets import QApplication
 
 from core import branding
 from ui.stat_cards import StatCardsRow
@@ -72,28 +73,28 @@ def test_the_app_icon_is_built_from_the_same_mark(qapp):
 
 def test_reset_states_are_honest_not_zeroed(qapp):
     row = StatCardsRow()
-    assert row.tasks_card._value.text() == "—"
+    assert row.tasks_card._value.full_text() == "—"
     assert row.tasks_card._progress.isHidden()
-    assert row.active_card._value.text() == "No active task"
-    assert row.activity_card._value.text() == "0%"
-    assert row.activity_card._sub.text() == "No activity today"
+    assert row.active_card._value.full_text() == "No active task"
+    assert row.activity_card._value.full_text() == "0%"
+    assert row.activity_card._sub.full_text() == "No activity today"
     assert row.activity_card._progress.isHidden()
 
 
 def test_total_card_formats_seconds_and_flags_tracking(qapp):
     row = StatCardsRow()
     row.set_total_seconds(3_725, True)
-    assert row.total_card._value.text() == "01:02:05"
-    assert row.total_card._sub.text() == "Tracking now"
+    assert row.total_card._value.full_text() == "01:02:05"
+    assert row.total_card._sub.full_text() == "Tracking now"
 
     row.set_total_seconds(3_725, False)
-    assert row.total_card._sub.text() == "Not tracking"
+    assert row.total_card._sub.full_text() == "Not tracking"
 
 
 def test_tasks_card_shows_the_ratio_and_its_progress(qapp):
     row = StatCardsRow()
     row.set_tasks_completed(3, 12)
-    assert row.tasks_card._value.text() == "3 / 12"
+    assert row.tasks_card._value.full_text() == "3 / 12"
     assert row.tasks_card._progress.value() == 25
     assert not row.tasks_card._progress.isHidden()
 
@@ -102,36 +103,159 @@ def test_tasks_card_without_a_project_hides_the_bar(qapp):
     row = StatCardsRow()
     row.set_tasks_completed(3, 12)
     row.set_tasks_completed(None, None)
-    assert row.tasks_card._value.text() == "—"
+    assert row.tasks_card._value.full_text() == "—"
     assert row.tasks_card._progress.isHidden()
 
 
+def _laid_out(row, width):
+    """The row at a real width, with its layout applied -- what decides
+    elision is the width a card actually gets, so a test that does not lay the
+    row out is not testing elision at all."""
+    row.resize(width, row.sizeHint().height())
+    row.show()
+    QApplication.processEvents()
+    return row
+
+
 def test_active_task_card_elides_long_names_but_keeps_the_full_one(qapp):
+    """Elision follows the card's actual width now, not a fixed character
+    count. A name that does not fit ends in an ellipsis and is offered in
+    full on hover; nothing is lost."""
     row = StatCardsRow()
-    name = "A very long task name that will not fit the card"
+    name = "A very long task name that will not possibly fit inside one card"
     row.set_active_task(name, "Project X")
-    assert row.active_card._value.text().endswith("…")
-    assert row.active_card._value.toolTip() == name
-    assert row.active_card._sub.text() == "Project X"
+    _laid_out(row, 900)
+
+    value = row.active_card._value
+    assert value.full_text() == name, "the real name is always retained"
+    assert value.text().endswith("…")
+    assert value.toolTip() == name
+    assert row.active_card._sub.full_text() == "Project X"
+    row.hide()
+
+
+def test_a_name_that_fits_is_not_abbreviated(qapp):
+    """Elision is decided by the card's width, so a name the card can show is
+    shown whole and offers no tooltip, because nothing is hidden."""
+    row = StatCardsRow()
+    row.set_active_task("Write specs", "Project X")
+    _laid_out(row, 1600)
+
+    value = row.active_card._value
+    assert value.text() == "Write specs"
+    assert value.toolTip() == "", "nothing is hidden, so nothing to offer on hover"
+    row.hide()
+
+
+def test_a_wider_card_shows_more_of_the_name(qapp):
+    """The property the old fixed 24-character cut could not have: what is
+    shown depends on the room there is to show it."""
+    name = "Review the Q3 client update and circulate it"
+    row = StatCardsRow()
+    row.set_active_task(name, "Project X")
+
+    _laid_out(row, 900)
+    narrow = row.active_card._value.text()
+    _laid_out(row, 1900)
+    wide = row.active_card._value.text()
+    row.hide()
+
+    assert len(wide) > len(narrow)
+    assert name.startswith(narrow.rstrip("…"))
+    assert name.startswith(wide.rstrip("…"))
+
+
+def test_the_running_duration_is_never_abbreviated(qapp):
+    """The cards may shorten a sub-line; the number they exist to show is not
+    negotiable. At the narrowest width the row permits, the clock still reads
+    in full."""
+    row = StatCardsRow()
+    row.set_total_seconds(3_725, True)
+    _laid_out(row, row.minimumWidth())
+
+    assert row.total_card._value.text() == "01:02:05"
+    row.hide()
+
+
+# ── responsive arrangement ───────────────────────────────────────────────────
+#
+# Four cards side by side need 1186px before the total-time clock starts being
+# abbreviated. A 1366x768 laptop -- the commonest screen this application runs
+# on -- has about 1066px left for content once the sidebar is accounted for.
+# The row previously demanded 1412px and was simply squeezed, cutting its text
+# mid-word with no ellipsis to show that anything was missing.
+
+COMMON_LAPTOP_CONTENT_WIDTH = 1066
+
+
+def test_the_row_fits_a_common_laptop(qapp):
+    row = StatCardsRow()
+    assert row.minimumWidth() <= COMMON_LAPTOP_CONTENT_WIDTH
+
+
+def test_a_wide_window_still_gets_one_row_of_four(qapp):
+    row = StatCardsRow()
+    _laid_out(row, 1600)
+    assert row.columns() == 4
+    row.hide()
+
+
+def test_a_laptop_width_wraps_to_two_by_two(qapp):
+    row = StatCardsRow()
+    _laid_out(row, COMMON_LAPTOP_CONTENT_WIDTH)
+    assert row.columns() == 2
+    row.hide()
+
+
+def test_wrapping_keeps_every_value_readable(qapp):
+    """The point of wrapping rather than shrinking: at the narrow width, all
+    four cards still show their numbers whole."""
+    row = StatCardsRow()
+    row.set_total_seconds(3_725, True)
+    row.set_tasks_completed(3, 12)
+    row.set_today_activity(72)
+    _laid_out(row, COMMON_LAPTOP_CONTENT_WIDTH)
+
+    assert row.total_card._value.text() == "01:02:05"
+    assert row.tasks_card._value.text() == "3 / 12"
+    assert row.activity_card._value.text() == "72%"
+    row.hide()
+
+
+def test_the_arrangement_only_changes_on_a_real_transition(qapp):
+    """Re-parenting four widgets on every resize event of an unchanged layout
+    is the level-triggered shape this project has paid for before."""
+    row = StatCardsRow()
+    _laid_out(row, 1600)
+    assert row.columns() == 4
+
+    row.resize(1500, row.height())
+    QApplication.processEvents()
+    assert row.columns() == 4, "still four across; nothing should have moved"
+
+    row.resize(900, row.height())
+    QApplication.processEvents()
+    assert row.columns() == 2
+    row.hide()
 
 
 def test_todays_activity_card_shows_a_percentage(qapp):
     row = StatCardsRow()
     row.set_today_activity(72, tracking=True)
-    assert row.activity_card._value.text() == "72%"
+    assert row.activity_card._value.full_text() == "72%"
     assert row.activity_card._progress.value() == 72
-    assert row.activity_card._sub.text() == "Live — keyboard & mouse"
+    assert row.activity_card._sub.full_text() == "Live — keyboard & mouse"
 
     row.set_today_activity(72, tracking=False)
-    assert row.activity_card._sub.text() == "Based on today's activity"
+    assert row.activity_card._sub.full_text() == "Based on today's activity"
 
 
 def test_todays_activity_card_says_so_when_nothing_was_measured(qapp):
     row = StatCardsRow()
     row.set_today_activity(72)
     row.set_today_activity(None)
-    assert row.activity_card._value.text() == "0%"
-    assert row.activity_card._sub.text() == "No activity today"
+    assert row.activity_card._value.full_text() == "0%"
+    assert row.activity_card._sub.full_text() == "No activity today"
     assert row.activity_card._progress.isHidden()
 
 
@@ -140,6 +264,6 @@ def test_todays_activity_card_clamps_out_of_range_values(qapp):
     the screen as one."""
     row = StatCardsRow()
     row.set_today_activity(140)
-    assert row.activity_card._value.text() == "100%"
+    assert row.activity_card._value.full_text() == "100%"
     row.set_today_activity(-5)
-    assert row.activity_card._value.text() == "0%"
+    assert row.activity_card._value.full_text() == "0%"

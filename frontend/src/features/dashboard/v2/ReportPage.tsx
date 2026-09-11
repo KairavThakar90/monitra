@@ -12,6 +12,7 @@ import {
 } from "./filters";
 import type { DateRange } from "./filters";
 import { monthByKey } from "./mockData";
+import { buildDistribution, describeCoverage } from "./distribution";
 import { ExportDialog } from "./ExportDialog";
 import {
   useGetReactReportsSummaryQuery,
@@ -175,11 +176,17 @@ export const ReportPage: React.FC = () => {
       if (reportId === 'apps') { name = item.app_name || name; id = String(item.app_id || i); }
       if (reportId === 'urls') { name = item.url_name || name; id = String(item.url_id || i); }
       
+      // Exact seconds from the server, with `value` derived from them rather
+      // than from the 2dp hours. Rounded hours made a ring slice larger than
+      // the exact scope total it is divided by (one project rendered at
+      // 100.4%), and rounded a four-second visit down to 00:00:00 in the
+      // ranked list beside it while the ring showed its real share.
+      const seconds = item.total_seconds ?? Math.round((item.total_hours || 0) * 3600);
       return {
         id,
         name,
-        value: item.total_hours || 0,
-        seconds: (item.total_hours || 0) * 3600,
+        value: seconds / 3600,
+        seconds,
         // Null activity means nothing was sampled, which is not 0%.
         secondary: item.avg_activity ?? null,
       };
@@ -241,24 +248,28 @@ export const ReportPage: React.FC = () => {
   // Distribution: the five largest groups by tracked time, from the same
   // grouped response the ranked bars use, so the two can never disagree.
   const DONUT_COLORS = ["#F59E0B", "#3B82F6", "#8B5CF6", "#10B981", "#EF4444"];
-  const donutTotalSeconds = totalTrackedSeconds; // Total from the summary card!
 
-  const donutSlices = finalGrouped.slice(0, 5).map((item: any, index: number) => ({
-    label: item.name,
-    value: item.value,
-    seconds: item.seconds,
-    color: DONUT_COLORS[index % DONUT_COLORS.length],
-  }));
+  // The whole this chart's parts are parts *of* is the list response's own
+  // scope-wide total, never the summary strip's. See distribution.ts for the
+  // defect that distinction fixes.
+  const donutTotalSeconds = listData?.total_seconds ?? 0;
 
-  const top5Seconds = donutSlices.reduce((sum: number, s: any) => sum + s.seconds, 0);
-  if (finalGrouped.length > 5 && donutTotalSeconds > top5Seconds) {
-    donutSlices.push({
-      label: "Others",
-      value: (donutTotalSeconds - top5Seconds) / 3600,
-      seconds: donutTotalSeconds - top5Seconds,
-      color: "#94A3B8" // Gray for others
-    });
-  }
+  const donutSlices = buildDistribution({
+    rows: finalGrouped,
+    totalSeconds: donutTotalSeconds,
+    rowCount: listData?.total ?? finalGrouped.length,
+    dimensionLabel: groupNoun,
+    colors: DONUT_COLORS,
+  });
+
+  /**
+   * Apps and URLs are measured separately from the session, so the two totals
+   * can honestly differ. Saying so — with the real numbers — is the diagnostic
+   * that used to be hidden inside the "Others" arc. Projects and Tasks are the
+   * same measure as the summary, so there is nothing to reconcile there.
+   */
+  const isUsageDimension = reportId === "apps" || reportId === "urls";
+  const coverage = describeCoverage(donutTotalSeconds, totalTrackedSeconds);
 
   return (
     <V2Shell
@@ -501,9 +512,9 @@ export const ReportPage: React.FC = () => {
                       <li key={slice.label} className="flex min-w-0 items-start justify-between gap-3 text-[12px]">
                         <div className="flex min-w-0 flex-1 items-start gap-2">
                           <span className="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} />
-                          {/* "Others" is an aggregate of several apps, not an
-                              app -- there is no one mark that stands for it. */}
-                          {reportId === "apps" && slice.label !== "Others" && (
+                          {/* The remainder arc aggregates several apps, so no
+                              one mark stands for it. */}
+                          {reportId === "apps" && !slice.isRemainder && (
                             <AppIcon name={slice.label} size={18} />
                           )}
                           <span className="min-w-0 break-all font-bold leading-4 text-[#0F172A]">{slice.label}</span>
@@ -517,6 +528,25 @@ export const ReportPage: React.FC = () => {
                   </ul>
                 </div>
               </div>
+              {/* The honest reconciliation. Application and browser time is
+                  measured by the desktop client while it can see the
+                  foreground window; session time is the whole timer. Where
+                  they differ, say by how much and why, rather than drawing
+                  the difference as though it were an application. */}
+              {isUsageDimension && coverage.hasGap && (
+                <p className="mt-5 border-t border-[#E2E8F0] pt-4 text-[11px] leading-4 text-[#64748B]">
+                  {formatHMS(donutTotalSeconds)} of {reportId === "apps" ? "application" : "browser"}{" "}
+                  activity was recorded against {formatHMS(totalTrackedSeconds)} of tracked time
+                  {coverage.measuredShare !== null && <> ({coverage.measuredShare.toFixed(1)}%)</>}. The remaining{" "}
+                  {formatHMS(coverage.unmeasuredSeconds)} was tracked but not attributed to
+                  {reportId === "apps" ? " an application" : " a web address"} — the desktop client
+                  was not running, the machine reported no foreground window, or
+                  {reportId === "apps"
+                    ? " the operating system refused the process query"
+                    : " the browser exposed no address bar (Firefox without accessibility, and all of macOS and Linux)"}
+                  .
+                </p>
+              )}
             </section>
 
           </div>

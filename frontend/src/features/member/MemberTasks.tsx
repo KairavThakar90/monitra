@@ -181,7 +181,11 @@ export const MemberTasks: React.FC = () => {
   const [searchError, setSearchError] = useState<string | null>(null);
   const debouncedSearch = useDebouncedValue(search);
 
-  const { data: projects = [], isLoading, isFetching, isError } = useGetAllProjectsQuery();
+  // This screen is built out of the tasks themselves, so it is one of the two
+  // that asks for them; everywhere else the project list is fetched without.
+  const { data: projects = [], isLoading, isFetching, isError } = useGetAllProjectsQuery({
+    includeTasks: true,
+  });
   const { data: metadata } = useGetProjectMetadataQuery();
   const [updateTask, { isLoading: isUpdating }] = useUpdateTaskMutation();
 

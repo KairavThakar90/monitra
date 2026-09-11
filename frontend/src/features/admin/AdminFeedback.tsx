@@ -14,6 +14,7 @@ import { useGetAllFeedbackItemsQuery } from "../../store/api/feedbackApi";
 import type { FeedbackCategory } from "../../store/api/feedbackApi";
 import { useGetAllMembersQuery } from "../../store/api/membersApi";
 import { useAuth } from "../auth/authContext";
+import { canManageFeedback } from "../feedback/feedbackActions";
 import { isTeamScoped } from "../../utils/roles";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
 import { PaginationArrow } from "../../components/PaginationArrow";
@@ -33,8 +34,12 @@ import type { DateRange } from "../dashboard/v2/filters";
  * `getAllFeedbackItems` and paginates the filtered result itself -- filtering a
  * single server page would report "no matches" for a row sitting on page two.
  *
- * Strictly read-only: feedback has no approval, no status and no response, so
- * there is deliberately no row action anywhere on this screen.
+ * The row controls are live for an administrator and read-only for everybody
+ * else who can reach this screen. HR and Leader see the same list and the same
+ * states and press nothing: marking feedback Working or Resolved emails the
+ * employee who submitted it, and that is an administrator's act. The buttons
+ * being hidden is a courtesy; `PATCH /feedback/{id}/status` is what enforces
+ * it, and it refuses a non-administrator regardless of what this page renders.
  */
 
 const PAGE_SIZE = 15;
@@ -54,6 +59,13 @@ export const AdminFeedback: React.FC = () => {
    * when the tab can appear, and only ever *narrows* what is displayed -- what
    * the caller is allowed to read is still `GET /feedback`'s answer.
    */
+  /**
+   * Whether this reader may drive the workflow. Mirrors the backend's
+   * administrator set; a stale copy here can only hide a control, never
+   * authorise one.
+   */
+  const canManage = canManageFeedback(currentUser);
+
   const teamScoped = isTeamScoped(currentUser);
   const { data: members } = useGetAllMembersQuery(undefined, { skip: !teamScoped });
   const teamIds = useMemo(
@@ -124,7 +136,11 @@ export const AdminFeedback: React.FC = () => {
   return (
     <V2Shell
       title="Feedback"
-      subtitle="Feedback & Help messages submitted from the Monitra desktop app."
+      subtitle={
+        canManage
+          ? "Feedback & Help messages submitted from the Monitra desktop app. Marking one Working or Resolved emails the employee who submitted it."
+          : "Feedback & Help messages submitted from the Monitra desktop app. View only — status updates are made by an administrator."
+      }
       actions={<InlineRefreshIndicator active={isFetching && !isLoading} />}
     >
       <div className="w-full space-y-4 pb-20">
@@ -175,7 +191,7 @@ export const AdminFeedback: React.FC = () => {
               </Card>
             ) : (
               <div className={`transition-opacity ${isFetching ? "opacity-60" : ""}`}>
-                <FeedbackTable items={pageItems} showActions />
+                <FeedbackTable items={pageItems} showActions canManage={canManage} />
               </div>
             )}
 

@@ -13,6 +13,7 @@ import {
 } from "../dashboard/v2/filters";
 import type { DateRange } from "../dashboard/v2/filters";
 import { series } from "../dashboard/v2/theme";
+import { buildDistribution, describeCoverage } from "../dashboard/v2/distribution";
 import {
   useGetReactReportsSummaryQuery,
   useGetReactReportsListQuery,
@@ -133,11 +134,14 @@ export const MemberReports: React.FC = () => {
           name = item.url_name || name;
           id = String(item.url_id ?? index);
         }
+        // Exact seconds from the server, with `hours` derived from them --
+        // see the same block in ReportPage for what the rounded hours did.
+        const seconds = item.total_seconds ?? Math.round((item.total_hours || 0) * 3600);
         return {
           id,
           name,
-          hours: item.total_hours || 0,
-          seconds: Math.round((item.total_hours || 0) * 3600),
+          hours: seconds / 3600,
+          seconds,
           // Null means nothing was sampled, which is not 0% activity.
           activity: item.avg_activity ?? null,
         };
@@ -153,18 +157,23 @@ export const MemberReports: React.FC = () => {
   const totalSeconds = Math.round((summaryData?.total_hours || 0) * 3600);
   const avgActivity = summaryData?.avg_activity ?? null;
 
-  const donutSlices = useMemo(() => {
-    const named = rows.slice(0, 5).map((row, index) => ({
-      label: row.name,
-      value: row.hours,
-      color: DONUT_COLORS[index % DONUT_COLORS.length],
-    }));
-    const rest = (summaryData?.total_hours || 0) - named.reduce((sum, slice) => sum + slice.value, 0);
-    if (rows.length > 5 && rest > 0.01) {
-      named.push({ label: "Others", value: Math.round(rest * 100) / 100, color: "#94A3B8" });
-    }
-    return named;
-  }, [rows, summaryData]);
+  // The population this chart's slices are drawn from is the list response's
+  // own scope-wide total, never the summary strip's. See distribution.ts.
+  const distributionSeconds = listData?.total_seconds ?? 0;
+  const isUsageDimension = reportId === "apps" || reportId === "urls";
+  const coverage = describeCoverage(distributionSeconds, totalSeconds);
+
+  const donutSlices = useMemo(
+    () =>
+      buildDistribution({
+        rows,
+        totalSeconds: listData?.total_seconds ?? 0,
+        rowCount: listData?.total ?? rows.length,
+        dimensionLabel: (config?.dimensionLabel ?? "row").toLowerCase(),
+        colors: DONUT_COLORS,
+      }),
+    [rows, listData, config]
+  );
 
   if (!config) return <Navigate to="/member/reports/projects" replace />;
 
@@ -361,20 +370,35 @@ export const MemberReports: React.FC = () => {
                   size={190}
                   slices={donutSlices}
                   centerLabel="Total"
-                  centerValue={formatHMS(totalSeconds)}
+                  // The slices' own total, not the session total: a ring whose
+                  // centre disagrees with its arcs is the bug this page had.
+                  centerValue={formatHMS(distributionSeconds)}
                 />
                 <Legend
                   items={donutSlices.map((slice) => ({
                     label: slice.label,
                     color: slice.color,
                     value: formatHoursAsHMS(slice.value),
-                    // "Others" aggregates several apps; no one mark stands for it.
+                    // The remainder arc aggregates several apps; no one mark
+                    // stands for it.
                     icon:
-                      reportId === "apps" && slice.label !== "Others" ? (
+                      reportId === "apps" && !slice.isRemainder ? (
                         <AppIcon name={slice.label} size={16} />
                       ) : undefined,
                   }))}
                 />
+                {/* Where application/browser capture covers less of the day
+                    than the timer did, say so with the real numbers instead
+                    of drawing the difference as an application. */}
+                {isUsageDimension && coverage.hasGap && (
+                  <p className="max-w-md text-center text-[11px] leading-4 text-[#64748B]">
+                    {formatHMS(distributionSeconds)} of{" "}
+                    {reportId === "apps" ? "application" : "browser"} activity was recorded against{" "}
+                    {formatHMS(totalSeconds)} of your tracked time. The remaining{" "}
+                    {formatHMS(coverage.unmeasuredSeconds)} was tracked but not attributed to
+                    {reportId === "apps" ? " an application" : " a web address"}.
+                  </p>
+                )}
               </div>
             )}
           </Card>

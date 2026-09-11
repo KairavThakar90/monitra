@@ -2,6 +2,7 @@ import re
 from typing import List, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 
+from tracking.app_identity import canonical_domain, resolve_application
 from tracking.browsers.base import BaseBrowserAdapter, UrlSource
 from tracking.browsers.chrome import ChromeAdapter
 from tracking.browsers.edge import EdgeAdapter
@@ -47,7 +48,11 @@ def normalize_domain_and_url(
             if not parsed.scheme or not parsed.netloc:
                 parsed = urlparse(f"https://{clean_url}")
             
-            domain = parsed.hostname.lower() if parsed.hostname else ""
+            # `www.` is a routing prefix, not a different site. Left on, the
+            # same site arrived as two report rows -- www.bing.com and
+            # bing.com -- each holding half the time and each small enough
+            # to be pushed out of the top of the list.
+            domain = canonical_domain(parsed.hostname) or ""
             path = parsed.path
             if len(path) > 1 and path.endswith('/'):
                 path = path.rstrip('/')
@@ -71,8 +76,9 @@ def normalize_domain_and_url(
         # Look for explicit domain patterns in title e.g. "docs.python.org"
         domain_match = re.search(r'([a-zA-Z0-9-]+\.(?:com|org|net|io|dev|edu|gov|co|in|app|ai|info|me|ca|uk|us|de|fr))[^\w]*', title)
         if domain_match:
-            dom = domain_match.group(1).lower()
-            return dom, f"https://{dom}"
+            dom = canonical_domain(domain_match.group(1))
+            if dom:
+                return dom, f"https://{dom}"
 
         # Look for known site keywords in title e.g. "GitHub" -> "github.com".
         # The match is on whole words: a bare substring test made the
@@ -145,9 +151,18 @@ class BrowserManager:
         if not adapter:
             return None
 
-        browser_name, raw_url, page_title, url_source = adapter.extract_url_info(
+        _adapter_name, raw_url, page_title, url_source = adapter.extract_url_info(
             hwnd, window_title
         )
+        # The adapter knows how to *read* a Chromium omnibox; it does not
+        # know which Chromium browser this is. `ChromeAdapter` serves Chrome,
+        # Brave, Vivaldi and Opera, and reported all four as "Google Chrome"
+        # -- so a Brave user's browsing was filed under a browser they do not
+        # have, and disagreed with the application-usage row for the very
+        # same session, which said "brave". The identity comes from the one
+        # catalogue instead, so both tables name the same product.
+        identity = resolve_application(process_name=app_name)
+        browser_name = identity.name or _adapter_name
         domain, normalized_url = normalize_domain_and_url(raw_url, page_title or window_title)
 
         if domain is None:

@@ -4,17 +4,23 @@ import { BRAND_MARKS } from "./appIconData";
 /**
  * The icon for a tracked application.
  *
- * The desktop client sends a *process name* and nothing else --
- * `time_entry_app_usage.application_name` is "chrome", "Code", "WINWORD",
- * "explorer", "ShellExperienceHost". There is no icon data anywhere in the
- * system: the desktop extracts real window icons for its own Activity view
- * (`desktop/ui/icon_manager.py`) but never uploads them, so the web client
- * cannot show the machine's actual icon for an app.
+ * `time_entry_app_usage.application_name` is now the application's canonical
+ * name -- "Google Chrome", "Visual Studio Code", "Microsoft Teams" -- resolved
+ * by `desktop/tracking/app_identity.py` and again by the backend on ingest.
+ * Rows written before that release still carry the raw executable stem
+ * ("chrome", "Code", "WINWORD"), and an application outside the catalogue
+ * keeps its stem on purpose, so both spellings reach this file and both are
+ * recognised.
  *
- * What it can do is recognise the name. A process this file knows is drawn
- * with its own brand mark in its own colour; anything else gets a neutral
- * monogram tile. The fallback is deliberately *not* a guessed logo -- an
- * unrecognised in-house tool must not be handed some other company's mark.
+ * There is no icon data anywhere in the system: the desktop extracts real
+ * window icons for its own Activity view (`desktop/ui/icon_manager.py`) but
+ * never uploads them, so the web client cannot show the machine's actual icon
+ * for an app.
+ *
+ * What it can do is recognise the name. An application this file knows is
+ * drawn with its own brand mark in its own colour; anything else gets a
+ * neutral monogram tile. The fallback is deliberately *not* a guessed logo --
+ * an unrecognised in-house tool must not be handed some other company's mark.
  */
 
 /* ------------------------------------------------------------------ */
@@ -60,6 +66,14 @@ const HOUSE_MARKS: Record<string, HouseMark> = {
     title: "Windows",
     path: "M3 5.8 10.6 4.7v6.6H3V5.8Zm8.9-1.3L21 3.2v8.1h-9.1V4.5ZM3 12.7h7.6v6.6L3 18.2v-5.5Zm8.9 0H21v8.1l-9.1-1.3v-6.8Z",
   },
+  /**
+   * Monitra itself. The desktop client runs as a bare Python process in
+   * development and as `Monitra.exe` once packaged, and both used to be
+   * reported as an application called "python" — drawn, wrongly, with
+   * Python's own logo. It is this product, so it gets this product's mark in
+   * this product's colour rather than borrowing a language's.
+   */
+  monitra: { hex: "#3B82F6", title: "Monitra", letter: "M" },
   terminal: {
     hex: "#1F2937",
     title: "Terminal",
@@ -194,6 +208,38 @@ const ALIASES: Record<string, string> = {
   // Media
   spotify: "spotify",
   vlc: "vlcmediaplayer",
+
+  /* ---------------------------------------------------------------- */
+  /* Canonical application names                                       */
+  /* ---------------------------------------------------------------- */
+  /**
+   * Since the release that gave every activity record one canonical identity,
+   * `application_name` is the product's real name rather than the executable
+   * stem — "Visual Studio Code", not "Code". Most canonical names already
+   * normalise onto a key above ("Google Chrome" -> `googlechrome`,
+   * "Microsoft Teams" -> `microsoftteams`); the ones below do not, and without
+   * them an application that used to show its own mark would silently drop to
+   * a monogram tile. `__tests__/appIcon.test.ts` fails if any alias this file
+   * recognises has a canonical name it does not.
+   *
+   * An application with no mark at all — Safari, Canva, an in-house tool —
+   * still gets the neutral monogram, deliberately. The fallback has never been
+   * a guessed logo.
+   */
+  jetbrainspycharm: "pycharm",
+  jetbrainsintellijidea: "intellijidea",
+  microsoftpowerpoint: "powerpoint",
+  microsoftonenote: "onenote",
+  commandprompt: "terminal",
+  // The OS shell, reported under the names Windows itself uses for these.
+  windowsshell: "windows",
+  windowssearch: "windows",
+  windowsstartmenu: "windows",
+  windowssettings: "windows",
+  windowslockscreen: "windows",
+  windowstaskmanager: "windows",
+  windowssecurity: "windows",
+  monitra: "monitra",
 };
 
 /**

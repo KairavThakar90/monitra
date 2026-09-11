@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from app.models.manual_time_entry import ManualTimeEntry
 from app.models.project import Project
-from app.models.project_status import ProjectStatus
 from app.models.task import Task
 from app.models.time_entry import TimeEntry
 from app.models.time_entry_activity import TimeEntryActivity
@@ -15,6 +14,7 @@ from app.models.time_entry_adjustment import TimeEntryAdjustment
 from app.models.time_entry_app_usage import TimeEntryAppUsage
 from app.models.time_entry_url_usage import TimeEntryUrlUsage
 from app.models.user import User
+from app.repositories.status_catalog import StatusCatalog, StatusRow
 from app.repositories.time_tracking import TimeTrackingRepository
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
@@ -74,15 +74,24 @@ class ReportsRepository:
         # As in `eligible_projects`: None means every project, [] means none.
         if project_ids is not None:
             filters.append(Project.id.in_(project_ids))
-        total = db.scalar(select(func.count(Project.id)).where(*filters)) or 0
-        projects = list(
-            db.scalars(
-                select(Project).where(*filters)
-                .order_by(Project.created_at.desc(), Project.id.desc())
-                .offset((page - 1) * limit).limit(limit)
-            ).all()
-        )
-        return projects, int(total)
+        # Page and total in one statement -- see ProjectManagementService.list
+        # for why the separate COUNT(*) was worth removing.
+        rows = db.execute(
+            select(Project, func.count().over().label("total"))
+            .where(*filters)
+            .order_by(Project.created_at.desc(), Project.id.desc())
+            .offset((page - 1) * limit).limit(limit)
+        ).all()
+        projects = [row[0] for row in rows]
+        if rows:
+            total = int(rows[0].total)
+        elif page > 1:
+            # Only a page past the end has to ask separately; reporting 0 would
+            # tell a client on page 5 of 3 that there is nothing to go back to.
+            total = int(db.scalar(select(func.count(Project.id)).where(*filters)) or 0)
+        else:
+            total = 0
+        return projects, total
 
     @staticmethod
     def active_tasks_by_project(db: Session, organization_id: int, project_ids: list[int]) -> dict[int, list[Task]]:
@@ -106,11 +115,16 @@ class ReportsRepository:
         return dict(by_project)
 
     @staticmethod
-    def project_statuses_lookup(db: Session, status_ids: set[int]) -> dict[int, ProjectStatus]:
+    def project_statuses_lookup(db: Session, status_ids: set[int]) -> dict[int, StatusRow]:
+        """The statuses behind a page of projects.
+
+        Served from the cached reference table rather than re-queried per
+        request; `status_ids` is kept in the signature because callers still
+        pass the ids they need, and an empty set still costs nothing.
+        """
         if not status_ids:
             return {}
-        rows = db.scalars(select(ProjectStatus).where(ProjectStatus.id.in_(status_ids))).all()
-        return {item.id: item for item in rows}
+        return StatusCatalog.project_statuses(db)
 
     @staticmethod
     def _activity_avg_subquery():

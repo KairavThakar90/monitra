@@ -1,6 +1,8 @@
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from datetime import datetime
 from typing import Optional, List
+
+from app.core.activity_identity import canonical_application_name
 
 #: Captured window titles are bounded but not content-checked. See
 #: ``AppUsageCreate.window_title``.
@@ -26,6 +28,31 @@ class AppUsageCreate(BaseModel):
     window_title: Optional[str] = Field(None, max_length=WINDOW_TITLE_MAX_LENGTH)
     duration_seconds: int = Field(..., ge=1)
     recorded_at: Optional[datetime] = None
+
+    @field_validator("application_name", mode="after")
+    @classmethod
+    def _canonicalize(cls, value: str) -> str:
+        """Store the application under its one canonical name.
+
+        An up-to-date desktop already sends the canonical name and this is a
+        no-op for it (`canonical_application_name` is idempotent). It matters
+        for the clients that do not: an older desktop still sends the raw
+        executable stem, and without this pass ``chrome`` and ``Google
+        Chrome`` would accumulate as two separate applications in every
+        report, each holding part of the same person's browsing.
+
+        An application the catalogue does not know keeps its own identifier
+        exactly as sent, so nothing is ever renamed into a catch-all bucket
+        and an unrecognised program stays diagnosable. The only rejection is
+        a name with no identifier in it at all -- ``min_length=1`` above
+        already refuses the empty string, and this refuses one that is
+        nothing but whitespace or path separators rather than storing a
+        blank application.
+        """
+        canonical = canonical_application_name(value)
+        if not canonical:
+            raise ValueError("application_name must identify an application")
+        return canonical
 
 
 class AppUsageBatchCreate(BaseModel):

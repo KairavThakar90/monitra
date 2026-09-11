@@ -46,14 +46,14 @@ def _entries():
 def test_total_card_reads_the_days_banked_seconds(dashboard):
     dashboard._today_time_entries = _entries()
     dashboard._update_stat_cards()
-    assert dashboard._stat_cards.total_card._value.text() == "01:30:00"
+    assert dashboard._stat_cards.total_card._value.full_text() == "01:30:00"
 
 
 def test_todays_activity_is_zero_until_something_is_measured(dashboard):
     dashboard._today_time_entries = []
     dashboard._update_stat_cards()
-    assert dashboard._stat_cards.activity_card._value.text() == "0%"
-    assert dashboard._stat_cards.activity_card._sub.text() == "No activity today"
+    assert dashboard._stat_cards.activity_card._value.full_text() == "0%"
+    assert dashboard._stat_cards.activity_card._sub.full_text() == "No activity today"
 
 
 def test_todays_activity_is_weighted_by_duration_not_averaged(dashboard, monkeypatch):
@@ -68,7 +68,7 @@ def test_todays_activity_is_weighted_by_duration_not_averaged(dashboard, monkeyp
         remote_ok=True,
     )
     dashboard._update_stat_cards()
-    assert dashboard._stat_cards.activity_card._value.text() == "30%"
+    assert dashboard._stat_cards.activity_card._value.full_text() == "30%"
 
 
 def test_todays_activity_adds_the_window_still_being_sampled(dashboard, monkeypatch):
@@ -85,7 +85,7 @@ def test_todays_activity_adds_the_window_still_being_sampled(dashboard, monkeypa
         lambda: ActivityTotals(weighted=100 * 600, measured=600),
     )
     dashboard._update_stat_cards()
-    assert dashboard._stat_cards.activity_card._value.text() == "60%"
+    assert dashboard._stat_cards.activity_card._value.full_text() == "60%"
 
 
 def test_a_snapshot_from_a_previous_day_is_not_shown_as_today(dashboard, monkeypatch):
@@ -97,7 +97,7 @@ def test_a_snapshot_from_a_previous_day_is_not_shown_as_today(dashboard, monkeyp
     )
     dashboard._activity_day = ist_today() - timedelta(days=1)
     dashboard._update_stat_cards()
-    assert dashboard._stat_cards.activity_card._value.text() == "0%"
+    assert dashboard._stat_cards.activity_card._value.full_text() == "0%"
 
 
 def test_a_stale_activity_reply_cannot_overwrite_a_newer_one(dashboard):
@@ -138,7 +138,7 @@ def test_tasks_completed_counts_the_projects_own_statuses(dashboard):
     ]
     dashboard._update_stat_cards()
 
-    assert dashboard._stat_cards.tasks_card._value.text() == "2 / 4"
+    assert dashboard._stat_cards.tasks_card._value.full_text() == "2 / 4"
     assert dashboard._stat_cards.tasks_card._progress.value() == 50
 
 
@@ -146,7 +146,7 @@ def test_tasks_card_without_a_project_says_so(dashboard):
     dashboard._current_project = None
     dashboard._project_tasks = []
     dashboard._update_stat_cards()
-    assert dashboard._stat_cards.tasks_card._value.text() == "—"
+    assert dashboard._stat_cards.tasks_card._value.full_text() == "—"
 
 
 def test_a_past_date_never_shows_a_running_session(dashboard, monkeypatch):
@@ -159,8 +159,8 @@ def test_a_past_date_never_shows_a_running_session(dashboard, monkeypatch):
     dashboard._current_date = ist_today() - timedelta(days=1)
     dashboard._update_stat_cards()
 
-    assert dashboard._stat_cards.total_card._value.text() == "01:30:00"
-    assert dashboard._stat_cards.total_card._sub.text() == "Not tracking"
+    assert dashboard._stat_cards.total_card._value.full_text() == "01:30:00"
+    assert dashboard._stat_cards.total_card._sub.full_text() == "Not tracking"
 
 
 def test_todays_running_session_is_included(dashboard, monkeypatch):
@@ -175,9 +175,9 @@ def test_todays_running_session_is_included(dashboard, monkeypatch):
     dashboard._current_date = ist_today()
     dashboard._update_stat_cards()
 
-    assert dashboard._stat_cards.total_card._value.text() == "01:40:00"
-    assert dashboard._stat_cards.total_card._sub.text() == "Tracking now"
-    assert dashboard._stat_cards.active_card._value.text() == "Write the report"
+    assert dashboard._stat_cards.total_card._value.full_text() == "01:40:00"
+    assert dashboard._stat_cards.total_card._sub.full_text() == "Tracking now"
+    assert dashboard._stat_cards.active_card._value.full_text() == "Write the report"
 
 
 def test_signing_out_clears_the_cards(dashboard):
@@ -185,5 +185,5 @@ def test_signing_out_clears_the_cards(dashboard):
     dashboard._update_stat_cards()
     dashboard.reset_state()
 
-    assert dashboard._stat_cards.activity_card._sub.text() == "No activity today"
-    assert dashboard._stat_cards.tasks_card._value.text() == "—"
+    assert dashboard._stat_cards.activity_card._sub.full_text() == "No activity today"
+    assert dashboard._stat_cards.tasks_card._value.full_text() == "—"

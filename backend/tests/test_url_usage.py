@@ -58,7 +58,7 @@ class TestURLUsageService(unittest.TestCase):
         with self.assertRaises(ValidationError):
             URLUsageCreate(
                 time_entry_id=100,
-                browser_name="Chrome",
+                browser_name="Google Chrome",
                 domain="github.com",
                 duration_seconds=-5
             )
@@ -77,7 +77,7 @@ class TestURLUsageService(unittest.TestCase):
     @patch("app.repositories.time_entry.TimeEntryRepository.get_by_id")
     def test_4_reject_non_existent_time_entry(self, mock_get_by_id):
         mock_get_by_id.return_value = None
-        payload = URLUsageCreate(time_entry_id=999, browser_name="Chrome", domain="github.com", duration_seconds=10)
+        payload = URLUsageCreate(time_entry_id=999, browser_name="Google Chrome", domain="github.com", duration_seconds=10)
 
         with self.assertRaises(HTTPException) as ctx:
             URLUsageService.record_usage(self.db, payload, self.current_user)
@@ -88,7 +88,7 @@ class TestURLUsageService(unittest.TestCase):
     def test_5_reject_cross_org_time_entry(self, mock_get_by_id):
         other_org_entry = TimeEntry(id=100, organization_id=99, user_id=1, status="running")
         mock_get_by_id.return_value = other_org_entry
-        payload = URLUsageCreate(time_entry_id=100, browser_name="Chrome", domain="github.com", duration_seconds=10)
+        payload = URLUsageCreate(time_entry_id=100, browser_name="Google Chrome", domain="github.com", duration_seconds=10)
 
         with self.assertRaises(HTTPException) as ctx:
             URLUsageService.record_usage(self.db, payload, self.current_user)
@@ -99,7 +99,7 @@ class TestURLUsageService(unittest.TestCase):
     def test_6_reject_unauthorized_user_submit(self, mock_get_by_id):
         other_user_entry = TimeEntry(id=100, organization_id=10, user_id=99, status="running")
         mock_get_by_id.return_value = other_user_entry
-        payload = URLUsageCreate(time_entry_id=100, browser_name="Chrome", domain="github.com", duration_seconds=10)
+        payload = URLUsageCreate(time_entry_id=100, browser_name="Google Chrome", domain="github.com", duration_seconds=10)
 
         with self.assertRaises(HTTPException) as ctx:
             URLUsageService.record_usage(self.db, payload, self.current_user)
@@ -116,8 +116,8 @@ class TestURLUsageService(unittest.TestCase):
         mock_latest.return_value = None
 
         payload = URLUsageBatchCreate(records=[
-            URLUsageCreate(time_entry_id=100, browser_name="Chrome", domain="github.com", duration_seconds=10),
-            URLUsageCreate(time_entry_id=100, browser_name="Chrome", domain="stackoverflow.com", duration_seconds=20)
+            URLUsageCreate(time_entry_id=100, browser_name="Google Chrome", domain="github.com", duration_seconds=10),
+            URLUsageCreate(time_entry_id=100, browser_name="Google Chrome", domain="stackoverflow.com", duration_seconds=20)
         ])
 
         accepted, failed = URLUsageService.batch_record_usage(self.db, payload, self.current_user)
@@ -135,7 +135,7 @@ class TestURLUsageService(unittest.TestCase):
         mock_get_client_id.return_value = existing_record
 
         payload = URLUsageCreate(
-            time_entry_id=100, browser_name="Chrome", domain="github.com",
+            time_entry_id=100, browser_name="Google Chrome", domain="github.com",
             duration_seconds=15, client_event_id="uuid-123"
         )
 
@@ -155,14 +155,14 @@ class TestURLUsageService(unittest.TestCase):
         now = datetime.now(timezone.utc)
         latest_record = TimeEntryUrlUsage(
             id=10, organization_id=10, time_entry_id=100,
-            browser_name="Chrome", domain="github.com", url="https://github.com/project",
+            browser_name="Google Chrome", domain="github.com", url="https://github.com/project",
             duration_seconds=10, recorded_at=now - timedelta(seconds=10)
         )
         mock_latest.return_value = latest_record
         mock_update.return_value = latest_record
 
         payload = URLUsageCreate(
-            time_entry_id=100, browser_name="Chrome", domain="github.com",
+            time_entry_id=100, browser_name="Google Chrome", domain="github.com",
             url="https://github.com/project", duration_seconds=5, recorded_at=now
         )
 
@@ -186,13 +186,13 @@ class TestURLUsageService(unittest.TestCase):
         now = datetime.now(timezone.utc)
         latest_record = TimeEntryUrlUsage(
             id=10, organization_id=10, time_entry_id=100,
-            browser_name="Chrome", domain="github.com", url="https://github.com/project",
+            browser_name="Google Chrome", domain="github.com", url="https://github.com/project",
             duration_seconds=10, recorded_at=now - timedelta(seconds=10)
         )
         mock_latest.return_value = latest_record
 
         payload = URLUsageCreate(
-            time_entry_id=100, browser_name="Chrome", domain="youtube.com",
+            time_entry_id=100, browser_name="Google Chrome", domain="youtube.com",
             url="https://youtube.com/watch", duration_seconds=15, recorded_at=now
         )
 
@@ -204,7 +204,7 @@ class TestURLUsageService(unittest.TestCase):
     @patch("app.repositories.url_usage_repository.URLUsageRepository.list_by_filters")
     def test_12_13_get_url_usage_pagination(self, mock_list, mock_get_by_id):
         mock_get_by_id.return_value = self.active_time_entry
-        mock_list.return_value = ([TimeEntryUrlUsage(id=1, organization_id=10, time_entry_id=100, browser_name="Chrome", domain="github.com", duration_seconds=10)], 1)
+        mock_list.return_value = ([TimeEntryUrlUsage(id=1, organization_id=10, time_entry_id=100, browser_name="Google Chrome", domain="github.com", duration_seconds=10)], 1)
 
         items, total = URLUsageService.list_usage_for_entry(
             self.db, 100, domain=None, browser_name=None,
