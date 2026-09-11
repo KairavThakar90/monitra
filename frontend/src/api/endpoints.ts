@@ -27,6 +27,8 @@ export const ENDPOINTS = {
   AUTH: {
     LOGIN: `${API_BASE_URL}/auth/login`,
     SSO_TOKEN: `${API_BASE_URL}/auth/sso/token`,
+    REFRESH: `${API_BASE_URL}/auth/refresh`,
+    LOGOUT: `${API_BASE_URL}/auth/logout`,
     ME: `${API_BASE_URL}/auth/me`,
   },
   MEMBERS: {

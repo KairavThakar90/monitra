@@ -1,5 +1,8 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
+import type { FetchArgs, FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import { createAction } from '@reduxjs/toolkit';
+import { refreshSessionAPI } from '../../api/auth';
+import { clearSessionStorage, ensureSessionExpiry, storeSessionTokens } from '../../auth/session';
 
 /**
  * Dispatched once at start-up with the cache we persisted during the previous
@@ -16,6 +19,47 @@ export const rehydrateApiCache = createAction<Record<string, unknown> | undefine
  * A single cache also means a tag invalidated by one domain is seen by all the
  * others — updating a project can refresh the Teams screens.
  */
+const rawBaseQuery = fetchBaseQuery({
+  baseUrl: '',
+  prepareHeaders: (headers) => {
+    const token = localStorage.getItem('accessToken');
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    return headers;
+  },
+});
+
+let refreshPromise: Promise<import('../../api/auth').TokenPair> | null = null;
+
+const baseQueryWithRefresh = async (args: string | FetchArgs, api: any, extraOptions: any) => {
+  const expiresAt = ensureSessionExpiry();
+  if (expiresAt !== null && expiresAt <= Date.now()) {
+    clearSessionStorage();
+    window.dispatchEvent(new Event('auth:session-expired'));
+    return { error: { status: 401, data: 'Session expired' } as FetchBaseQueryError };
+  }
+
+  let result = await rawBaseQuery(args, api, extraOptions);
+  if (result.error?.status !== 401) return result;
+
+  const refreshToken = localStorage.getItem('refreshToken');
+  if (!refreshToken) return result;
+
+  refreshPromise ??= refreshSessionAPI(refreshToken).finally(() => {
+    refreshPromise = null;
+  });
+
+  try {
+    const session = await refreshPromise;
+    storeSessionTokens(session, true);
+    result = await rawBaseQuery(args, api, extraOptions);
+  } catch {
+    clearSessionStorage();
+    window.dispatchEvent(new Event('auth:session-expired'));
+  }
+
+  return result;
+};
+
 export const baseApi = createApi({
   reducerPath: 'api',
   // Keep an unused endpoint's data for 10 minutes so moving between pages and
@@ -25,15 +69,7 @@ export const baseApi = createApi({
   // revalidated in the background while the stale rows stay on screen.
   refetchOnMountOrArgChange: 60,
   refetchOnReconnect: true,
-  baseQuery: fetchBaseQuery({
-    // Endpoints supply absolute URLs from src/api/endpoints.ts.
-    baseUrl: '',
-    prepareHeaders: (headers) => {
-      const token = localStorage.getItem('accessToken');
-      if (token) headers.set('Authorization', `Bearer ${token}`);
-      return headers;
-    },
-  }),
+  baseQuery: baseQueryWithRefresh,
   extractRehydrationInfo(action, { reducerPath }) {
     if (rehydrateApiCache.match(action)) {
       return action.payload?.[reducerPath] as any;

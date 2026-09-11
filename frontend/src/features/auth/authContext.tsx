@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import type { ReactNode } from "react";
-import { loginAPI, getMeAPI, ssoLoginAPI } from "../../api/auth";
+import { loginAPI, getMeAPI, logoutAPI, refreshSessionAPI, ssoLoginAPI } from "../../api/auth";
+import { clearSessionStorage, ensureSessionExpiry, getSessionExpiresAt, storeSessionTokens } from "../../auth/session";
 import { store } from "../../store";
 import { baseApi } from "../../store/api/baseApi";
 import { clearPersistedApiCache } from "../../store/persist";
@@ -101,8 +102,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [ssoToken] = useState<string | null>(consumeSsoToken);
 
   const applySession = (response: { access_token: string; refresh_token: string; user: UserRead }) => {
-    localStorage.setItem("accessToken", response.access_token);
-    localStorage.setItem("refreshToken", response.refresh_token);
+    storeSessionTokens(response);
     // A previous account's cache must never leak into this session.
     store.dispatch(baseApi.util.resetApiState());
     clearPersistedApiCache();
@@ -115,6 +115,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   // Restore authentication from localStorage on application mount
   useEffect(() => {
+    const handleSessionExpired = () => {
+      setAccessToken(null);
+      setRefreshToken(null);
+      setCurrentUser(null);
+      setIsLoading(false);
+      writeCachedProfile(null);
+      clearPersistedApiCache();
+      store.dispatch(baseApi.util.resetApiState());
+    };
+
+    window.addEventListener("auth:session-expired", handleSessionExpired);
+
     const restoreAuth = async () => {
       // A portal handoff wins over whatever session is already stored: the link
       // says who is arriving, and it may not be the account cached in this
@@ -137,19 +149,33 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const storedRefresh = localStorage.getItem("refreshToken");
 
       if (storedAccess && storedRefresh) {
+        ensureSessionExpiry();
         try {
+          const sessionExpiresAt = getSessionExpiresAt();
+          if (sessionExpiresAt !== null && sessionExpiresAt <= Date.now()) {
+            throw new Error("Session expired");
+          }
+
           // Verify the token and pick up any profile change. When we already
           // restored from cache this runs behind the rendered UI; otherwise the
           // app waits on it exactly as before.
-          const user = await getMeAPI(storedAccess);
-          setAccessToken(storedAccess);
-          setRefreshToken(storedRefresh);
-          setCurrentUser(user);
-          writeCachedProfile(user);
+          try {
+            const user = await getMeAPI(storedAccess);
+            setAccessToken(storedAccess);
+            setRefreshToken(storedRefresh);
+            setCurrentUser(user);
+            writeCachedProfile(user);
+          } catch {
+            const refreshed = await refreshSessionAPI(storedRefresh);
+            storeSessionTokens(refreshed, true);
+            setAccessToken(refreshed.access_token);
+            setRefreshToken(refreshed.refresh_token);
+            setCurrentUser(refreshed.user);
+            writeCachedProfile(refreshed.user);
+          }
         } catch (err) {
           console.error("Failed to restore session, clearing invalid tokens:", err);
-          localStorage.removeItem("accessToken");
-          localStorage.removeItem("refreshToken");
+          clearSessionStorage();
           writeCachedProfile(null);
           clearPersistedApiCache();
           store.dispatch(baseApi.util.resetApiState());
@@ -164,6 +190,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
 
     restoreAuth();
+    return () => window.removeEventListener("auth:session-expired", handleSessionExpired);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -173,8 +200,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const logout = () => {
-    localStorage.removeItem("accessToken");
-    localStorage.removeItem("refreshToken");
+    const storedRefresh = localStorage.getItem("refreshToken");
+    void logoutAPI(storedRefresh).catch(() => undefined);
+    clearSessionStorage();
     // Cached responses belong to the account that fetched them - drop both the
     // in-memory cache and the copy on disk so the next sign-in starts clean.
     store.dispatch(baseApi.util.resetApiState());

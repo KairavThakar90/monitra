@@ -10,6 +10,8 @@ export interface TokenPair {
   refresh_token: string;
   token_type: string;
   user: UserRead;
+  session_created_at?: string;
+  session_expires_at?: string;
 }
 
 /** What the portal returns when credentials are accepted. */
@@ -122,6 +124,29 @@ export async function ssoLoginAPI(
   }
 
   return response.json();
+}
+
+export async function refreshSessionAPI(refreshToken: string): Promise<TokenPair> {
+  const response = await fetch(ENDPOINTS.AUTH.REFRESH, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Session expired");
+  }
+
+  return response.json();
+}
+
+export async function logoutAPI(refreshToken: string | null): Promise<void> {
+  if (!refreshToken) return;
+  await fetch(ENDPOINTS.AUTH.LOGOUT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
 }
 
 export interface UserRead {
