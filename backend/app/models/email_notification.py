@@ -49,6 +49,11 @@ STATUS_CANCELLED = "cancelled"
 #: the uniqueness key, so renaming one would let a second email through.
 TYPE_WELCOME = "welcome"
 TYPE_FEEDBACK = "feedback"
+#: "A new version of Monitra is available", announced once per user per
+#: version. Keyed on the *version*, never on the release row: one version is
+#: several rows (Windows, macOS arm64, macOS x86_64…) and publishing the second
+#: artifact must not send a second announcement.
+TYPE_RELEASE = "release"
 
 
 class EmailNotification(Base):

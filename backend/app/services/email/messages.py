@@ -55,6 +55,11 @@ MESSAGE_PREVIEW_LENGTH = 50
 #: `FeedbackAdminRoute` guards — which is exactly who this notification goes to.
 FEEDBACK_DASHBOARD_PATH = "/admin/feedback"
 
+#: Where the release announcement's "Download the update" button points. The
+#: web download page, not a direct artifact URL: the page picks the right build
+#: for the visitor's platform, and one version is several artifacts.
+DOWNLOAD_PAGE_PATH = "/download"
+
 #: What the welcome email says Monitra does. Four, because the feature list is
 #: an orientation and not a manual.
 WELCOME_FEATURES = (
@@ -464,10 +469,180 @@ def _reply_to(payload: dict[str, Any]) -> Optional[str]:
     return (settings.EMAIL_REPLY_TO or "").strip() or None
 
 
+# ----------------------------------------------------------------------
+# Workflow 3 — new desktop version available
+# ----------------------------------------------------------------------
+
+def release_subject(payload: dict[str, Any]) -> str:
+    version = str(payload.get("version") or "").strip()
+    return clean_subject(
+        f"Monitra {version} is available — what's new" if version
+        else "A new version of Monitra is available"
+    )
+
+
+def download_page_url() -> Optional[str]:
+    """The web download page, or None when no web address is configured."""
+    base = (settings.MONITRA_APP_URL or "").strip().rstrip("/")
+    if not base.startswith("https://"):
+        return None
+    return f"{base}{DOWNLOAD_PAGE_PATH}"
+
+
+def render_release_notes(notes: str) -> Markup:
+    """Whatever the release author wrote, as readable HTML.
+
+    A light structural read of plain text, and nothing more:
+
+    * a line ending in ``:`` with nothing after it is a heading, which is how
+      "New features:" and "Bug fixes:" become sections;
+    * a line starting ``-``, ``*`` or ``•`` is a bullet;
+    * anything else is a paragraph.
+
+    It does **not** invent sections, classify anything as a feature or a fix,
+    or summarise. What the release names is what the email says: a notification
+    claiming a bug was fixed when the notes never said so is fabricated
+    release information, and people make upgrade decisions on it.
+
+    Every line is escaped before any tag is added, so release notes are text
+    even though an administrator wrote them.
+    """
+    lines = [line.rstrip() for line in (notes or "").splitlines()]
+    blocks: list[Markup] = []
+    bullets: list[Markup] = []
+
+    def flush() -> None:
+        if bullets:
+            blocks.append(
+                Markup('<ul style="margin:0 0 16px 0;padding-left:20px;">{}</ul>')
+                .format(Markup("").join(bullets))
+            )
+            bullets.clear()
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            flush()
+            continue
+        if stripped.endswith(":") and len(stripped) <= 60:
+            flush()
+            blocks.append(
+                Markup(
+                    '<p style="margin:0 0 8px 0;font-family:Helvetica,Arial,sans-serif;'
+                    'font-size:12px;font-weight:700;letter-spacing:0.08em;'
+                    'text-transform:uppercase;color:#9AA3AF;">{}</p>'
+                ).format(stripped.rstrip(":"))
+            )
+            continue
+        if stripped[0] in "-*•":
+            bullets.append(
+                Markup(
+                    '<li style="margin:0 0 7px 0;font-family:Helvetica,Arial,sans-serif;'
+                    'font-size:15px;line-height:24px;color:#374151;">{}</li>'
+                ).format(stripped[1:].strip())
+            )
+            continue
+        flush()
+        blocks.append(
+            Markup(
+                '<p style="margin:0 0 14px 0;font-family:Helvetica,Arial,sans-serif;'
+                'font-size:15px;line-height:25px;color:#374151;">{}</p>'
+            ).format(stripped)
+        )
+
+    flush()
+    return Markup("").join(blocks)
+
+
+def build_release_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    """The "a new version is available" announcement, for one user."""
+    version = str(payload.get("version") or "").strip()
+    subject = release_subject(payload)
+    notes = str(payload.get("release_notes") or "").strip()
+    notes_url = str(payload.get("release_notes_url") or "").strip()
+
+    frame = _frame_context(
+        subject=subject,
+        preheader=(
+            f"Monitra {version} is ready to install." if version
+            else "A new version of Monitra is ready to install."
+        ),
+        footer_note=(
+            "You are receiving this because you use Monitra. It is sent once "
+            "per release."
+        ),
+    )
+
+    download_url = download_page_url()
+    cta_block = Markup("")
+    if download_url:
+        cta_block = Markup(
+            '<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+            'class="st-cta" style="margin:4px 0 0 0;">'
+            '<tr><td align="center" style="background-color:#2563EB;border-radius:8px;">'
+            '<a href="{url}" style="display:inline-block;padding:13px 30px;'
+            'font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;'
+            'color:#FFFFFF;text-decoration:none;">Download the update</a>'
+            '</td></tr></table>'
+        ).format(url=download_url)
+
+    notes_link = Markup("")
+    if notes_url.startswith("https://"):
+        notes_link = Markup(
+            '<p style="margin:16px 0 0 0;font-family:Helvetica,Arial,sans-serif;'
+            'font-size:14px;line-height:22px;">'
+            '<a href="{url}" style="color:#2563EB;text-decoration:none;">'
+            'Read the full release notes</a></p>'
+        ).format(url=notes_url)
+
+    # No notes is an honest empty state, not an invented changelog. The email
+    # still tells the user a new version exists and where to get it.
+    notes_html = render_release_notes(notes) if notes else Markup(
+        '<p style="margin:0 0 14px 0;font-family:Helvetica,Arial,sans-serif;'
+        'font-size:15px;line-height:25px;color:#6B7280;">'
+        'Release notes for this version have not been published yet.</p>'
+    )
+
+    html = render_page(
+        "release.html",
+        {
+            **frame,
+            "version_heading": f"Monitra {version}" if version else "A new version of Monitra",
+            "notes_html": notes_html,
+            "notes_link": notes_link,
+            "cta_block": cta_block,
+        },
+    )
+
+    text_lines = [
+        f"MONITRA {version} IS AVAILABLE" if version else "A NEW VERSION OF MONITRA IS AVAILABLE",
+        "",
+        "What's changed",
+        "-" * 48,
+        notes or "Release notes for this version have not been published yet.",
+        "-" * 48,
+    ]
+    if download_url:
+        text_lines += ["", f"Download the update: {download_url}"]
+    if notes_url.startswith("https://"):
+        text_lines += [f"Full release notes: {notes_url}"]
+    text_lines += ["", "Monitra — Staff Management System", "Store Transform"]
+
+    return OutgoingEmail(
+        to=recipients,
+        subject=subject,
+        html=html,
+        text="\n".join(text_lines),
+        reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
+        inline_images=frame["_inline_images"],
+    )
+
+
 #: Maps a notification type to the builder that renders it. The outbox is
 #: type-agnostic: adding a third email is a builder, an entry here and a
 #: `dedupe_key`, with nothing in the delivery machinery changing.
 BUILDERS = {
     "welcome": build_welcome_email,
     "feedback": build_feedback_email,
+    "release": build_release_email,
 }

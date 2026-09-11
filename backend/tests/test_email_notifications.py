@@ -34,7 +34,8 @@ from app.services.email.provider import (
 )
 from app.services.email.templates import detail_rows, paragraphs, render
 from app.services.email.workflows import (
-    feedback_dedupe_key, queue_feedback_notification, queue_welcome_email,
+    feedback_dedupe_key, queue_feedback_notification,
+    queue_release_announcements, queue_welcome_email, release_dedupe_key,
     welcome_dedupe_key,
 )
 from app.services.feedback import FeedbackService
@@ -632,6 +633,200 @@ class TestUserContentIsEscaped(unittest.TestCase):
 
     def test_paragraphs_of_empty_text_render_as_nothing(self):
         self.assertEqual(str(paragraphs("   \n  ")), "")
+
+
+# ======================================================================
+# Workflow 3 — the release announcement
+# ======================================================================
+
+def _release(version="2.1.0", **overrides):
+    release = MagicMock()
+    release.version = version
+    release.status = overrides.get("status", "published")
+    release.release_notes = overrides.get("release_notes", (
+        "New features:\n"
+        "- Idle detection now pauses the timer automatically\n"
+        "- Weekly summary export\n"
+        "\n"
+        "Bug fixes:\n"
+        "- Fixed the timer resetting after waking from sleep\n"
+    ))
+    release.release_notes_url = overrides.get("release_notes_url", None)
+    return release
+
+
+class TestReleaseAnnouncementTrigger(unittest.TestCase):
+
+    def _users(self, count=3):
+        users = []
+        for index in range(count):
+            user = MagicMock()
+            user.id = 100 + index
+            user.name = f"User {index}"
+            user.email = f"user{index}@example.com"
+            user.organization_id = 7
+            users.append(user)
+        return users
+
+    def test_publishing_queues_one_announcement_per_active_user(self):
+        db = MagicMock()
+        with email_settings(), \
+                patch(f"{WORKFLOWS}.UserRepository") as repo, \
+                patch(f"{WORKFLOWS}.EmailOutboxService") as outbox:
+            repo.list_announcement_recipients.return_value = self._users(3)
+            outbox.enqueue.side_effect = [_notification(id=n) for n in (1, 2, 3)]
+            queued = queue_release_announcements(db, _release("2.1.0"))
+
+        self.assertEqual(len(queued), 3)
+        keys = [call.kwargs["dedupe_key"] for call in outbox.enqueue.call_args_list]
+        self.assertEqual(
+            keys,
+            ["release:2.1.0:user:100", "release:2.1.0:user:101", "release:2.1.0:user:102"],
+        )
+        self.assertEqual(
+            [call.kwargs["recipients"] for call in outbox.enqueue.call_args_list],
+            [["user0@example.com"], ["user1@example.com"], ["user2@example.com"]],
+        )
+
+    def test_the_key_is_the_version_so_a_second_artifact_announces_nothing(self):
+        # 2.1.0 is four rows -- Windows, two macOS builds, the portable zip.
+        # Each is published separately; all four resolve to the same key.
+        self.assertEqual(release_dedupe_key("2.1.0", 100), "release:2.1.0:user:100")
+        self.assertNotEqual(release_dedupe_key("2.1.0", 100), release_dedupe_key("2.2.0", 100))
+        self.assertNotEqual(release_dedupe_key("2.1.0", 100), release_dedupe_key("2.1.0", 101))
+
+    def test_only_the_transition_into_published_announces_anything(self):
+        from app.models.desktop_release import ReleaseStatus
+        from app.services.desktop_release import DesktopReleaseService
+
+        db = MagicMock()
+        cases = [
+            # (was_published, new status, should announce)
+            (False, ReleaseStatus.PUBLISHED, True),
+            (True, ReleaseStatus.PUBLISHED, False),   # re-publish is not new news
+            (False, ReleaseStatus.DRAFT, False),
+            (False, ReleaseStatus.DISABLED, False),
+            (True, ReleaseStatus.ROLLED_BACK, False),
+        ]
+        for was_published, status, should_announce in cases:
+            with self.subTest(was=was_published, now=status):
+                release = _release(status=status)
+                with patch(
+                    "app.services.email.queue_release_announcements"
+                ) as announce:
+                    DesktopReleaseService._announce_if_newly_published(
+                        db, release, was_published
+                    )
+                self.assertEqual(announce.called, should_announce)
+
+    def test_a_user_without_a_usable_address_is_skipped_not_guessed_at(self):
+        db = MagicMock()
+        users = self._users(2)
+        users[0].email = "not-an-address"
+        with email_settings(), \
+                patch(f"{WORKFLOWS}.UserRepository") as repo, \
+                patch(f"{WORKFLOWS}.EmailOutboxService") as outbox:
+            repo.list_announcement_recipients.return_value = users
+            outbox.enqueue.return_value = _notification()
+            queue_release_announcements(db, _release())
+
+        self.assertEqual(outbox.enqueue.call_count, 1)
+        self.assertEqual(
+            outbox.enqueue.call_args.kwargs["recipients"], ["user1@example.com"]
+        )
+
+    def test_announcements_can_be_turned_off_for_a_quiet_publish(self):
+        db = MagicMock()
+        with email_settings(RELEASE_EMAIL_ENABLED=False), \
+                patch(f"{WORKFLOWS}.EmailOutboxService") as outbox:
+            self.assertEqual(queue_release_announcements(db, _release()), [])
+        outbox.enqueue.assert_not_called()
+
+    def test_publishing_never_fails_because_email_could_not_be_queued(self):
+        db = MagicMock()
+        with email_settings(), patch(f"{WORKFLOWS}.UserRepository") as repo:
+            repo.list_announcement_recipients.side_effect = RuntimeError("database down")
+            self.assertEqual(queue_release_announcements(db, _release()), [])
+
+    def test_a_release_with_no_version_announces_nothing(self):
+        db = MagicMock()
+        with email_settings(), patch(f"{WORKFLOWS}.EmailOutboxService") as outbox:
+            self.assertEqual(queue_release_announcements(db, _release(version="")), [])
+        outbox.enqueue.assert_not_called()
+
+
+class TestReleaseAnnouncementContent(unittest.TestCase):
+
+    def build(self, **overrides):
+        payload = {
+            "version": "2.1.0",
+            "release_notes": _release().release_notes,
+            "release_notes_url": None,
+            "user_id": 100,
+            "name": "Priya",
+        }
+        payload.update(overrides)
+        with email_settings(MONITRA_APP_URL="https://staff.example.com"):
+            return messages.build_release_email(payload, ["priya@example.com"])
+
+    def test_the_subject_names_the_version(self):
+        self.assertEqual(self.build().subject, "Monitra 2.1.0 is available — what's new")
+
+    def test_it_shows_the_version_and_both_brands(self):
+        html = self.build().html
+        self.assertIn("Monitra 2.1.0", html)
+        self.assertIn("cid:store-transform-logo", html)
+        self.assertIn("cid:monitra-logo", html)
+
+    def test_the_release_notes_keep_their_sections_and_bullets(self):
+        html = self.build().html
+        self.assertIn("New features", html)
+        self.assertIn("Bug fixes", html)
+        self.assertIn("Idle detection now pauses the timer automatically", html)
+        self.assertIn("Fixed the timer resetting after waking from sleep", html)
+        self.assertIn("<ul", html)
+        self.assertIn("<li", html)
+
+    def test_the_download_button_points_at_the_download_page(self):
+        html = self.build().html
+        self.assertIn('href="https://staff.example.com/download"', html)
+        self.assertIn("Download the update", html)
+
+    def test_there_is_no_button_without_a_configured_web_address(self):
+        with email_settings(MONITRA_APP_URL=""):
+            html = messages.build_release_email(
+                {"version": "2.1.0", "release_notes": "x"}, ["a@x.com"]
+            ).html
+        self.assertNotIn("Download the update", html)
+
+    def test_missing_release_notes_produce_an_honest_empty_state(self):
+        # Never an invented changelog: people make upgrade decisions on this.
+        html = self.build(release_notes=None).html
+        self.assertIn("have not been published yet", html)
+        self.assertIn("Monitra 2.1.0", html)
+        self.assertIn("Download the update", html)
+
+    def test_release_notes_are_escaped_even_though_an_administrator_wrote_them(self):
+        html = self.build(release_notes="- <script>alert(1)</script>").html
+        self.assertNotIn("<script>", html)
+        self.assertIn("&lt;script&gt;", html)
+
+    def test_a_full_notes_link_is_shown_only_when_it_is_a_real_url(self):
+        self.assertIn(
+            'href="https://example.com/notes"',
+            self.build(release_notes_url="https://example.com/notes").html,
+        )
+        self.assertNotIn(
+            "Read the full release notes",
+            self.build(release_notes_url="http://localhost/notes").html,
+        )
+
+    def test_it_has_a_plain_text_alternative(self):
+        text = self.build().text
+        self.assertIn("MONITRA 2.1.0 IS AVAILABLE", text)
+        self.assertIn("Idle detection now pauses the timer automatically", text)
+        self.assertIn("https://staff.example.com/download", text)
+        self.assertNotIn("<", text)
 
 
 # ======================================================================

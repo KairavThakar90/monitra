@@ -156,6 +156,14 @@ class Settings(BaseSettings):
     #: Shown as "need help? write to ..." in both templates. Omitted when empty.
     MONITRA_SUPPORT_EMAIL: str = ""
 
+    # ── Release announcement ──────────────────────────────────────────────
+    #: Whether publishing a desktop release emails every active user about it.
+    #: One announcement per user per *version* — publishing the second artifact
+    #: of the same version sends nothing. Turn this off to publish quietly (a
+    #: pilot, a re-publish after a withdrawal); as with the welcome email, the
+    #: once-per-user guarantee does not depend on this flag.
+    RELEASE_EMAIL_ENABLED: bool = True
+
     # ── Email delivery mechanics ──────────────────────────────────────────
     #: How many times one notification may be attempted before it is parked as
     #: `failed`. With the backoff below, six attempts span roughly six hours.
