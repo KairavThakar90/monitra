@@ -6,22 +6,31 @@ The date filter is a single pill: previous/next chevrons around a date
 button that opens a calendar picker, plus a "Today" shortcut that appears
 whenever some other day is being viewed.
 
-A future date *is* selectable. Nothing can have been tracked there, and the
-views say so with their own empty state — which is a better answer than a
-disabled chevron, because a control that refuses to move explains nothing. The
-date is a filter over data, and no date is invalid to filter on; what differs
-is what the filter finds.
+**Today is the maximum selectable date.** A future day cannot be reached by
+any route this widget offers — the calendar caps at today (which also stops
+keyboard navigation inside it), the forward chevron is disabled on today, and
+`_set_selected_date` refuses one outright, so a rapid click, a queued signal or
+a programmatic caller cannot get past it either. This replaced an earlier
+decision to let the user browse into a future day and read an empty state
+there: the empty state was honest, but "today or earlier" is now a business
+rule about what may be *acted on*, and a date the timer will refuse to track
+against is not a date the header should offer to select.
+
+Past days stay freely navigable; they are read-only history, which each view
+enforces for itself (see `ui/task_table.py` and `ui/activity_section.py`).
 """
 from datetime import date, timedelta
 from typing import Optional
 
-from PySide6.QtCore import Qt, QSize, QDate, Signal
+from PySide6.QtCore import Qt, QSize, QDate, QTimer, Signal
 from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCalendarWidget, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu,
     QPushButton, QToolButton, QWidget, QWidgetAction
 )
 
+from core.date_mode import DateMode, as_calendar_day, date_mode
+from core.logging_setup import get_logger
 from core.time_format import ist_today
 from core.validation import SEARCH_MAX_LENGTH
 from ui import icons
@@ -31,6 +40,15 @@ from ui.styles import (
     BORDER_LIGHT, BORDER_MID, CARD_BG,
     BUTTON_GRADIENT, BUTTON_GRADIENT_HOVER,
 )
+
+
+log = get_logger("ui.topbar")
+
+#: How often the header re-checks whether the calendar day has rolled over.
+#: A minute is far finer than the thing it watches for, and the check itself
+#: is two comparisons — it starts no work and emits nothing unless the day has
+#: actually changed, which is the edge-triggered rule the runtime depends on.
+DAY_ROLLOVER_CHECK_MS = 60_000
 
 
 def _format_date_win(d: date) -> str:
@@ -68,8 +86,22 @@ class TopBar(QFrame):
         self._state = "UNKNOWN"
         self._latency_ms: Optional[int] = None
         self._selected_date = ist_today()
+        #: The IST day the controls were last rendered against. Only the
+        #: rollover watchdog reads it; every rule is evaluated against a fresh
+        #: `ist_today()` so no verdict here can go stale.
+        self._today = self._selected_date
         self._build_ui()
         self._apply_style()
+
+        # Midnight rollover. A window left open overnight would otherwise keep
+        # calling yesterday "today": the forward chevron would stay disabled on
+        # a day that is now in the past, and — worse — the live Start/Stop
+        # controls would still be showing for it while the timer service
+        # (which reads the clock, not this widget) tracked against the new day.
+        # A UI-only timer that schedules no work; see DAY_ROLLOVER_CHECK_MS.
+        self._rollover_timer = QTimer(self)
+        self._rollover_timer.timeout.connect(self._check_day_rollover)
+        self._rollover_timer.start(DAY_ROLLOVER_CHECK_MS)
 
     def _build_ui(self) -> None:
         layout = QHBoxLayout(self)
@@ -397,19 +429,26 @@ class TopBar(QFrame):
 
     # ── Date filter ───────────────────────────────────────────────────────────
 
-    def _open_calendar(self) -> None:
-        """Pop a calendar under the date button.
+    def build_calendar(self, parent: Optional[QWidget] = None) -> QCalendarWidget:
+        """The date picker, capped at today.
 
-        Every date is selectable, future ones included. A future day simply has
-        nothing in it, and each view says exactly that; capping the calendar at
-        today instead left the user unable to look and unable to see why.
+        `setMaximumDate` is the real restriction, not a hint: Qt draws every
+        day after it in the disabled palette, refuses the click, and refuses
+        the keyboard too — arrow keys, Page Down and End all stop at the
+        maximum, so there is no second route past it inside the popup. The
+        refusal in `_set_selected_date` still stands behind it, because a
+        picker is one of several ways the selection can be asked to move.
+
+        Built here rather than inline in `_open_calendar` so the cap can be
+        asserted without the modal `menu.exec()` a test cannot return from.
         """
-        menu = QMenu(self)
-        calendar = QCalendarWidget(menu)
+        today = ist_today()
+        calendar = QCalendarWidget(parent)
         calendar.setGridVisible(False)
         calendar.setVerticalHeaderFormat(
             QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader
         )
+        calendar.setMaximumDate(QDate(today.year, today.month, today.day))
         calendar.setSelectedDate(
             QDate(self._selected_date.year, self._selected_date.month, self._selected_date.day)
         )
@@ -433,6 +472,12 @@ class TopBar(QFrame):
                 border-radius: 6px;
             }}
         """)
+        return calendar
+
+    def _open_calendar(self) -> None:
+        """Pop the date picker under the date button."""
+        menu = QMenu(self)
+        calendar = self.build_calendar(menu)
 
         def on_picked(qdate: QDate) -> None:
             menu.close()
@@ -453,26 +498,54 @@ class TopBar(QFrame):
         self._set_selected_date(self._selected_date - timedelta(days=1))
 
     def _on_next_day(self) -> None:
+        # Disabled on today, so this is normally unreachable there. It is still
+        # written to go through the one guarded setter rather than assuming the
+        # disabled state held: a queued click delivered after the button was
+        # disabled would otherwise step a day past today.
         self._set_selected_date(self._selected_date + timedelta(days=1))
 
     def _on_today_clicked(self) -> None:
         self._set_selected_date(ist_today())
 
-    def _set_selected_date(self, value: date) -> None:
-        """The one place the selected date changes.
+    def select_date(self, value: date) -> bool:
+        """Move the selection programmatically, under the same rules.
 
-        Nothing is emitted when the date did not actually move -- picking the
-        day already shown must not trigger a reload of what is already on
-        screen.
+        The supported entry point for any caller outside this widget. It is
+        deliberately not a plain setter: a future date is refused here exactly
+        as it is when the user clicks, so no other component can put the header
+        into a state the user could not have reached themselves.
         """
-        if value == self._selected_date:
-            return
-        self._selected_date = value
+        return self._set_selected_date(value)
+
+    def _set_selected_date(self, value: date) -> bool:
+        """The one place the selected date changes. Returns whether it moved.
+
+        Three refusals, in order:
+
+        * a value that is not a readable calendar day — a selection nobody can
+          identify must not become the day the rest of the window loads;
+        * a future day — today is the maximum selectable date, and this is the
+          check that holds when the chevron, the calendar cap or a widget's
+          enabled state has been bypassed;
+        * the day already shown — picking it again must not trigger a reload of
+          what is already on screen.
+        """
+        day = as_calendar_day(value)
+        if day is None:
+            log.warning("ignoring an unreadable selected date: %r", value)
+            return False
+        if date_mode(day) == DateMode.FUTURE:
+            log.info("refusing to select %s: today is the latest selectable date", day)
+            return False
+        if day == self._selected_date:
+            return False
+        self._selected_date = day
         self._update_date_display()
+        return True
 
     @property
     def selected_date(self) -> date:
-        """The date currently being viewed."""
+        """The date currently being viewed. Never later than today."""
         return self._selected_date
 
     def _update_date_display(self) -> None:
@@ -481,15 +554,43 @@ class TopBar(QFrame):
         self.date_changed.emit(self._selected_date)
 
     def _update_next_button_state(self) -> None:
-        """Both chevrons stay live; only the "Today" shortcut is conditional.
+        """Point the forward chevron and the "Today" shortcut at the selection.
 
-        It is shown whenever some other day is on screen -- past or future --
-        because that is exactly when "take me back to today" is a useful
-        action, and it is meaningless when today is already showing.
+        The forward chevron is live only while a past day is on screen, because
+        today is the last day there is to move to. The "Today" shortcut is the
+        mirror of it: shown exactly when some other day is displayed, and
+        meaningless when today already is.
+
+        Read from a fresh `ist_today()` on every call rather than from a cached
+        verdict, so the rollover watchdog only has to ask for a re-render.
         """
-        is_today = self._selected_date == ist_today()
-        self.next_btn.setEnabled(True)
+        is_today = date_mode(self._selected_date) == DateMode.TODAY
+        self.next_btn.setEnabled(not is_today)
+        self.next_btn.setToolTip(
+            "Today is the latest date you can view" if is_today else "Next day"
+        )
         self._today_btn.setVisible(not is_today)
+
+    def _check_day_rollover(self) -> None:
+        """Follow the clock over midnight. Edge-triggered: acts only on change.
+
+        A selection that *was* today follows the new today, because "today" is
+        what the user asked to see — and leaving them parked on a day that has
+        just become history would disable Stop while their timer kept running,
+        with no control left to stop it. A selection that was already in the
+        past is a fixed historical day and stays exactly where it is; only its
+        controls are re-rendered, since "yesterday" has moved under it.
+        """
+        today = ist_today()
+        if today == self._today:
+            return
+        was_today = self._selected_date == self._today
+        log.info("calendar day rolled over: %s -> %s", self._today, today)
+        self._today = today
+        if was_today:
+            self._set_selected_date(today)
+        else:
+            self._update_next_button_state()
 
     #: How each network state is presented. "Offline" is reserved for the one
     #: case where it is literally true — the machine cannot reach the network at

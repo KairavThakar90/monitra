@@ -18,6 +18,7 @@ from app.schemas.project_management import (
 )
 from app.services.member_scope import is_team_scoped
 from app.services.project_scope import may_view_project, visible_project_ids
+from app.services.task_scope import is_task_scoped, may_view_task, scoped_task_query
 from app.core.permissions import LEADER_ROLE_NAMES
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
@@ -138,14 +139,20 @@ class ProjectManagementService:
         return {"id": task.id, "project_id": task.project_id, "name": task.task_name, "assignee_id": task.assignee_id, "assignee": ProjectManagementService._person(assignee), "status": task_status, "created_at": task.created_at, "updated_at": task.updated_at}
 
     @staticmethod
-    def _detail_payload(db: Session, project: Project):
+    def _detail_payload(db: Session, project: Project, user: User):
         project_status = db.get(ProjectStatus, project.status_id)
         leader = db.get(User, project.leader_id) if project.leader_id else None
         members = list(db.scalars(select(ProjectMember).where(ProjectMember.project_id == project.id)).all())
         employee_ids = [member.user_id for member in members]
         employees = list(db.scalars(select(User).where(User.id.in_(employee_ids))).all()) if employee_ids else []
         employee_by_id = {item.id: item for item in employees}
-        tasks = list(db.scalars(select(Task).where(Task.project_id == project.id, Task.status != "archived").order_by(Task.id)).all())
+        # The project payload embeds its tasks, so it is a task-returning route
+        # like any other and takes the same scope. `user` is required rather
+        # than optional: a caller that forgets it must fail, not quietly hand
+        # back every task in the project.
+        tasks = list(db.scalars(scoped_task_query(
+            select(Task).where(Task.project_id == project.id, Task.status != "archived"), user
+        ).order_by(Task.id)).all())
         assignee_ids = [task.assignee_id for task in tasks if task.assignee_id]
         assignees = list(db.scalars(select(User).where(User.id.in_(assignee_ids))).all()) if assignee_ids else []
         assignee_by_id = {item.id: item for item in assignees}
@@ -153,13 +160,17 @@ class ProjectManagementService:
         return {"id": project.id, "project_name": project.project_name, "description": project.description, "status": project_status, "leader": ProjectManagementService._person(leader), "employees": [ProjectManagementService._person(employee_by_id[item_id]) for item_id in employee_ids if item_id in employee_by_id], "deadline": project.deadline, "billing_type": project.billing_type, "fixed_hours": project.fixed_hours, "organization_id": project.organization_id, "created_at": project.created_at, "updated_at": project.updated_at, "tasks": [ProjectManagementService._task_payload(task, task_statuses.get(task.status_id), assignee_by_id.get(task.assignee_id)) for task in tasks]}
 
     @staticmethod
-    def _detail_payloads(db: Session, projects: list[Project]):
+    def _detail_payloads(db: Session, projects: list[Project], user: User):
         if not projects:
             return []
         project_ids = [project.id for project in projects]
         memberships = list(db.scalars(select(ProjectMember).where(ProjectMember.project_id.in_(project_ids))).all())
         member_ids = {member.user_id for member in memberships}
-        tasks = list(db.scalars(select(Task).where(Task.project_id.in_(project_ids), Task.status != "archived")).all())
+        # Same scope as _detail_payload, for the paginated list: the embedded
+        # tasks are task rows and must not be a second, wider way to read them.
+        tasks = list(db.scalars(scoped_task_query(
+            select(Task).where(Task.project_id.in_(project_ids), Task.status != "archived"), user
+        )).all())
         user_ids = member_ids | {project.leader_id for project in projects if project.leader_id} | {task.assignee_id for task in tasks if task.assignee_id}
         users = list(db.scalars(select(User).where(User.id.in_(user_ids))).all()) if user_ids else []
         users_by_id = {item.id: item for item in users}
@@ -222,7 +233,7 @@ class ProjectManagementService:
                 db.add(Task(organization_id=user.organization_id, project_id=project.id, task_name=task_name, status=todo_legacy, status_id=todo_status.id, created_by=user.id))
             db.commit()
             db.refresh(project)
-            return ProjectManagementService._detail_payload(db, project)
+            return ProjectManagementService._detail_payload(db, project, user)
         except Exception:
             db.rollback()
             raise
@@ -253,7 +264,7 @@ class ProjectManagementService:
         total = db.scalar(select(func.count(Project.id)).where(*filters)) or 0
         projects = list(db.scalars(select(Project).where(*filters).order_by(Project.created_at.desc(), Project.id.desc()).offset((page - 1) * limit).limit(limit)).all())
         items = []
-        for detail in ProjectManagementService._detail_payloads(db, projects):
+        for detail in ProjectManagementService._detail_payloads(db, projects, user):
             detail["employee_count"] = len(detail["employees"])
             detail["task_count"] = len(detail["tasks"])
             items.append(detail)
@@ -261,7 +272,7 @@ class ProjectManagementService:
 
     @staticmethod
     def get(db: Session, user: User, project_id: int):
-        return ProjectManagementService._detail_payload(db, ProjectManagementService._project(db, project_id, user))
+        return ProjectManagementService._detail_payload(db, ProjectManagementService._project(db, project_id, user), user)
 
     @staticmethod
     def update(db: Session, user: User, project_id: int, payload: ProjectUpdate):
@@ -294,7 +305,7 @@ class ProjectManagementService:
                 db.add(ProjectMember(project_id=project.id, organization_id=user.organization_id, user_id=employee.id, created_by=user.id))
         db.commit()
         db.refresh(project)
-        return ProjectManagementService._detail_payload(db, project)
+        return ProjectManagementService._detail_payload(db, project, user)
 
     @staticmethod
     def delete(db: Session, user: User, project_id: int):
@@ -307,7 +318,15 @@ class ProjectManagementService:
     @staticmethod
     def tasks(db: Session, user: User, project_id: int, status_id: Optional[int], assignee_id: Optional[int], search: Optional[str]):
         project = ProjectManagementService._project(db, project_id, user)
-        query = select(Task).where(Task.project_id == project.id, Task.status != "archived")
+        # This is the route the desktop client reads, and it returned every task
+        # in the project to every member of it. `scoped_task_query` narrows a
+        # non-managing caller to their own work before the query runs; the
+        # `assignee_id` filter below is a *view* filter the caller chose and
+        # cannot widen this, because both clauses are ANDed in SQL.
+        query = scoped_task_query(
+            select(Task).where(Task.project_id == project.id, Task.status != "archived"),
+            user,
+        )
         if status_id: query = query.where(Task.status_id == status_id)
         if assignee_id: query = query.where(Task.assignee_id == assignee_id)
         if search:
@@ -340,6 +359,16 @@ class ProjectManagementService:
             if not assignee or assignee.role_name != "employee":
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "Task assignee must be an active employee in this organization.")
 
+        # An employee's own task is their own. Derived from the bearer token,
+        # never from the payload: the desktop does send `assignee_id`, but a
+        # modified or older client that omits it would otherwise create an
+        # *unassigned* task -- which is shared project work by definition (see
+        # task_scope) and would reappear in every other member's client. That is
+        # precisely the leak being fixed, so the server pins it rather than
+        # trusting the client to. It mirrors what TaskService.create_task on the
+        # legacy route has always done.
+        if assignee is None and is_task_scoped(user):
+            assignee = user
         task = Task(organization_id=user.organization_id, project_id=project.id, task_name=payload.name, assignee_id=assignee.id if assignee else None, status_id=task_status.id, status=ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task"), created_by=user.id)
         db.add(task)
         db.flush()
@@ -350,11 +379,25 @@ class ProjectManagementService:
         return ProjectManagementService._task_payload(task, task_status, assignee)
 
     @staticmethod
+    def _task(db: Session, user: User, project_id: int, task_id: int) -> Task:
+        """One task, by id, that this caller is actually allowed to touch.
+
+        Both the update and the delete path used to look a task up by id alone
+        and settle for "it is in a project you can open". That let any member of
+        a project edit or archive another member's task by supplying its id --
+        the write-side half of the same data-isolation defect. 404 rather than
+        403, matching `_project`: whether somebody else's task exists is not
+        this caller's to learn.
+        """
+        task = db.scalar(select(Task).where(Task.id == task_id, Task.project_id == project_id, Task.organization_id == user.organization_id, Task.status != "archived"))
+        if not task or not may_view_task(db, user, task):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found.")
+        return task
+
+    @staticmethod
     def update_task(db: Session, user: User, project_id: int, task_id: int, payload: TaskUpdate):
         ProjectManagementService._project(db, project_id, user)
-        task = db.scalar(select(Task).where(Task.id == task_id, Task.project_id == project_id, Task.organization_id == user.organization_id, Task.status != "archived"))
-        if not task:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found.")
+        task = ProjectManagementService._task(db, user, project_id, task_id)
         values = payload.model_dump(exclude_unset=True)
         assignee = db.get(User, task.assignee_id) if task.assignee_id else None
         task_status = db.get(TaskStatus, task.status_id)
@@ -377,9 +420,7 @@ class ProjectManagementService:
     @staticmethod
     def delete_task(db: Session, user: User, project_id: int, task_id: int):
         ProjectManagementService._project(db, project_id, user)
-        task = db.scalar(select(Task).where(Task.id == task_id, Task.project_id == project_id, Task.organization_id == user.organization_id, Task.status != "archived"))
-        if not task:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found.")
+        task = ProjectManagementService._task(db, user, project_id, task_id)
         task.status = "archived"
         db.commit()
         return {"id": task.id, "status": "archived"}

@@ -39,6 +39,7 @@ from background_services.public_api import (
     ActivityTotals, BackgroundApi, NetworkState, NotificationLevel, TodaySnapshot,
     UpdateState,
 )
+from core.date_mode import DateMode, as_calendar_day, date_mode, is_live_date
 from core.logging_setup import get_logger
 from core.time_format import ist_clock, ist_day_bounds_utc, ist_today
 from ui import icons
@@ -220,9 +221,11 @@ class DashboardWindow(QWidget):
         self._pending_active_timer: Optional[Dict[str, Any]] = None
         self._had_pending_sync = False
         self._active = False
-        #: The date currently selected in the top bar. Drives whether the
-        #: live timer is allowed to bleed into the sidebar/task totals: a
-        #: past date must show completed hours only, never a ticking value.
+        #: The date currently selected in the top bar. Never later than today —
+        #: the header refuses a future selection and this window refuses to
+        #: adopt one, so the two cannot disagree. Drives whether the live timer
+        #: is allowed to bleed into the sidebar/task totals: any day but today
+        #: must show completed hours only, never a ticking value.
         self._current_date: date = ist_today()
         #: Whether the last committed network state was usable. Starts None so
         #: the first observation is not announced as a recovery — telling the
@@ -1167,7 +1170,7 @@ class DashboardWindow(QWidget):
         ]
         banked = sum(e.get("total_seconds", 0) for e in finished)
 
-        viewing_today = self._current_date == ist_today()
+        viewing_today = is_live_date(self._current_date)
         running = self.api.is_timer_running()
         live = self.api.timer_elapsed_seconds() if (running and viewing_today) else 0
         self._stat_cards.set_total_seconds(banked + live, running and viewing_today)
@@ -1317,7 +1320,13 @@ class DashboardWindow(QWidget):
         target_date: Optional[date] = None,
         on_done: Optional[Callable[[bool], None]] = None,
     ) -> bool:
-        target = target_date or ist_today()
+        target = as_calendar_day(target_date) or ist_today()
+        if date_mode(target) == DateMode.FUTURE:
+            # A day that has not happened has no entries to return. Asking
+            # anyway would be a round trip whose only possible answer is the
+            # empty list the caller can have for free.
+            log.debug("not requesting time entries for %s: the day is in the future", target)
+            return False
 
         cached = self.api.cache.get_cached_time_entries(target.isoformat())
         if cached:
@@ -1369,7 +1378,7 @@ class DashboardWindow(QWidget):
         # Add the live session only for today, and take its value from the
         # timer service rather than from any widget.
         live = 0
-        if target == ist_today() and self.api.is_timer_running():
+        if is_live_date(target) and self.api.is_timer_running():
             live = self.api.timer_elapsed_seconds()
         self._sidebar.set_total_seconds(banked + live)
 
@@ -1380,6 +1389,21 @@ class DashboardWindow(QWidget):
         self._update_stat_cards()
 
     def _on_date_changed(self, target_date: date) -> None:
+        """Point the whole window at the newly selected day.
+
+        A future date cannot arrive here — the header refuses to select one —
+        but it is rejected rather than trusted, because adopting it would put
+        the timer totals, the day's entries and all three Activity tabs onto a
+        day nothing can be tracked against. The same goes for a value that is
+        not a readable calendar day: there is nothing to load for it, and
+        defaulting it to today would silently show one day's data under
+        another's heading.
+        """
+        day = as_calendar_day(target_date)
+        if day is None or date_mode(day) == DateMode.FUTURE:
+            log.warning("ignoring an unselectable date from the header: %r", target_date)
+            return
+        target_date = day
         self._current_date = target_date
         self._task_section.set_viewing_date(target_date)
         # One selected date drives the whole window: the time entries above and
@@ -1505,7 +1529,7 @@ class DashboardWindow(QWidget):
         must show completed hours only; _apply_time_entries() already set
         that value when the date changed, so this tick is simply skipped.
         """
-        if self._current_date != ist_today():
+        if not is_live_date(self._current_date):
             return
         banked = sum(
             e.get("total_seconds", 0)

@@ -36,6 +36,14 @@ log = get_logger("cache")
 _get_cache_dir = cache_dir
 _get_db_path = db_path
 
+#: `app_state` key naming the user the read-through caches belong to.
+#:
+#: The projects, tasks, task-status and time-entry caches carry no user column
+#: -- they are a paint-the-dashboard-before-the-network store, replaced
+#: wholesale on each refresh -- so this one row is how the client knows whose
+#: rows are sitting in them. See `LocalCache.claim_cache_for`.
+CACHE_OWNER_KEY = "cache_owner_user_id"
+
 #: Largest number of telemetry rows one read hands to the sync consumer.
 #:
 #: This is load-bearing, not a tidiness bound. The backend caps an app-usage
@@ -180,6 +188,34 @@ class LocalCache:
             for table in ("projects", "tasks", "task_cache_status",
                           "task_statuses", "time_entries_today"):
                 conn.execute(f"DELETE FROM {table}")
+
+    def claim_cache_for(self, user_id: Optional[int]) -> bool:
+        """Bind the read-through caches to one user, clearing another's.
+
+        `clear_user_scoped_cache` runs on logout, which covers the ordinary
+        path. This covers the rest of them: a session that ended without a
+        deliberate logout, a token swapped underneath the client, a crash
+        between the two. The caches carry no user column, so the only way to
+        know whose rows they are is to record it — this is the cache's
+        `user_id` key, kept as one row rather than as a column on five tables.
+
+        Returns whether another user's rows were dropped. A `None` id (a
+        profile that arrived without one) claims nothing and clears nothing:
+        it is not evidence that the owner changed, and clearing on it would
+        throw away the cache the user is about to be shown.
+        """
+        if user_id is None:
+            return False
+        previous = self.load_app_state(CACHE_OWNER_KEY)
+        cleared = previous is not None and previous != user_id
+        if cleared:
+            log.info(
+                "local cache belonged to user %s; clearing it for user %s",
+                previous, user_id,
+            )
+            self.clear_user_scoped_cache()
+        self.save_app_state(CACHE_OWNER_KEY, user_id)
+        return cleared
 
     # ── App State (Timer / Recovery) ──────────────────────────────────────────
 

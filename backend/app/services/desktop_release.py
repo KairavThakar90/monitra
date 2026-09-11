@@ -448,6 +448,8 @@ class DesktopReleaseService:
         if release is None:
             return None
 
+        was_published = release.status == ReleaseStatus.PUBLISHED
+
         if payload.status is not None:
             DesktopReleaseService._apply_status(release, payload.status)
         if payload.release_notes is not None:
@@ -461,6 +463,7 @@ class DesktopReleaseService:
 
         db.commit()
         db.refresh(release)
+        DesktopReleaseService._announce_if_newly_published(db, release, was_published)
         return release
 
     @staticmethod
@@ -471,10 +474,42 @@ class DesktopReleaseService:
         release = DesktopReleaseRepository.get(db, release_id)
         if release is None:
             return None
+        was_published = release.status == ReleaseStatus.PUBLISHED
         DesktopReleaseService._apply_status(release, status)
         db.commit()
         db.refresh(release)
+        DesktopReleaseService._announce_if_newly_published(db, release, was_published)
         return release
+
+    @staticmethod
+    def _announce_if_newly_published(
+        db: Session, release: DesktopRelease, was_published: bool
+    ) -> None:
+        """Email every active user, on the transition *into* published only.
+
+        Three conditions, and each rules out a way of mailing people twice or
+        wrongly:
+
+        * the release must now be published — a draft is by definition not
+          something users should be told about;
+        * it must not already have been — re-publishing after a withdrawal is
+          not new news, and the announcement for that version has been sent;
+        * and the announcement itself is keyed on the *version*, inside the
+          outbox, so publishing the Windows artifact and then the two macOS
+          ones sends one announcement, not three.
+
+        Mail is queued after the commit, never before: the release is live
+        whether or not anybody can be told about it, and `queue_release_
+        announcements` does not raise, so publishing cannot fail over email.
+        """
+        if was_published or release.status != ReleaseStatus.PUBLISHED:
+            return
+        # Imported here rather than at module scope: the email package imports
+        # the user repository, and a top-level import would tie this module's
+        # import order to it for something only this one path needs.
+        from app.services.email import queue_release_announcements
+
+        queue_release_announcements(db, release)
 
     @staticmethod
     def _apply_status(release: DesktopRelease, status: str) -> None:

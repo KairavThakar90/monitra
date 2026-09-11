@@ -32,11 +32,12 @@ source of truth; if it never fired, `elapsed_seconds()` would still be correct.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import QTimer, Signal
 
+from core.date_mode import DateMode, date_mode
 from core.logging_setup import get_logger, session_generation
 from core.service import BaseService
 from core.time_format import ist_today
@@ -186,6 +187,51 @@ class TimerService(BaseService):
             except Exception:  # noqa: BLE001
                 self.log.exception("sub-tracker %s failed to stop", type(tracker).__name__)
 
+    # ── Date guard ────────────────────────────────────────────────────────────
+    #
+    # Tracked time only ever runs against today. The UI hides Start/Stop on any
+    # other day, but a hidden button is a presentation detail: a queued signal,
+    # a keyboard shortcut, a future caller or a widget rebuilt at the wrong
+    # moment can all reach these methods anyway. The rule therefore also lives
+    # here, at the layer that actually mutates tracked time.
+    #
+    # `for_date` is the calendar day the *user* is acting on -- the date the
+    # header is showing. It is optional because not every caller is acting on a
+    # browsed date: the idle popup's "Stop timer", crash recovery and
+    # reconciliation with the backend are system-initiated and carry no date,
+    # and blocking those would strand a running entry rather than protect
+    # anything. Every user-facing path passes it.
+
+    def _date_refusal(self, for_date, verb: str) -> Optional[str]:
+        """Why this date-scoped request must be refused, or None to allow it.
+
+        The message is user-facing: it is emitted on `timer_error`, which the
+        task list already handles by restoring the affected row, so a refused
+        action can never leave a button stuck on "Starting…".
+        """
+        if for_date is None:
+            return None
+        mode = date_mode(for_date)
+        if mode == DateMode.TODAY:
+            return None
+        if mode == DateMode.FUTURE:
+            return f"You cannot {verb} a timer on a future date."
+        if mode == DateMode.HISTORY:
+            return (
+                f"You are viewing a past date, which is read-only. "
+                f"Switch to today to {verb} a timer."
+            )
+        return f"Monitra could not read the selected date, so it will not {verb} a timer."
+
+    def _refuse_for_date(self, for_date, verb: str) -> bool:
+        """True when the request was refused (and reported)."""
+        refusal = self._date_refusal(for_date, verb)
+        if refusal is None:
+            return False
+        self.log.info("refusing to %s tracking for %r: %s", verb, for_date, refusal)
+        self.timer_error.emit(refusal)
+        return True
+
     # ── Status ────────────────────────────────────────────────────────────────
 
     def _set_status(self, status: str) -> None:
@@ -219,7 +265,14 @@ class TimerService(BaseService):
 
     # ── Start ─────────────────────────────────────────────────────────────────
 
-    def start_tracking(self, project_id: int, task_id: int, task_name: Optional[str] = None) -> None:
+    def start_tracking(
+        self,
+        project_id: int,
+        task_id: int,
+        task_name: Optional[str] = None,
+        *,
+        for_date: Optional[date] = None,
+    ) -> None:
         """
         Start tracking a task.
 
@@ -227,7 +280,13 @@ class TimerService(BaseService):
         call is reconciled afterwards. If the backend cannot be reached the
         operation is queued durably rather than lost, and the timer keeps
         running — going offline must not stop the user's clock.
+
+        :param for_date: The calendar day the caller is acting on. Anything but
+            today is refused outright — see the date guard above. Omitted only
+            by system-initiated callers, which are not scoped to a browsed day.
         """
+        if self._refuse_for_date(for_date, "start"):
+            return
         if self.is_running():
             if self.task_id != task_id:
                 self.switch_tracking(project_id, task_id, task_name)
@@ -319,7 +378,9 @@ class TimerService(BaseService):
 
     # ── Stop ──────────────────────────────────────────────────────────────────
 
-    def stop_tracking(self, notify_backend: bool = True) -> None:
+    def stop_tracking(
+        self, notify_backend: bool = True, *, for_date: Optional[date] = None
+    ) -> None:
         """Stop tracking. Local state commits immediately; the backend follows.
 
         `notify_backend=False` brings the local session down without issuing a
@@ -330,7 +391,15 @@ class TimerService(BaseService):
         through the durable queue. Everything else — the durable record, the
         sub-trackers, the cache fold, the `timer_stopped` signal the UI
         listens to — happens identically.
+
+        :param for_date: The calendar day the caller is acting on; anything but
+            today is refused. A timer that is running keeps running when the
+            user browses to another date, so stopping it means going back to
+            today first — which is also the only place the elapsed time can be
+            seen while deciding.
         """
+        if self._refuse_for_date(for_date, "stop"):
+            return
         if not self.is_running() or self._session is None:
             return
         if self._status == TimerStatus.STOPPING:
@@ -422,8 +491,23 @@ class TimerService(BaseService):
             key=f"timer-stop:{entry_id}",
         )
 
-    def switch_tracking(self, project_id: int, task_id: int, task_name: Optional[str] = None) -> None:
-        """Stop the current task and start another. Ordered, never concurrent."""
+    def switch_tracking(
+        self,
+        project_id: int,
+        task_id: int,
+        task_name: Optional[str] = None,
+        *,
+        for_date: Optional[date] = None,
+    ) -> None:
+        """Stop the current task and start another. Ordered, never concurrent.
+
+        The date is checked once, here, before anything moves. Checking it only
+        inside `start_tracking` would let a refused switch stop the running
+        timer first and then decline to start the new one — a browsed date must
+        never be able to end a live session.
+        """
+        if self._refuse_for_date(for_date, "start"):
+            return
         if self.is_running():
             self.stop_tracking()
         self.start_tracking(project_id, task_id, task_name)

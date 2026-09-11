@@ -13,6 +13,7 @@ from app.models.task import Task
 from app.models.user import User
 from app.services.member_scope import is_team_scoped, visible_member_ids
 from app.services.project_scope import may_view_project, visible_project_ids
+from app.services.task_scope import scoped_task_query
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
 
@@ -149,7 +150,11 @@ class TeamsService:
         memberships = list(db.scalars(select(ProjectMember).where(ProjectMember.project_id.in_(project_ids))).all()) if project_ids else []
         member_ids = {member.user_id for member in memberships}
         users = {item.id: item for item in db.scalars(select(User).where(User.id.in_(member_ids))).all()} if member_ids else {}
-        tasks = list(db.scalars(select(Task).where(Task.project_id.in_(project_ids), Task.status != "archived")).all()) if project_ids else []
+        # Scoped like every other task read. An employee holds `projects:view`
+        # and can therefore reach these screens, and the member cards below
+        # name individual tasks -- so an unscoped fetch here is a second route
+        # to another member's task list. A manager or leader is unrestricted.
+        tasks = list(db.scalars(scoped_task_query(select(Task).where(Task.project_id.in_(project_ids), Task.status != "archived"), user)).all()) if project_ids else []
         tasks_by_project = {}
         for task in tasks: tasks_by_project.setdefault(task.project_id, []).append(task)
         members_by_project = {}
@@ -180,7 +185,7 @@ class TeamsService:
         memberships = list(db.scalars(select(ProjectMember).where(ProjectMember.project_id == project_id)).all())
         member_ids = [item.user_id for item in memberships]
         members = {item.id: item for item in db.scalars(select(User).where(User.id.in_(member_ids))).all()} if member_ids else {}
-        tasks = list(db.scalars(select(Task).where(Task.project_id == project_id, Task.status != "archived")).all())
+        tasks = list(db.scalars(scoped_task_query(select(Task).where(Task.project_id == project_id, Task.status != "archived"), user)).all())
         completed = sum(task.status_id in completed_task_ids for task in tasks)
         return {"id": project.id, "project_name": project.project_name, "description": project.description, "status": status_map.get(project.status_id), "created_at": project.created_at, "deadline": project.deadline, "leader": {"id": leader.id, "name": leader.name, "designation": leader.designation, "initials": _initials(leader.name)} if leader else None, "members": {"count": len(members), "items": [TeamsService._member_card(db, member, project_id, tasks, task_status_map, completed_task_ids) for member in members.values()]}, "task_progress": {"completed": completed, "total": len(tasks), "percentage": _percent(completed, len(tasks))}, "unassigned_task_count": sum(task.assignee_id is None for task in tasks)}
 
@@ -201,7 +206,10 @@ class TeamsService:
         if not member:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Member not found in this project.")
         _, task_status_map, completed_task_ids = TeamsService._status_maps(db)
-        tasks = list(db.scalars(select(Task).where(Task.project_id == project_id, Task.assignee_id == member_id, Task.status != "archived")).all())
+        # The member filter is the caller's choice of view; the scope is not.
+        # Both are ANDed, so asking for somebody else's member id cannot widen
+        # what a scoped caller receives.
+        tasks = list(db.scalars(scoped_task_query(select(Task).where(Task.project_id == project_id, Task.assignee_id == member_id, Task.status != "archived"), user)).all())
         card = TeamsService._member_card(db, member, project_id, tasks, task_status_map, completed_task_ids)
         card["project_id"] = project_id
         return card

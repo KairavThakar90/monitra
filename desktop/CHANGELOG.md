@@ -20,6 +20,18 @@ re-grant a permission.
 
 ## [Unreleased]
 
+### Fixed
+
+- **You can no longer open a future date, and a past date is now genuinely
+  read-only.** Today is the latest date the header will show: the forward
+  chevron stops there and the calendar will not select past it. Choosing an
+  earlier day shows that day's tracked time, applications and websites exactly
+  as before, but Start and Stop are hidden while you are looking at it —
+  previously a future date kept the live controls, so a timer could be started
+  from a day that had not happened. A timer that is already running is not
+  affected by browsing dates: it keeps running, and returning to today brings
+  its controls back.
+
 ## [1.1.1]
 
 The same Monitra as 1.1.0, rebuilt and published from the project's new home.

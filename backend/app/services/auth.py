@@ -18,6 +18,7 @@ from app.models.sso_handoff_token import SsoHandoffToken
 from app.core.permissions import ROLE_PERMISSIONS, resolve_role_alias
 from fastapi import HTTPException
 from app.services.external_auth_service import ExternalAuthService
+from app.services.email import deliver_in_background, queue_welcome_email
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -145,6 +146,37 @@ def _as_utc(value: datetime | None) -> datetime | None:
 
 class AuthService:
     @staticmethod
+    def _welcome_new_user(db: Session, user: User, background_tasks=None) -> None:
+        """Queue the one-time welcome for an account that was just provisioned.
+
+        Called from the two places a Monitra account comes into existence — the
+        credential exchange and the single sign-on exchange — and from nowhere
+        else. **Provisioning is the trigger, not signing in.** That distinction
+        is the entire correctness argument:
+
+        * It is what "first-time Monitra user" actually means here. An account
+          is created the first time somebody authenticates successfully, so the
+          creation *is* the activation; every later sign-in reaches the
+          synchronise branch above and never gets here.
+        * Welcoming on sign-in instead would have mailed every existing
+          employee the first working day after this feature was deployed. The
+          outbox would have deduplicated them to one each, which is precisely
+          the problem: one unexpected email each, to everybody, correctly.
+
+        The idempotency does not rest on this call site being right. The outbox
+        row is keyed on the user, uniquely, in the database — so a retry, a
+        replayed request, or two devices signing in at the same moment still
+        produce exactly one welcome. This call site is what stops a *legitimate*
+        second send from ever being asked for.
+
+        Never raises. A welcome email is a side effect of provisioning and must
+        not be able to fail it.
+        """
+        notification_id = queue_welcome_email(db, user)
+        if notification_id is not None and background_tasks is not None:
+            background_tasks.add_task(deliver_in_background, notification_id)
+
+    @staticmethod
     def _access_claims(user: User) -> dict:
         """The claim set every Monitra access token carries."""
         return {
@@ -261,12 +293,17 @@ class AuthService:
         username: str,
         password: str,
         login_for: LoginFor = DEFAULT_LOGIN_FOR,
+        background_tasks=None,
     ) -> TokenPair:
         """Verify credentials with the provider and issue a local session.
 
         `login_for` identifies the client the sign-in is for and is forwarded to
         the provider. It changes nothing locally: the resolved role, permissions
         and session window are the same whichever client asked.
+
+        `background_tasks` is optional and only ever used to attempt delivery of
+        a welcome email after the response has been written. Sign-in does not
+        depend on it, wait for it, or fail with it.
         """
         normalized_username = username.strip()
 
@@ -414,6 +451,11 @@ class AuthService:
             )
             try:
                 user = UserRepository.create(db, user_create)
+                # This request is the one that brought the account into
+                # existence, so this request is the one that welcomes it. The
+                # race branch below deliberately does not: the request that won
+                # the insert has already queued it.
+                AuthService._welcome_new_user(db, user, background_tasks)
             except IntegrityError:
                 db.rollback()
                 user = (
@@ -550,7 +592,9 @@ class AuthService:
         return AuthService._issue_token_pair(db, user)
 
     @staticmethod
-    async def sso_exchange(db: Session, provider_token: str) -> TokenPair:
+    async def sso_exchange(
+        db: Session, provider_token: str, background_tasks=None
+    ) -> TokenPair:
         """
         Exchange a provider-issued JWT (the ?token=... handoff from the performance
         portal) for a local session, so a user arriving from that portal lands on the
@@ -639,6 +683,7 @@ class AuthService:
             )
             try:
                 user = UserRepository.create(db, user_create)
+                AuthService._welcome_new_user(db, user, background_tasks)
             except IntegrityError:
                 db.rollback()
                 user = UserRepository.get_by_normalized_email(db, email)

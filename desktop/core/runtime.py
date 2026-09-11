@@ -244,6 +244,14 @@ class ApplicationRuntime(QObject):
             bump_session_generation()
             self.queue_floor_generation = 0  # same user; keep their queued work
             log.info("restored persisted session (generation %d)", session_generation())
+            # The restored token names a user; the caches may not be theirs.
+            # Checked here rather than only at sign-in because this path
+            # reaches the dashboard without passing through on_login at all.
+            try:
+                profile = self.session_manager.user_info or {}
+                self.cache.claim_cache_for(profile.get("id"))
+            except Exception:  # noqa: BLE001 — never block a restore on this
+                log.exception("could not verify which user the local cache belongs to")
         self._set_phase(RuntimePhase.SESSION_RESTORED)
         return restored
 
@@ -276,10 +284,22 @@ class ApplicationRuntime(QObject):
 
     # ── Session transitions ───────────────────────────────────────────────────
 
-    def on_login(self) -> None:
-        """Advance the session generation for a newly authenticated user."""
+    def on_login(self, user_id: Optional[int] = None) -> None:
+        """Advance the session generation for a newly authenticated user.
+
+        `user_id` binds the read-through caches to whoever just signed in. A
+        deliberate logout already clears them, so this is the backstop for
+        every other way the account can change: a session that ended without
+        one, a crash between the two, a token replaced underneath the client.
+        Without it the dashboard paints the previous user's projects and tasks
+        from cache before the first response arrives.
+        """
         generation = bump_session_generation()
         log.info("login: session generation is now %d", generation)
+        try:
+            self.cache.claim_cache_for(user_id)
+        except Exception:  # noqa: BLE001 — a cache check must not block signing in
+            log.exception("could not verify which user the local cache belongs to")
         self.sync.resume_after_auth()
         # The check holds while signed out; a login is the moment it can work.
         self.updates.check_now()

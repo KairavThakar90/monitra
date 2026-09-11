@@ -10,6 +10,33 @@ class UserRepository:
         return db.scalar(select(User).where(User.id == user_id))
 
     @staticmethod
+    def list_announcement_recipients(db: Session) -> list[User]:
+        """Every account that should be told about a new desktop release.
+
+        Active accounts with an address, ordered by id so a run is repeatable.
+        Deliberately not scoped to an organisation: a desktop release is the
+        same software for everyone, exactly as `desktop_releases` has no
+        `organization_id`, and announcing it per tenant would mean one customer
+        being told about a build another was silently not.
+
+        Only `id`, `name` and `email` are ever used by the caller; the whole row
+        is returned because that is what every other method here returns and a
+        second shape would be one more thing to keep in step.
+        """
+        return list(
+            db.scalars(
+                select(User)
+                .where(
+                    User.is_active.is_(True),
+                    User.status == "active",
+                    User.email.isnot(None),
+                    User.email != "",
+                )
+                .order_by(User.id)
+            ).all()
+        )
+
+    @staticmethod
     def get_by_email(db: Session, email: str) -> Optional[User]:
         return db.scalar(select(User).where(User.email == email))
 

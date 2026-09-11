@@ -18,6 +18,7 @@ from app.api.teams import router as teams_router
 from app.api.time_tracking import router as time_tracking_router
 from app.api.desktop_release import router as desktop_release_router
 from app.api.feedback import router as feedback_router
+from app.api.email_notifications import router as email_notifications_router
 from app.react_apis.reports import router as reports_router
 from app.react_apis.manual_time_entry import router as react_manual_time_entry_router
 from app.react_apis.member_usage import router as member_usage_router
@@ -66,6 +67,38 @@ try:
 except Exception:  # noqa: BLE001
     logger.warning("Could not report screenshot storage configuration", exc_info=True)
 
+# Email, stated at boot, for the same reason. A deployment with no mail
+# configuration looks completely healthy: feedback still saves, sign-in still
+# works, and the notifications simply queue forever with nothing to send them.
+# Saying so here is what turns that into something a person can notice.
+# Non-sensitive by construction: `describe_configuration()` reports which
+# settings are populated, never any value.
+try:
+    from app.services.email import describe_configuration as _describe_email
+    from app.services.email import describe_feedback_recipients as _describe_recipients
+    from app.services.email import unconfigured_reason as _email_unconfigured
+
+    _email_config = _describe_email()
+    if _email_config["configured"]:
+        logger.info(
+            "Email delivery: provider=%s assets=%s authenticated=%s",
+            _email_config["provider"], _email_config["asset_mode"],
+            _email_config["smtp_authenticated"],
+        )
+    else:
+        logger.warning(
+            "Email delivery is DISABLED: %s. Welcome and feedback notifications "
+            "will queue in email_notifications and stay pending.",
+            _email_unconfigured(),
+        )
+    if not _describe_recipients()["configured"]:
+        logger.warning(
+            "Feedback notifications have NO recipients: set FEEDBACK_ADMIN_EMAIL "
+            "and FEEDBACK_HR_EMAIL, or no one will be told about submitted feedback."
+        )
+except Exception:  # noqa: BLE001
+    logger.warning("Could not report email configuration", exc_info=True)
+
 # 1. Base registrations for desktop client endpoints (which expect paths without /api/v1)
 app.include_router(auth_router)
 app.include_router(project_router)
@@ -83,6 +116,11 @@ app.include_router(url_usage_router)
 app.include_router(idle_period_router)
 app.include_router(desktop_release_router)
 app.include_router(feedback_router)
+# Registered once, without the /api/v1 prefix: its two routes are a scheduler
+# trigger and a public image URL, and both are referenced by absolute path —
+# from a cron configuration and from inside already-delivered email. A second
+# spelling of either would be a second URL to keep working forever.
+app.include_router(email_notifications_router)
 
 # 2. Registrations with the /api/v1 prefix (expected by React frontend and prefix-aware desktop calls)
 api_prefix = "/api/v1"
@@ -138,6 +176,22 @@ def health_check():
         # Health must stay answerable even if storage cannot be introspected.
         logger.warning("Could not report screenshot storage in /health", exc_info=True)
         payload["screenshot_storage"] = {"configured": False, "reason": "unavailable"}
+
+    try:
+        from app.services.email import (
+            describe_configuration, describe_feedback_recipients, unconfigured_reason,
+        )
+
+        email = describe_configuration()
+        if not email["configured"]:
+            email["reason"] = unconfigured_reason()
+        email["feedback_recipients"] = describe_feedback_recipients()
+        email["dispatch_endpoint_enabled"] = bool(settings.EMAIL_DISPATCH_TOKEN)
+        payload["email"] = email
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not report email configuration in /health", exc_info=True)
+        payload["email"] = {"configured": False, "reason": "unavailable"}
+
     return payload
 
 

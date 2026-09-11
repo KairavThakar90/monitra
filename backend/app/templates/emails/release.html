@@ -1,0 +1,38 @@
+<!--
+  "A new version of Monitra is available" — sent once per user per version when
+  a release is published.
+
+  The release notes are whatever the release author wrote, escaped and given
+  light structure by `messages.render_release_notes`. Nothing here classifies,
+  summarises or invents a changelog: people make upgrade decisions on this.
+-->
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px 0;">
+  <tr>
+    <td style="padding:5px 12px;background-color:#EFF6FF;border:1px solid #DBEAFE;border-radius:999px;font-family:Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#1D4ED8;">
+      Update available
+    </td>
+  </tr>
+</table>
+
+<h1 class="st-h1" style="margin:0 0 12px 0;font-family:Helvetica,Arial,sans-serif;font-size:30px;line-height:38px;font-weight:700;color:#0F172A;letter-spacing:-0.4px;">
+  {{ version_heading }}
+</h1>
+
+<p style="margin:0 0 26px 0;font-family:Helvetica,Arial,sans-serif;font-size:16px;line-height:26px;color:#374151;">
+  A new version of the Monitra desktop app is ready to install. Here is what changed.
+</p>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 26px 0;">
+  <tr>
+    <td class="st-card" style="padding:18px 20px;background-color:#F8FAFC;border:1px solid #E8ECF3;border-radius:10px;">
+      {{ notes_html }}
+      {{ notes_link }}
+    </td>
+  </tr>
+</table>
+
+{{ cta_block }}
+
+<p style="margin:24px 0 0 0;font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:23px;color:#6B7280;">
+  Your tracked time and settings are kept — installing the update does not sign you out.
+</p>

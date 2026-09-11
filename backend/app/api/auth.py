@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.schemas.user import UserRead, DevLoginRequest, LoginRequest, SsoTokenRequest
@@ -28,10 +28,15 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
         504: {"description": "Provider timed out"},
     },
 )
-async def login(payload: LoginRequest, db: Session = Depends(get_db)):
+async def login(
+    payload: LoginRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     try:
         return await AuthService.login_exchange(
-            db, payload.username, payload.password, payload.login_for
+            db, payload.username, payload.password, payload.login_for,
+            background_tasks=background_tasks,
         )
     except HTTPException as he:
         raise he
@@ -56,9 +61,15 @@ async def login(payload: LoginRequest, db: Session = Depends(get_db)):
         503: {"description": "Provider is unavailable"},
     },
 )
-async def sso_token_login(payload: SsoTokenRequest, db: Session = Depends(get_db)):
+async def sso_token_login(
+    payload: SsoTokenRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     try:
-        return await AuthService.sso_exchange(db, payload.token)
+        return await AuthService.sso_exchange(
+            db, payload.token, background_tasks=background_tasks
+        )
     except HTTPException:
         raise
     except Exception as e:

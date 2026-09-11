@@ -92,6 +92,115 @@ class Settings(BaseSettings):
             and (self.GOOGLE_SERVICE_ACCOUNT_JSON or self.GOOGLE_SERVICE_ACCOUNT_JSON_PATH)
         )
 
+    # ── Transactional email ───────────────────────────────────────────────
+    # Two automated emails leave this system: a one-time welcome when an
+    # account is first provisioned, and a notification to Admin/HR when
+    # somebody submits feedback from the desktop client. Both are queued in
+    # the `email_notifications` outbox and delivered from there, so nothing
+    # below is ever read on a request's critical path.
+    #
+    # Credentials live here and *only* here. The desktop client never receives
+    # an SMTP host, username, password or a recipient address — it posts
+    # feedback to this backend over its ordinary authenticated session, and
+    # this backend is the only thing that talks to a mail server.
+    #
+    # EMAIL_PROVIDER selects the transport:
+    #   "smtp"     — a real mail server, configured by the SMTP_* values below
+    #   "console"  — logs that a message would have been sent, and its
+    #                recipients/subject only. For local development.
+    #   "disabled" — queue but never deliver. Rows stay pending.
+    # Left unconfigured, delivery is skipped and the outbox row stays pending
+    # rather than being marked sent: an email this deployment cannot send must
+    # never be recorded as one it did.
+    EMAIL_PROVIDER: str = "smtp"
+    EMAIL_FROM_ADDRESS: str = ""
+    EMAIL_FROM_NAME: str = "Monitra"
+    #: Where a human reply should go. Optional; omitted from the message when empty.
+    EMAIL_REPLY_TO: str = ""
+
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    #: STARTTLS on the standard submission port. Turn this off only for a
+    #: local relay that speaks plain SMTP on a loopback interface.
+    SMTP_USE_TLS: bool = True
+    #: Implicit TLS (SMTPS, usually port 465). Mutually exclusive with STARTTLS;
+    #: when both are set this one wins, because the socket is already wrapped.
+    SMTP_USE_SSL: bool = False
+    #: Hard ceiling on one delivery attempt. Delivery runs outside the request
+    #: path, but an unbounded socket read would still pin a serverless
+    #: invocation until the platform killed it mid-send.
+    SMTP_TIMEOUT_SECONDS: float = 20.0
+
+    # ── Feedback notification recipients ──────────────────────────────────
+    # Never hard-coded: these are people, and who they are changes without the
+    # code changing. Each accepts a single address; FEEDBACK_NOTIFICATION_EMAILS
+    # accepts a comma-separated list for any additional recipient. All three are
+    # merged, validated and de-duplicated by `resolve_feedback_recipients()`.
+    # With none of them set, feedback is still persisted and the notification is
+    # simply not queued.
+    FEEDBACK_ADMIN_EMAIL: str = ""
+    FEEDBACK_HR_EMAIL: str = ""
+    FEEDBACK_NOTIFICATION_EMAILS: str = ""
+
+    # ── Welcome email ─────────────────────────────────────────────────────
+    #: Whether a newly provisioned account is welcomed at all. The idempotency
+    #: guarantee does not depend on this flag — it is the outbox's unique
+    #: (notification_type, dedupe_key) that makes a second send impossible.
+    WELCOME_EMAIL_ENABLED: bool = True
+    #: The "Open Monitra" destination. The welcome email renders its call to
+    #: action only when this holds a real https:// URL — a button pointing at
+    #: localhost, or at a guess, is worse than no button.
+    MONITRA_APP_URL: str = ""
+    #: Shown as "need help? write to ..." in both templates. Omitted when empty.
+    MONITRA_SUPPORT_EMAIL: str = ""
+
+    # ── Release announcement ──────────────────────────────────────────────
+    #: Whether publishing a desktop release emails every active user about it.
+    #: One announcement per user per *version* — publishing the second artifact
+    #: of the same version sends nothing. Turn this off to publish quietly (a
+    #: pilot, a re-publish after a withdrawal); as with the welcome email, the
+    #: once-per-user guarantee does not depend on this flag.
+    RELEASE_EMAIL_ENABLED: bool = True
+
+    # ── Email delivery mechanics ──────────────────────────────────────────
+    #: How many times one notification may be attempted before it is parked as
+    #: `failed`. With the backoff below, six attempts span roughly six hours.
+    EMAIL_MAX_ATTEMPTS: int = 6
+    #: Delay before the first retry. Each subsequent attempt doubles it, up to
+    #: EMAIL_RETRY_MAX_DELAY_SECONDS, and every delay carries jitter — a whole
+    #: queue retrying in lockstep after an outage is a self-inflicted load test.
+    EMAIL_RETRY_BASE_DELAY_SECONDS: int = 60
+    EMAIL_RETRY_MAX_DELAY_SECONDS: int = 3600
+    #: Most notifications one sweep will attempt. Bounded so a backlog cannot
+    #: make a single invocation run past its platform timeout.
+    EMAIL_DISPATCH_BATCH_SIZE: int = 20
+    #: Shared secret for the dispatch sweeper endpoint, which is how a
+    #: scheduler (Vercel Cron, an external cron, a CI job) drains the outbox.
+    #: Unset, that endpoint answers 503 and is never open — an unauthenticated
+    #: trigger for outbound mail is an open relay with extra steps.
+    EMAIL_DISPATCH_TOKEN: str = ""
+    #: Public base URL the email templates load their logos from, e.g.
+    #: "https://staff.peakworkos.com/email-assets". Left empty, the logos are
+    #: attached to the message and referenced by Content-ID instead, which is
+    #: what a deployment without public asset hosting should use. Never point
+    #: this at localhost: the recipient's mail client, not this server, is what
+    #: resolves it.
+    EMAIL_ASSET_BASE_URL: str = ""
+
+    @property
+    def email_configured(self) -> bool:
+        """Whether this deployment can actually deliver a message."""
+        provider = (self.EMAIL_PROVIDER or "").strip().lower()
+        if not self.EMAIL_FROM_ADDRESS:
+            return False
+        if provider == "console":
+            return True
+        if provider == "smtp":
+            return bool(self.SMTP_HOST)
+        return False
+
     ENV: str = os.getenv("ENV", "development")
 
     # JWT_SECRET_KEY must be set in .env for production; development has a default

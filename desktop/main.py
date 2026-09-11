@@ -284,7 +284,9 @@ class MainWindow(QMainWindow):
         # opens means its first data load is not held back waiting for a
         # health probe to reach the same conclusion.
         self.runtime.network.note_backend_reachable()
-        self.runtime.on_login()
+        # The signed-in user is named so the runtime can tell whether the local
+        # caches belong to them or to whoever used this machine last.
+        self.runtime.on_login(user_data.get("id"))
         self._enter_dashboard(user_data)
 
     def _on_logout(self) -> None:
