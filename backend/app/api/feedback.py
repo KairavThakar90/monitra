@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -25,16 +25,24 @@ router = APIRouter(prefix="/feedback", tags=["Feedback"])
     description=(
         "Records feedback from the authenticated user. The submitting user and "
         "their organization are taken from the access token, and the status is "
-        "always set to 'new' — none of the three can be supplied by the client."
+        "always set to 'new' — none of the three can be supplied by the client.\n\n"
+        "Submitting also queues a notification email to the configured Admin and "
+        "HR recipients. That notification is queued, not sent inline: this "
+        "response reports whether the feedback was **saved**, and email delivery "
+        "cannot change it. A submission is never rejected because mail could not "
+        "go out."
     ),
     responses={422: {"description": "Unsupported category, or an empty/too-long message."}},
 )
 def submit_feedback(
     feedback_in: FeedbackCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return FeedbackService.submit_feedback(db, feedback_in, current_user)
+    return FeedbackService.submit_feedback(
+        db, feedback_in, current_user, background_tasks=background_tasks
+    )
 
 
 # The two `/my` routes are declared before `/{feedback_id}`: FastAPI matches in

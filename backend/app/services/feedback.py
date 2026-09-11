@@ -9,6 +9,7 @@ from app.models.feedback_request import FeedbackRequest
 from app.models.user import User
 from app.repositories.feedback import FeedbackRepository, FeedbackRow
 from app.schemas.feedback import FeedbackCreate, FeedbackStatus
+from app.services.email import deliver_in_background, queue_feedback_notification
 
 #: The roles that may read the whole organization's feedback. Admin, HR and
 #: Leader are the three the product asks for; `org_admin`/`super_admin` and
@@ -30,8 +31,27 @@ class FeedbackService:
 
     @staticmethod
     def submit_feedback(
-        db: Session, feedback_in: FeedbackCreate, current_user: User
+        db: Session,
+        feedback_in: FeedbackCreate,
+        current_user: User,
+        background_tasks=None,
     ) -> FeedbackRequest:
+        """Persist one submission, then notify Admin and HR about it.
+
+        The order is the contract. The feedback row is committed first and on
+        its own; queueing the notification happens afterwards and cannot
+        influence it. `queue_feedback_notification` does not raise — it logs and
+        returns None — so there is no path from "the mail server is down" or
+        "nobody is configured to notify" to a person being told their feedback
+        failed. It was saved; that is what the response reports.
+
+        `background_tasks` is the fast path and nothing more. When the route
+        supplies it, one delivery attempt runs after the response has been
+        written, so the person submitting waits for the database and not for
+        SMTP. When it is absent, or the attempt fails, or the platform freezes
+        the invocation before the task runs, the row is still queued and the
+        dispatch sweeper delivers it.
+        """
         # The schema already trims and rejects a blank message; this guards the
         # service against a caller that builds the model some other way.
         message = feedback_in.message.strip()
@@ -47,7 +67,7 @@ class FeedbackService:
                 detail="Your account is not associated with an organization.",
             )
 
-        return FeedbackRepository.create(
+        feedback = FeedbackRepository.create(
             db=db,
             organization_id=current_user.organization_id,
             user_id=current_user.id,
@@ -55,6 +75,12 @@ class FeedbackService:
             message=message,
             status=FeedbackStatus.new.value,
         )
+
+        notification_id = queue_feedback_notification(db, feedback, current_user)
+        if notification_id is not None and background_tasks is not None:
+            background_tasks.add_task(deliver_in_background, notification_id)
+
+        return feedback
 
     # ------------------------------------------------------------------
     # Read paths. All of them are view-only: there is no approval, no status
