@@ -42,6 +42,7 @@ from app.react_apis.reports_page.repository import ReportFilters, ReportsPageRep
 from app.react_apis.reports_page.service import ReportsPageService
 from app.schemas.time_entry_app_usage import AppUsageCreate
 from app.schemas.url_usage import URLUsageCreate
+from app.services.url_usage_service import normalize_url
 
 from datetime import date, datetime, timezone
 
@@ -164,6 +165,33 @@ class UrlIngestTests(unittest.TestCase):
         )
         self.assertEqual(payload.domain, "bing.com")
         self.assertEqual(str(payload.url), "https://www.bing.com/search?q=x")
+
+    def test_the_service_does_not_undo_the_schema_s_canonicalization(self):
+        """`normalize_url` re-derives the domain from the URL's own hostname,
+        which is the better authority. It used to lowercase and stop there,
+        quietly putting the record back under `www.github.com` after the
+        schema had already resolved it -- so one site occupied two rows and
+        its time was split between them. Both paths end in one function now.
+        """
+        domain, url = normalize_url("https://www.github.com/monitra", "www.github.com")
+        self.assertEqual(domain, "github.com")
+        self.assertEqual(url, "https://www.github.com/monitra")
+
+    def test_the_service_agrees_with_the_schema_on_every_shape(self):
+        for supplied_domain, supplied_url in (
+            ("www.github.com", "https://www.github.com/x"),
+            ("github.com", "https://www.github.com/x"),
+            ("www.github.com", None),
+            ("docs.google.com", "https://docs.google.com/document/d/1"),
+            ("WWW.Bing.com", "https://WWW.Bing.com/search?q=x"),
+        ):
+            with self.subTest(domain=supplied_domain, url=supplied_url):
+                from_service, _ = normalize_url(supplied_url, supplied_domain)
+                from_schema = URLUsageCreate(
+                    time_entry_id=1, browser_name="Google Chrome",
+                    domain=supplied_domain, url=supplied_url, duration_seconds=1,
+                ).domain
+                self.assertEqual(from_service, from_schema)
 
     def test_a_record_with_no_url_is_still_accepted(self):
         """Acceptance criterion 4. Where no address bar can be read -- macOS,
