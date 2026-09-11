@@ -225,6 +225,34 @@ States: `IDLE → STARTING → RUNNING → STOPPING → STOPPED`, plus `RECOVERI
 The one-second `QTimer` emits a display tick only. If it never fired,
 `elapsed_seconds()` would still be correct.
 
+### The timer only ever runs against today
+
+`core/date_mode.py` is the one definition of what a selected date means:
+`FUTURE`, `TODAY` or `HISTORY`. Every date-dependent control and every
+date-scoped action reads it, so the header, the task list and the timer cannot
+partition the space differently — which they previously did, one testing
+`== today` and the other `< today`, leaving future dates fully live.
+
+```
+selected_date ──▶ date_mode ──▶ FUTURE   not selectable; no request; no action
+                               TODAY    live: Start/Stop, capture, tracking
+                               HISTORY  read-only: data shown, nothing mutable
+```
+
+The rule is enforced at both layers, because a hidden button is presentation
+and not a guarantee. `start_tracking` / `switch_tracking` / `stop_tracking`
+take `for_date` — the calendar day the *user* is acting on — and refuse
+anything that is not today, reporting it on `timer_error` so a refused action
+restores the row rather than stranding it on "Starting…". `for_date` is
+optional precisely so system-initiated stops (the idle popup's "Stop timer",
+recovery, reconciliation) are never blocked: they are not scoped to a browsed
+date, and refusing them would strand a running entry.
+
+Browsing dates is a filter over data. It never starts, stops, switches or
+re-anchors a session, and it never reaches the activity, app-usage, URL or
+screenshot trackers, all of which are driven solely by the timer's own
+lifecycle.
+
 > Naming: the tracking verbs are `start_tracking` / `stop_tracking` /
 > `switch_tracking`. `start()` and `stop()` belong to `BaseService` and are the
 > *service* lifecycle. Overloading them made `ServiceManager.start_all()` try to

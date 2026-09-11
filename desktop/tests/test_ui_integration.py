@@ -8,9 +8,12 @@ services is caught rather than discovered at runtime.
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from background_services.public_api import BackgroundApi
+from core.time_format import ist_today
 
 
 @pytest.fixture
@@ -257,6 +260,187 @@ def test_topbar_starts_unknown_rather_than_claiming_online(qapp):
     bar = TopBar()
     assert bar._status_dot.toolTip() == "Checking…"
     bar.deleteLater()
+
+
+# ── Date navigation, end to end ──────────────────────────────────────────────
+#
+# The unit-level rules live in test_date_access_control.py. These drive the
+# whole path -- top bar -> dashboard -> task list + Activity panel + the real
+# TimerService -- because the defect was a wiring one: the header and the task
+# list each held their own idea of what the selected date meant, and the timer
+# held none at all.
+
+def test_selecting_a_past_date_takes_the_whole_window_with_it(dashboard, runtime):
+    runtime.cache.cache_projects([PROJECT])
+    runtime.cache.cache_tasks(1, TASKS)
+    dashboard.on_login({"id": 1, "role_name": "member"})
+    dashboard._on_project_selected(PROJECT)
+
+    yesterday = ist_today() - timedelta(days=1)
+    dashboard._topbar._set_selected_date(yesterday)
+
+    assert dashboard._current_date == yesterday
+    assert dashboard._task_section._viewing_date == yesterday
+    assert dashboard._activity_section.selected_date == yesterday
+    assert all(row._readonly for row in dashboard._task_section._task_rows)
+
+
+def test_returning_to_today_restores_live_controls_everywhere(dashboard, runtime):
+    runtime.cache.cache_projects([PROJECT])
+    runtime.cache.cache_tasks(1, TASKS)
+    dashboard.on_login({"id": 1, "role_name": "member"})
+    dashboard._on_project_selected(PROJECT)
+
+    dashboard._topbar._set_selected_date(ist_today() - timedelta(days=1))
+    dashboard._topbar._on_today_clicked()
+
+    assert dashboard._current_date == ist_today()
+    assert dashboard._activity_section.selected_date == ist_today()
+    assert all(not row._readonly for row in dashboard._task_section._task_rows)
+    assert dashboard._task_section._task_rows[0]._timer_btn.isVisibleTo(
+        dashboard._task_section
+    )
+
+
+def test_the_header_cannot_take_the_window_to_a_future_date(dashboard, runtime):
+    runtime.cache.cache_projects([PROJECT])
+    dashboard.on_login({"id": 1, "role_name": "member"})
+
+    dashboard._topbar._on_next_day()
+    dashboard._topbar._set_selected_date(ist_today() + timedelta(days=5))
+
+    assert dashboard._topbar.selected_date == ist_today()
+    assert dashboard._current_date == ist_today()
+    assert dashboard._activity_section.selected_date == ist_today()
+
+
+def test_a_future_date_delivered_straight_to_the_window_is_refused(dashboard, runtime):
+    """Defense in depth: the header cannot emit one, so this asserts the window
+    would not adopt it even if something else did."""
+    runtime.cache.cache_projects([PROJECT])
+    dashboard.on_login({"id": 1, "role_name": "member"})
+
+    dashboard._on_date_changed(ist_today() + timedelta(days=1))
+
+    assert dashboard._current_date == ist_today()
+    assert dashboard._task_section._viewing_date == ist_today()
+
+
+def test_no_time_entry_request_is_made_for_a_future_date(dashboard, runtime):
+    """A day that has not happened has no entries to return; asking is a round
+    trip whose only possible answer is the empty list."""
+    runtime.cache.cache_projects([PROJECT])
+    dashboard.on_login({"id": 1, "role_name": "member"})
+
+    assert dashboard._load_today_time(ist_today() + timedelta(days=1)) is False
+
+
+def test_starting_a_timer_is_impossible_while_a_past_date_is_shown(dashboard, runtime):
+    """Both layers together: the row's button is gone, and the service refuses
+    the request even when it is made directly."""
+    runtime.cache.cache_projects([PROJECT])
+    runtime.cache.cache_tasks(1, TASKS)
+    dashboard.on_login({"id": 1, "role_name": "member"})
+    dashboard._on_project_selected(PROJECT)
+    dashboard._topbar._set_selected_date(ist_today() - timedelta(days=1))
+
+    row = dashboard._task_section._task_rows[0]
+    dashboard._task_section._handle_start_request(row)
+    assert not runtime.timer.is_running()
+
+    # And past the widget entirely, straight at the action layer.
+    runtime.timer.start_tracking(1, 10, "Write the report",
+                                 for_date=ist_today() - timedelta(days=1))
+    assert not runtime.timer.is_running()
+
+
+def test_a_running_timer_survives_date_navigation_untouched(dashboard, runtime):
+    """Browsing history must not corrupt, reset, duplicate or reassign the
+    active session -- only which controls are reachable changes."""
+    runtime.cache.cache_projects([PROJECT])
+    runtime.cache.cache_tasks(1, TASKS)
+    dashboard.on_login({"id": 1, "role_name": "member"})
+    dashboard._on_project_selected(PROJECT)
+
+    dashboard._task_section._handle_start_request(dashboard._task_section._task_rows[0])
+    session_before = runtime.timer.active_session()
+
+    for day in (1, 3, 0, 2, 0):
+        dashboard._topbar._set_selected_date(ist_today() - timedelta(days=day))
+
+    session_after = runtime.timer.active_session()
+    assert runtime.timer.is_running()
+    assert session_after["task_id"] == session_before["task_id"]
+    assert session_after["started_at_utc"] == session_before["started_at_utc"]
+    assert session_after["client_op"] == session_before["client_op"]
+
+
+def test_stopping_is_refused_from_a_past_date_and_works_again_from_today(
+    dashboard, runtime
+):
+    runtime.cache.cache_projects([PROJECT])
+    runtime.cache.cache_tasks(1, TASKS)
+    dashboard.on_login({"id": 1, "role_name": "member"})
+    dashboard._on_project_selected(PROJECT)
+
+    row = dashboard._task_section._task_rows[0]
+    dashboard._task_section._handle_start_request(row)
+
+    dashboard._topbar._set_selected_date(ist_today() - timedelta(days=1))
+    dashboard._task_section._handle_stop_request(row)
+    assert runtime.timer.is_running(), "a read-only date stopped a live timer"
+
+    dashboard._topbar._on_today_clicked()
+    dashboard._task_section._handle_stop_request(
+        dashboard._task_section._task_rows[0]
+    )
+    assert not runtime.timer.is_running()
+
+
+def test_switching_dates_quickly_leaves_the_window_on_the_final_date(
+    dashboard, runtime
+):
+    """The stale-response race, driven from the top: whatever happens in
+    between, every date-scoped surface must agree on the last date chosen."""
+    runtime.cache.cache_projects([PROJECT])
+    dashboard.on_login({"id": 1, "role_name": "member"})
+
+    yesterday = ist_today() - timedelta(days=1)
+    for day in (yesterday, ist_today(), yesterday, ist_today()):
+        dashboard._topbar._set_selected_date(day)
+
+    assert dashboard._current_date == ist_today()
+    assert dashboard._task_section._viewing_date == ist_today()
+    assert dashboard._activity_section.selected_date == ist_today()
+
+    for day in (ist_today(), yesterday):
+        dashboard._topbar._set_selected_date(day)
+
+    assert dashboard._current_date == yesterday
+    assert dashboard._task_section._viewing_date == yesterday
+    assert dashboard._activity_section.selected_date == yesterday
+
+
+def test_a_late_time_entry_response_is_written_against_its_own_date(
+    dashboard, runtime
+):
+    """Each day's entries are cached under that day's key, so a reply that
+    lands after the user has moved on cannot be filed as the new day's."""
+    runtime.cache.cache_projects([PROJECT])
+    dashboard.on_login({"id": 1, "role_name": "member"})
+    yesterday = ist_today() - timedelta(days=1)
+
+    dashboard._topbar._set_selected_date(yesterday)
+    dashboard._topbar._on_today_clicked()
+
+    # The reply for yesterday's request, arriving now.
+    dashboard._apply_time_entries(
+        [{"id": 1, "task_id": 10, "total_seconds": 60, "status": "stopped"}],
+        yesterday,
+    )
+
+    assert runtime.cache.get_cached_time_entries(yesterday.isoformat())
+    assert not runtime.cache.get_cached_time_entries(ist_today().isoformat())
 
 
 def test_sidebar_pagination_handles_many_projects(qapp):

@@ -16,6 +16,7 @@ Everything here is a thin, intention-revealing call onto the runtime.
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Callable, Dict, Optional
 
 from background_services.activity.app_usage import build_app_usage_summary
@@ -91,21 +92,56 @@ class BackgroundApi:
         """
         return self._runtime.timer
 
-    def start_timer(self, project_id: int, task_id: int, task_name: Optional[str] = None) -> None:
-        self._runtime.timer.start_tracking(project_id, task_id, task_name)
+    def start_timer(
+        self,
+        project_id: int,
+        task_id: int,
+        task_name: Optional[str] = None,
+        *,
+        for_date: Optional[date] = None,
+    ) -> None:
+        """Start tracking a task.
 
-    def stop_timer(self, notify_backend: bool = True) -> None:
+        `for_date` is the calendar day the user is acting on — the date the
+        header is showing. Tracked time only ever runs against today, so the
+        service refuses anything else and says so through `timer_error`. Pass
+        it from every user-facing path: the disabled button is the first layer
+        of that rule, and this is the layer that holds when a queued signal, a
+        shortcut or a later caller gets past it. Omit it only for
+        system-initiated actions, which are not scoped to a browsed date.
+        """
+        self._runtime.timer.start_tracking(
+            project_id, task_id, task_name, for_date=for_date
+        )
+
+    def stop_timer(
+        self, notify_backend: bool = True, *, for_date: Optional[date] = None
+    ) -> None:
         """Stop tracking.
 
         `notify_backend=False` is only for the case where the backend has
         already stopped the entry itself — resolving an idle period with
         "Stop timer" does exactly that — so a second stop request would
-        merely conflict with the one already applied.
+        merely conflict with the one already applied. That path is
+        system-initiated and passes no `for_date`; see `start_timer` for what
+        the argument means and when to pass it.
         """
-        self._runtime.timer.stop_tracking(notify_backend=notify_backend)
+        self._runtime.timer.stop_tracking(
+            notify_backend=notify_backend, for_date=for_date
+        )
 
-    def switch_timer(self, project_id: int, task_id: int, task_name: Optional[str] = None) -> None:
-        self._runtime.timer.switch_tracking(project_id, task_id, task_name)
+    def switch_timer(
+        self,
+        project_id: int,
+        task_id: int,
+        task_name: Optional[str] = None,
+        *,
+        for_date: Optional[date] = None,
+    ) -> None:
+        """Stop whatever is tracking and start this task. Same date rule."""
+        self._runtime.timer.switch_tracking(
+            project_id, task_id, task_name, for_date=for_date
+        )
 
     def timer_elapsed_seconds(self) -> int:
         return self._runtime.timer.elapsed_seconds()

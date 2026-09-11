@@ -82,6 +82,39 @@ def test_every_tab_fetches_the_same_selected_day(qapp):
     assert params["date"] == yesterday.isoformat()
 
 
+def test_moving_between_two_historical_days_re_asks_all_three_tabs(qapp):
+    """Each hop must re-scope every tab. A tab left on the previous day would
+    show one date's rows under another's heading -- the exact confusion the
+    single selected date exists to prevent."""
+    section = _make_section()
+    for offset in (1, 3, 5):
+        day = ist_today() - timedelta(days=offset)
+        section.set_selected_date(day)
+
+        assert section.selected_date == day
+        assert section.api.app_usage_summary.call_args.args[0] == day
+        assert section.api.url_usage_summary.call_args.args[0] == day
+
+
+def test_an_empty_historical_day_shows_the_empty_state_not_an_error(qapp):
+    section = _make_section()
+    section.set_selected_date(ist_today() - timedelta(days=2))
+
+    assert section.view_apps._mode == MODE_EMPTY
+    assert section.view_urls._mode == MODE_EMPTY
+    assert section.view_ss._mode == MODE_EMPTY
+
+
+def test_coming_back_to_today_re_scopes_every_tab_to_today(qapp):
+    section = _make_section()
+    section.set_selected_date(ist_today() - timedelta(days=2))
+    section.set_selected_date(ist_today())
+
+    assert section.selected_date == ist_today()
+    assert section.api.app_usage_summary.call_args.args[0] == ist_today()
+    assert section.api.url_usage_summary.call_args.args[0] == ist_today()
+
+
 def test_the_screenshot_timeline_is_asked_for_one_day_not_all_of_history(qapp):
     """The endpoint's own IST date filter, so only the selected day's captures
     cross the wire."""

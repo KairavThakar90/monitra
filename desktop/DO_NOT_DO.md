@@ -272,6 +272,51 @@ if self._current_project.get("id") != project_id:
 matches, so user A's slow response cannot mutate user B's session after a
 logout/login.
 
+### ❌ Do not decide a three-way rule with a two-way comparison
+
+```python
+# The task list's read-only test
+readonly = target_date < ist_today()
+```
+
+A selected date is one of three things — future, today, or history — and `<`
+answers only one of them. `tomorrow < today` is false, so a **future** date
+read as "not history" and kept the live Start/Stop controls on a day nothing
+could possibly have been tracked on. The same two-way shape appeared in the top
+bar (`selected == ist_today()`), so the two components partitioned different
+spaces and could not agree.
+
+**Instead:** `core/date_mode.py` returns `FUTURE` / `TODAY` / `HISTORY` from one
+place, and every control and every action reads it. `is_live_date()` is the
+single predicate that gates anything live.
+
+### ❌ Do not let a disabled control be the only thing enforcing a rule
+
+`TimerService` had no date rule at all: the only thing standing between a
+browsed historical date and a live time entry was a hidden button. A hidden
+button is a presentation detail — a queued click delivered after the widget
+changed state, a rebuilt row, a keyboard path or a later caller reaches the
+method regardless.
+
+**Instead:** the rule also lives at the layer that mutates tracked time.
+`start_tracking` / `switch_tracking` / `stop_tracking` take `for_date`, the day
+the user is acting on, and refuse anything that is not today. The switch checks
+it **before** stopping the running timer, or a refused switch would end a live
+session and then decline to start the replacement.
+
+### ❌ Do not cache a verdict that depends on the current date
+
+A window is left open overnight. A boolean computed when the date was selected
+still says "this is today" the next morning, so the live controls stay on a day
+that is now history — and the reverse trap is worse: a user parked on the day
+that just became yesterday finds **Stop** disabled with their timer still
+running and no control left to stop it.
+
+**Instead:** evaluate `is_live_date()` at the moment of the action, and let the
+top bar's rollover watchdog carry a selection that *was* today forward onto the
+new today. The watchdog is edge-triggered — it emits only when the day actually
+changes, never on a tick of an unchanged one.
+
 ### ❌ Do not present mock data as if it were the user's own
 
 ```python

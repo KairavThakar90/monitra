@@ -46,8 +46,12 @@ from ui.styles import (
     BUTTON_GRADIENT_REVERSED, BUTTON_GRADIENT_REVERSED_HOVER,
     ACTIVE_ROW_BORDER,
 )
+from core.date_mode import as_calendar_day, is_live_date
+from core.logging_setup import get_logger
 from core.time_format import format_hms, ist_today
 
+
+log = get_logger("ui.tasks")
 
 #: The one authoritative duration formatter (core.time_format.format_hms).
 #: Widgets must not keep private copies of duration formatting.
@@ -1021,8 +1025,8 @@ class TaskRow(QFrame):
         #: Seconds elapsed in the *current* session, supplied by the
         #: TimerService. The row never increments this itself.
         self._session_elapsed = 0
-        #: True while viewing a past date: Start/Stop is hidden for every
-        #: task, since a historical day is a read-only view. Set at
+        #: True whenever the viewed day is not today: Start/Stop is hidden for
+        #: every task, since only the live day may be tracked against. Set at
         #: construction and kept current afterwards via set_readonly().
         self._readonly = readonly
         #: Column pixel widths shared with the header (see COLUMN_* at the
@@ -1288,9 +1292,10 @@ class TaskRow(QFrame):
     def set_readonly(self, readonly: bool) -> None:
         """Show/hide Start/Stop for this row without touching timer state.
 
-        Called when the viewed date changes to/from a past date. A timer
-        that is already running keeps running regardless -- this only
-        controls whether this row's own button is reachable.
+        Called when the viewed date changes to or from today. A timer that is
+        already running keeps running regardless -- this only controls whether
+        this row's own button is reachable. Browsing dates must never start,
+        stop, reassign or reset tracking.
         """
         if readonly == self._readonly:
             return
@@ -1476,10 +1481,17 @@ class TaskSection(QWidget):
         self._search_text = ""
         self.user_role = None
         self._has_loaded_tasks = False
-        #: True while the top bar's selected date is before today. Read-only
-        #: view of history: Start/Stop is hidden on every row regardless of
-        #: whether a timer happens to be running elsewhere.
-        self._viewing_past_date = False
+        #: The calendar day the window is showing, and whether that makes this
+        #: list read-only. Only today is live: a past day is finished history
+        #: and a future day cannot be tracked against at all, so both hide
+        #: Start/Stop on every row regardless of whether a timer happens to be
+        #: running elsewhere.
+        #:
+        #: The flag is the *rendered* state; every action re-derives the rule
+        #: from `self._viewing_date` at the moment it runs, so a window left
+        #: open across midnight cannot act on a stale verdict.
+        self._viewing_date: date = ist_today()
+        self._readonly_date = False
         #: Every project the user can see, for the manual-entry dialog's
         #: project dropdown -- distinct from self._tasks/self._project, which
         #: only ever cover the one project currently displayed.
@@ -1720,15 +1732,30 @@ class TaskSection(QWidget):
     def set_viewing_date(self, target_date) -> None:
         """Called whenever the top bar's selected date changes.
 
-        A past date is a read-only view of history: Start/Stop is hidden on
-        every row. Today keeps the normal, unchanged behavior. Rows already
-        on screen are updated in place; new rows built afterwards (search,
-        project switch) pick up the current value from self._viewing_past_date.
+        Only today is live. A past date is a read-only view of history and a
+        future date is one nothing could have been tracked on, so both hide
+        Start/Stop on every row. This used to test `target_date < ist_today()`,
+        which is false for tomorrow — so a future day read as "not history" and
+        kept the live controls. `is_live_date` partitions all three cases.
+
+        Rows already on screen are updated in place; rows built afterwards (a
+        search, a project switch) pick the current value up from
+        `self._readonly_date`.
+
+        An unreadable date is refused rather than defaulted: the viewed day
+        gates tracking, and quietly treating a value nobody could parse as
+        today is exactly the kind of fallback that hands a live Start button to
+        a day the user never selected.
         """
-        readonly = target_date < ist_today()
-        if readonly == self._viewing_past_date:
+        day = as_calendar_day(target_date)
+        if day is None:
+            log.warning("ignoring an unreadable viewing date: %r", target_date)
             return
-        self._viewing_past_date = readonly
+        self._viewing_date = day
+        readonly = not is_live_date(day)
+        if readonly == self._readonly_date:
+            return
+        self._readonly_date = readonly
         for row in self._task_rows:
             row.set_readonly(readonly)
 
@@ -1852,7 +1879,7 @@ class TaskSection(QWidget):
                 project_name=project_name,
                 project_color=color,
                 is_running=(task.get("id") == self._running_task_id),
-                readonly=self._viewing_past_date,
+                readonly=self._readonly_date,
                 column_widths=self._column_widths,
                 parent=self._rows_container,
             )
@@ -1929,9 +1956,14 @@ class TaskSection(QWidget):
     # state and the durability, and publishes it back through signals.
 
     def _handle_start_request(self, row: TaskRow) -> None:
-        # The button that emits this is hidden while viewing a past date;
-        # this is defense in depth against a stray/queued signal.
-        if self._viewing_past_date:
+        # Three layers, and the button is only the first of them. It is hidden
+        # unless today is on screen; this check re-derives the same rule from
+        # the clock, so a stray or queued signal cannot ride a stale flag; and
+        # `for_date` carries the day the user is acting on down to TimerService,
+        # which refuses anything that is not today at the action layer. A
+        # disabled control is a courtesy, not a guarantee.
+        if not is_live_date(self._viewing_date):
+            log.info("refusing to start tracking: %s is not today", self._viewing_date)
             return
         task_id = row.task.get("id")
         if task_id is None:
@@ -1940,13 +1972,16 @@ class TaskSection(QWidget):
         row.set_pending("Starting…")
         # switch() handles both "nothing running" and "something else running";
         # the service serialises stop-then-start so the two can never race.
-        self.api.switch_timer(row.project_id, task_id, task_name)
+        self.api.switch_timer(
+            row.project_id, task_id, task_name, for_date=self._viewing_date
+        )
 
     def _handle_stop_request(self, row: TaskRow) -> None:
-        if self._viewing_past_date:
+        if not is_live_date(self._viewing_date):
+            log.info("refusing to stop tracking: %s is not today", self._viewing_date)
             return
         row.set_pending("Stopping…")
-        self.api.stop_timer()
+        self.api.stop_timer(for_date=self._viewing_date)
 
     # ── TimerService subscriptions ────────────────────────────────────────────
 
@@ -2007,13 +2042,13 @@ class TaskSection(QWidget):
         """
         Render the elapsed seconds reported by the service.
 
-        Skipped while viewing a past date: that row's base is the historical
-        completed-hours total for the viewed date (set by
+        Skipped while any day other than today is on screen: that row's base is
+        the completed-hours total for the viewed date (set by
         update_tasks_tracked_times), and folding today's live `elapsed` onto
         it would mix the two. The row keeps showing its completed total,
         unticking, until the user navigates back to today.
         """
-        if self._running_task_id is None or self._viewing_past_date:
+        if self._running_task_id is None or not is_live_date(self._viewing_date):
             return
         for row in self._task_rows:
             if row.task.get("id") == self._running_task_id:
