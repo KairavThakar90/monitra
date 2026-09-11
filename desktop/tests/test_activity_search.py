@@ -117,7 +117,7 @@ def test_a_site_is_found_by_its_title(qapp):
 
 def test_a_site_is_found_by_its_domain(qapp):
     view = _urls_view()
-    view.set_filter("github.com")
+    view.set_filter("github.com") 
 
     assert _names_on_screen(view, URLRowWidget) == ["GitHub"]
 
