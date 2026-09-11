@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
+from app.api.exceptions import redact_urls
 from app.auth.service import AuthService
 from core.branding import logo_pixmap
 from core.validation import (
@@ -369,7 +370,12 @@ class LoginWindow(QWidget):
     def _on_login_error(self, error_message: str) -> None:
         self._login_in_flight = False
         self._set_loading(False)
-        self._set_message(error_message)
+        # The message is shown verbatim, so it is redacted here rather than
+        # trusted. This handler receives str() of *any* exception -- including
+        # ones raised below the API client and text echoed from a backend
+        # `detail` -- and this screen is the one most likely to be read over a
+        # user's shoulder. The endpoint is in the log for support.
+        self._set_message(redact_urls(error_message))
 
     def reset(self) -> None:
         """Clear inputs when returning to login screen."""

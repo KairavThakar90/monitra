@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Optional
 
 
@@ -42,28 +43,79 @@ def error_detail(response_body: Optional[str], fallback: str = "") -> str:
     return fallback
 
 
+#: What a redacted address is called in a user-facing message.
+URL_PLACEHOLDER = "the server"
+
+#: Any ``scheme://rest`` run of non-space characters. Deliberately broad: the
+#: point is that nothing address-shaped reaches a user, not that we parse URLs.
+_URL_PATTERN = re.compile(r"""[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s'"<>]*""")
+
+#: Trailing characters that belong to the sentence, not to the address.
+_TRAILING_PUNCTUATION = ".,;:!?)]}'\""
+
+
+def redact_urls(text: str, placeholder: str = URL_PLACEHOLDER) -> str:
+    """Replace every URL in `text` with `placeholder`.
+
+    A user has no use for an endpoint, and showing one leaks internal
+    infrastructure to anyone standing behind them -- the sign-in screen once
+    printed the full authentication provider URL in red under the password
+    field, on a timeout.
+
+    Applied where a message is *displayed*, as a net under the messages
+    themselves: a string can arrive from the backend's own ``detail`` or from
+    an unexpected exception, and neither is under this client's control.
+
+    Sentence punctuation immediately after the address is preserved, so
+    "Request to https://host/x timed out." reads "Request to the server timed
+    out." rather than losing the full stop.
+    """
+    if not text:
+        return text
+
+    def _swap(match: "re.Match[str]") -> str:
+        url = match.group(0)
+        trailing = ""
+        while url and url[-1] in _TRAILING_PUNCTUATION:
+            trailing = url[-1] + trailing
+            url = url[:-1]
+        return placeholder + trailing
+
+    return _URL_PATTERN.sub(_swap, text)
+
+
 class ApiError(Exception):
-    """Base exception class for all SMS Desktop API client errors."""
-    
-    def __init__(self, message: str, status_code: Optional[int] = None) -> None:
+    """Base exception class for all SMS Desktop API client errors.
+
+    `message` is user-facing: every caller from the sign-in screen down shows
+    it verbatim when it has nothing better. The endpoint that failed therefore
+    lives in `url`, which is for logs and diagnostics only and is never
+    formatted into `message`.
+    """
+
+    def __init__(self, message: str, status_code: Optional[int] = None,
+                 url: Optional[str] = None) -> None:
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+        self.url = url
 
 
 class ApiConnectionError(ApiError):
     """Raised when there is a connection failure or network error."""
-    
-    def __init__(self, message: str, original_exception: Optional[Exception] = None) -> None:
-        super().__init__(message)
+
+    def __init__(self, message: str, original_exception: Optional[Exception] = None,
+                 url: Optional[str] = None) -> None:
+        super().__init__(message, url=url)
         self.original_exception = original_exception
 
 
 class ApiTimeoutError(ApiError):
     """Raised when an API request times out."""
-    
-    def __init__(self, message: str, original_exception: Optional[Exception] = None) -> None:
-        super().__init__(message)
+
+    def __init__(self, message: str, original_exception: Optional[Exception] = None,
+                 url: Optional[str] = None) -> None:
+        super().__init__(message, url=url)
         self.original_exception = original_exception
 
 
