@@ -1586,8 +1586,30 @@ class DashboardWindow(QWidget):
     def _on_active_timer_checked(self, active_entry: Optional[dict]) -> None:
         if not active_entry or "id" not in active_entry:
             return
+        # The backend calls an entry `running` until our stop reaches it. While
+        # that stop is still in the durable queue, adopting the entry would put
+        # a timer the user has already stopped back on screen, counting from
+        # its original start.
+        if self._has_queued_stop(active_entry.get("id")):
+            log.info(
+                "ignoring backend-running entry %s: its stop is still queued here",
+                active_entry.get("id"),
+            )
+            return
         self._pending_active_timer = active_entry
         self._apply_active_timer_if_ready()
+
+    def _has_queued_stop(self, entry_id) -> bool:
+        cache = getattr(self.api, "cache", None)
+        if cache is None or entry_id is None:
+            return False
+        try:
+            return cache.has_pending_stop_for_entry(entry_id)
+        except Exception:  # noqa: BLE001
+            # A cache that cannot answer must not block the reconciliation it
+            # is only advising.
+            log.exception("could not check for a queued stop of entry %s", entry_id)
+            return False
 
     def _apply_active_timer_if_ready(self) -> None:
         """
