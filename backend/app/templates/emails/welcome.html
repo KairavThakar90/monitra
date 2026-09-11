@@ -1,0 +1,42 @@
+<!--
+  Welcome to Monitra — sent once, when an account is first provisioned.
+
+  No credential, no token and no link that signs anybody in appears here. The
+  call to action is an ordinary link to the product, and it is rendered only
+  when MONITRA_APP_URL holds a real URL: `cta_block` is empty markup otherwise,
+  because a button that goes nowhere is worse than no button.
+-->
+<h1 class="st-h1" style="margin:0 0 14px 0;font-family:Helvetica,Arial,sans-serif;font-size:30px;line-height:38px;font-weight:700;color:#0F172A;letter-spacing:-0.4px;">
+  Welcome to Monitra
+</h1>
+
+<p style="margin:0 0 20px 0;font-family:Helvetica,Arial,sans-serif;font-size:16px;line-height:26px;color:#374151;">
+  {{ greeting }} Your Monitra workspace is ready.
+</p>
+
+<p style="margin:0 0 26px 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:25px;color:#4B5563;">
+  Monitra is the staff management system your team uses to track working time, keep
+  projects and tasks moving, and see how the working day actually went. It runs quietly
+  in the background while you work, so the record builds itself instead of being
+  reconstructed at the end of the week.
+</p>
+
+<!-- Feature cards. A table, not flexbox: no email client can be relied on for
+     modern layout, and a two-column table degrades to stacked rows on mobile
+     through the media query in the frame. -->
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 26px 0;">
+  <tr>
+    <td class="st-card" style="padding:16px 18px;background-color:#F8FAFC;border:1px solid #E8ECF3;border-radius:10px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+        {{ feature_rows }}
+      </table>
+    </td>
+  </tr>
+</table>
+
+{{ cta_block }}
+
+<p style="margin:24px 0 0 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:25px;color:#4B5563;">
+  There is nothing to set up. Sign in to the Monitra desktop app, start your first timer,
+  and everything else follows from there.
+</p>

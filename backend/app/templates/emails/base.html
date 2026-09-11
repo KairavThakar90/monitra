@@ -1,0 +1,82 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="x-apple-disable-message-reformatting" />
+<meta name="color-scheme" content="light" />
+<meta name="supported-color-schemes" content="light" />
+<title>{{ subject }}</title>
+<!--
+  Every rule that matters is inline on the element it applies to: Gmail's web
+  client strips <style> from a forwarded message, and several clients never
+  supported it at all. What lives here is only the progressive enhancement —
+  the stacking behaviour on a narrow screen — which is safe to lose.
+-->
+<style type="text/css">
+  @media only screen and (max-width: 620px) {
+    .st-container { width: 100% !important; }
+    .st-pad { padding-left: 22px !important; padding-right: 22px !important; }
+    .st-stack { display: block !important; width: 100% !important; text-align: center !important; padding: 0 0 14px 0 !important; }
+    .st-stack img { margin-left: auto !important; margin-right: auto !important; }
+    .st-h1 { font-size: 26px !important; line-height: 34px !important; }
+    .st-card { padding: 18px !important; }
+    .st-cta a { display: block !important; }
+  }
+</style>
+</head>
+<body style="margin:0;padding:0;background-color:#F4F6FA;-webkit-font-smoothing:antialiased;">
+<!--
+  The preheader is the grey line a client prints next to the subject in the
+  inbox list. Hidden in the body, and padded so the client does not pull the
+  first sentence of the email in after it.
+-->
+<div style="display:none;font-size:1px;color:#F4F6FA;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">{{ preheader }}&#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847; &#8199;&#65279;&#847;</div>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#F4F6FA;">
+  <tr>
+    <td align="center" style="padding:28px 12px 40px 12px;">
+
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" class="st-container" style="width:600px;max-width:600px;background-color:#FFFFFF;border-radius:14px;border:1px solid #E4E8EF;overflow:hidden;">
+
+        <!-- Header: the two brands this email comes from. -->
+        <tr>
+          <td class="st-pad" style="padding:24px 32px;background-color:#FFFFFF;border-bottom:1px solid #EDF0F5;">
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+              <tr>
+                <td class="st-stack" align="left" valign="middle" style="vertical-align:middle;">{{ store_transform_brand }}</td>
+                <td class="st-stack" align="right" valign="middle" style="vertical-align:middle;text-align:right;">{{ monitra_brand }}</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- A thin brand rule, drawn as a background colour so it renders in
+             clients that drop CSS gradients. -->
+        <tr><td style="height:3px;line-height:3px;font-size:0;background-color:#3B82F6;">&nbsp;</td></tr>
+
+        <tr>
+          <td class="st-pad" style="padding:32px;">
+            {{ content }}
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td class="st-pad" style="padding:22px 32px 26px 32px;background-color:#F8FAFC;border-top:1px solid #EDF0F5;">
+            <p style="margin:0 0 8px 0;font-family:Helvetica,Arial,sans-serif;font-size:13px;line-height:20px;color:#6B7280;">{{ footer_note }}</p>
+            {{ support_block }}
+            <p style="margin:12px 0 0 0;font-family:Helvetica,Arial,sans-serif;font-size:12px;line-height:18px;color:#9AA3AF;">
+              <strong style="color:#4B5563;">Monitra</strong> &nbsp;&middot;&nbsp; Staff Management System<br />
+              &copy; {{ year }} <strong style="color:#4B5563;">Store Transform</strong>. All rights reserved.
+            </p>
+          </td>
+        </tr>
+
+      </table>
+
+    </td>
+  </tr>
+</table>
+</body>
+</html>
