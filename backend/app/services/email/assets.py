@@ -43,10 +43,12 @@ ASSET_DIR = Path(__file__).resolve().parents[2] / "assets" / "email"
 #: render unpredictably against the varying backgrounds mail clients apply.
 MONITRA_LOGO = "monitra-logo.png"
 
-#: The Store Transform company logo. Optional on disk — see the module
-#: docstring. Drop the official artwork at
-#: `backend/app/assets/email/store-transform-logo.png`, prepared the same way,
-#: and both templates pick it up with no code change.
+#: The Store Transform company logo, as published at
+#: storetransform.com/wp-content/uploads/2023/06/store-logo.png — trimmed and
+#: flattened onto white. It is 201px wide, which is the largest the company
+#: publishes, so it is drawn at 130px rather than half its width: the honest
+#: ceiling on what this artwork can do. Replace the file with a larger export
+#: and the display width below can go up with it.
 STORE_TRANSFORM_LOGO = "store-transform-logo.png"
 
 #: Largest asset that may be embedded in a message. A logo is a few tens of
@@ -137,7 +139,7 @@ def monitra_logo() -> Optional[EmailLogo]:
 
 
 def store_transform_logo() -> Optional[EmailLogo]:
-    return logo(STORE_TRANSFORM_LOGO, alt="Store Transform", width=140)
+    return logo(STORE_TRANSFORM_LOGO, alt="Store Transform", width=130)
 
 
 def asset_path(filename: str) -> Optional[Path]:

@@ -379,7 +379,7 @@ class TestFeedbackEmailContent(unittest.TestCase):
         html = self.build().html
         for expected in (
             "FB-17", "42", "priya", "Priya Raman", "priya@example.com", "employee",
-            "Report a Problem", "Monitra Desktop",
+            "Report a Problem",
             "The timer resets when I resume from sleep.",
         ):
             self.assertIn(expected, html, f"the feedback email must show {expected!r}")
@@ -411,6 +411,62 @@ class TestFeedbackEmailContent(unittest.TestCase):
         self.assertIn("FB-17", text)
         self.assertIn("Priya Raman", text)
         self.assertIn("The timer resets when I resume from sleep.", text)
+
+    def test_the_source_row_is_not_shown(self):
+        # The summary and the footer both already say it came from Monitra
+        # Desktop; a third copy of a value identical on every notification is
+        # noise. It stays in the payload for a future non-desktop client.
+        message = self.build()
+        self.assertNotIn(">Source<", message.html)
+        self.assertNotIn("Source     ", message.text)
+
+    def test_the_inbox_shows_who_submitted_it(self):
+        # "who is this from" in a shared mailbox means the submitter, not the
+        # mailbox the notification was sent from.
+        self.assertEqual(self.build().from_name, "Priya Raman via Monitra")
+
+    def test_replying_reaches_the_person_who_wrote_in(self):
+        self.assertEqual(self.build().reply_to, "priya@example.com")
+
+    def test_the_sending_address_is_never_the_submitters(self):
+        """The From *address* stays the authenticated mailbox.
+
+        Putting the submitter's address there is spoofing: SPF and DMARC
+        authorise this deployment to send only as its own sender, and a
+        receiving server either rejects the message or files it as spam. The
+        submitter is named in the display name and reachable through Reply-To.
+        """
+        with email_settings():
+            mime = build_mime_message(self.build())
+        self.assertIn("monitra@example.com", mime["From"])
+        self.assertIn("Priya Raman via Monitra", mime["From"])
+        self.assertNotIn("priya@example.com", mime["From"])
+        self.assertEqual(mime["Reply-To"], "priya@example.com")
+
+    def test_a_submitter_without_an_address_falls_back_rather_than_breaking(self):
+        with email_settings(EMAIL_REPLY_TO="support@example.com"):
+            message = messages.build_feedback_email({
+                "feedback_id": 17, "category": "other", "message": "hi",
+                "submitted_at": "2026-09-10T12:00:00+00:00",
+            }, ["admin@example.com"])
+        self.assertEqual(message.reply_to, "support@example.com")
+        self.assertEqual(message.from_name, "Monitra")
+
+    def test_an_unusable_submitter_address_never_becomes_a_reply_to(self):
+        # A Reply-To that does not parse is worse than none: the client
+        # silently refuses to send.
+        self.assertIsNone(self.build(user_email="not-an-address").reply_to)
+
+    def test_a_submitter_name_cannot_inject_a_header_through_the_display_name(self):
+        with email_settings():
+            mime = build_mime_message(self.build(user_name="Priya\nBcc: x@evil.com"))
+        self.assertIsNone(mime["Bcc"])
+        self.assertEqual(len(mime.get_all("From")), 1)
+
+    def test_the_welcome_email_is_still_sent_as_monitra_itself(self):
+        with email_settings():
+            message = messages.build_welcome_email({"user_id": 1, "name": "A"}, ["a@x.com"])
+        self.assertIsNone(message.from_name)
 
 
 class TestUserContentIsEscaped(unittest.TestCase):
@@ -959,12 +1015,22 @@ class TestDispatchEndpointAuthorisation(unittest.TestCase):
 
 class TestEmailAssets(unittest.TestCase):
 
-    def test_the_monitra_logo_is_installed_and_email_sized(self):
+    def test_both_logos_are_installed_and_email_sized(self):
         from app.services.email import assets
 
-        data = assets._read_asset(assets.MONITRA_LOGO)
-        self.assertIsNotNone(data, "the Monitra logo must ship with the backend")
-        self.assertLess(len(data), assets.MAX_ASSET_BYTES)
+        for filename in (assets.MONITRA_LOGO, assets.STORE_TRANSFORM_LOGO):
+            data = assets._read_asset(filename)
+            self.assertIsNotNone(data, f"{filename} must ship with the backend")
+            self.assertLess(len(data), assets.MAX_ASSET_BYTES)
+
+    def test_both_brands_are_drawn_as_images_not_text(self):
+        with email_settings():
+            html = messages.build_feedback_email({
+                "feedback_id": 1, "category": "other", "message": "hi",
+                "submitted_at": "2026-09-10T12:00:00+00:00",
+            }, ["a@x.com"]).html
+        self.assertIn('src="cid:store-transform-logo"', html)
+        self.assertIn('src="cid:monitra-logo"', html)
 
     def test_a_missing_logo_renders_the_brand_as_text_rather_than_a_stand_in(self):
         from app.services.email.templates import brand_html

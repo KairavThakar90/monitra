@@ -20,7 +20,9 @@ from markupsafe import Markup
 from app.core.config import settings
 from app.core.time_format import IST, to_ist
 from app.services.email import assets
-from app.services.email.provider import OutgoingEmail, assert_header_safe
+from app.services.email.provider import (
+    EmailAddressError, OutgoingEmail, assert_header_safe, normalise_address,
+)
 from app.services.email.templates import (
     brand_html, detail_rows, paragraphs, render_page,
 )
@@ -294,12 +296,16 @@ def build_feedback_email(payload: dict[str, Any], recipients: list[str]) -> Outg
         ("Role", payload.get("user_role")),
         ("User ID", payload.get("user_id")),
     ])
+    # No "Source" row: the summary above and the footer both already say the
+    # feedback came from the Monitra desktop application, and a third copy of a
+    # value that is the same on every notification is noise. `source` stays in
+    # the payload, so a future notification from another client can still say
+    # which one it was.
     submission_rows = detail_rows([
         ("Feedback ID", reference),
         ("Category", label),
         ("Submitted on", day),
         ("Submitted at", clock),
-        ("Source", payload.get("source") or "Monitra Desktop"),
     ])
 
     html = render_page(
@@ -333,7 +339,6 @@ def build_feedback_email(payload: dict[str, Any], recipients: list[str]) -> Outg
         f"  Feedback   {reference or '-'}",
         f"  Category   {label}",
         f"  Submitted  {submitted}",
-        f"  Source     {payload.get('source') or 'Monitra Desktop'}",
         "",
         "Message",
         "-" * 48,
@@ -348,9 +353,44 @@ def build_feedback_email(payload: dict[str, Any], recipients: list[str]) -> Outg
         subject=subject,
         html=html,
         text="\n".join(text_lines),
-        reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
+        from_name=_sender_display_name(who),
+        reply_to=_reply_to(payload),
         inline_images=frame["_inline_images"],
     )
+
+
+def _sender_display_name(who: str) -> str:
+    """"Smit Prajapati via Monitra" — who the notification is *about*.
+
+    This is the display name only. The address stays the one mailbox this
+    deployment is authorised to send from; see `build_mime_message` for why
+    putting the submitter's address in `From` is not an option. "via Monitra"
+    is kept because the mail genuinely is from Monitra on that person's behalf,
+    and a reader who cannot tell the difference is a reader who has been misled
+    about where a message came from.
+    """
+    name = " ".join((who or "").split())
+    if not name or name == "a team member":
+        return settings.EMAIL_FROM_NAME or "Monitra"
+    return f"{name} via Monitra"
+
+
+def _reply_to(payload: dict[str, Any]) -> Optional[str]:
+    """The submitter's address, so Reply goes to the person who wrote in.
+
+    This is the part that actually answers "I want to reach the user who sent
+    it": hitting Reply on the notification opens a message to them, not to the
+    mailbox the notification was sent from. Falls back to EMAIL_REPLY_TO when
+    the submitter has no usable address — a Reply-To that does not parse is
+    worse than none, because a client will silently refuse to send.
+    """
+    candidate = str(payload.get("user_email") or "").strip()
+    if candidate:
+        try:
+            return normalise_address(candidate, field_label="Submitter email")
+        except EmailAddressError:
+            pass
+    return (settings.EMAIL_REPLY_TO or "").strip() or None
 
 
 #: Maps a notification type to the builder that renders it. The outbox is

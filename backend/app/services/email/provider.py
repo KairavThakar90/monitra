@@ -87,6 +87,11 @@ class OutgoingEmail:
     html: str
     text: str
     reply_to: Optional[str] = None
+    #: Overrides EMAIL_FROM_NAME for this message only — the *display* name
+    #: beside the sending address, never the address itself. This is how a
+    #: notification reads as "Smit Prajapati via Monitra" in the inbox while
+    #: still being sent by the one mailbox this system is allowed to send from.
+    from_name: Optional[str] = None
     inline_images: Sequence[InlineImage] = field(default_factory=tuple)
 
 
@@ -149,8 +154,16 @@ def build_mime_message(message: OutgoingEmail) -> EmailMessage:
     from_address = normalise_address(
         settings.EMAIL_FROM_ADDRESS, field_label="EMAIL_FROM_ADDRESS"
     )
+    # The display name may be per-message; the address never is. Every message
+    # is sent by the one mailbox this deployment authenticates as, because that
+    # is the only address SPF and DMARC authorise it to send from — putting
+    # somebody else's address in `From` is spoofing, and a receiving server
+    # either rejects it or files it as spam. Naming the person in the display
+    # name, and pointing `Reply-To` at them, achieves what a reader actually
+    # wants from "who is this from" without forging anything.
     from_name = assert_header_safe(
-        settings.EMAIL_FROM_NAME or "Monitra", field_label="EMAIL_FROM_NAME"
+        message.from_name or settings.EMAIL_FROM_NAME or "Monitra",
+        field_label="Sender name",
     )
     recipients = [normalise_address(address, field_label="Recipient") for address in message.to]
     if not recipients:
@@ -166,7 +179,7 @@ def build_mime_message(message: OutgoingEmail) -> EmailMessage:
     # the feedback notifications land in.
     mime["Auto-Submitted"] = "auto-generated"
     if message.reply_to:
-        mime["Reply-To"] = normalise_address(message.reply_to, field_label="EMAIL_REPLY_TO")
+        mime["Reply-To"] = normalise_address(message.reply_to, field_label="Reply-To")
 
     mime.set_content(message.text)
     mime.add_alternative(message.html, subtype="html")
