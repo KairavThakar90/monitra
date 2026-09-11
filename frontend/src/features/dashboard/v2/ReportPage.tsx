@@ -176,14 +176,17 @@ export const ReportPage: React.FC = () => {
       if (reportId === 'apps') { name = item.app_name || name; id = String(item.app_id || i); }
       if (reportId === 'urls') { name = item.url_name || name; id = String(item.url_id || i); }
       
+      // Exact seconds from the server, with `value` derived from them rather
+      // than from the 2dp hours. Rounded hours made a ring slice larger than
+      // the exact scope total it is divided by (one project rendered at
+      // 100.4%), and rounded a four-second visit down to 00:00:00 in the
+      // ranked list beside it while the ring showed its real share.
+      const seconds = item.total_seconds ?? Math.round((item.total_hours || 0) * 3600);
       return {
         id,
         name,
-        value: item.total_hours || 0,
-        // Exact, from the server. Deriving seconds from 2dp hours made a
-        // slice larger than the exact scope total it is divided by, and the
-        // Projects ring rendered a single project at 100.4%.
-        seconds: item.total_seconds ?? Math.round((item.total_hours || 0) * 3600),
+        value: seconds / 3600,
+        seconds,
         // Null activity means nothing was sampled, which is not 0%.
         secondary: item.avg_activity ?? null,
       };

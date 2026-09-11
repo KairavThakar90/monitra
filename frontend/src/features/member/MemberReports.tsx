@@ -134,12 +134,14 @@ export const MemberReports: React.FC = () => {
           name = item.url_name || name;
           id = String(item.url_id ?? index);
         }
+        // Exact seconds from the server, with `hours` derived from them --
+        // see the same block in ReportPage for what the rounded hours did.
+        const seconds = item.total_seconds ?? Math.round((item.total_hours || 0) * 3600);
         return {
           id,
           name,
-          hours: item.total_hours || 0,
-          // Exact, from the server -- see the same line in ReportPage.
-          seconds: item.total_seconds ?? Math.round((item.total_hours || 0) * 3600),
+          hours: seconds / 3600,
+          seconds,
           // Null means nothing was sampled, which is not 0% activity.
           activity: item.avg_activity ?? null,
         };
