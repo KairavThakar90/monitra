@@ -455,5 +455,93 @@ class CatalogueParityTests(unittest.TestCase):
                 seen[key] = canonical
 
 
+class WebIconParityTests(unittest.TestCase):
+    """The web client's icon map has to keep up with the catalogue.
+
+    `time_entry_app_usage.application_name` used to be the executable stem, and
+    `frontend/src/components/AppIcon.tsx` is keyed on exactly those stems.
+    Making the stored name canonical therefore cost several applications their
+    mark without anything failing: `pycharm` was in the icon map but
+    "JetBrains PyCharm" was not, so a row that had always shown the PyCharm
+    logo quietly dropped to a grey monogram tile.
+
+    The invariant is narrow: **if the icon map recognises any spelling of an
+    application, it must recognise that application's canonical name too.** It
+    deliberately does not demand a mark for every application in the catalogue
+    -- Safari, Canva and an in-house tool genuinely have none, and the neutral
+    monogram is the honest answer there rather than some other company's logo.
+
+    This check lives in the Python suite for the same reason the catalogue
+    parity check above does: it is the suite that already reads across layers,
+    and the frontend's `tsc` does not carry Node's filesystem types.
+    """
+
+    #: `AppIcon.normalize`, reproduced. Kept in step by `test_normalize_matches`.
+    @staticmethod
+    def _normalize(name: str) -> str:
+        import re
+
+        return re.sub(r"[^a-z0-9]", "", re.sub(r"\.exe$", "", name, flags=re.I), flags=re.I).lower()
+
+    @classmethod
+    def _icon_source(cls) -> str:
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "frontend" / "src" / "components" / "AppIcon.tsx"
+        )
+        if not path.exists():  # pragma: no cover - desktop-only checkout
+            raise unittest.SkipTest(f"web icon map not present at {path}")
+        return path.read_text(encoding="utf-8")
+
+    @classmethod
+    def _icon_aliases(cls) -> set:
+        import re
+
+        source = cls._icon_source()
+        block = source.split("const ALIASES: Record<string, string> = {")[1]
+        block = block.split("\n};")[0]
+        return set(re.findall(r"^ {2}([a-z0-9]+):", block, flags=re.M))
+
+    def test_the_icon_map_is_readable(self):
+        """A rename in AppIcon.tsx must fail loudly here, not silently pass."""
+        self.assertGreater(len(self._icon_aliases()), 50)
+
+    def test_normalize_matches_the_one_the_web_client_uses(self):
+        self.assertIn(
+            'name.replace(/\\.exe$/i, "").replace(/[^a-z0-9]/gi, "").toLowerCase()',
+            self._icon_source(),
+        )
+
+    def test_every_application_it_knew_is_still_known_by_its_canonical_name(self):
+        keys = self._icon_aliases()
+        missing = []
+        for canonical, aliases in APPLICATION_CATALOGUE.items():
+            known_by_alias = any(self._normalize(alias) in keys for alias in aliases)
+            if known_by_alias and self._normalize(canonical) not in keys:
+                missing.append(f"{canonical} -> {self._normalize(canonical)!r}")
+        self.assertEqual(
+            missing, [],
+            "These applications have an icon under their old executable name but "
+            "not under the canonical name now stored, so their rows render as a "
+            "blank monogram. Add the canonical key to ALIASES in AppIcon.tsx:\n  "
+            + "\n  ".join(missing),
+        )
+
+    def test_the_raw_stems_in_historical_rows_are_still_recognised(self):
+        """Rows written before the canonicalization release were renamed by the
+        data migration, but an installation that has not run it yet -- and any
+        desktop client that has not been updated -- still sends these."""
+        keys = self._icon_aliases()
+        for stem in ("chrome", "msedge", "firefox", "code", "explorer", "winword"):
+            self.assertIn(stem, keys, f"lost the icon alias for {stem!r}")
+
+    def test_monitra_is_not_drawn_with_another_project_s_logo(self):
+        """"python" mapped to Python's own mark, so this product was shown
+        under a language's logo. It has its own now."""
+        keys = self._icon_aliases()
+        self.assertIn("monitra", keys)
+        self.assertIn('monitra: { hex:', self._icon_source())
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
