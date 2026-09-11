@@ -49,6 +49,17 @@ STATUS_CANCELLED = "cancelled"
 #: the uniqueness key, so renaming one would let a second email through.
 TYPE_WELCOME = "welcome"
 TYPE_FEEDBACK = "feedback"
+#: "We are working on your feedback" / "Your feedback is resolved", sent to the
+#: person who submitted it when an administrator moves it through the workflow.
+#: Keyed `feedback:<id>:<status>`, so each state is announced at most once for
+#: a given piece of feedback however many times the button is pressed, while
+#: Working and Resolved remain two distinct, separately-deliverable events.
+#:
+#: A distinct type from TYPE_FEEDBACK, which is the inbound Admin/HR
+#: notification. They travel in opposite directions and to different people;
+#: sharing a type would have made the dedupe keys of an inbound notification
+#: and an outbound one collide in the same namespace.
+TYPE_FEEDBACK_STATUS = "feedback_status"
 #: "A new version of Monitra is available", announced once per user per
 #: version. Keyed on the *version*, never on the release row: one version is
 #: several rows (Windows, macOS arm64, macOS x86_64…) and publishing the second
