@@ -57,6 +57,10 @@ from ui.topbar import TopBar
 
 log = get_logger("dashboard")
 
+#: Which project the user was last in, so reopening the app lands on it with
+#: its cached tasks already drawn instead of on an empty task area.
+LAST_PROJECT_KEY = "dashboard.last_project_id"
+
 #: Background refresh cadence for project/task data while the window is open.
 REFRESH_INTERVAL_MS = 120_000
 
@@ -918,6 +922,11 @@ class DashboardWindow(QWidget):
         self._refresh_outstanding = 0
         self._refresh_failed = False
 
+        try:
+            self.api.cache.clear_app_state(LAST_PROJECT_KEY)
+        except Exception:  # noqa: BLE001
+            log.exception("could not clear the last selected project")
+
         self._projects = []
         self._current_project = None
         self._user_id = None
@@ -950,6 +959,7 @@ class DashboardWindow(QWidget):
             self._task_section.set_all_projects(cached)
             self._status_bar.set_message("Loaded projects from cache.")
             self._apply_active_timer_if_ready()
+            self._select_initial_project()
         else:
             # Rendered inside the sidebar's projects area, which holds its
             # geometry whatever the message is -- so the account card and the
@@ -1013,6 +1023,7 @@ class DashboardWindow(QWidget):
             # repeating it here would just be stale, duplicate information.
             self._status_bar.set_message("Ready")
             self._apply_active_timer_if_ready()
+            self._select_initial_project()
         else:
             self._status_bar.set_message("No projects found.", TEXT_MUTED)
             self._task_section.clear()
@@ -1033,9 +1044,58 @@ class DashboardWindow(QWidget):
         if "session expired" in str(exc).lower():
             self.unauthorized_error.emit()
 
+    def _remembered_project_id(self) -> Optional[int]:
+        """The project this user was last in, if it is still one of theirs."""
+        try:
+            stored = self.api.cache.load_app_state(LAST_PROJECT_KEY)
+        except Exception:  # noqa: BLE001
+            log.exception("could not read the last selected project")
+            return None
+        return stored if isinstance(stored, int) else None
+
+    def _remember_project_id(self, project_id: Optional[int]) -> None:
+        if not isinstance(project_id, int):
+            return
+        try:
+            self.api.cache.save_app_state(LAST_PROJECT_KEY, project_id)
+        except Exception:  # noqa: BLE001
+            # Losing the memory costs one extra click next launch. It must
+            # never cost the selection the user just made.
+            log.exception("could not record the last selected project")
+
+    def _select_initial_project(self) -> None:
+        """Open a project as soon as the list exists, without waiting for a click.
+
+        Rendering the sidebar and leaving the task area empty was the whole of
+        the reported problem: the tasks were already in the local cache and
+        could have been on screen immediately, but nothing selected a project,
+        so the user had to click one and wait out a request to see anything.
+
+        Selection is not forced on top of anything: an explicit choice, and a
+        running timer's own project, both win. The remembered project is only
+        honoured if it is still in this user's list, so a stale id -- or one
+        belonging to whoever signed in last -- falls back to the first project
+        rather than selecting nothing.
+        """
+        if self._current_project or not self._projects:
+            return
+        if self._pending_active_timer:
+            # The running timer decides which project opens, and
+            # _apply_active_timer_if_ready is about to select it. Choosing a
+            # different one here would draw one project's tasks and replace
+            # them a moment later.
+            return
+
+        remembered = self._remembered_project_id()
+        project = next(
+            (p for p in self._projects if p.get("id") == remembered), None
+        )
+        self._on_project_selected(project or self._projects[0])
+
     def _on_project_selected(self, project: Dict[str, Any]) -> None:
         self._current_project = project
         project_id = project.get("id")
+        self._remember_project_id(project_id)
         project_name = project.get("project_name", "Project")
 
         index = next(
@@ -1586,8 +1646,30 @@ class DashboardWindow(QWidget):
     def _on_active_timer_checked(self, active_entry: Optional[dict]) -> None:
         if not active_entry or "id" not in active_entry:
             return
+        # The backend calls an entry `running` until our stop reaches it. While
+        # that stop is still in the durable queue, adopting the entry would put
+        # a timer the user has already stopped back on screen, counting from
+        # its original start.
+        if self._has_queued_stop(active_entry.get("id")):
+            log.info(
+                "ignoring backend-running entry %s: its stop is still queued here",
+                active_entry.get("id"),
+            )
+            return
         self._pending_active_timer = active_entry
         self._apply_active_timer_if_ready()
+
+    def _has_queued_stop(self, entry_id) -> bool:
+        cache = getattr(self.api, "cache", None)
+        if cache is None or entry_id is None:
+            return False
+        try:
+            return cache.has_pending_stop_for_entry(entry_id)
+        except Exception:  # noqa: BLE001
+            # A cache that cannot answer must not block the reconciliation it
+            # is only advising.
+            log.exception("could not check for a queued stop of entry %s", entry_id)
+            return False
 
     def _apply_active_timer_if_ready(self) -> None:
         """

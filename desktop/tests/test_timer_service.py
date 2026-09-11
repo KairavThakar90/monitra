@@ -264,3 +264,197 @@ def test_parse_utc_normalises_backend_timestamps(value, expected_tz):
 def test_parse_utc_rejects_garbage():
     assert parse_utc("not a timestamp") is None
     assert parse_utc(None) is None
+
+
+# ── Switching tasks, and starts that land too late ────────────────────────────
+#
+# Reported as: stop a task, start another, stop that, restart the app, and the
+# *previous* task's timer is running again.
+#
+# The cause was here, not in the restore path. A start is optimistic: local
+# state commits immediately and the backend call runs on the task pool. If the
+# user stops or switches before that call returns, the entry id it produced was
+# thrown away -- the session it belonged to was gone, so `on_success` returned
+# early. The queued stop carrying the same client_op never learned what to
+# stop, spent its deferral budget waiting for a queued start that had already
+# succeeded online (and so was never queued), and was cancelled. The entry
+# stayed `running` on the backend, and the next launch adopted it.
+
+
+class DeferredTasks:
+    """A task pool that holds the callback until the test releases it.
+
+    The bug only exists in the window between a start being submitted and its
+    reply arriving, so a pool that runs inline cannot express it.
+    """
+
+    def __init__(self):
+        self.pending = []
+
+    def submit(self, fn, on_success=None, on_error=None, key=None, **kwargs):
+        self.pending.append((fn, on_success, on_error, key))
+        return None
+
+    def release_one(self):
+        """Complete just the oldest held call.
+
+        Two sessions of the same task submit under the same pool key, so the
+        stale reply can only be singled out by order.
+        """
+        if not self.pending:
+            return None
+        fn, on_success, on_error, key = self.pending.pop(0)
+        try:
+            result = fn()
+        except Exception as exc:  # noqa: BLE001
+            if on_error:
+                on_error(exc)
+        else:
+            if on_success:
+                on_success(result)
+        return key
+
+    def release(self, key_prefix: str = "") -> int:
+        """Run the held calls, newest last, as the pool eventually would."""
+        held, self.pending = self.pending, []
+        released = 0
+        for fn, on_success, on_error, key in held:
+            if key_prefix and not (key or "").startswith(key_prefix):
+                self.pending.append((fn, on_success, on_error, key))
+                continue
+            released += 1
+            try:
+                result = fn()
+            except Exception as exc:  # noqa: BLE001
+                if on_error:
+                    on_error(exc)
+            else:
+                if on_success:
+                    on_success(result)
+        return released
+
+
+@pytest.fixture
+def deferred_timer(qapp, cache):
+    """A timer whose backend calls only complete when the test says so."""
+    backend = FakeTimeEntryService(entry_id=4242)
+    runtime = FakeRuntime(cache, backend)
+    runtime.tasks = DeferredTasks()
+    service = TimerService(runtime, backend, cache)
+    runtime.timer = service
+    service.backend = backend
+    yield service
+    service.stop(timeout_ms=500)
+
+
+def _queued(runtime, action_type):
+    return [p for a, p, _ in runtime.sync.enqueued if a == action_type]
+
+
+def test_stopping_clears_the_durable_record(timer, cache):
+    """Nothing may remain for a restart to restore."""
+    timer.start_tracking(1, 7, "First")
+    timer.stop_tracking()
+
+    assert cache.load_app_state(TIMER_STATE_KEY) is None
+    assert not timer.is_running()
+
+
+def test_a_restart_after_a_stop_restores_no_timer(qapp, cache):
+    """The refresh half of the report: a stopped timer stays stopped."""
+    backend = FakeTimeEntryService(entry_id=11)
+    runtime = FakeRuntime(cache, backend)
+    first = TimerService(runtime, backend, cache)
+    runtime.timer = first
+    first.start_tracking(1, 7, "First")
+    first.stop_tracking()
+
+    second = TimerService(runtime, backend, cache)
+    runtime.timer = second
+    try:
+        assert second.recover() is None
+        assert not second.is_running()
+        assert second.task_id is None
+    finally:
+        second.stop(timeout_ms=500)
+
+
+def test_switching_tasks_leaves_only_the_new_task_running(timer, cache):
+    timer.start_tracking(1, 7, "First")
+    timer.switch_tracking(1, 8, "Second")
+
+    assert timer.is_running()
+    assert timer.task_id == 8
+    assert cache.load_app_state(TIMER_STATE_KEY)["task_id"] == 8
+
+
+def test_a_start_landing_after_its_stop_hands_the_entry_id_to_the_queued_stop(
+    deferred_timer, cache
+):
+    """The exact orphan: stop before the start's reply arrives."""
+    timer = deferred_timer
+    timer.start_tracking(1, 7, "First")
+    timer.stop_tracking()                 # entry id still unknown -> stop queued
+
+    queued = _queued(timer.runtime, "stop_timer")
+    assert len(queued) == 1
+    assert queued[0]["entry_id"] is None, "the stop has nothing to identify yet"
+    client_op = queued[0]["client_op"]
+
+    # Now the start finally succeeds, for a session that no longer exists.
+    timer.runtime.tasks.release("timer-start")
+
+    resolved = [
+        p for p in _queued(timer.runtime, "stop_timer") if p.get("entry_id")
+    ]
+    assert resolved or cache.has_pending_stop_for_entry(4242), (
+        "the entry the backend created was discarded; nothing will ever stop it"
+    )
+    assert not timer.is_running()
+    assert client_op
+
+
+def test_switching_before_the_first_start_replies_does_not_orphan_it(deferred_timer):
+    """Stop-and-start-another is the reported sequence; same window."""
+    timer = deferred_timer
+    timer.start_tracking(1, 7, "First")
+    timer.switch_tracking(1, 8, "Second")
+
+    timer.runtime.tasks.release("timer-start")
+
+    assert timer.is_running(), "the second task must still be running"
+    assert timer.task_id == 8
+    stops = _queued(timer.runtime, "stop_timer")
+    assert any(p.get("entry_id") for p in stops), (
+        "the first task's entry was left running on the backend"
+    )
+
+
+def test_a_late_start_never_binds_to_a_later_session_of_the_same_task(
+    deferred_timer,
+):
+    """Two sessions of one task share a task id but never a client_op.
+
+    Binding on the task id gave the second session the first session's entry
+    id, so stopping it stopped the wrong entry and left the live one running.
+    """
+    timer = deferred_timer
+    timer.start_tracking(1, 7, "Task seven")
+    first_op = timer.active_session()["client_op"]
+    timer.stop_tracking()
+
+    timer.start_tracking(1, 7, "Task seven again")
+    second_op = timer.active_session()["client_op"]
+    assert first_op != second_op
+
+    # Only the *first* session's start reply lands. Both sessions submit under
+    # the same pool key, so nothing but ordering separates them -- which is
+    # exactly why the task id was never enough to tell them apart.
+    timer.runtime.tasks.release_one()
+
+    assert timer.is_running()
+    assert timer.active_session()["client_op"] == second_op
+    assert timer.entry_id is None, (
+        "the live session was bound to the previous session's entry; stopping "
+        "it would stop the wrong entry and leave this one running"
+    )

@@ -169,8 +169,18 @@ class NotificationService(BaseService):
     DEDUPE_SECONDS = 2.0
     #: Ceiling on notifications shown per minute, whatever their key.
     MAX_PER_MINUTE = 30
-    #: How long a toast is displayed before it is explicitly retired.
-    DISPLAY_MS = 4000
+    #: How long a toast is meant to stay on screen before it is retired.
+    #:
+    #: This is a *hint* to the platform, not a guarantee, and on Windows it is
+    #: not honoured at all: `Shell_NotifyIcon`'s `uTimeout` has been ignored
+    #: since Vista, and the real on-screen time comes from the user's
+    #: accessibility setting (Settings -> Accessibility -> Visual effects ->
+    #: "Dismiss notifications after this amount of time"), which defaults to
+    #: five seconds. Raising the value here therefore lengthens the service's
+    #: own lifecycle -- how long a click can still open the notification's
+    #: link, and when `_retire_current` runs -- but a Windows user who wants
+    #: the toast itself held for a minute has to raise that OS setting too.
+    DISPLAY_MS = 60_000
 
     def __init__(self, runtime, parent: Optional[QObject] = None) -> None:
         super().__init__(runtime, parent)

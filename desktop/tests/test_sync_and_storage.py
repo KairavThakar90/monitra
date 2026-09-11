@@ -425,3 +425,59 @@ def test_connection_count_stays_bounded_under_repeated_service_cycles(runtime):
         f"connections grew from {baseline} to {runtime.storage.connection_count} "
         f"across 5 service restart cycles"
     )
+
+
+# ── Restoring an entry the backend still calls "running" ──────────────────────
+#
+# The backend reports an entry as running until our stop reaches it. A launch
+# during that window asked "is a timer running?", was told yes, and restored a
+# session the user had already stopped -- re-anchored to its original start, so
+# the clock resumed from a total that was never tracked. The queue is the local
+# record of "we have already stopped this", so it is what settles the question.
+
+
+def test_a_queued_stop_marks_its_entry_as_already_stopped(cache):
+    cache.enqueue_action("stop_timer", {"entry_id": 77}, idempotency_key="stop:77")
+
+    assert cache.has_pending_stop_for_entry(77) is True
+
+
+def test_an_entry_with_no_queued_stop_is_not_claimed(cache):
+    cache.enqueue_action("stop_timer", {"entry_id": 77}, idempotency_key="stop:77")
+
+    assert cache.has_pending_stop_for_entry(78) is False
+    assert cache.has_pending_stop_for_entry(None) is False
+
+
+def test_a_stop_still_awaiting_its_entry_id_claims_nothing(cache):
+    """A stop queued before the start replied carries no id yet."""
+    cache.enqueue_action(
+        "stop_timer", {"entry_id": None, "client_op": "timer:7:t"},
+        idempotency_key="stop:timer:7:t",
+    )
+
+    assert cache.has_pending_stop_for_entry(None) is False
+
+
+def test_a_resolved_stop_then_claims_the_entry_it_was_given(cache):
+    """Once the late start hands over its id, the entry is spoken for."""
+    cache.enqueue_action(
+        "stop_timer", {"entry_id": None, "client_op": "timer:7:t"},
+        idempotency_key="stop:timer:7:t",
+    )
+    assert cache.has_pending_stop_for_entry(4242) is False
+
+    resolved = cache.resolve_entry_id_for_client_op("timer:7:t", 4242)
+
+    assert resolved == 1
+    assert cache.has_pending_stop_for_entry(4242) is True
+
+
+def test_a_completed_stop_no_longer_claims_its_entry(cache):
+    """Only unfinished work speaks for an entry; a sent stop is done."""
+    action_id = cache.enqueue_action(
+        "stop_timer", {"entry_id": 77}, idempotency_key="stop:77"
+    )
+    cache.complete_action(action_id)
+
+    assert cache.has_pending_stop_for_entry(77) is False

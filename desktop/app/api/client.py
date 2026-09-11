@@ -27,6 +27,20 @@ TIMEOUT_SLOW = 30.0     # Uploads, large queries
 #: server then treats the architecture as unknown rather than assuming one.
 MACHINE_ARCH = platform.machine() or ""
 
+# Failure messages shown to the user.
+#
+# None of them names an endpoint. These strings are surfaced verbatim by
+# callers that have nothing better to say -- the sign-in screen prints one in
+# red under the password field -- and an internal hostname there is noise to
+# the user and free reconnaissance to anyone looking over their shoulder. The
+# URL that failed is attached to the exception as `.url` and written to the
+# log, which is where a support engineer reads it.
+TIMEOUT_MESSAGE = "The request timed out. Please check your connection and try again."
+UPLOAD_TIMEOUT_MESSAGE = "The upload timed out. Please try again."
+NETWORK_MESSAGE = "Could not reach the server. Please check your connection."
+UNEXPECTED_MESSAGE = "An unexpected connection error occurred. Please try again."
+CLIENT_CLOSED_MESSAGE = "The connection is closing; the request was not sent."
+
 
 class ApiClient:
     """Reusable synchronous HTTP client for interacting with the SMS backend API.
@@ -248,14 +262,14 @@ class ApiClient:
         req_timeout = req_timeout or self.timeout
 
         if self._closed:
-            raise ApiConnectionError(f"Client is closed; refusing request to {url}.")
+            raise ApiConnectionError(CLIENT_CLOSED_MESSAGE, url=url)
 
         client = self._client
         if client is None:
             self._ensure_client()
             client = self._client
         if client is None:
-            raise ApiConnectionError(f"Client is closed; refusing request to {url}.")
+            raise ApiConnectionError(CLIENT_CLOSED_MESSAGE, url=url)
 
         try:
             # NOTE: deliberately NOT holding a lock here. httpx.Client is
@@ -277,10 +291,12 @@ class ApiClient:
             return response
 
         except httpx.TimeoutException as e:
-            raise ApiTimeoutError(f"Request to {url} timed out.", original_exception=e)
-            
+            log.warning("request timed out: %s %s", method, url)
+            raise ApiTimeoutError(TIMEOUT_MESSAGE, original_exception=e, url=url)
+
         except (httpx.ConnectError, httpx.NetworkError) as e:
-            raise ApiConnectionError(f"Network error trying to connect to {url}.", original_exception=e)
+            log.warning("network error: %s %s (%s)", method, url, e)
+            raise ApiConnectionError(NETWORK_MESSAGE, original_exception=e, url=url)
             
         except httpx.HTTPStatusError as e:
             raise ApiHttpError(
@@ -291,7 +307,8 @@ class ApiClient:
             
         except Exception as e:
             # Fallback for unexpected failures (e.g. malformed responses)
-            raise ApiConnectionError(f"Unexpected connection error occurred while querying {url}.", original_exception=e)
+            log.warning("unexpected request failure: %s %s (%s)", method, url, e)
+            raise ApiConnectionError(UNEXPECTED_MESSAGE, original_exception=e, url=url)
 
     def post_external(
         self,
@@ -314,7 +331,10 @@ class ApiClient:
         :param url: Absolute URL. The base URL is not applied.
         """
         if not url.startswith(("http://", "https://")):
-            raise ApiConnectionError(f"Refusing to send credentials to a non-HTTP URL: {url!r}")
+            log.error("refusing to send credentials to a non-HTTP URL: %r", url)
+            raise ApiConnectionError(
+                "The sign-in service is not configured correctly.", url=url
+            )
 
         return self._send(
             "POST",
@@ -372,13 +392,13 @@ class ApiClient:
         headers.pop("Content-Type", None)
 
         if self._closed:
-            raise ApiConnectionError(f"Client is closed; refusing request to {url}.")
+            raise ApiConnectionError(CLIENT_CLOSED_MESSAGE, url=url)
         client = self._client
         if client is None:
             self._ensure_client()
             client = self._client
         if client is None:
-            raise ApiConnectionError(f"Client is closed; refusing request to {url}.")
+            raise ApiConnectionError(CLIENT_CLOSED_MESSAGE, url=url)
 
         try:
             response = client.post(
@@ -391,9 +411,11 @@ class ApiClient:
             response.raise_for_status()
             return response
         except httpx.TimeoutException as e:
-            raise ApiTimeoutError(f"Upload to {url} timed out.", original_exception=e)
+            log.warning("upload timed out: %s", url)
+            raise ApiTimeoutError(UPLOAD_TIMEOUT_MESSAGE, original_exception=e, url=url)
         except (httpx.ConnectError, httpx.NetworkError) as e:
-            raise ApiConnectionError(f"Network error trying to connect to {url}.", original_exception=e)
+            log.warning("network error during upload: %s (%s)", url, e)
+            raise ApiConnectionError(NETWORK_MESSAGE, original_exception=e, url=url)
         except httpx.HTTPStatusError as e:
             raise ApiHttpError(
                 status_code=e.response.status_code,
@@ -401,7 +423,8 @@ class ApiClient:
                 message=f"API responded with status code {e.response.status_code}",
             )
         except Exception as e:
-            raise ApiConnectionError(f"Unexpected connection error occurred while uploading to {url}.", original_exception=e)
+            log.warning("unexpected upload failure: %s (%s)", url, e)
+            raise ApiConnectionError(UNEXPECTED_MESSAGE, original_exception=e, url=url)
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[float] = None, skip_auth_refresh: bool = False) -> httpx.Response:
         """Execute a GET request."""

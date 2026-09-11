@@ -666,6 +666,31 @@ class LocalCache:
                 continue
         return False
 
+    def has_pending_stop_for_entry(self, entry_id: int) -> bool:
+        """Whether a stop for this backend entry is still waiting to be sent.
+
+        The backend keeps reporting such an entry as `running` until the queued
+        stop reaches it, so a client that asks "is a timer running?" during that
+        window gets a yes for a timer the user already stopped. Restoring it
+        would resurrect a finished session -- and, worse, re-anchor it to the
+        original start, so the clock resumes from a total the user never
+        tracked.
+        """
+        if entry_id is None:
+            return False
+        rows = self._storage.query_all(
+            "SELECT payload FROM pending_actions "
+            "WHERE action_type = 'stop_timer' "
+            "AND status IN ('pending', 'processing', 'retry')",
+        )
+        for row in rows:
+            try:
+                if json.loads(row["payload"]).get("entry_id") == entry_id:
+                    return True
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return False
+
     def resolve_entry_id_for_client_op(self, client_op: str, entry_id: int) -> int:
         """
         Fill in the backend entry id on queued actions awaiting it.
