@@ -195,7 +195,7 @@ class KeyIssuingTests(unittest.TestCase):
         Refusing to mint a key for an administrator is what makes the
         provisioning script safe to hand to someone.
         """
-        for role in ("admin", "org_admin", "hr", "manager", "employee"):
+        for role in ("administrator", "org_admin", "hr", "manager", "employee"):
             with self.subTest(role=role):
                 with self.assertRaises(ValueError):
                     ServiceCredentialService.issue(
@@ -256,7 +256,7 @@ class AuthenticateTests(unittest.TestCase):
         after its key was minted.
         """
         token, row = _mint()
-        for role in ("admin", "org_admin", "hr", "manager", "employee"):
+        for role in ("administrator", "org_admin", "hr", "manager", "employee"):
             with self.subTest(role=role):
                 with self.assertRaises(HTTPException) as caught:
                     self._authenticate(token, row, _person(role, user_id=900))
@@ -338,7 +338,7 @@ class AuthenticateTests(unittest.TestCase):
             (None, _bot_user()),
             (_credential(token, revoked_at=datetime.now(UTC)), _bot_user()),
             (row, _bot_user(is_active=False)),
-            (row, _person("admin", user_id=900)),
+            (row, _person("administrator", user_id=900)),
         ):
             with self.assertRaises(HTTPException) as caught:
                 self._authenticate(token, credential, user)
@@ -524,7 +524,7 @@ class PeopleStillAuthenticateTests(unittest.TestCase):
         return {"Authorization": f"Bearer {token}"}
 
     def test_an_admin_access_token_still_manages_releases(self):
-        admin = _person("admin", user_id=238)
+        admin = _person("administrator", user_id=238)
         with patch("app.core.security.UserRepository.get_by_id", return_value=admin), \
              patch("app.api.desktop_release.DesktopReleaseService.list_releases",
                    return_value=[_release_row()]):
@@ -532,7 +532,7 @@ class PeopleStillAuthenticateTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
 
     def test_an_admin_is_not_treated_as_a_machine(self):
-        admin = _person("admin", user_id=238)
+        admin = _person("administrator", user_id=238)
         with patch("app.core.security.UserRepository.get_by_id", return_value=admin), \
              patch("app.services.auth.AuthService.issue_handoff_token",
                    return_value=("mh_x", datetime.now(UTC))):

@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 class MemberRole(str, Enum):
-    admin = "admin"
+    administrator = "administrator"
     hr = "hr"
     leader = "leader"
     employee = "employee"

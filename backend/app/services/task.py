@@ -55,7 +55,7 @@ class TaskService:
         ProjectService.get_project(db, project_id, current_user)
         
         # 2. List tasks based on role
-        if current_user.role_name in ["org_admin", "admin", "super_admin", "manager"]:
+        if current_user.role_name in ["org_admin", "administrator", "super_admin", "manager"]:
             tasks = list(db.scalars(
                 select(Task)
                 .where(Task.project_id == project_id)

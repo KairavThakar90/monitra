@@ -189,7 +189,7 @@ class TestFeedbackReadAccess(unittest.TestCase):
         repo.get_for_organization.assert_not_called()
 
     def test_admin_hr_and_leader_may_list_all_feedback_scoped_to_their_organization(self):
-        for role in ("admin", "hr", "leader", "administrator", "org_admin", "project_leader"):
+        for role in ("administrator", "hr", "leader", "org_admin", "project_leader"):
             with self.subTest(role=role):
                 user = _user(organization_id=7)
                 user.role_name = role
@@ -210,7 +210,7 @@ class TestFeedbackReadAccess(unittest.TestCase):
 
     def test_feedback_from_another_organization_is_a_404(self):
         user = _user(organization_id=7)
-        user.role_name = "admin"
+        user.role_name = "administrator"
         with patch(f"{SVC}.FeedbackRepository") as repo:
             repo.get_for_organization.return_value = None
             with self.assertRaises(HTTPException) as ctx:

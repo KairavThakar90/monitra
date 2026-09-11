@@ -29,7 +29,7 @@ import type { UserRead } from './api/auth'
  * A permission, not a role list: a leader's job is to run projects — they hold
  * `projects:create`, `project_members:manage` and `tasks:create`, and the
  * backend accepts their writes — but the old hardcoded
- * `["admin", "org_admin", "super_admin"]` list bounced them off the very
+ * hardcoded administrator-role list bounced them off the very
  * screens those permissions are for.
  */
 const canManageProjects = (user: UserRead | null) => !!user?.permissions?.["projects:create"];

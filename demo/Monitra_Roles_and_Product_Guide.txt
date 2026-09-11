@@ -1,0 +1,695 @@
+================================================================================
+                   M O N I T R A  —  PRODUCT & ROLES GUIDE
+        What Monitra is, what each role can do, and how the Web app
+                    differs from the Desktop application
+================================================================================
+
+  Prepared for : Admin / Management, and for every team member to read
+  Document type: Plain-English explanation (no technical knowledge needed)
+  Last updated : 11 September 2026
+  Source       : Read directly from the product source code
+                 (see Part 11, "Where this information comes from")
+
+--------------------------------------------------------------------------------
+HOW TO READ THIS DOCUMENT
+--------------------------------------------------------------------------------
+
+  Part 1 ... What is Monitra?
+  Part 2 ... The two applications: Web app vs Desktop app
+  Part 3 ... Full feature list (Desktop) and (Web)
+  Part 4 ... The roles: Admin, HR, Leader, Employee
+  Part 5 ... Side-by-side role comparison table
+  Part 6 ... What "permissions" mean, in plain words
+  Part 7 ... How a role is assigned to a person (the process)
+  Part 8 ... Privacy — who can see whose data
+  Part 9 ... Common questions
+  Part 10 .. Things that are NOT built yet (so nobody waits for them)
+  Part 11 .. Where this information comes from
+
+================================================================================
+PART 1  —  WHAT IS MONITRA?
+================================================================================
+
+Monitra is a staff time-tracking and work-visibility system for a company.
+
+In one sentence:
+  Staff run a small desktop app that records the time they spend on a project
+  and a task, and management sees that time — plus how it was spent — on a web
+  dashboard.
+
+It answers questions like:
+  * How many hours did the team work today / this week?
+  * Which project and which task did those hours go to?
+  * Which applications and websites were used during tracked time?
+  * Was the person actually active, or was the timer just left running?
+  * Who is on which project team, and who leads it?
+
+What Monitra records (only while a timer is running — never before, never after):
+  * Tracked time      — start time, stop time, project, task
+  * Activity level    — keyboard and mouse activity, as a percentage
+  * Application usage — which application was in the foreground, and for how long
+  * Website usage     — the website open in the browser address bar (Windows)
+  * Screenshots       — periodic screen captures (about one per 10 minutes)
+  * Idle periods      — time when the person stopped using the machine
+
+  IMPORTANT: Stopping the timer stops all of it. Simply having Monitra open, or
+  simply being signed in, records NOTHING. Tracking is the only thing that turns
+  capture on.
+
+The system has three parts:
+  1. Desktop app  — the tracker, installed on the staff member's computer
+  2. Web app      — the dashboard and management console, opened in a browser
+  3. Backend/API  — the server both of them talk to, which stores everything
+
+================================================================================
+PART 2  —  THE TWO APPLICATIONS: WEB vs DESKTOP
+================================================================================
+
+The simplest way to remember it:
+
+     DESKTOP APP  =  where work is RECORDED   ("the stopwatch")
+     WEB APP      =  where work is REVIEWED   ("the report book")
+
+--------------------------------------------------------------------------------
+ Question                          | Desktop app          | Web app
+--------------------------------------------------------------------------------
+ Where does it run?                | Installed on the     | Any browser
+                                   | computer (Windows,   | (Chrome, Edge, ...)
+                                   | macOS)               |
+ Who uses it?                      | Everyone who tracks  | Everyone, but the
+                                   | time                 | screens differ by role
+ Can it START a timer?             | YES — the only place | NO
+ Can it take screenshots?          | YES                  | NO
+ Can it see app / website usage?   | YES (it records it)  | YES (it reports it)
+ Does it work without internet?    | YES — see below      | NO
+ Can it create projects?           | NO                   | YES (Admin / Leader)
+ Can it add or edit staff members? | NO                   | YES (Admin only)
+ Can it see OTHER people's data?   | NO — your own only   | YES, depending on role
+ Does the screen change by role?   | Almost never         | YES, a lot
+--------------------------------------------------------------------------------
+
+WORKS WITHOUT INTERNET (desktop only — this matters):
+  If the internet drops, the desktop app keeps tracking normally. Everything is
+  saved into a local database on the machine and placed in a queue. When the
+  connection returns, the queue is uploaded automatically, in order, with
+  retries. Nothing is lost, and nothing is uploaded twice.
+
+ROLE DOES ALMOST NOTHING ON THE DESKTOP APP:
+  Every role — Admin, HR, Leader, Employee — sees the same desktop screens and
+  the same buttons. The desktop app is a personal tool: it always shows only the
+  signed-in person's own projects, tasks, time, activity and screenshots.
+
+  The single visible difference is that an Admin deleting a task gets a stronger
+  warning ("tracked hours or task-related records associated with this task may
+  be affected") and a button labelled "Delete Task" instead of "Delete".
+
+  All the real role differences live in the WEB app.
+
+================================================================================
+PART 3  —  FULL FEATURE LIST
+================================================================================
+
+--------------------------------------------------------------------------------
+3A. DESKTOP APP FEATURES  (the same for every role)
+--------------------------------------------------------------------------------
+
+  SIGN IN
+    * Sign in with the company account (the same username / password as the web
+      app).
+    * The session is remembered, so the app opens ready to use next time.
+    * Sign out clears the session and discards anything still queued from it.
+
+  PROJECTS AND TASKS
+    * The sidebar lists the projects the person is a member of, with search.
+    * Task list for the selected project, with status.
+    * Create / edit / delete a task (subject to the person's permissions).
+
+  THE TIMER  (the heart of the product)
+    * Start, stop and switch the timer against one project + task.
+    * "Total Time Today" is always visible in the sidebar.
+    * Only ONE timer can run at a time. Switching tasks stops the old one and
+      starts the new one in a single step, so no second is double-counted.
+    * Time is calculated from real start/stop timestamps, so closing the laptop
+      lid, a crash, or a restart cannot inflate or lose the number.
+
+  MANUAL TIME ENTRY  (for work done away from the computer)
+    * A member can request a manual time entry — date, times, project, task and
+      a reason.
+    * It is a REQUEST. It does not become approved time until someone with
+      approval rights (Admin, HR, Leader) approves it in the web app.
+
+  IDLE DETECTION
+    * If the keyboard and mouse go quiet for longer than the configured number
+      of minutes, Monitra notices and shows an idle alert.
+    * The person then chooses: keep that idle time, discard it, or reassign it
+      to a different project / task.
+
+  ACTIVITY, APPLICATION AND WEBSITE TRACKING
+    * Keyboard and mouse activity is counted (COUNTS ONLY — never the actual
+      keys pressed) and shown as an activity percentage.
+    * The foreground application is recorded, with an app icon, and totalled.
+    * The website open in the browser address bar is recorded on Windows for
+      Chrome, Edge, Brave, Vivaldi and Opera.
+    * Where the URL genuinely cannot be read (Firefox without accessibility
+      enabled, and all macOS / Linux browsers) NO website record is written at
+      all — the time still counts as application usage against the browser.
+      Monitra never invents a placeholder website.
+
+  SCREENSHOTS
+    * While tracking, the screen is captured roughly once every 10 minutes, at a
+      random moment inside each window, so it is not predictable.
+    * Images are compressed, stored locally, then uploaded; the local copy is
+      deleted only after the server confirms it was stored.
+    * The Screenshots / Apps / URLs tabs show that person's own day.
+
+  NOTIFICATIONS AND TRAY
+    * System tray icon, with notifications for important events.
+    * The app can be minimised to the tray and keep tracking.
+
+  SYNC STATUS
+    * A "Last synced" readout and an online / offline indicator.
+    * A pending count showing how much is still waiting to upload.
+
+  AUTOMATIC UPDATE NOTICE
+    * Monitra checks periodically whether a newer version exists and offers it.
+    * It never installs anything by itself — the user chooses — and it verifies
+      the download's fingerprint before running it.
+
+  FEEDBACK & HELP
+    * A built-in form to send feedback or a problem report to management.
+
+--------------------------------------------------------------------------------
+3B. WEB APP FEATURES  (what appears depends on the role — see Part 4)
+--------------------------------------------------------------------------------
+
+  ORGANISATION SCREENS (Admin, HR, Leader)
+    * Dashboard     — organisation-wide worked hours, activity and trends.
+    * Reports       — four views: Project-wise, Top Tasks, App-wise, URL-wise.
+    * Members       — the staff directory: name, email, designation, role,
+                      status, date of joining, date of birth.
+    * Time Tracking — every member's time entries, and approval of manual ones.
+    * Screenshots   — captured screenshots, by member and by day.
+    * Teams         — team leaders and the members under each of them.
+    * Feedback      — feedback submitted by staff.
+
+  PROJECT MANAGEMENT SCREENS (Admin, Leader — NOT HR, NOT Employee)
+    * Project management — create, edit and delete projects; set the leader,
+                           billing type and status; add and remove project
+                           members.
+    * Task listing       — create, edit, delete and assign tasks.
+
+  PERSONAL SCREENS (Employee, and anyone viewing their own work)
+    * My Dashboard, My Projects, My Tasks, My Time Tracking, My Screenshots,
+      My Team, Feedback.
+    * Reports for their own work only (Project-wise, Task-wise, App-wise,
+      URL-wise).
+
+  DOWNLOAD PAGE
+    * A public page for downloading the Monitra desktop installer. It does not
+      require sign-in — a new joiner has to be able to get the app before they
+      have signed in to anything.
+
+================================================================================
+PART 4  —  THE ROLES
+================================================================================
+
+Monitra offers FOUR roles that can be given to a person in the Members screen:
+
+        ADMIN          HR          LEADER          EMPLOYEE
+
+(The system also recognises a few internal and alternative names — see Part 4.5
+— but the four above are what anyone will actually choose in the UI.)
+
+--------------------------------------------------------------------------------
+4.1  ADMIN  —  full control of the organisation
+--------------------------------------------------------------------------------
+
+  Think of Admin as the owner of the system. Admin is the ONLY role that can
+  change the staff directory.
+
+  ADMIN CAN DO EVERYTHING THE OTHER ROLES CAN, PLUS:
+
+    1. MANAGE STAFF MEMBERS  (unique to Admin)
+       * Add a new member.
+       * Edit a member's name, email, designation, dates and ROLE.
+       * Deactivate a member.
+       No other role can do any of these three. HR can look at the directory in
+       full detail, but every create / edit / deactivate control is unavailable
+       to HR.
+
+    2. FULL PROJECT AND TASK CONTROL
+       * Create, edit and delete projects; assign a project leader.
+       * Add and remove project members.
+       * Create, edit, delete and assign tasks.
+
+    3. SEE THE WHOLE ORGANISATION
+       * Everyone's time entries, dashboards, reports, app and website usage.
+       * Everyone's screenshots.
+
+    4. APPROVE MANUAL TIME, AND FILE IT FOR OTHERS
+       * Approve or reject manual time entry requests.
+       * Create a manual time entry on someone else's behalf.
+
+    5. DELETE SCREENSHOTS
+       * Shared only with HR. A Leader and an Employee can never delete one.
+
+    6. MANAGE DESKTOP RELEASES  (the most powerful permission in the system)
+       * Register and publish new versions of the desktop app.
+       * This decides what every installed copy of Monitra downloads and then
+         runs, so it is deliberately held by Admin only — not by Leader, not by
+         HR.
+
+  ONE THING ADMIN CANNOT DO:
+       Deactivate their own account. The system refuses, to stop an
+       organisation locking itself out.
+
+--------------------------------------------------------------------------------
+4.2  HR  —  people oversight, read-only over the directory
+--------------------------------------------------------------------------------
+
+  HR's authority is over PEOPLE, not over projects.
+
+  HR CAN:
+    * See the full member directory — every member, all details.
+    * See the whole organisation's tracked time, dashboards and reports.
+    * See EVERY member's screenshots (only Admin and HR can do this).
+    * DELETE a screenshot. This is HR's one destructive power, and it exists
+      because a capture that should never have been taken must be removable by
+      the people responsible for staff records.
+    * Approve or reject manual time entry requests.
+    * File a manual time entry on someone else's behalf.
+    * See all staff feedback.
+    * Track their own time like anyone else.
+
+  HR CANNOT:
+    * Add, edit or deactivate a member  (Admin only).
+    * Change anyone's role              (Admin only).
+    * Create, edit or delete a project.
+    * Create, edit or delete a task.
+    * Add or remove project members.
+    * Publish desktop releases.
+
+  In short: HR SEES everything about people, and CHANGES nothing about them.
+
+--------------------------------------------------------------------------------
+4.3  LEADER  —  runs projects, and sees only their own team
+--------------------------------------------------------------------------------
+
+  A Leader is a project / team leader. This role carries the most important
+  limit in the whole system, so please read the scope note below.
+
+  LEADER CAN:
+    * Create, edit and delete projects.
+    * Add and remove project members.
+    * Create, edit, delete and assign tasks.
+    * See their team's tracked time, dashboards and reports.
+    * Approve or reject their team's manual time entry requests.
+    * See the member directory — but only their own team members.
+    * See all staff feedback.
+    * Track their own time.
+
+  LEADER CANNOT:
+    * Add, edit or deactivate a member, or change a role.
+    * See OTHER PEOPLE'S SCREENSHOTS. A Leader sees only their own captures.
+      Watching a team member's screen is deliberately restricted to Admin and HR.
+    * Delete a screenshot — not even their own.
+    * File a manual time entry on somebody else's behalf. A Leader approves or
+      rejects what their members file, but the entry itself must come from the
+      person whose working day it describes.
+    * Publish desktop releases.
+
+  ** THE LEADER SCOPE RULE — the key difference from Admin and HR **
+
+      Admin and HR see THE WHOLE ORGANISATION.
+      A Leader sees THEIR OWN TEAM ONLY.
+
+      "Their own team" means: every person who has been added as a member of a
+      project that this Leader leads, plus the Leader themselves. If a Leader
+      has not been given a project yet, they see only themselves — which is the
+      correct, honest answer, not a fault.
+
+      The same rule applies on EVERY screen: the member directory, member
+      details, dashboard, reports, time tracking and manual time entry lists.
+      A Leader cannot see one team on one screen and the whole company on
+      another.
+
+      One deliberate exception: when a Leader is BUILDING a project team, the
+      "add member" picker shows the whole organisation. Otherwise it would be
+      impossible to staff a new project. The scope rule limits READING other
+      people's recorded work — not choosing who to work with.
+
+--------------------------------------------------------------------------------
+4.4  EMPLOYEE  —  does the work, sees their own work
+--------------------------------------------------------------------------------
+
+  EMPLOYEE CAN:
+    * See the projects they are a member of.
+    * See the tasks in those projects.
+    * Create and update tasks.
+    * Track their own time with the desktop app (start / stop / switch).
+    * Request a manual time entry for their own time (it goes for approval).
+    * See their OWN dashboard, reports, time entries, app and website usage,
+      and screenshots.
+    * See their own team page.
+    * Submit feedback, and see their own submissions.
+
+  EMPLOYEE CANNOT:
+    * See anybody else's time, reports, activity or screenshots.
+    * Delete a task, or delete a project.
+    * Create a project, or add anyone to one.
+    * Approve manual time entries — including their own.
+    * See the member directory.
+    * See other people's feedback.
+    * Delete a screenshot — not even their own.
+
+  On sign-in, an Employee is taken to "My Dashboard", not the organisation
+  dashboard, because every request the organisation dashboard makes would be
+  refused for them.
+
+--------------------------------------------------------------------------------
+4.5  OTHER ROLE NAMES THAT EXIST IN THE SYSTEM
+--------------------------------------------------------------------------------
+
+  These are not offered in the Members screen, but they exist and may appear on
+  older accounts or in technical discussions:
+
+    org_admin / super_admin   Identical powers to Admin.
+    administrator             The central company login system's own word for an
+                              Admin; Monitra automatically treats it as Admin.
+    project_leader            A second spelling of Leader, identical powers.
+    manager                   Like a Leader, but organisation-wide, and may file
+                              manual time for others. Cannot manage members,
+                              cannot delete screenshots, cannot publish releases,
+                              and does not see the organisation-wide feedback
+                              list.
+    release_bot               NOT a person. An automated build-system account
+                              that can do exactly ONE thing: publish desktop
+                              releases. It exists so automation never has to
+                              sign in as a full Admin. Nobody logs in as this.
+
+================================================================================
+PART 5  —  ROLE COMPARISON TABLE  (the quick answer)
+================================================================================
+
+  Legend:   YES = allowed      no = not allowed      OWN = own data only
+            TEAM = their own team only      ALL = whole organisation
+
+------------------------------------------------------------------------------
+ What the person can do                    | ADMIN | HR    | LEADER | EMPLOYEE
+------------------------------------------------------------------------------
+ STAFF DIRECTORY
+  See the member directory                 |  YES  |  YES  |  TEAM  |   no
+  Add a new member                         |  YES  |  no   |   no   |   no
+  Edit a member / change their role        |  YES  |  no   |   no   |   no
+  Deactivate a member                      |  YES  |  no   |   no   |   no
+
+ PROJECTS
+  See projects                             |  YES  |  YES  |  YES   |  YES
+  Create a project                         |  YES  |  no   |  YES   |   no
+  Edit a project                           |  YES  |  no   |  YES   |   no
+  Delete a project                         |  YES  |  no   |  YES   |   no
+  Add / remove project members             |  YES  |  no   |  YES   |   no
+
+ TASKS
+  See tasks                                |  YES  |  YES  |  YES   |  YES
+  Create a task                            |  YES  |  no   |  YES   |  YES
+  Edit a task                              |  YES  |  no   |  YES   |  YES
+  Delete a task                            |  YES  |  no   |  YES   |   no
+  Assign a task to someone                 |  YES  |  no   |  YES   |   no
+
+ TIME
+  Track own time (desktop timer)           |  YES  |  YES  |  YES   |  YES
+  See other people's time                  |  ALL  |  ALL  |  TEAM  |   no
+  Approve / reject manual time requests    |  YES  |  YES  |  YES   |   no
+  File manual time FOR SOMEONE ELSE        |  YES  |  YES  |   no   |   no
+
+ SCREENSHOTS
+  See own screenshots                      |  YES  |  YES  |  YES   |  YES
+  See OTHER people's screenshots           |  YES  |  YES  |   no   |   no
+  Delete a screenshot                      |  YES  |  YES  |   no   |   no
+
+ REPORTING
+  Organisation-wide dashboard & reports    |  YES  |  YES  |  TEAM  |   no
+  Own dashboard & reports                  |  YES  |  YES  |  YES   |  YES
+  Read all staff feedback                  |  YES  |  YES  |  YES   |   no
+
+ SYSTEM
+  Publish a new desktop app version        |  YES  |  no   |   no   |   no
+------------------------------------------------------------------------------
+
+THE FOUR-LINE SUMMARY
+  * ADMIN is the only role that can change WHO is in the system and WHAT role
+    they hold, and the only role that can publish the desktop app.
+  * HR sees everything about people — including screenshots — but changes
+    nothing about them, and has no power over projects or tasks.
+  * LEADER runs projects and approves time, but only for their own team, and
+    never sees another person's screenshots.
+  * EMPLOYEE sees and manages only their own work.
+
+================================================================================
+PART 6  —  WHAT "PERMISSIONS" ACTUALLY MEAN
+================================================================================
+
+Behind every role is a fixed list of permission keys. A role is simply a named
+bundle of those keys. Nobody is given keys individually — the role decides them.
+
+The keys, in plain English:
+
+  projects:view                       Can see projects
+  projects:create / update / delete   Can create / edit / delete a project
+  project_members:manage              Can add and remove people on a project
+  tasks:view                          Can see tasks
+  tasks:create / update / delete      Can create / edit / delete a task
+  task_assignees:manage               Can assign a task to a person
+  time_entries:manage_own             Can track and manage their own time
+  time_entries:view_all               Can see other people's time
+  manual_time_entries:approve         Can approve or reject a manual time request
+  manual_time_entries:create_for_others
+                                      Can file manual time on someone else's
+                                      behalf
+  view_employees                      Can open the member directory
+  manage_employees                    Can add / edit / deactivate a member
+  screenshots:delete                  Can permanently delete a screenshot
+  manage_desktop_releases             Can publish a new desktop app version
+
+How many keys each role holds:
+
+    ADMIN / org_admin / super_admin ... 18 keys (everything above)
+    manager ........................... 15 keys
+    LEADER / project_leader ........... 14 keys
+    HR .................................. 8 keys
+    EMPLOYEE ............................ 5 keys
+    release_bot ......................... 1 key
+
+Two important safety facts:
+
+  1. THE SERVER CHECKS EVERY REQUEST. Hiding a button in the app is only a
+     convenience. Even if someone reached a hidden screen, or contacted the
+     server directly, the server refuses the action. Access control is not
+     decided by what happens to be visible on screen.
+
+  2. PERMISSIONS ARE ALWAYS REBUILT FROM THE ROLE AT SIGN-IN. They are never
+     edited by hand on a person's record — anything hand-edited would be
+     silently wiped the next time that person logs in.
+
+================================================================================
+PART 7  —  HOW A ROLE IS ASSIGNED  (the process)
+================================================================================
+
+STEP 1 — An Admin opens the Members screen in the web app
+         Web app -> Members. Only an Admin sees the "Add member" and "Edit"
+         controls here; HR sees the same list read-only.
+
+STEP 2 — Admin fills in the member's details
+         Name, email, designation, date of joining, date of birth, status
+         (active / inactive), and the ROLE.
+         The Role dropdown offers exactly four choices, supplied by the server:
+             Admin | Leader | HR | Employee
+         Email must be unique — a second member with the same email is rejected.
+         Dates in the future are rejected.
+
+STEP 3 — Save
+         The member record is created in the organisation.
+
+STEP 4 — The member signs in
+         Sign-in is verified against the company's central login system (the
+         same account used for the company portal), NOT against a password
+         stored in Monitra. Monitra does not create or hold the sign-in password.
+
+STEP 5 — The role and its permissions are applied
+         At every sign-in the server re-reads the person's role and rebuilds
+         their permission list from the fixed table. This happens on every
+         single login, so a role change takes effect the next time that person
+         signs in.
+
+TO CHANGE SOMEONE'S ROLE
+         Admin -> Members -> Edit the member -> change Role -> Save.
+         The person should sign out and sign back in for the change to take
+         full effect in their app.
+
+TO REMOVE SOMEONE'S ACCESS
+         Admin -> Members -> Deactivate. The record is kept (so their historic
+         time is not lost) and marked inactive. An Admin cannot deactivate
+         their own account.
+
+*** THE ONE THING ADMINS MUST KNOW ABOUT ROLES ***
+
+    The central company login system is the final authority on a person's role.
+
+    When someone signs in, if that central system reports a role for them,
+    Monitra applies THAT role — it overwrites whatever is stored in Monitra.
+    So if a role set in the Members screen keeps reverting after the person logs
+    in, the role must be corrected in the central login system, not here.
+
+    Also: if the central system sends a role name Monitra does not recognise,
+    that person cannot sign in at all and will see an authentication error. The
+    recognised names are listed in Part 4.5. This is deliberate safety
+    behaviour: an unknown role is refused rather than quietly granted access.
+
+*** ONE ORGANISATION, FOR NOW ***
+
+    The central login system does not yet tell Monitra which organisation a
+    person belongs to, so every new account is placed in the single default
+    organisation. This is a known temporary arrangement, not an error. A
+    person's organisation is never changed by a later sign-in.
+
+================================================================================
+PART 8  —  PRIVACY: WHO CAN SEE WHOSE DATA
+================================================================================
+
+  YOUR OWN DATA                    Everyone always sees their own — time,
+                                   activity, apps, websites and screenshots.
+
+  SOMEONE ELSE'S TIME & ACTIVITY   Admin and HR: everyone.
+                                   Leader: their own team only.
+                                   Employee: nobody.
+
+  SOMEONE ELSE'S SCREENSHOTS       Admin and HR ONLY.
+                                   A Leader cannot see their team's screenshots,
+                                   even though they can see their team's time.
+                                   Seeing someone's hours is supervision; seeing
+                                   their screen is not the same thing, and the
+                                   product treats the two differently on purpose.
+
+  DELETING A SCREENSHOT            Admin and HR only. Nobody else, for any
+                                   screenshot, including their own.
+
+  WHAT IS NEVER RECORDED           * The actual keys someone types. Only the
+                                     NUMBER of keystrokes and mouse actions is
+                                     counted, to produce an activity percentage.
+                                   * Anything at all while the timer is stopped.
+                                   * Passwords. Monitra does not hold the
+                                     sign-in password.
+
+  WHEN A MEMBER LOOKUP IS REFUSED  If a Leader tries to open a member outside
+                                   their team, the system answers "not found"
+                                   rather than "not allowed" — because saying
+                                   "not allowed" would itself confirm that the
+                                   person exists.
+
+================================================================================
+PART 9  —  COMMON QUESTIONS
+================================================================================
+
+Q. I am a Leader. Why is the Members list almost empty?
+A. A Leader sees only their own team. Until an Admin makes you the leader of a
+   project and adds people to it, that list contains just you. This is correct
+   behaviour.
+
+Q. I am HR. Why can't I add a new member?
+A. Only an Admin can create, edit or deactivate members. HR is intentionally
+   read-only over the directory. Ask an Admin.
+
+Q. I am a Leader. Where are my team's screenshots?
+A. Screenshots of other people are visible to Admin and HR only. You see your
+   own. This is a deliberate privacy boundary.
+
+Q. Why does the desktop app look the same for everyone?
+A. Because it is a personal tracking tool. It always shows the signed-in
+   person's own work. Role-based screens live in the web app.
+
+Q. I changed someone's role but nothing happened.
+A. Roles are applied at sign-in. Ask the person to sign out and back in. If it
+   reverts again, their role is being supplied by the central company login
+   system — correct it there (see Part 7).
+
+Q. Someone cannot log in and sees an authentication error.
+A. Most often their role in the central login system is one Monitra does not
+   recognise. Check the list in Part 4.5 with whoever administers that system.
+
+Q. The internet went down. Did we lose the tracked hours?
+A. No. The desktop app keeps tracking offline, stores everything locally, and
+   uploads it when the connection returns.
+
+Q. Can someone edit their tracked time to make it look better?
+A. Tracked time comes from real start/stop timestamps and cannot be typed in.
+   Time worked away from the computer must be filed as a manual entry, and a
+   manual entry is only a request until an Admin, HR or their Leader approves it.
+
+Q. What happens to idle time?
+A. The app detects it and asks the person what to do: keep it, discard it, or
+   move it to another project or task. Time deducted for unwanted activity is
+   recorded as a separate, auditable adjustment — the original tracked total is
+   never quietly rewritten.
+
+Q. Can an Admin delete their own account?
+A. No. The system refuses, to prevent an organisation locking itself out.
+
+Q. Where do I download the desktop app?
+A. The Download page in the web app. It is public and needs no sign-in, because
+   a new joiner must be able to get the app before signing in to anything.
+
+================================================================================
+PART 10  —  NOT BUILT YET  (so nobody waits for them)
+================================================================================
+
+  * MULTIPLE ORGANISATIONS. Everyone currently lands in one default
+    organisation, because the central login system does not yet supply one.
+
+  * WEBSITE TRACKING ON macOS AND LINUX. There is no way to read the browser's
+    address bar on those platforms, so no website record is written there. The
+    time is still captured as application usage against the browser. On Windows
+    it works for Chrome, Edge, Brave, Vivaldi and Opera; Firefox works only when
+    accessibility is enabled.
+
+  * AUTOMATIC UPDATES ARE NOT YET PUBLISHED TO REAL USERS. The mechanism is
+    built and verified, but the installers are not yet code-signed for Windows
+    or notarised for macOS, so releases are piloted internally rather than
+    pushed out. The macOS update path has not been run on real hardware.
+
+  * TRAY AND TASKBAR BEHAVIOUR has only been verified in automated, screenless
+    test runs — not on a real desktop.
+
+  A note on honesty: this product deliberately never shows invented data. If a
+  website cannot be read, no website is shown. If there are no screenshots for a
+  day, the screen says so. An empty space in Monitra means "nothing was
+  recorded", and can be trusted to mean exactly that.
+
+================================================================================
+PART 11  —  WHERE THIS INFORMATION COMES FROM
+================================================================================
+
+Everything above was read from the product's own source code and documentation,
+so it describes what the system actually does today — not a plan.
+
+  Role and permission definitions ... backend/app/core/permissions.py
+  Roles offerable in the UI ......... backend/app/schemas/member.py
+                                      backend/app/api/project_management.py
+  Member create/edit/deactivate ..... backend/app/api/members.py
+                                      backend/app/services/member_service.py
+  Leader "own team only" rule ....... backend/app/services/member_scope.py
+  Sign-in and role resolution ....... backend/app/services/auth.py
+  Screenshot / feedback visibility .. frontend/src/features/auth/roles.ts
+  Web screens and their gates ....... frontend/src/App.tsx
+  Desktop runtime and features ...... desktop/ARCHITECTURE.md
+                                      desktop/README.md
+                                      desktop/background_services/
+  Existing RBAC summary ............. docs/rbac.md
+
+If any behaviour described here does not match what you see in the application,
+please report it — the code is the final authority, and this document should be
+corrected to match it.
+
+================================================================================
+                                END OF DOCUMENT
+================================================================================

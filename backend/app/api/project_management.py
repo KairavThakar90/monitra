@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api/v1", tags=["Project Management"])
 @router.get("/project-management/metadata", response_model=ProjectManagementMetadata, dependencies=[Depends(get_current_user)], summary="Get project management metadata")
 def project_management_metadata(db: Session = Depends(get_db)):
     roles = [
-        RoleRead(id=1, role_type="Admin", value="admin"),
+        RoleRead(id=1, role_type="Administrator", value="administrator"),
         RoleRead(id=2, role_type="Leader", value="leader"),
         RoleRead(id=3, role_type="HR", value="hr"),
         RoleRead(id=4, role_type="Employee", value="employee"),

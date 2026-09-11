@@ -152,7 +152,7 @@ def test_an_employees_task_is_still_assigned_to_them(qapp, monkeypatch):
 def test_an_admins_task_is_created_unassigned(qapp, monkeypatch):
     """Self-assigning an admin is exactly what the backend refused with
     HTTP 400, because an admin is not an employee."""
-    section = _section("admin")
+    section = _section("administrator")
     assert _created_assignee(section, monkeypatch) is None
 
 

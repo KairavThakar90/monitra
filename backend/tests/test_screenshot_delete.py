@@ -75,7 +75,7 @@ class PermissionTableTests(unittest.TestCase):
     """Only administrators and HR carry the capability at all."""
 
     def test_admin_and_hr_may_delete_screenshots(self):
-        for role in ("admin", "org_admin", "super_admin", "hr"):
+        for role in ("administrator", "org_admin", "super_admin", "hr"):
             with self.subTest(role=role):
                 self.assertIn("screenshots:delete", ROLE_PERMISSIONS[role])
 
@@ -103,7 +103,7 @@ class DeleteRouteAuthorizationTests(unittest.TestCase):
         return response, deleted
 
     def test_an_admin_may_delete(self):
-        response, deleted = self._delete_as(_user("admin"))
+        response, deleted = self._delete_as(_user("administrator"))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.json(),
@@ -160,7 +160,7 @@ class DeleteServiceTests(unittest.TestCase):
             try:
                 result = TimeEntryScreenshotService.delete_screenshot(
                     db=db, screenshot_id=77,
-                    current_user=user or _user("admin"),
+                    current_user=user or _user("administrator"),
                 )
             except HTTPException as error:
                 return error, deleted, db
@@ -212,7 +212,7 @@ class DeleteServiceTests(unittest.TestCase):
              patch(f"{SVC}.drive_service", drive):
             with self.assertRaises(HTTPException) as raised:
                 TimeEntryScreenshotService.delete_screenshot(
-                    db=db, screenshot_id=77, current_user=_user("admin")
+                    db=db, screenshot_id=77, current_user=_user("administrator")
                 )
         self.assertEqual(raised.exception.status_code, 404)
         drive.delete_file_strict.assert_not_called()
@@ -232,7 +232,7 @@ class DeleteServiceTests(unittest.TestCase):
              patch(f"{SVC}.drive_service", drive):
             with self.assertRaises(HTTPException) as raised:
                 TimeEntryScreenshotService.delete_screenshot(
-                    db=db, screenshot_id=77, current_user=_user("admin")
+                    db=db, screenshot_id=77, current_user=_user("administrator")
                 )
         self.assertEqual(raised.exception.status_code, 404)
 

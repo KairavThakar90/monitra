@@ -58,8 +58,8 @@ def _leader(role="leader"):
 
 def _admin():
     return SimpleNamespace(
-        id=1, organization_id=1, role_name="admin", name="Ada", email="ada@example.com",
-        permissions={p: True for p in ROLE_PERMISSIONS["admin"]},
+        id=1, organization_id=1, role_name="administrator", name="Ada", email="ada@example.com",
+        permissions={p: True for p in ROLE_PERMISSIONS["administrator"]},
     )
 
 

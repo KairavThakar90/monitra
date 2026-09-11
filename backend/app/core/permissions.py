@@ -66,7 +66,7 @@ ROLE_PERMISSIONS = {
         "screenshots:delete",
         "manage_desktop_releases",
     },
-    "admin": {  # Alias/compatible role name mapping to org_admin permissions
+    "administrator": {  # Full organization administration permissions
         "projects:create",
         "projects:update",
         "projects:delete",
@@ -121,7 +121,7 @@ ROLE_PERMISSIONS = {
     # A team / project leader. `leader` is a role the rest of the application
     # already recognises -- TeamsService.leaders(), TeamsService.summary() and
     # /projects/assignable-leaders all select on
-    # `role_name IN ("admin", "leader")`, and ProjectMemberService.LEADER_ROLES
+    # `role_name IN ("administrator", "leader")`, and ProjectMemberService.LEADER_ROLES
     # is {"leader", "project_leader"} -- but it was never given a permission set
     # here. login_exchange refuses any role missing from this table, so a
     # WordPress user coming back with roles: ["leader"] authenticated
@@ -194,7 +194,7 @@ ROLE_PERMISSIONS["project_leader"] = set(ROLE_PERMISSIONS["leader"])
 # would silently lose it at the next sign-in, and the release job would start
 # failing with a 403 that nothing in the code explains.
 #
-# Why it exists at all: without it, CI has to authenticate as `admin` or
+# Why it exists at all: without it, CI has to authenticate as `administrator` or
 # `org_admin` -- eighteen permissions including `manage_employees` and
 # `screenshots:delete` -- to perform one action. A credential that sits in a CI
 # secret should be able to do exactly the job it is there for, so that a leak
@@ -225,11 +225,7 @@ SERVICE_ROLE_NAMES = frozenset({"release_bot"})
 # WordPress ships its own role vocabulary, and the provider passes those slugs
 # straight through in `user.roles`. Some of them are just a different spelling
 # of a role this system already defines: WordPress's built-in super-user is
-# `administrator`, which is exactly Monitra's `admin`. An admin account that
-# was provisioned as `admin` began coming back from the provider as
-# roles: ["administrator"], which matches no key in ROLE_PERMISSIONS, so the
-# login was refused with 502 -- the same failure `leader` and `hr` hit, one
-# spelling further out.
+# `administrator`, which is also Monitra's canonical role name.
 #
 # This table only renames; it never invents authority. An alias must point at
 # a role ROLE_PERMISSIONS already defines, and it is applied before the
@@ -238,9 +234,7 @@ SERVICE_ROLE_NAMES = frozenset({"release_bot"})
 # WordPress core roles (editor, author, contributor, subscriber) have no
 # clean Monitra equivalent and are deliberately left unmapped so they are
 # refused rather than silently granted access.
-PROVIDER_ROLE_ALIASES = {
-    "administrator": "admin",
-}
+PROVIDER_ROLE_ALIASES = {}
 
 
 def resolve_role_alias(role: str) -> str:
@@ -264,25 +258,19 @@ def with_role_aliases(roles: Iterable[str]) -> list[str]:
     of the leader picker, out of the Team Leaders tile, and out of the check
     that lets an admin staff a project.
 
-    ``resolve_role_alias`` answers the other direction -- one provider slug to
-    one Monitra name -- which is what the login paths need. This answers "which
-    stored spellings mean any of these roles", which is what a query needs.
+    ``resolve_role_alias`` answers the provider-to-Monitra direction used by
+    login paths. Stored rows are migrated to their canonical role names.
 
     Expanding the list is deliberately preferred over normalising the column in
     the query: ``lower(role_name) IN (...)`` cannot use an index, and this runs
     on every Teams page load.
     """
-    targets = set(roles)
-    return sorted(
-        targets
-        | {slug for slug, target in PROVIDER_ROLE_ALIASES.items() if target in targets}
-    )
+    return sorted(set(roles))
 
 
 #: Every stored spelling that means "leads projects".
 #:
 #: One list, used by the leader picker, the Team Leaders tile, the leader lookup
 #: and project creation, so a role cannot be assignable on one screen and
-#: unknown on the next. Expanded through the alias table, so a row saved as
-#: `administrator` is not silently dropped from any of them.
-LEADER_ROLE_NAMES = with_role_aliases(["admin", "leader", "project_leader"])
+#: unknown on the next.
+LEADER_ROLE_NAMES = with_role_aliases(["administrator", "leader", "project_leader"])

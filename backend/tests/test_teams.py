@@ -43,7 +43,7 @@ class TeamsTests(unittest.TestCase):
         db = MagicMock()
         db.scalar.return_value = 0
         db.execute.return_value.all.return_value = []
-        TeamsService.summary(db, SimpleNamespace(id=1, organization_id=1, role_name="admin"))
+        TeamsService.summary(db, SimpleNamespace(id=1, organization_id=1, role_name="administrator"))
 
         # The first two counts are the leader tile and the member tile.
         leaders_where = str(db.scalar.call_args_list[0][0][0]).split("WHERE", 1)[1]

@@ -114,7 +114,7 @@ def _create_smoke_account(db) -> User:
 #: Every spelling of "administrator" this deployment actually stores. The
 #: provider returns `administrator`, which the alias table renames to `admin`
 #: at sign-in; both spellings therefore exist on real rows.
-ADMIN_ROLES = ("admin", "org_admin", "administrator")
+ADMIN_ROLES = ("administrator", "org_admin")
 
 
 def _person_auth(env_name: str, user: User) -> tuple[dict, bool]:
