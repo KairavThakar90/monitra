@@ -375,14 +375,41 @@ class TestFeedbackEmailContent(unittest.TestCase):
             "Monitra Feedback Received — Report a Problem — Priya Raman",
         )
 
+    #: The body shows these six fields, in this order, and nothing else.
+    EXPECTED_FIELDS = [
+        "Name", "Email", "Category", "Submitted time", "Submission date", "Message",
+    ]
+
     def test_it_shows_every_required_field(self):
         html = self.build().html
         for expected in (
-            "FB-17", "42", "priya", "Priya Raman", "priya@example.com", "employee",
-            "Report a Problem",
+            "Priya Raman", "priya@example.com", "Report a Problem",
+            "5:30 PM IST", "10 September 2026",
             "The timer resets when I resume from sleep.",
         ):
             self.assertIn(expected, html, f"the feedback email must show {expected!r}")
+
+    def test_the_body_carries_those_six_labels_in_order_and_no_others(self):
+        import re
+
+        html = self.build().html
+        # Every label cell in the table, in document order.
+        labels = re.findall(r'vertical-align:top;width:38%[^>]*>([^<]+)</td>', html)
+        self.assertEqual([label.strip() for label in labels], self.EXPECTED_FIELDS)
+
+    def test_internal_identifiers_are_not_shown(self):
+        # The user id, username, role and feedback reference mean nothing to
+        # the person reading the notification. They stay in the payload.
+        html = self.build().html
+        for absent in ("FB-17", "User ID", "Username", "Role", "Source"):
+            self.assertNotIn(absent, html, f"{absent!r} should not be in the body")
+
+    def test_the_plain_text_alternative_carries_the_same_six_fields(self):
+        text = self.build().text
+        for expected in self.EXPECTED_FIELDS:
+            self.assertIn(expected, text)
+        for absent in ("FB-17", "User ID", "Username", "Role"):
+            self.assertNotIn(absent, text)
 
     def test_the_timestamp_is_shown_in_the_organisations_timezone_and_says_so(self):
         # 12:00 UTC is 17:30 in Asia/Kolkata, the zone every other user-facing
@@ -395,21 +422,20 @@ class TestFeedbackEmailContent(unittest.TestCase):
         html = self.build(user_email=None, user_role=None, username="").html
         self.assertNotIn("None", html)
         self.assertNotIn(">Email<", html)
-        self.assertNotIn(">Role<", html)
         # The fields that do exist are still there.
         self.assertIn("Priya Raman", html)
-        self.assertIn("FB-17", html)
+        self.assertIn("Report a Problem", html)
 
     def test_an_unknown_category_is_shown_rather_than_relabelled(self):
         self.assertIn("Escalation", self.build(category="escalation").html)
 
     def test_a_malformed_timestamp_does_not_make_the_email_unrenderable(self):
-        self.assertIn("FB-17", self.build(submitted_at="not a timestamp").html)
+        self.assertIn("Priya Raman", self.build(submitted_at="not a timestamp").html)
 
     def test_it_has_a_plain_text_alternative_carrying_the_same_facts(self):
         text = self.build().text
-        self.assertIn("FB-17", text)
         self.assertIn("Priya Raman", text)
+        self.assertIn("priya@example.com", text)
         self.assertIn("The timer resets when I resume from sleep.", text)
 
     def test_the_source_row_is_not_shown(self):
@@ -760,8 +786,8 @@ class TestDelivery(unittest.TestCase):
         self._deliver(_notification(), provider)
 
         message = provider.sent[0]
-        self.assertIn("FB-17", message.html)
         self.assertIn("Priya Raman", message.html)
+        self.assertIn("priya@example.com", message.html)
         self.assertIn("Report a Problem", message.html)
 
     def test_nothing_reads_the_row_after_it_is_marked_sent(self):

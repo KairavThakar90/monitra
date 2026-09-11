@@ -276,8 +276,6 @@ def build_feedback_email(payload: dict[str, Any], recipients: list[str]) -> Outg
     label = category_label(str(payload.get("category") or ""))
     who = str(payload.get("user_name") or payload.get("username") or "a team member").strip()
     day, clock, submitted = _display_times(payload.get("submitted_at"))
-    feedback_id = payload.get("feedback_id")
-    reference = f"FB-{feedback_id}" if feedback_id is not None else None
     message = str(payload.get("message") or "")
 
     frame = _frame_context(
@@ -289,56 +287,37 @@ def build_feedback_email(payload: dict[str, Any], recipients: list[str]) -> Outg
         ),
     )
 
-    user_rows = detail_rows([
+    # Six fields, one table, in this order. Everything else the payload carries
+    # -- username, role, user id, feedback id, source -- is deliberately not
+    # shown: it is either duplicated elsewhere in the message or it is an
+    # internal identifier that means nothing to the person reading. The payload
+    # still holds all of it, so nothing has to be re-derived to bring a field
+    # back, and `reference` remains the identifier used in logs.
+    rows = detail_rows([
         ("Name", payload.get("user_name")),
-        ("Username", payload.get("username")),
         ("Email", payload.get("user_email")),
-        ("Role", payload.get("user_role")),
-        ("User ID", payload.get("user_id")),
-    ])
-    # No "Source" row: the summary above and the footer both already say the
-    # feedback came from the Monitra desktop application, and a third copy of a
-    # value that is the same on every notification is noise. `source` stays in
-    # the payload, so a future notification from another client can still say
-    # which one it was.
-    submission_rows = detail_rows([
-        ("Feedback ID", reference),
         ("Category", label),
-        ("Submitted on", day),
-        ("Submitted at", clock),
+        ("Submitted time", clock),
+        ("Submission date", day),
     ])
 
     html = render_page(
         "feedback.html",
-        {
-            **frame,
-            "category_label": label,
-            "summary": (
-                f"{who} submitted feedback from the Monitra desktop application "
-                f"on {submitted}. The full message is below."
-            ),
-            "user_rows": user_rows,
-            "submission_rows": submission_rows,
-            "message_html": paragraphs(message),
-        },
+        {**frame, "detail_rows": rows, "message_html": paragraphs(message)},
     )
 
+    # The same six fields, in the same order. The two alternatives of one
+    # message must not disagree about what was submitted.
     text_lines = [
         "MONITRA FEEDBACK RECEIVED",
         "",
-        f"{who} submitted feedback from the Monitra desktop application.",
+        "A new feedback submission has been received from the Monitra desktop application.",
         "",
-        "Submitted by",
-        f"  Name       {payload.get('user_name') or '-'}",
-        f"  Username   {payload.get('username') or '-'}",
-        f"  Email      {payload.get('user_email') or '-'}",
-        f"  Role       {payload.get('user_role') or '-'}",
-        f"  User ID    {payload.get('user_id') if payload.get('user_id') is not None else '-'}",
-        "",
-        "Submission",
-        f"  Feedback   {reference or '-'}",
-        f"  Category   {label}",
-        f"  Submitted  {submitted}",
+        f"  Name             {payload.get('user_name') or '-'}",
+        f"  Email            {payload.get('user_email') or '-'}",
+        f"  Category         {label}",
+        f"  Submitted time   {clock}",
+        f"  Submission date  {day}",
         "",
         "Message",
         "-" * 48,

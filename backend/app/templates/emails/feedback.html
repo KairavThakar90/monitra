@@ -2,48 +2,31 @@
   Feedback notification — sent to the configured Admin and HR recipients when
   somebody submits feedback from the Monitra desktop client.
 
-  Everything on this page that came from a person is escaped before it gets
-  here: `message_html` is built by `templates.paragraphs()`, which escapes the
-  text and *then* adds the line breaks, and every value in `detail_rows` goes
-  through the same escaping. A feedback message containing markup renders as
-  the characters the user typed.
+  One table, six fields. Everything on this page that came from a person is
+  escaped before it gets here: `message_html` is built by
+  `templates.paragraphs()`, which escapes the text and *then* adds the line
+  breaks, and every value in `detail_rows` goes through the same escaping. A
+  feedback message containing markup renders as the characters the user typed.
 -->
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px 0;">
-  <tr>
-    <td style="padding:5px 12px;background-color:#EFF6FF;border:1px solid #DBEAFE;border-radius:999px;font-family:Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#1D4ED8;">
-      {{ category_label }}
-    </td>
-  </tr>
-</table>
-
 <h1 class="st-h1" style="margin:0 0 12px 0;font-family:Helvetica,Arial,sans-serif;font-size:26px;line-height:34px;font-weight:700;color:#0F172A;letter-spacing:-0.3px;">
   New feedback received
 </h1>
 
 <p style="margin:0 0 26px 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:25px;color:#4B5563;">
-  {{ summary }}
+  A new feedback submission has been received from the Monitra desktop application.
 </p>
 
-<p style="margin:0 0 8px 0;font-family:Helvetica,Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9AA3AF;">
-  Submitted by
-</p>
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 24px 0;border:1px solid #E8ECF3;border-radius:10px;border-collapse:separate;overflow:hidden;">
-  {{ user_rows }}
-</table>
-
-<p style="margin:0 0 8px 0;font-family:Helvetica,Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9AA3AF;">
-  Submission
-</p>
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 24px 0;border:1px solid #E8ECF3;border-radius:10px;border-collapse:separate;overflow:hidden;">
-  {{ submission_rows }}
-</table>
-
-<p style="margin:0 0 8px 0;font-family:Helvetica,Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9AA3AF;">
-  Message
-</p>
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 8px 0;">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0;border:1px solid #E8ECF3;border-radius:10px;border-collapse:separate;overflow:hidden;">
+  {{ detail_rows }}
+  <!--
+    The message is the last row of the same table rather than a card below it,
+    so the notification is one block. It gets its own cell styling because a
+    paragraph of prose does not want the nowrap, single-line treatment the
+    label/value rows above use.
+  -->
   <tr>
-    <td class="st-card" style="padding:18px 20px;background-color:#F8FAFC;border:1px solid #E8ECF3;border-left:4px solid #3B82F6;border-radius:8px;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:25px;color:#1F2937;word-break:break-word;">
+    <td style="padding:12px 16px;font-family:Helvetica,Arial,sans-serif;font-size:13px;color:#6B7280;vertical-align:top;width:38%;background-color:#FBFCFE;">Message</td>
+    <td class="st-card" style="padding:14px 16px;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:25px;color:#1F2937;vertical-align:top;word-break:break-word;border-left:3px solid #3B82F6;">
       {{ message_html }}
     </td>
   </tr>
