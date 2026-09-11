@@ -30,6 +30,19 @@ def _project():
     return Project(id=7, organization_id=1, status="active")
 
 
+def _task_status(status_id=1, name="Todo"):
+    """A task_statuses row.
+
+    `name` must be set after construction: `MagicMock(name=...)` is consumed by
+    the Mock constructor and never becomes an attribute. The service derives the
+    legacy `tasks.status` string from this name, so a mock without one is not a
+    status row at all.
+    """
+    item = MagicMock(id=status_id, color="#CBD5E1")
+    item.name = name
+    return item
+
+
 class TestTaskAssigneeRule(unittest.TestCase):
     """The assignee validation, exercised with the caller as an admin -- the
     account for which task creation failed in production."""
@@ -41,7 +54,7 @@ class TestTaskAssigneeRule(unittest.TestCase):
     def _create(self, member, assignee, user=None):
         # _project, then the membership lookup, then the assignee lookup.
         self.db.scalar.side_effect = [_project(), member, assignee]
-        self.db.get.return_value = MagicMock(id=1)
+        self.db.get.return_value = _task_status()
         return ProjectManagementService.create_task(
             self.db, user or _user(), 7, self.payload
         )
@@ -89,7 +102,7 @@ class TestUnassignedTask(unittest.TestCase):
     def test_a_task_with_no_assignee_is_created_unassigned(self):
         db = MagicMock()
         db.scalar.return_value = _project()
-        db.get.return_value = MagicMock(id=1, name="Todo", color="#CBD5E1")
+        db.get.return_value = _task_status()
 
         ProjectManagementService.create_task(
             db, _user(role="admin"), 7,
@@ -110,7 +123,7 @@ class TestUnassignedTask(unittest.TestCase):
         it is not run, so it cannot reject a task that names nobody."""
         db = MagicMock()
         db.scalar.return_value = _project()
-        db.get.return_value = MagicMock(id=1)
+        db.get.return_value = _task_status()
 
         ProjectManagementService.create_task(
             db, _user(role="admin"), 7, TaskCreate(name="Write the report", status_id=1)

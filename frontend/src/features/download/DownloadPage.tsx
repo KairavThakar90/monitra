@@ -257,6 +257,36 @@ export function DownloadPage() {
             be told when a new version is ready and can install it without
             coming back here.
           </p>
+          {/*
+            Windows shows SmartScreen on any installer it has not seen signed by
+            a known publisher, and Monitra's is not signed yet. Saying so here,
+            with the exact wording and the exact clicks, is the honest thing:
+            somebody who meets an unexplained security warning either abandons a
+            legitimate install or learns to click past warnings without reading
+            them, and the second habit is worse than the first.
+          */}
+          <div className="mx-auto mt-5 max-w-2xl rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] p-4 text-left">
+            <p className="text-sm font-semibold text-[#0F172A]">
+              Windows security warning — “Windows protected your PC”
+            </p>
+            <p className="mt-1 text-sm text-[#64748B]">
+              Windows may show this message the first time you run the
+              installer. It is expected. To continue:
+            </p>
+            <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-[#64748B]">
+              <li>
+                You may see the “Windows protected your PC” message.
+              </li>
+              <li>
+                Click <span className="font-semibold text-[#0F172A]">More info</span>.
+              </li>
+              <li>
+                Then click{' '}
+                <span className="font-semibold text-[#0F172A]">Run anyway</span>{' '}
+                to proceed with the application installation or execution.
+              </li>
+            </ol>
+          </div>
           {index?.latest_version && (
             <p className="mt-4 text-sm text-[#64748B]">
               Latest version:{' '}
