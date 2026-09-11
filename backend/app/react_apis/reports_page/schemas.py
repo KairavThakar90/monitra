@@ -34,6 +34,14 @@ class SortOrder(str, Enum):
 
 
 class ReportMetrics(BaseModel):
+    total_seconds: int = Field(
+        ...,
+        description="Exact tracked seconds for this row. Prefer this over total_hours when "
+                    "rendering a duration or computing a share -- decimal hours have already "
+                    "lost precision, and a slice derived from them can exceed the exact "
+                    "scope total it is divided by (a distribution ring showed 100.4%).",
+        examples=[153900],
+    )
     total_hours: float = Field(
         ...,
         description="Tracked time in hours, rounded to 2 decimals. Derived from the same "

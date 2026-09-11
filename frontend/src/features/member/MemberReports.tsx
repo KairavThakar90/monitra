@@ -138,7 +138,8 @@ export const MemberReports: React.FC = () => {
           id,
           name,
           hours: item.total_hours || 0,
-          seconds: Math.round((item.total_hours || 0) * 3600),
+          // Exact, from the server -- see the same line in ReportPage.
+          seconds: item.total_seconds ?? Math.round((item.total_hours || 0) * 3600),
           // Null means nothing was sampled, which is not 0% activity.
           activity: item.avg_activity ?? null,
         };

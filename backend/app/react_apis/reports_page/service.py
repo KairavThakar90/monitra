@@ -108,6 +108,11 @@ class ReportsPageService:
     @staticmethod
     def _metrics(row) -> dict:
         return {
+            # Exact seconds alongside the rounded hours, so a caller computing
+            # a share divides like by like. A slice built from 2dp hours can
+            # exceed the exact scope total it is divided by -- the Projects
+            # ring showed a single project at 100.4%.
+            "total_seconds": int(row.total_seconds or 0),
             "total_hours": round(float(row.total_seconds or 0) / 3600, 2),
             "avg_activity": None if row.avg_activity is None else round(float(row.avg_activity), 2),
             "total_members": int(row.total_members or 0),

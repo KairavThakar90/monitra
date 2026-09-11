@@ -64,7 +64,8 @@ DASHBOARD_PAYLOAD = {
                  "total_seconds": 0, "total_hours": 0.0, "total_app_hours": 0.0},
 }
 
-SUMMARY_PAYLOAD = {"total_hours": 0.0, "avg_activity": None, "total_members": 0, "total_tasks": 0}
+SUMMARY_PAYLOAD = {"total_seconds": 0, "total_hours": 0.0, "avg_activity": None,
+                   "total_members": 0, "total_tasks": 0}
 
 
 class MemberRouteAccessTests(unittest.TestCase):

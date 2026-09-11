@@ -138,7 +138,8 @@ class ShapingTests(unittest.TestCase):
         row = SimpleNamespace(total_seconds=153900, avg_activity=71.3216, total_members=5, total_tasks=14)
         self.assertEqual(
             ReportsPageService._metrics(row),
-            {"total_hours": 42.75, "avg_activity": 71.32, "total_members": 5, "total_tasks": 14},
+            {"total_seconds": 153900, "total_hours": 42.75, "avg_activity": 71.32,
+             "total_members": 5, "total_tasks": 14},
         )
 
     def test_null_activity_stays_null_rather_than_becoming_zero(self):

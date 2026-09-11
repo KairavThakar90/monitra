@@ -180,7 +180,10 @@ export const ReportPage: React.FC = () => {
         id,
         name,
         value: item.total_hours || 0,
-        seconds: (item.total_hours || 0) * 3600,
+        // Exact, from the server. Deriving seconds from 2dp hours made a
+        // slice larger than the exact scope total it is divided by, and the
+        // Projects ring rendered a single project at 100.4%.
+        seconds: item.total_seconds ?? Math.round((item.total_hours || 0) * 3600),
         // Null activity means nothing was sampled, which is not 0%.
         secondary: item.avg_activity ?? null,
       };

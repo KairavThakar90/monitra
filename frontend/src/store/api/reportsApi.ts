@@ -49,6 +49,12 @@ export interface ReactReportsSummaryResponse {
 }
 
 export interface ReactReportsItem {
+  /**
+   * Exact tracked seconds for this row — prefer this over `total_hours`.
+   * A share computed from 2dp hours can exceed the exact scope total it is
+   * divided by; the Projects ring showed a single project at 100.4%.
+   */
+  total_seconds: number;
   total_hours: number;
   avg_activity: number | null;
   total_members: number;
