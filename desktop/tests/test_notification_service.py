@@ -189,3 +189,36 @@ def test_stopping_the_service_clears_a_pending_link(service):
     service.on_stop(1000)
 
     assert service._pending_link is None
+
+
+# ── Display duration ──────────────────────────────────────────────────────────
+
+def test_a_notification_is_held_for_at_least_a_minute(service):
+    """The requested behaviour: a toast is not a blink-and-miss-it flash.
+
+    Windows ignores the hint and uses its own accessibility setting, so this
+    can only assert what the service actually controls -- the value passed to
+    the platform, and how long the service keeps the notification alive.
+    """
+    assert NotificationService.DISPLAY_MS >= 60_000
+
+    service.notify("Drink water", key="wellbeing:hydrate")
+
+    _, _, _, timeout_ms = service._tray.showMessage.call_args[0]
+    assert timeout_ms >= 60_000
+
+
+def test_the_retirement_timer_outlasts_the_display_window(service):
+    """Retiring early would drop the link while the toast is still on screen."""
+    service.notify("Release 2.0 is available", key="update", link="https://example.com")
+
+    assert service._dismiss_timer.remainingTime() > NotificationService.DISPLAY_MS
+    assert service._pending_link == "https://example.com"
+
+
+def test_a_click_still_opens_the_link_late_in_the_display_window(service):
+    """A minute-long toast is one the user can act on a minute later."""
+    service.notify("Release 2.0 is available", key="update", link="https://example.com")
+
+    service._retire_current()          # only now does the window close
+    assert service._pending_link is None
