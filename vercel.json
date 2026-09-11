@@ -15,5 +15,11 @@
       "dest": "api/index.py",
       "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
     }
+  ],
+  "crons": [
+    {
+      "path": "/internal/email/dispatch",
+      "schedule": "0 * * * *"
+    }
   ]
 }

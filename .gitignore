@@ -27,6 +27,12 @@ node_modules/
 .vscode/  
 .vercel
 .env*
+# This second `.env*` pattern (above) was defeating the `!.env.example`
+# negation at the top of this file, so a new placeholders-only example could
+# not be committed while `desktop/.env.example` -- added before it -- stayed
+# tracked. Re-asserted here, after the pattern that overrode it. Only the
+# literal name `.env.example` is exempt; every real `.env` stays ignored.
+!**/.env.example
 
 # local dev server logs
 *.log
