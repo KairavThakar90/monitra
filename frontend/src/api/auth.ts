@@ -10,6 +10,8 @@ export interface TokenPair {
   refresh_token: string;
   token_type: string;
   user: UserRead;
+  session_created_at?: string;
+  session_expires_at?: string;
 }
 
 /** What the portal returns when credentials are accepted. */
@@ -121,7 +123,32 @@ export async function ssoLoginAPI(
     throw new Error(errorDetail);
   }
 
-  return response.json();
+  const data = (await response.json()) as TokenPair;
+  return { ...data, user: normalizeUserProfile(data.user) };
+}
+
+export async function refreshSessionAPI(refreshToken: string): Promise<TokenPair> {
+  const response = await fetch(ENDPOINTS.AUTH.REFRESH, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Session expired");
+  }
+
+  const data = (await response.json()) as TokenPair;
+  return { ...data, user: normalizeUserProfile(data.user) };
+}
+
+export async function logoutAPI(refreshToken: string | null): Promise<void> {
+  if (!refreshToken) return;
+  await fetch(ENDPOINTS.AUTH.LOGOUT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
 }
 
 export interface UserRead {
@@ -130,10 +157,17 @@ export interface UserRead {
   username: string;
   email: string;
   name: string;
+  designation?: string | null;
   role_name: string;
   permissions: Record<string, boolean>;
   is_active: boolean;
 }
+
+/** Keep profiles from older deployments compatible with the canonical role name. */
+const normalizeUserProfile = (user: UserRead): UserRead => ({
+  ...user,
+  role_name: user.role_name.trim().toLowerCase() === "admin" ? "administrator" : user.role_name,
+});
 
 export async function getMeAPI(token: string): Promise<UserRead> {
   const response = await fetch(ENDPOINTS.AUTH.ME, {
@@ -151,5 +185,5 @@ export async function getMeAPI(token: string): Promise<UserRead> {
     throw new Error("Failed to fetch user profile");
   }
 
-  return response.json();
+  return normalizeUserProfile((await response.json()) as UserRead);
 }

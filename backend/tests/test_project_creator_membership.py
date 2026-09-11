@@ -41,7 +41,7 @@ def _status_row(row_id, name):
 
 
 def _actor():
-    return User(id=ACTOR_ID, organization_id=1, role_name="admin", permissions={})
+    return User(id=ACTOR_ID, organization_id=1, role_name="administrator", permissions={})
 
 
 def _create(existing_member_ids, employee_ids):

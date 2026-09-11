@@ -45,8 +45,8 @@ def _leader(role="leader"):
 
 def _admin():
     return SimpleNamespace(
-        id=1, organization_id=1, role_name="admin",
-        permissions={p: True for p in ROLE_PERMISSIONS["admin"]},
+        id=1, organization_id=1, role_name="administrator",
+        permissions={p: True for p in ROLE_PERMISSIONS["administrator"]},
     )
 
 
@@ -78,7 +78,7 @@ class PermissionTableTests(unittest.TestCase):
                     self.assertIn(permission, ROLE_PERMISSIONS[role])
 
     def test_the_roles_that_may_file_for_others_are_the_org_wide_ones(self):
-        for role in ("admin", "org_admin", "super_admin", "manager", "hr"):
+        for role in ("administrator", "org_admin", "super_admin", "manager", "hr"):
             with self.subTest(role=role):
                 self.assertIn("manual_time_entries:create_for_others", ROLE_PERMISSIONS[role])
 

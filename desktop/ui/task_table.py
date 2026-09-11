@@ -1529,7 +1529,7 @@ class TaskSection(QWidget):
 
     @property
     def is_admin(self) -> bool:
-        return self.user_role in ["admin", "org_admin", "super_admin"]
+        return self.user_role in ["administrator", "org_admin", "super_admin"]
 
     def _run_task_mutation(self, call, success_message: str, key: str) -> None:
         """

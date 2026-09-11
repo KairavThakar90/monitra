@@ -55,7 +55,7 @@ def archive_task(
     from fastapi import HTTPException
     task = TaskService.get_task(db, project_id, task_id, current_user)
     
-    is_admin = current_user.role_name in ["admin", "org_admin", "super_admin"]
+    is_admin = current_user.role_name in ["administrator", "org_admin", "super_admin"]
     is_duplicate = (
         task.is_duplicate or 
         (task.description is not None and "[duplicate]" in task.description) or

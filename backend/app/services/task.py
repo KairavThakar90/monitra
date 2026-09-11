@@ -75,6 +75,12 @@ class TaskService:
         # limited to what they created, what is assigned to them, and the
         # project's unassigned shared work. The filter runs in the database,
         # so the rows fetched are already the authorised ones.
+        #
+        # Merge note: `main` reached the same line to rename `admin` ->
+        # `administrator` in the role list this replaced. That rename is kept --
+        # it lives in `TASK_MANAGER_ROLES` now, which names both spellings, so
+        # an administrator is still unrestricted here and the role list has one
+        # home instead of being repeated at every task query.
         query = (
             select(Task)
             .where(Task.project_id == project_id)

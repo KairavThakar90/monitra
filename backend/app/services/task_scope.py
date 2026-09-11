@@ -67,14 +67,21 @@ from app.models.user import User
 #: on the private side of it: a role nobody has thought about yet is not a role
 #: that should silently inherit the whole project's tasks.
 #:
-#: Wrapped in ``with_role_aliases`` for the reason that helper exists:
-#: ``users.role_name`` does not always hold the canonical name. WordPress sends
-#: ``administrator``, and rows provisioned before the alias table existed still
-#: carry it -- this deployment's own admin account is one. Matching the literal
-#: spellings only would have quietly demoted a real administrator to their own
-#: tasks, which is a failure that looks exactly like the bug being fixed.
+#: **Both admin spellings are named on purpose.** ``administrator`` is the
+#: canonical role (migration ``f4a1b2c3d4e5`` renamed the stored ``admin`` rows
+#: to it), and ``admin`` is kept beside it because a deployment that has not run
+#: that migration yet -- or a client mid-rolling-deploy -- still has rows
+#: carrying the old spelling. Matching only one of the two would quietly demote
+#: a real administrator to their own tasks, which is a failure indistinguishable
+#: from the bug this module exists to fix, and it would show up only on whichever
+#: deployment happened to be on the other side of the rename.
+#:
+#: Still wrapped in ``with_role_aliases`` so that if the provider alias table is
+#: ever repopulated, every stored spelling it introduces is covered here too --
+#: the same arrangement ``LEADER_ROLE_NAMES`` uses.
 TASK_MANAGER_ROLES = frozenset(with_role_aliases({
-    "admin", "org_admin", "super_admin", "manager", "hr", "leader", "project_leader",
+    "administrator", "admin", "org_admin", "super_admin", "manager", "hr",
+    "leader", "project_leader",
 }))
 
 

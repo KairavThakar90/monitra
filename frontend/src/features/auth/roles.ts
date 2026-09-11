@@ -12,12 +12,10 @@ import type { UserRead } from "../../api/auth";
  * add it to the other.
  *
  * `org_admin` / `super_admin` and `project_leader` are the alternate spellings
- * the backend's ROLE_PERMISSIONS table already defines for admin and leader
- * authority; `administrator` is the WordPress slug the provider sends for an
- * admin, which the backend resolves through its alias table.
+ * the backend's ROLE_PERMISSIONS table already defines for administrator and
+ * leader authority.
  */
 const FEEDBACK_VIEW_ALL_ROLES = new Set([
-  "admin",
   "administrator",
   "org_admin",
   "super_admin",
@@ -46,7 +44,6 @@ export const canViewAllFeedback = (user: UserRead | null) =>
  * from the endpoint's caller-pinned default rather than from a `user_id`.
  */
 const SCREENSHOT_VIEW_ALL_ROLES = new Set([
-  "admin",
   "administrator",
   "org_admin",
   "super_admin",
@@ -62,7 +59,7 @@ export const canViewAllScreenshots = (user: UserRead | null) =>
  *
  * Unlike `canViewAllScreenshots`, this one has a real backend permission to
  * mirror: `DELETE /time-entry-screenshots/{id}` is gated on `screenshots:delete`,
- * which `app/core/permissions.py` grants to `admin`, `org_admin`, `super_admin`
+ * which `app/core/permissions.py` grants to `administrator`, `org_admin`, `super_admin`
  * and `hr` and to nobody else — deliberately not to a leader or a manager, who
  * may see their team's captures but may not delete them, and not to an employee
  * for their own. So the check reads the permission the user was actually issued

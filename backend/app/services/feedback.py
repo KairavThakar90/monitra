@@ -18,7 +18,7 @@ from app.services.email import deliver_in_background, queue_feedback_notificatio
 #: happens to carry the alternate name. `manager` and `employee` are not here:
 #: a manager was never given directory-wide feedback visibility.
 FEEDBACK_VIEW_ALL_ROLES = frozenset(
-    {"admin", "org_admin", "super_admin", "hr", "leader", "project_leader"}
+    {"administrator", "org_admin", "super_admin", "hr", "leader", "project_leader"}
 )
 
 

@@ -21,6 +21,18 @@ const EyeOffIcon = () => (
   </svg>
 );
 
+const UserIcon = () => (
+  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.75 7.5a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.5 20.25a7.5 7.5 0 0115 0" />
+  </svg>
+);
+
+const LockIcon = () => (
+  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16.5 10.5V7.75a4.5 4.5 0 00-9 0v2.75m-1.5 0h12a1.5 1.5 0 011.5 1.5v7.5a1.5 1.5 0 01-1.5 1.5h-12A1.5 1.5 0 015 19.5V12a1.5 1.5 0 011.5-1.5z" />
+  </svg>
+);
+
 export const LoginScreen: React.FC = () => {
   const { login, ssoError } = useAuth();
   const navigate = useNavigate();
@@ -145,19 +157,24 @@ export const LoginScreen: React.FC = () => {
               <label htmlFor="email" className="block text-xs font-semibold text-[#94A3B8] tracking-wider uppercase mb-1">
                 Email Address
               </label>
-              <input
-                id="email"
-                name="email"
-                type="email"
-                required
-                disabled={isLoading}
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                onBlur={() => loginForm.validateField("email", email)}
-                placeholder="e.g. admin@example.com"
-                {...loginForm.fieldProps("email")}
-                className="w-full px-3 py-2 border border-[#E2E8F0] rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB] focus:border-[#2563EB] text-sm text-[#0F172A] placeholder-[#94A3B8]"
-              />
+              <div className="relative">
+                <span className="pointer-events-none absolute left-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md bg-[#EFF6FF] text-[#2563EB]">
+                  <UserIcon />
+                </span>
+                <input
+                  id="email"
+                  name="email"
+                  type="email"
+                  required
+                  disabled={isLoading}
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  onBlur={() => loginForm.validateField("email", email)}
+                  placeholder="you@example.com"
+                  {...loginForm.fieldProps("email")}
+                  className="w-full rounded-xl border-2 border-[#E2E8F0] py-3 pl-14 pr-3 text-sm text-[#0F172A] shadow-sm outline-none placeholder-[#94A3B8] transition focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/15"
+                />
+              </div>
               <FieldError id={loginForm.errorId("email")} message={loginForm.errors.email} />
             </div>
 
@@ -175,6 +192,9 @@ export const LoginScreen: React.FC = () => {
                 </button>
               </div>
               <div className="relative">
+                <span className="pointer-events-none absolute left-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md bg-[#EFF6FF] text-[#2563EB]">
+                  <LockIcon />
+                </span>
                 <input
                   id="password"
                   name="password"
@@ -185,7 +205,7 @@ export const LoginScreen: React.FC = () => {
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
                   {...loginForm.fieldProps("password")}
-                  className="w-full pl-3 pr-10 py-2 border border-[#E2E8F0] rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB] focus:border-[#2563EB] text-sm text-[#0F172A] placeholder-[#94A3B8]"
+                  className="w-full rounded-xl border-2 border-[#E2E8F0] py-3 pl-14 pr-10 text-sm text-[#0F172A] shadow-sm outline-none placeholder-[#94A3B8] transition focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/15"
                 />
                 <button
                   type="button"

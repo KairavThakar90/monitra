@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { V2Shell } from '../dashboard/v2/V2Shell';
 import { 
   useGetProjectMetadataQuery, 
@@ -91,6 +91,8 @@ const AssigneeSelector: React.FC<{
   label?: string;
 }> = ({ selectedIds, options, onChange, isOpen, setIsOpen, onClose, label = "ASSIGN TO" }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 });
   const selectedMembers = (options || []).filter(o => (selectedIds || []).includes(o.id));
   const filteredOptions = (options || []).filter(o => (o.name || '').toLowerCase().includes(searchTerm.toLowerCase()));
 
@@ -121,11 +123,31 @@ const AssigneeSelector: React.FC<{
     return colors[id % colors.length];
   };
 
+  const toggleMenu = () => {
+    if (isOpen) {
+      onClose();
+      return;
+    }
+
+    const trigger = triggerRef.current?.getBoundingClientRect();
+    if (trigger) {
+      const menuWidth = 256;
+      const menuHeight = 380;
+      const opensUpward = trigger.bottom + menuHeight > window.innerHeight && trigger.top > menuHeight;
+      setMenuPosition({
+        left: Math.min(trigger.left, Math.max(12, window.innerWidth - menuWidth - 12)),
+        top: opensUpward ? trigger.top - menuHeight - 8 : trigger.bottom + 8,
+      });
+    }
+    setIsOpen(true);
+  };
+
   return (
     <div className="relative">
       <div 
+        ref={triggerRef}
         className="flex items-center gap-1 cursor-pointer group"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={toggleMenu}
       >
         {selectedMembers.length > 0 ? (
           <div className="flex -space-x-2 items-center p-1">
@@ -154,7 +176,10 @@ const AssigneeSelector: React.FC<{
       {isOpen && (
         <>
           <div className="fixed inset-0 z-10" onClick={onClose}></div>
-          <div className="absolute left-0 top-full z-20 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-3 shadow-2xl">
+          <div
+            className="fixed z-50 w-64 rounded-xl border border-slate-200 bg-white p-3 shadow-2xl"
+            style={{ left: menuPosition.left, top: menuPosition.top }}
+          >
             <div className="mb-2 px-1 text-[11px] font-black uppercase tracking-wider text-slate-500">{label}</div>
             <div className="mb-3 px-1">
               <input 
@@ -236,13 +261,36 @@ const StatusPillDropdown = ({
   fullWidth?: boolean;
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0, width: 160 });
   const selected = options?.find((o) => o.id === value) || options?.[0];
+
+  const toggleMenu = () => {
+    if (isOpen) {
+      setIsOpen(false);
+      return;
+    }
+
+    const trigger = triggerRef.current?.getBoundingClientRect();
+    if (trigger) {
+      const menuWidth = fullWidth ? trigger.width : 160;
+      const menuHeight = Math.max(64, (options?.length || 1) * 38 + 16);
+      const opensUpward = trigger.bottom + menuHeight > window.innerHeight && trigger.top > menuHeight;
+      setMenuPosition({
+        left: Math.min(trigger.left, Math.max(12, window.innerWidth - menuWidth - 12)),
+        top: opensUpward ? trigger.top - menuHeight - 6 : trigger.bottom + 6,
+        width: menuWidth,
+      });
+    }
+    setIsOpen(true);
+  };
 
   return (
     <div className={`relative ${fullWidth ? 'block w-full' : 'inline-block'} ${className}`}>
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
+        ref={triggerRef}
+        onClick={toggleMenu}
         className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-[12px] font-bold tracking-wide transition shadow-sm border ${fullWidth ? 'w-full px-4' : 'px-3 py-1.5 text-[11px]'}`}
         style={{ 
           color: selected?.color || '#334155', 
@@ -259,7 +307,10 @@ const StatusPillDropdown = ({
       {isOpen && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)}></div>
-          <div className={`absolute left-0 top-full z-20 mt-1.5 rounded-xl border border-slate-100 bg-white p-2 shadow-xl ${fullWidth ? 'w-full' : 'w-40'}`}>
+          <div
+            className="fixed z-50 rounded-xl border border-slate-100 bg-white p-2 shadow-xl"
+            style={{ left: menuPosition.left, top: menuPosition.top, width: menuPosition.width }}
+          >
             <div className="flex flex-col gap-1.5">
               {(options || []).map((opt) => (
                 <button
@@ -441,7 +492,7 @@ export const AdminProjectManagement: React.FC = () => {
     setFormLeader(proj.leader?.id || (leaderIsFixed && currentUser ? currentUser.id : ''));
     setFormDeadline(proj.deadline ? proj.deadline.split('T')[0] : '');
     setFormStatusId(proj.status?.id || 1);
-    setFormEmployees((proj.employees || []).filter(e => e.role === 'employee' || e.role === 'Employee').map(e => e.id));
+    setFormEmployees((proj.employees || []).map(e => e.id));
     setFormBillingType(proj.billing_type as 'fixed' | 'free' || 'fixed');
     setFormBillingHours(proj.fixed_hours ? String(proj.fixed_hours) : '');
     
@@ -519,7 +570,7 @@ export const AdminProjectManagement: React.FC = () => {
         leader_id: proj.leader?.id || null,
         employee_ids: newEmployeeIds !== undefined 
           ? newEmployeeIds 
-          : (proj.employees || []).filter((e: any) => e.role === 'employee' || e.role === 'Employee').map((e: any) => e.id),
+          : (proj.employees || []).map((e: any) => e.id),
         deadline: proj.deadline ? proj.deadline.split('T')[0] : null,
         billing_type: proj.billing_type || 'fixed',
         fixed_hours: proj.fixed_hours ? Number(proj.fixed_hours) : null,
@@ -533,6 +584,24 @@ export const AdminProjectManagement: React.FC = () => {
   // State to track which project's team dropdown is open
   const [openTeamDropdownId, setOpenTeamDropdownId] = useState<number | null>(null);
   const [openManageDropdownId, setOpenManageDropdownId] = useState<number | null>(null);
+  const [manageMenuPosition, setManageMenuPosition] = useState({ left: 0, top: 0 });
+
+  const toggleManageMenu = (projectId: number, event: React.MouseEvent<HTMLButtonElement>) => {
+    if (openManageDropdownId === projectId) {
+      setOpenManageDropdownId(null);
+      return;
+    }
+
+    const trigger = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 128;
+    const menuHeight = 120;
+    const opensUpward = trigger.bottom + menuHeight > window.innerHeight && trigger.top > menuHeight;
+    setManageMenuPosition({
+      left: Math.min(trigger.right - menuWidth, Math.max(12, window.innerWidth - menuWidth - 12)),
+      top: opensUpward ? trigger.top - menuHeight - 6 : trigger.bottom + 6,
+    });
+    setOpenManageDropdownId(projectId);
+  };
 
   const handleDelete = async (id: number) => {
     if (await confirmAction('Delete project?', 'This project and its management record will be permanently removed.')) {
@@ -757,7 +826,7 @@ export const AdminProjectManagement: React.FC = () => {
                     </td>}
                     {visibleColumns.team && <td className="px-6 py-4 font-medium text-slate-600 relative overflow-visible">
                       <AssigneeSelector
-                        selectedIds={(proj.employees || []).filter((e: any) => e.role === 'employee' || e.role === 'Employee').map((e: any) => e.id)}
+                        selectedIds={(proj.employees || []).map((e: any) => e.id)}
                         options={assignableEmployees || []}
                         onChange={(newIds) => handleUpdateProjectInline(proj, undefined, newIds)}
                         isOpen={openTeamDropdownId === proj.id}
@@ -783,14 +852,17 @@ export const AdminProjectManagement: React.FC = () => {
                       {formatDate(proj.deadline)}
                     </td>}
                     {visibleColumns.manage && <td className="relative px-6 py-4">
-                      <button onClick={() => setOpenManageDropdownId(openManageDropdownId === proj.id ? null : proj.id)} className="flex items-center gap-2 rounded bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-200">
+                      <button onClick={(event) => toggleManageMenu(proj.id, event)} className="flex items-center gap-2 rounded bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-200">
                         Manage
                         <svg className="h-3 w-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                       </button>
                       {openManageDropdownId === proj.id && (
                         <>
                           <div className="fixed inset-0 z-10" onClick={() => setOpenManageDropdownId(null)} />
-                          <div className="absolute right-6 z-20 mt-1 w-32 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">
+                          <div
+                            className="fixed z-50 w-32 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl"
+                            style={{ left: manageMenuPosition.left, top: manageMenuPosition.top }}
+                          >
                             <button onClick={() => { setViewingProject(proj); setOpenManageDropdownId(null); }} className="block w-full px-3 py-2 text-left text-xs font-bold text-indigo-600 transition hover:bg-indigo-50">View</button>
                             <button onClick={() => { openEditDrawer(proj); setOpenManageDropdownId(null); }} className="block w-full px-3 py-2 text-left text-xs font-bold text-blue-600 transition hover:bg-blue-50">Edit</button>
                             <button onClick={() => { handleDelete(proj.id); setOpenManageDropdownId(null); }} className="block w-full px-3 py-2 text-left text-xs font-bold text-rose-600 transition hover:bg-rose-50">Delete</button>

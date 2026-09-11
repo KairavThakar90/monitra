@@ -154,7 +154,7 @@ def test_login_issues_each_initial_load_once(dashboard):
     suppressed a second submission while the first was still in flight."""
     runner = _armed(dashboard, NetworkState.BACKEND_REACHABLE)
 
-    dashboard.on_login({"id": 1, "role_name": "admin"})
+    dashboard.on_login({"id": 1, "role_name": "administrator"})
 
     assert len(runner.keys) == len(set(runner.keys)), runner.keys
     assert "load-projects" in runner.keys
@@ -169,7 +169,7 @@ def test_login_does_not_wait_for_a_timer_to_start_loading(dashboard):
     refresh timer's first tick 120 seconds later."""
     runner = _armed(dashboard, NetworkState.BACKEND_REACHABLE)
 
-    dashboard.on_login({"id": 1, "role_name": "admin"})
+    dashboard.on_login({"id": 1, "role_name": "administrator"})
 
     assert runner.keys, "no work was scheduled by on_login"
     assert dashboard._refresh_timer.isActive()
@@ -213,7 +213,7 @@ def test_a_restored_session_arms_the_client_before_the_dashboard_loads():
             api_client=client,
             session_manager=SimpleNamespace(
                 access_token="restored-token",
-                user_info={"id": 54, "role_name": "admin"},
+                user_info={"id": 54, "role_name": "administrator"},
             ),
         ),
         _login=SimpleNamespace(reset=lambda: None, show_checking_session=lambda: None),

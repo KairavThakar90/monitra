@@ -27,6 +27,8 @@ export const ENDPOINTS = {
   AUTH: {
     LOGIN: `${API_BASE_URL}/auth/login`,
     SSO_TOKEN: `${API_BASE_URL}/auth/sso/token`,
+    REFRESH: `${API_BASE_URL}/auth/refresh`,
+    LOGOUT: `${API_BASE_URL}/auth/logout`,
     ME: `${API_BASE_URL}/auth/me`,
   },
   MEMBERS: {
@@ -69,7 +71,7 @@ export const ENDPOINTS = {
     // prefix, so the client rebuilds it from the id rather than using it raw.
     VIEW: (id: string | number) => `${API_BASE_URL}/time-entry-screenshots/${id}/view`,
     // Permanently destroys the image and its row. The backend admits only
-    // callers holding `screenshots:delete` (admin and HR); every other role is
+    // callers holding `screenshots:delete` (Administrator and HR); every other role is
     // refused with 403 whatever the UI chose to show them.
     DELETE: (id: string | number) => `${API_BASE_URL}/time-entry-screenshots/${id}`,
   },

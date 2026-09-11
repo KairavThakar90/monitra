@@ -36,7 +36,7 @@ UTC = timezone.utc
 
 
 def _user():
-    return User(id=54, organization_id=1, role_name="admin", permissions={})
+    return User(id=54, organization_id=1, role_name="administrator", permissions={})
 
 
 # ── the duration itself ──────────────────────────────────────────────────────

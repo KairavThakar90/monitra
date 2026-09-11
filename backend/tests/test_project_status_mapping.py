@@ -37,7 +37,7 @@ def _status_row(row_id, name):
 
 
 def _user():
-    return User(id=1, organization_id=1, role_name="admin", permissions={})
+    return User(id=1, organization_id=1, role_name="administrator", permissions={})
 
 
 class StatusKeyTests(unittest.TestCase):

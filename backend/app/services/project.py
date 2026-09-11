@@ -23,7 +23,7 @@ class ProjectService:
     @staticmethod
     def list_projects(db: Session, current_user: User) -> List[Project]:
         # Admins, managers, and super_admins can see all active projects in their organization
-        if current_user.role_name in ["org_admin", "admin", "super_admin", "manager"]:
+        if current_user.role_name in ["org_admin", "administrator", "super_admin", "manager"]:
             return list(db.scalars(
                 select(Project)
                 .where(Project.organization_id == current_user.organization_id)

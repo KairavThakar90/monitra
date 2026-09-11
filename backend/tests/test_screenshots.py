@@ -567,7 +567,7 @@ class DayGridTests(unittest.TestCase):
             settings.SCREENSHOT_WINDOW_MINUTES = self.WINDOW_MINUTES
             return TimeEntryScreenshotService.get_day_grid(
                 db=db,
-                current_user=user or _user(id=1, role_name="admin"),
+                current_user=user or _user(id=1, role_name="administrator"),
                 date_from=date_from or T0.date(),
                 date_to=date_to or T0.date(),
             )
@@ -687,7 +687,7 @@ class DayGridTests(unittest.TestCase):
              ) as listed:
             settings.SCREENSHOT_WINDOW_MINUTES = self.WINDOW_MINUTES
             TimeEntryScreenshotService.get_day_grid(
-                db=db, current_user=_user(id=1, role_name="admin"),
+                db=db, current_user=_user(id=1, role_name="administrator"),
                 date_from=T0.date(), date_to=T0.date(), user_id=5,
             )
         self.assertEqual(listed.call_args.kwargs["user_ids"], {5})

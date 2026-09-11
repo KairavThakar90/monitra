@@ -25,7 +25,7 @@ const GRADIENT_CYAN_PURPLE = 'bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[
  * is allowed to lag behind it, but the row must still render.
  */
 const ROLE_TONES: Record<string, string> = {
-  admin: 'text-purple-600',
+  administrator: 'text-purple-600',
   hr: 'text-amber-600',
   leader: 'text-blue-600',
   employee: 'text-slate-600',

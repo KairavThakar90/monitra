@@ -12,10 +12,7 @@ from app.services.project import ProjectService
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
 class ProjectMemberService:
-    #: Expanded through the alias table: an account stored as `administrator`
-    #: is an admin, and without this it was refused the right to staff a
-    #: project that its own role grants.
-    ADMIN_ROLES = set(with_role_aliases(["org_admin", "admin", "super_admin"]))
+    ADMIN_ROLES = set(with_role_aliases(["org_admin", "administrator", "super_admin"]))
     LEADER_ROLES = {"leader", "project_leader"}
 
     @staticmethod

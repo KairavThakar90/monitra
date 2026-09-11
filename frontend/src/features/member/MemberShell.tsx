@@ -257,6 +257,12 @@ export const MemberShell: React.FC<{
                 <div className="truncate text-[10px] leading-normal text-[#64748B]" title={currentUser.email}>
                   {currentUser.email}
                 </div>
+                <div
+                  className="truncate text-[10px] leading-normal text-[#94A3B8]"
+                  title={currentUser.designation || currentUser.role_name}
+                >
+                  {currentUser.designation || currentUser.role_name}
+                </div>
               </div>
             </div>
           )}

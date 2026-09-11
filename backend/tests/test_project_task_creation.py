@@ -22,7 +22,7 @@ from app.schemas.project_management import TaskCreate
 from app.services.project_management import ProjectManagementService
 
 
-def _user(role="admin", user_id=1):
+def _user(role="administrator", user_id=1):
     return User(id=user_id, organization_id=1, role_name=role, permissions={})
 
 
@@ -63,7 +63,7 @@ class TestTaskAssigneeRule(unittest.TestCase):
         """The exact production failure: the desktop self-assigned, so an
         admin's own id arrived as assignee_id and was refused."""
         with self.assertRaises(HTTPException) as ctx:
-            self._create(member=MagicMock(), assignee=_user(role="admin"))
+            self._create(member=MagicMock(), assignee=_user(role="administrator"))
 
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("active employee", ctx.exception.detail)
@@ -105,7 +105,7 @@ class TestUnassignedTask(unittest.TestCase):
         db.get.return_value = _task_status()
 
         ProjectManagementService.create_task(
-            db, _user(role="admin"), 7,
+            db, _user(role="administrator"), 7,
             TaskCreate(name="Write the report", status_id=1),
         )
 
@@ -126,7 +126,7 @@ class TestUnassignedTask(unittest.TestCase):
         db.get.return_value = _task_status()
 
         ProjectManagementService.create_task(
-            db, _user(role="admin"), 7, TaskCreate(name="Write the report", status_id=1)
+            db, _user(role="administrator"), 7, TaskCreate(name="Write the report", status_id=1)
         )
 
         # One scalar() call only: the project lookup in _project.

@@ -351,17 +351,17 @@ class ProviderRoleResolutionTests(unittest.IsolatedAsyncioTestCase):
         # 502 because Monitra spells that role "admin". The alias renames it;
         # the stored role is the Monitra name.
         created = await self._resolve({"roles": ["administrator"]})
-        self.assertEqual(created.role_name, "admin")
-        self.assertEqual(created.permissions, {p: True for p in ROLE_PERMISSIONS["admin"]})
+        self.assertEqual(created.role_name, "administrator")
+        self.assertEqual(created.permissions, {p: True for p in ROLE_PERMISSIONS["administrator"]})
 
     async def test_administrator_slug_is_normalised_before_aliasing(self):
         created = await self._resolve({"roles": ["  Administrator "]})
-        self.assertEqual(created.role_name, "admin")
+        self.assertEqual(created.role_name, "administrator")
 
     async def test_an_existing_admin_is_not_locked_out_when_the_slug_changes(self):
         response = _login_response({"roles": ["administrator"], "hubstaff_user_id": "2630683"})
         existing = MagicMock(id=54, organization_id=1, permissions={}, hubstaff_user_id="2630683")
-        existing.role_name = "admin"
+        existing.role_name = "administrator"
         db = MagicMock()
 
         with patch("app.services.external_auth_service.httpx.AsyncClient", return_value=FakeAsyncClient(response)), \
@@ -374,7 +374,7 @@ class ProviderRoleResolutionTests(unittest.IsolatedAsyncioTestCase):
             result = await AuthService.login_exchange(db, "user@example.com", "provider-password")
 
         self.assertEqual(result, "token-pair")
-        self.assertEqual(existing.role_name, "admin")
+        self.assertEqual(existing.role_name, "administrator")
 
     async def test_permission_schema_still_resolves_the_role_when_roles_is_absent(self):
         # The path that worked before the fix must keep working.
@@ -382,7 +382,7 @@ class ProviderRoleResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created.role_name, "manager")
 
     async def test_every_role_the_application_selects_on_can_authenticate(self):
-        for role in ("employee", "hr", "leader", "project_leader", "manager", "admin", "org_admin", "super_admin"):
+        for role in ("employee", "hr", "leader", "project_leader", "manager", "administrator", "org_admin", "super_admin"):
             with self.subTest(role=role):
                 created = await self._resolve({"roles": [role]})
                 self.assertEqual(created.role_name, role)
@@ -624,8 +624,8 @@ class SsoTokenExchangeTests(unittest.IsolatedAsyncioTestCase):
         answering with the old map, and the UI, which gates every screen on it,
         hid project creation and bounced the user off the member directory.
         """
-        client = FakeSsoClient(_valid_validation_response(), _profile_response(roles=["admin"]))
-        user = MagicMock(id=7, organization_id=1, role_name="admin", is_active=True)
+        client = FakeSsoClient(_valid_validation_response(), _profile_response(roles=["administrator"]))
+        user = MagicMock(id=7, organization_id=1, role_name="administrator", is_active=True)
         user.status = "active"
         user.permissions = {"projects:view": True}
         db = MagicMock()
@@ -634,7 +634,7 @@ class SsoTokenExchangeTests(unittest.IsolatedAsyncioTestCase):
             user_read.model_validate.return_value = "user-read"
             await AuthService.sso_exchange(db, "provider.token.value")
 
-        self.assertEqual(user.permissions, {p: True for p in ROLE_PERMISSIONS["admin"]})
+        self.assertEqual(user.permissions, {p: True for p in ROLE_PERMISSIONS["administrator"]})
         # The screens the user reported as missing are exactly these two.
         self.assertTrue(user.permissions["projects:create"])
         self.assertTrue(user.permissions["view_employees"])
@@ -658,8 +658,8 @@ class SsoTokenExchangeTests(unittest.IsolatedAsyncioTestCase):
             user_read.model_validate.return_value = "user-read"
             await AuthService.sso_exchange(db, "provider.token.value")
 
-        self.assertEqual(user.role_name, "admin")
-        self.assertEqual(user.permissions, {p: True for p in ROLE_PERMISSIONS["admin"]})
+        self.assertEqual(user.role_name, "administrator")
+        self.assertEqual(user.permissions, {p: True for p in ROLE_PERMISSIONS["administrator"]})
 
     async def test_unmapped_provider_role_does_not_demote_an_existing_user(self):
         """A provider vocabulary change must not strip an existing account.
@@ -671,7 +671,7 @@ class SsoTokenExchangeTests(unittest.IsolatedAsyncioTestCase):
         client = FakeSsoClient(
             _valid_validation_response(), _profile_response(roles=["subscriber"])
         )
-        user = MagicMock(id=7, organization_id=1, role_name="admin", is_active=True)
+        user = MagicMock(id=7, organization_id=1, role_name="administrator", is_active=True)
         user.status = "active"
         user.permissions = {}
         db = MagicMock()
@@ -680,8 +680,8 @@ class SsoTokenExchangeTests(unittest.IsolatedAsyncioTestCase):
             user_read.model_validate.return_value = "user-read"
             await AuthService.sso_exchange(db, "provider.token.value")
 
-        self.assertEqual(user.role_name, "admin")
-        self.assertEqual(user.permissions, {p: True for p in ROLE_PERMISSIONS["admin"]})
+        self.assertEqual(user.role_name, "administrator")
+        self.assertEqual(user.permissions, {p: True for p in ROLE_PERMISSIONS["administrator"]})
 
     async def test_a_row_stored_as_administrator_is_canonicalised_not_emptied(self):
         """The live failure: `GET /projects` answering 403 for an admin.
@@ -705,7 +705,7 @@ class SsoTokenExchangeTests(unittest.IsolatedAsyncioTestCase):
 
         # Canonicalised, because every `role_name IN (...)` query in this app
         # selects on the Monitra spellings.
-        self.assertEqual(user.role_name, "admin")
+        self.assertEqual(user.role_name, "administrator")
         self.assertTrue(user.permissions["projects:view"])
         self.assertTrue(user.permissions["projects:create"])
         self.assertTrue(user.permissions["view_employees"])
