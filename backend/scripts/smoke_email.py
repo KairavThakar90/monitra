@@ -68,8 +68,8 @@ from app.services.email.messages import (  # noqa: E402
     build_feedback_email, build_welcome_email,
 )
 from app.services.email.provider import (  # noqa: E402
-    EmailError, get_email_provider, normalise_address, redact_error,
-    unconfigured_reason,
+    EmailError, credential_warnings, get_email_provider, normalise_address,
+    redact_error, unconfigured_reason,
 )
 from app.services.email.recipients import resolve_feedback_recipients  # noqa: E402
 
@@ -120,6 +120,14 @@ def describe() -> bool:
 
     print("\nDispatch sweeper")
     print(f"  EMAIL_DISPATCH_TOKEN  {'set' if settings.EMAIL_DISPATCH_TOKEN else '(unset) -- retries will not run'}")
+
+    # A mail server answers every credential mistake with the same opaque 535,
+    # so anything we can name before connecting is worth naming.
+    warnings = credential_warnings()
+    if warnings:
+        print("\nCredential problems that will cause a 535 'Username and Password not accepted':")
+        for warning in warnings:
+            print(f"  ! {warning}")
 
     if reason:
         print(f"\nCANNOT SEND: {reason}")

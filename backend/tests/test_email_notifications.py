@@ -576,6 +576,69 @@ class TestHeaderSafety(unittest.TestCase):
         self.assertIn("text/html", types)
 
 
+class TestCredentialWarnings(unittest.TestCase):
+    """A mail server answers every credential mistake with the same opaque 535.
+
+    Anything nameable before connecting saves someone guessing at it, and each
+    case below cost a real round of that.
+    """
+
+    def warnings(self, **config):
+        from app.services.email.provider import credential_warnings
+
+        with email_settings(**config):
+            return " ".join(credential_warnings())
+
+    def test_a_correct_gmail_app_password_produces_no_warning(self):
+        self.assertEqual(
+            self.warnings(
+                SMTP_USERNAME="someone@gmail.com",
+                EMAIL_FROM_ADDRESS="someone@gmail.com",
+                SMTP_PASSWORD="abcdefghijklmnop",
+            ),
+            "",
+        )
+
+    def test_an_app_password_pasted_with_its_display_spaces_is_flagged(self):
+        # Google shows it as "abcd efgh ijkl mnop"; the spaces are readability.
+        self.assertIn("no spaces", self.warnings(
+            SMTP_USERNAME="someone@gmail.com",
+            EMAIL_FROM_ADDRESS="someone@gmail.com",
+            SMTP_PASSWORD="abcd efgh ijkl mnop",
+        ))
+
+    def test_a_quoted_password_is_flagged(self):
+        self.assertIn("quotes", self.warnings(
+            SMTP_USERNAME="someone@gmail.com",
+            EMAIL_FROM_ADDRESS="someone@gmail.com",
+            SMTP_PASSWORD='"abcdefghijklmnop"',
+        ))
+
+    def test_a_gmail_password_of_the_wrong_length_is_flagged(self):
+        self.assertIn("exactly 16", self.warnings(
+            SMTP_USERNAME="someone@gmail.com",
+            EMAIL_FROM_ADDRESS="someone@gmail.com",
+            SMTP_PASSWORD="my-ordinary-account-password",
+        ))
+
+    def test_a_username_and_sender_that_are_different_accounts_are_flagged(self):
+        # The invisible one: borrowing another account's app password while
+        # leaving your own address in SMTP_USERNAME cannot authenticate.
+        self.assertIn("different accounts", self.warnings(
+            SMTP_USERNAME="employee@gmail.com",
+            EMAIL_FROM_ADDRESS="admin@gmail.com",
+            SMTP_PASSWORD="abcdefghijklmnop",
+        ))
+
+    def test_no_warning_ever_contains_the_password_itself(self):
+        secret = "abcd efgh ijkl mnop"
+        self.assertNotIn(secret.replace(" ", ""), self.warnings(
+            SMTP_USERNAME="someone@gmail.com",
+            EMAIL_FROM_ADDRESS="other@gmail.com",
+            SMTP_PASSWORD=secret,
+        ))
+
+
 class TestSecretsAreNeverLeaked(unittest.TestCase):
 
     def test_an_smtp_password_is_redacted_out_of_an_error(self):

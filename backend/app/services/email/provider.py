@@ -300,6 +300,60 @@ def unconfigured_reason() -> Optional[str]:
     return None
 
 
+def credential_warnings() -> list[str]:
+    """Things about the SMTP credential that will cause an authentication failure.
+
+    A mail server answers every one of these with the same opaque
+    ``535 Username and Password not accepted``, which says nothing about which
+    of them it was. Naming them here is the difference between a fixable
+    message and an afternoon of guessing.
+
+    Deliberately warnings and not repairs. A password is never trimmed,
+    normalised or otherwise edited by this system — silently changing a secret
+    is how a value stops matching what someone actually configured, and the
+    project's validation rules forbid it for exactly that reason. These say
+    what is wrong and leave the fixing to a person.
+    """
+    warnings: list[str] = []
+    password = settings.SMTP_PASSWORD or ""
+    username = (settings.SMTP_USERNAME or "").strip().lower()
+
+    if password and password != password.strip():
+        warnings.append(
+            "SMTP_PASSWORD has leading or trailing whitespace, which is part of "
+            "the value as far as the mail server is concerned."
+        )
+    if any(character.isspace() for character in password.strip()):
+        warnings.append(
+            "SMTP_PASSWORD contains spaces. Google displays an app password as "
+            "four groups of four ('abcd efgh ijkl mnop') for readability only — "
+            "it must be entered as the 16 characters with no spaces."
+        )
+    if password.startswith(('"', "'")) or password.endswith(('"', "'")):
+        warnings.append(
+            "SMTP_PASSWORD is wrapped in quotes, which become part of the value "
+            "in a .env file."
+        )
+    if username.endswith("@gmail.com") and password and len(password.replace(" ", "")) != 16:
+        warnings.append(
+            f"SMTP_USERNAME is a Gmail address but SMTP_PASSWORD is "
+            f"{len(password.replace(' ', ''))} characters; a Google app password "
+            f"is exactly 16. An ordinary account password is always rejected."
+        )
+    # The mismatch that is easiest to create and hardest to see: an app password
+    # authenticates only the account it was generated for, so borrowing a
+    # colleague's while leaving your own address in SMTP_USERNAME cannot work.
+    # Being a *recipient* of the mail has nothing to do with sending it.
+    sender = (settings.EMAIL_FROM_ADDRESS or "").strip().lower()
+    if username and sender and username != sender:
+        warnings.append(
+            f"SMTP_USERNAME ({username}) and EMAIL_FROM_ADDRESS ({sender}) are "
+            f"different accounts. Most providers refuse to send as an address "
+            f"the authenticated account does not own."
+        )
+    return warnings
+
+
 def describe_configuration() -> dict:
     """What this deployment's email setup is, safe to log and to serve on /health."""
     return {
@@ -309,4 +363,7 @@ def describe_configuration() -> dict:
         "smtp_host_set": bool(settings.SMTP_HOST),
         "smtp_authenticated": bool(settings.SMTP_USERNAME),
         "asset_mode": "url" if settings.EMAIL_ASSET_BASE_URL else "cid",
+        # Count only: the warnings name settings, never values, but a count is
+        # all /health needs and it keeps the payload uniform.
+        "credential_warnings": len(credential_warnings()),
     }
