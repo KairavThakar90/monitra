@@ -6,6 +6,7 @@ from app.api.exceptions import (
     ApiError,
     ApiHttpError,
     ApiConnectionError,
+    ApiTimeoutError,
     SessionExpiredError,
     SESSION_EXPIRED_MESSAGE,
 )
@@ -53,6 +54,11 @@ class AuthService:
             elif e.status_code not in (400, 401, 403):
                 message = f"Sign-in service error (HTTP {e.status_code})."
             raise ApiError(message)
+        except ApiTimeoutError:
+            # ApiTimeoutError is a sibling of ApiConnectionError, not a
+            # subclass, so it needs its own clause. Without one it travelled
+            # all the way to the sign-in screen unmapped.
+            raise ApiError("The sign-in service did not respond in time. Please try again.")
         except ApiConnectionError:
             raise ApiError("Network connection failure. Could not reach the authentication server.")
 
@@ -151,6 +157,9 @@ class AuthService:
             if e.status_code in (400, 401, 403):
                 raise ApiError(error_msg)
             raise ApiError(f"Server error during authentication (HTTP {e.status_code}).")
+
+        except ApiTimeoutError:
+            raise ApiError("Signing in timed out. Please try again.")
 
         except ApiConnectionError as e:
             raise ApiError("Network connection failure. Could not reach the authentication server.")

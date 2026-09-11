@@ -335,8 +335,14 @@ class TimerService(BaseService):
             )
 
         def on_success(entry_id: int) -> None:
-            if not self._session or self._session.get("task_id") != task_id:
-                return  # superseded while in flight
+            # Keyed on `client_op`, not `task_id`: stopping a task and starting
+            # the *same* task again produces two sessions with equal task ids,
+            # and a task id match would bind this entry to the later session --
+            # whose stop would then stop the earlier entry and leave the live
+            # one running.
+            if not self._session or self._session.get("client_op") != client_op:
+                self._orphaned_start_succeeded(client_op, entry_id)
+                return
             self._session["entry_id"] = entry_id
             self._session["sync_status"] = "synced"
             self._session["updated_at"] = _utc_now().isoformat()
@@ -345,7 +351,11 @@ class TimerService(BaseService):
             self.log.info("timer bound to backend entry %s", entry_id)
 
         def on_error(exc: BaseException) -> None:
-            if not self._session or self._session.get("task_id") != task_id:
+            # Same keying as on_success, and for the same reason. A start that
+            # failed created no entry, so a session that is already gone needs
+            # nothing queued: the stop waiting on this client_op will find no
+            # start, and is correctly abandoned.
+            if not self._session or self._session.get("client_op") != client_op:
                 return
             self.log.warning("start_time_entry failed (%s); queueing durably", exc)
             self._session["sync_status"] = "queued"
@@ -365,6 +375,58 @@ class TimerService(BaseService):
         self.runtime.tasks.submit(
             call, on_success=on_success, on_error=on_error, key=f"timer-start:{task_id}"
         )
+
+    def _orphaned_start_succeeded(self, client_op: str, entry_id: int) -> None:
+        """Deal with a start that landed after its session was already gone.
+
+        The user stopped or switched before the backend answered, so nothing
+        local references the entry the backend went on to create -- but it is
+        real, and it is running. The stop for this session is already in the
+        durable queue carrying the same `client_op` and a null entry id, which
+        is precisely what `resolve_entry_id_for_client_op` exists to fill in.
+
+        This is the bug that made a stopped timer come back: the id was simply
+        discarded here, so the queued stop never learned what to stop. It spent
+        its deferral budget waiting for a queued start that had already
+        succeeded online and was therefore never queued, was cancelled as
+        unresolvable, and the entry stayed `running` on the backend for ever --
+        for the next launch to find and adopt as "a timer is still running".
+        """
+        self.log.info(
+            "start for %s landed after its session ended; entry %s needs stopping",
+            client_op, entry_id,
+        )
+        resolved = 0
+        if self._cache:
+            try:
+                resolved = self._cache.resolve_entry_id_for_client_op(client_op, entry_id)
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not resolve entry %s onto its queued stop", entry_id)
+        if resolved:
+            self.log.info("entry %s handed to %d queued action(s)", entry_id, resolved)
+            return
+
+        # Nothing was waiting for it -- the stop was cancelled before this
+        # arrived, or never queued. Queue one now rather than leave an entry
+        # running that no one is tracking. `stopped_at` is this moment, which
+        # is the earliest instant that can still be honestly claimed.
+        self.log.warning(
+            "no queued stop was waiting for entry %s; queueing one now", entry_id
+        )
+        try:
+            self.runtime.sync.enqueue(
+                "stop_timer",
+                {
+                    "entry_id": entry_id,
+                    "stopped_at": _utc_now().isoformat(),
+                    "client_op": client_op,
+                },
+                idempotency_key=f"stop:{entry_id}",
+                entity_type="time_entry",
+                entity_id=str(entry_id),
+            )
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not queue a stop for orphaned entry %s", entry_id)
 
     def _bind_trackers_to_entry(self, entry_id: int) -> None:
         """Give sub-trackers the backend entry id once it is known."""

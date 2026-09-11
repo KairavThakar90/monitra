@@ -1777,7 +1777,6 @@ class TaskSection(QWidget):
                 row.set_running(True, entry_id, live_elapsed)
             else:
                 row.set_running(False)
-        self._reorder_rows()
         self.timer_state_changed.emit(True)
 
     # ── Private helpers ────────────────────────────────────────────────────────
@@ -1796,40 +1795,34 @@ class TaskSection(QWidget):
             if not is_task_completed(t) or t.get("id") == self._running_task_id
         ]
 
-    def _active_first_key(self, task: Dict[str, Any]):
-        """Sort key: the tracked task first, then the backend's own order.
+    def _task_order_key(self, task: Dict[str, Any]):
+        """Sort key: newest tasks first.
 
-        The second element keeps the ordering reversible -- a row that was
-        floated to the top drops back into its original position when its
-        timer stops, instead of staying pinned there.
+        ``created_at`` is the durable ordering signal for task creation. Rows
+        from older cached responses may not carry it, so their original
+        backend position remains the deterministic fallback.
+
+        The running timer is deliberately absent from this key. Ordering is a
+        property of the task list, not of the timer, so starting a task leaves
+        its row exactly where the user last saw it instead of jumping it to the
+        top and shifting every row the user was about to click.
         """
-        active = 0 if (
-            self._running_task_id is not None
-            and task.get("id") == self._running_task_id
-        ) else 1
+        created_at = task.get("created_at") or task.get("createdAt")
+        created_timestamp = 0.0
+        if created_at:
+            try:
+                created_timestamp = datetime.fromisoformat(
+                    str(created_at).replace("Z", "+00:00")
+                ).timestamp()
+            except (TypeError, ValueError, OverflowError):
+                created_timestamp = 0.0
         try:
             position = [t.get("id") for t in self._tasks].index(task.get("id"))
         except ValueError:
             position = len(self._tasks)
-        return (active, position)
-
-    def _reorder_rows(self) -> None:
-        """Float the actively tracked row to the top of the existing rows.
-
-        The rows are moved, not rebuilt: they stay the same widget instances,
-        so mark_running/mark_stopped, the tick handler and every connected
-        signal keep working on them. Called on each timer transition so the
-        ordering holds for start, stop, switch and an adopted session, and
-        _rebuild_rows() applies the same order on a full reload.
-        """
-        ordered = sorted(self._task_rows, key=lambda row: self._active_first_key(row.task))
-        if ordered == self._task_rows:
-            return
-        for row in ordered:
-            self._rows_layout.removeWidget(row)
-        for index, row in enumerate(ordered):
-            self._rows_layout.insertWidget(index, row)
-        self._task_rows = ordered
+        # Prefixing with ``not created_at`` keeps timestamped rows ahead of
+        # legacy rows; the numeric timestamp gives newest-first ordering.
+        return (not bool(created_at), -created_timestamp, position)
 
     def _running_task_display_name(self) -> Optional[str]:
         """Name of the task being tracked, if any.
@@ -1855,9 +1848,9 @@ class TaskSection(QWidget):
             t for t in self._visible_tasks()
             if self._search_text.lower() in (t.get("name") or t.get("task_name") or "").lower()
         ]
-        # Active task first; everything else keeps the order the backend
-        # returned it in (list.sort is stable, so nothing else moves).
-        filtered.sort(key=self._active_first_key)
+        # Newest tasks first. The tracked task is not special-cased: it keeps
+        # whatever position it already has.
+        filtered.sort(key=self._task_order_key)
 
         project_name = (
             self._project.get("project_name", "Project") if self._project else "Project"
@@ -2000,7 +1993,6 @@ class TaskSection(QWidget):
             elif row._is_running:
                 row.mark_stopped()
 
-        self._reorder_rows()
         self.timer_state_changed.emit(True)
         self._on_timer_tick(self.api.timer_elapsed_seconds())
         self.api.notify(f"Timer started for '{task_name}'", NotificationLevel.SUCCESS, key=f"timer-started-{task_id}")
@@ -2034,7 +2026,6 @@ class TaskSection(QWidget):
             self._running_entry_id = None
             self._running_task_name = None
 
-        self._reorder_rows()
         self.timer_state_changed.emit(False)
         self.api.notify("Timer stopped. Time entry saved.", NotificationLevel.INFO, key=f"timer-stopped-{task_id}")
 

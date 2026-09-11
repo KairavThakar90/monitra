@@ -87,3 +87,70 @@ def test_a_successful_login_emits_the_user_and_clears_the_password(window):
 
     assert seen == [{"id": 1, "name": "Kairav"}]
     assert window.password_input.text() == ""
+
+
+# ── Field geometry ───────────────────────────────────────────────────────────
+#
+# A stale `QLineEdit#LoginInput { padding: 10px 14px }` rule survived in
+# LOGIN_QSS after the input was wrapped in `_Field`. Qt merges that rule with
+# the frame's own, and padding is taken out of the text rect, which the frame's
+# fixed height leaves no slack to absorb -- so the bottom of every descender
+# was sheared off and a typed "…@gmail.com" rendered as "…@amail.com".
+#
+# These are geometry assertions rather than pixel ones on purpose: the suite
+# runs under QT_QPA_PLATFORM=offscreen, which paints placeholder boxes instead
+# of real glyphs, so no amount of reading the rendered image can see a clipped
+# tail here. Height is the signature that survives the offscreen platform --
+# padding inflates the widget's box, and every pixel of that inflation is
+# taken back out of the room left for the text.
+
+
+def _padding_slack(edit) -> int:
+    """How much taller the input's box is than one line of its own font.
+
+    With no padding this is a couple of pixels of frame. Anything larger is
+    padding, and padding here is exactly what shears the descenders off.
+    """
+    return edit.height() - edit.fontMetrics().height()
+
+
+@pytest.fixture
+def shown_window(window):
+    """The window realised at a realistic size.
+
+    An unsized window leaves the card squeezed below the height the fields
+    actually get on screen, which is not the geometry under test.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    window.resize(518, 576)
+    window.show()
+    QApplication.processEvents()
+    yield window
+    window.hide()
+
+
+@pytest.mark.parametrize("field", ["username_input", "password_input"])
+def test_the_input_box_is_not_inflated_by_padding(shown_window, field):
+    edit = getattr(shown_window, field)
+
+    assert _padding_slack(edit) <= 8, (
+        f"{field} is {_padding_slack(edit)}px taller than its own line height; "
+        "that excess is padding, and Qt takes it out of the text rect, which "
+        "clips the tails of 'g', 'y' and 'p'"
+    )
+
+
+def test_no_stylesheet_pads_the_login_input_from_a_distance(shown_window):
+    """The frame owns the field's box; a global rule must not reach into it.
+
+    This is the rule that was actually violated. The pixel-level symptom is
+    invisible to an offscreen run, so assert the cause directly.
+    """
+    from ui.styles import LOGIN_QSS
+
+    assert "LoginInput" not in LOGIN_QSS, (
+        "style the login input in _Field, not in LOGIN_QSS -- a rule here "
+        "merges with the frame's own and silently re-pads the text rect"
+    )
+    assert "padding: 0" in shown_window._username_field.styleSheet()
