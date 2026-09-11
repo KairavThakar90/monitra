@@ -69,6 +69,19 @@ export interface ReactReportsListResponse {
   limit: number;
   total: number;
   pages: number;
+  /**
+   * Seconds held by every matching row, not just this page — the denominator
+   * for a part-to-whole chart of this tab.
+   *
+   * This is not interchangeable with the /summary endpoint's total. Summary
+   * counts session time; the Apps and URLs tabs count application and browser
+   * time, which the desktop measures separately and which legitimately covers
+   * less of the day. Dividing one by the other drew every second that
+   * application capture had never claimed to measure as one unnamed slice.
+   */
+  total_seconds: number;
+  /** `total_seconds` as hours, 2dp. Prefer the seconds for durations. */
+  total_hours: number;
 }
 
 export interface ReactReportsTrendPoint {

@@ -54,10 +54,14 @@ DASHBOARD_PAYLOAD = {
     "summary": {"activity": None, "monthly_activity": None, "total_hours": 0.0,
                 "active_projects": 0, "team_members": 0, "total_tasks": 0},
     "time_tracked": {"interval": "day", "data": []},
-    "top_projects": {"items": [], "page": 1, "limit": 10, "total": 0, "pages": 0},
-    "top_members": {"items": [], "page": 1, "limit": 10, "total": 0, "pages": 0},
+    # `total_seconds`/`total_hours` are the scope-wide totals every ranked
+    # page now carries -- the denominator a part-to-whole chart divides by.
+    "top_projects": {"items": [], "page": 1, "limit": 10, "total": 0, "pages": 0,
+                     "total_seconds": 0, "total_hours": 0.0},
+    "top_members": {"items": [], "page": 1, "limit": 10, "total": 0, "pages": 0,
+                    "total_seconds": 0, "total_hours": 0.0},
     "top_apps": {"items": [], "page": 1, "limit": 10, "total": 0, "pages": 0,
-                 "total_app_hours": 0.0},
+                 "total_seconds": 0, "total_hours": 0.0, "total_app_hours": 0.0},
 }
 
 SUMMARY_PAYLOAD = {"total_hours": 0.0, "avg_activity": None, "total_members": 0, "total_tasks": 0}

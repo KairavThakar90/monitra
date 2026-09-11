@@ -22,38 +22,49 @@ class StubRuntime:
         self.timer.active_session.return_value = {"entry_id": 101}
 
 
+def window(process_name, title, exe_path=None):
+    """One `get_active_window_details` reading.
+
+    Tests pass the identifier the operating system really reports -- the
+    executable's base name on Windows -- rather than the product's display
+    name, because that is what the service has to turn into an identity.
+    """
+    return (process_name, title, exe_path, 4242, 1)
+
+
 class TestAppUsageService(unittest.TestCase):
     def setUp(self):
         self.cache = MagicMock()
         self.service = AppUsageService(StubRuntime(), self.cache)
 
-    @patch("background_services.activity.app_usage_service.get_active_window_info")
+    @patch("background_services.activity.app_usage_service.get_active_window_details")
     def test_segment_is_saved_when_the_foreground_window_changes(self, active_window):
-        active_window.return_value = ("VS Code", "main.py")
+        active_window.return_value = window("Code", "main.py")
         self.service.start_tracker({"entry_id": 101})
         self.service.tick()  # opens the first segment
 
-        self.assertEqual(self.service._current_app, "VS Code")
+        # Stored under the product's name, not the executable's stem.
+        self.assertEqual(self.service._current_app, "Visual Studio Code")
         self.assertEqual(self.service._current_title, "main.py")
 
         self.service._segment_start = time.monotonic() - 15.0
-        active_window.return_value = ("Chrome", "Dashboard")
+        active_window.return_value = window("chrome", "Dashboard")
         self.service.tick()
 
         self.cache.save_app_usage.assert_called_once()
         kwargs = self.cache.save_app_usage.call_args.kwargs
         self.assertEqual(kwargs["time_entry_id"], 101)
-        self.assertEqual(kwargs["application_name"], "VS Code")
+        self.assertEqual(kwargs["application_name"], "Visual Studio Code")
         self.assertEqual(kwargs["window_title"], "main.py")
         self.assertGreaterEqual(kwargs["duration_seconds"], 15)
 
-    @patch("background_services.activity.app_usage_service.get_active_window_info")
+    @patch("background_services.activity.app_usage_service.get_active_window_details")
     def test_long_unbroken_segment_is_flushed_at_the_cap(self, active_window):
         """
         A long session in one application must still produce incremental
         records, so a crash cannot lose an hour of usage in one row.
         """
-        active_window.return_value = ("VS Code", "main.py")
+        active_window.return_value = window("Code", "main.py")
         self.service.start_tracker({"entry_id": 101})
         self.service.tick()
 
@@ -77,9 +88,9 @@ class TestAppUsageService(unittest.TestCase):
         self.cache.save_app_usage.assert_called_once()
         self.assertIsNone(self.service._entry_id)
 
-    @patch("background_services.activity.app_usage_service.get_active_window_info")
+    @patch("background_services.activity.app_usage_service.get_active_window_details")
     def test_nothing_is_recorded_when_no_session_is_tracked(self, active_window):
-        active_window.return_value = ("VS Code", "main.py")
+        active_window.return_value = window("Code", "main.py")
         self.service.tick()
         self.cache.save_app_usage.assert_not_called()
 
@@ -143,33 +154,33 @@ class TestAppUsageSegmentBoundaries(unittest.TestCase):
         self.cache = MagicMock()
         self.service = AppUsageService(StubRuntime(), self.cache)
 
-    @patch("background_services.activity.app_usage_service.get_active_window_info")
+    @patch("background_services.activity.app_usage_service.get_active_window_details")
     def test_title_change_within_one_application_does_not_split_the_segment(
         self, active_window
     ):
-        active_window.return_value = ("Code", "main.py - Visual Studio Code")
+        active_window.return_value = window("Code", "main.py - Visual Studio Code")
         self.service.start_tracker({"entry_id": 101})
         self.service.tick()
 
         for title in ("service.py - Visual Studio Code",
                       "tests.py - Visual Studio Code",
                       "README.md - Visual Studio Code"):
-            active_window.return_value = ("Code", title)
+            active_window.return_value = window("Code", title)
             self.service.tick()
 
         self.cache.save_app_usage.assert_not_called()
-        self.assertEqual(self.service._current_app, "Code")
+        self.assertEqual(self.service._current_app, "Visual Studio Code")
         # The segment carries the most recent title rather than the first.
         self.assertEqual(self.service._current_title, "README.md - Visual Studio Code")
 
-    @patch("background_services.activity.app_usage_service.get_active_window_info")
+    @patch("background_services.activity.app_usage_service.get_active_window_details")
     def test_switching_between_applications_produces_one_segment_each(
         self, active_window
     ):
         self.service.start_tracker({"entry_id": 101})
 
-        for app in ("Chrome", "Code", "Chrome", "Notepad", "Teams"):
-            active_window.return_value = (app, f"{app} window")
+        for app in ("chrome", "Code", "chrome", "notepad", "ms-teams"):
+            active_window.return_value = window(app, f"{app} window")
             self.service.tick()
             # Age the open segment so each switch closes a measurable one.
             self.service._segment_start -= 5.0
@@ -178,17 +189,20 @@ class TestAppUsageSegmentBoundaries(unittest.TestCase):
             call.kwargs["application_name"]
             for call in self.cache.save_app_usage.call_args_list
         ]
-        self.assertEqual(recorded, ["Chrome", "Code", "Chrome", "Notepad"])
-        self.assertEqual(self.service._current_app, "Teams")
+        self.assertEqual(
+            recorded,
+            ["Google Chrome", "Visual Studio Code", "Google Chrome", "Notepad"],
+        )
+        self.assertEqual(self.service._current_app, "Microsoft Teams")
         for call in self.cache.save_app_usage.call_args_list:
             self.assertGreater(call.kwargs["duration_seconds"], 0)
 
-    @patch("background_services.activity.app_usage_service.get_active_window_info")
+    @patch("background_services.activity.app_usage_service.get_active_window_details")
     def test_unobserved_gap_is_not_recorded_as_application_use(self, active_window):
         """A laptop that sleeps with an editor in front must not wake up and
         report the whole sleep as editor use. Duration is measured to the last
         sample that actually observed the application, not to `now`."""
-        active_window.return_value = ("Code", "main.py")
+        active_window.return_value = window("Code", "main.py")
         self.service.start_tracker({"entry_id": 101})
         self.service.tick()
 
@@ -202,13 +216,13 @@ class TestAppUsageSegmentBoundaries(unittest.TestCase):
             self.cache.save_app_usage.call_args.kwargs["duration_seconds"], 10
         )
 
-    @patch("background_services.activity.app_usage_service.get_active_window_info")
+    @patch("background_services.activity.app_usage_service.get_active_window_details")
     def test_a_held_open_segment_does_not_trip_the_gap_check(self, active_window):
         """While no time-entry id exists yet the segment is held open. Those
         samples still observed the application, so they must keep the
         observation clock moving or the next tick would see a false gap."""
         self.service.runtime.timer.active_session.return_value = {}
-        active_window.return_value = ("Code", "main.py")
+        active_window.return_value = window("Code", "main.py")
         self.service.start_tracker({})
         self.service.tick()
         opened_at = self.service._segment_start

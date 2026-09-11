@@ -246,11 +246,25 @@ class ReportsPageRepository:
         sort_order: str,
         page: int,
         limit: int,
-    ) -> tuple[list, int]:
-        """Apply whitelisted sorting + LIMIT/OFFSET, and count the full result set.
+    ) -> tuple[list, int, float]:
+        """Apply whitelisted sorting + LIMIT/OFFSET, and measure the full result set.
 
         ``sort_by`` has already been narrowed to a ``SortField`` enum value by
         FastAPI, so it can only ever select one of the columns below.
+
+        Returns ``(rows, total_rows, total_seconds)``. The third value is the
+        seconds held by *every* row the filters matched, not just the page --
+        the denominator a part-to-whole chart needs. It is summed in the same
+        aggregate as the row count, so exposing it costs no extra query.
+
+        Why it is needed: the Reports page drew its distribution chart by
+        subtracting the visible rows from the summary strip's total. On the
+        Project and Task tabs those are the same measure and the remainder is
+        honest. On the App and URL tabs they are not -- the summary counts
+        session time, while the rows count separately-measured application and
+        browser time -- so the remainder silently absorbed every second of
+        session time that application/URL capture had never claimed to
+        measure, and drew it as one enormous unnamed slice.
         """
         subq = query.subquery("report_rows")
         sortable = {
@@ -265,14 +279,19 @@ class ReportsPageRepository:
         # than jumping to the top of a descending page.
         order_clause = order_col.desc().nullslast() if sort_order == "desc" else order_col.asc().nullslast()
 
-        total = db.scalar(select(func.count()).select_from(subq)) or 0
+        totals = db.execute(
+            select(
+                func.count(),
+                func.coalesce(func.sum(subq.c.total_seconds), 0.0),
+            ).select_from(subq)
+        ).one()
         rows = db.execute(
             select(subq)
             .order_by(order_clause, subq.c.id)
             .offset((page - 1) * limit)
             .limit(limit)
         ).all()
-        return list(rows), int(total)
+        return list(rows), int(totals[0] or 0), float(totals[1] or 0.0)
 
     @staticmethod
     def _grouped_sessions(
@@ -286,7 +305,7 @@ class ReportsPageRepository:
         sort_order: str,
         page: int,
         limit: int,
-    ) -> tuple[list, int]:
+    ) -> tuple[list, int, float]:
         """Group the entry-grain rows by ``project_id`` or ``task_id`` and
         attach the entity's name."""
         entries = ReportsPageRepository.entry_grain_subquery(filters)
@@ -398,7 +417,7 @@ class ReportsPageRepository:
         sort_order: str,
         page: int,
         limit: int,
-    ) -> tuple[list, int]:
+    ) -> tuple[list, int, float]:
         """App/URL report rows.
 
         Each usage row joins to exactly one time entry and (at most) one

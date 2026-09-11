@@ -70,6 +70,55 @@ def db_path() -> Path:
     return cache_dir() / "cache.db"
 
 
+#: The two telemetry tables whose `time_entry_id` is nullable, kept out of
+#: `SCHEMA` as named DDL because `_relax_entry_id_constraint` has to recreate
+#: one of them on an existing installation. Interpolated into `SCHEMA` below,
+#: so a fresh database and a rebuilt table are created from the same text and
+#: cannot drift apart.
+PENDING_APP_USAGE_DDL = """
+-- `time_entry_id` is nullable: a segment measured before the backend issued
+-- an entry id (an offline start, or the first seconds of a session) is held
+-- here against its session's `client_op` and adopted by
+-- `LocalCache.bind_app_usage_to_entry` once the id arrives. Dropping those
+-- segments instead is what used to lose an offline session's application
+-- usage entirely. Same shape as `pending_screenshots`, for the same reason.
+CREATE TABLE IF NOT EXISTS pending_app_usage (
+    id TEXT PRIMARY KEY,
+    time_entry_id INTEGER,
+    client_op TEXT,
+    application_name TEXT NOT NULL,
+    window_title TEXT,
+    duration_seconds INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at REAL NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_app_usage_status ON pending_app_usage(status);
+"""
+
+PENDING_URL_USAGE_DDL = """
+-- Nullable `time_entry_id` and `client_op`: see `pending_app_usage` above.
+CREATE TABLE IF NOT EXISTS pending_url_usage (
+    id TEXT PRIMARY KEY,
+    time_entry_id INTEGER,
+    client_op TEXT,
+    browser_name TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    url TEXT,
+    page_title TEXT,
+    duration_seconds INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL,
+    client_event_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at REAL NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_url_usage_status ON pending_url_usage(status);
+"""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY,
@@ -137,19 +186,7 @@ CREATE TABLE IF NOT EXISTS app_state (
     updated_at REAL NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS pending_app_usage (
-    id TEXT PRIMARY KEY,
-    time_entry_id INTEGER NOT NULL,
-    application_name TEXT NOT NULL,
-    window_title TEXT,
-    duration_seconds INTEGER NOT NULL,
-    recorded_at TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    retry_count INTEGER NOT NULL DEFAULT 0,
-    next_retry_at REAL NOT NULL DEFAULT 0,
-    created_at REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_app_usage_status ON pending_app_usage(status);
+%(pending_app_usage)s
 
 CREATE TABLE IF NOT EXISTS activity_samples (
     id TEXT PRIMARY KEY,
@@ -203,22 +240,7 @@ CREATE TABLE IF NOT EXISTS pending_adjustments (
 );
 CREATE INDEX IF NOT EXISTS idx_adjustments_status ON pending_adjustments(status);
 
-CREATE TABLE IF NOT EXISTS pending_url_usage (
-    id TEXT PRIMARY KEY,
-    time_entry_id INTEGER NOT NULL,
-    browser_name TEXT NOT NULL,
-    domain TEXT NOT NULL,
-    url TEXT,
-    page_title TEXT,
-    duration_seconds INTEGER NOT NULL,
-    recorded_at TEXT NOT NULL,
-    client_event_id TEXT NOT NULL UNIQUE,
-    status TEXT NOT NULL DEFAULT 'pending',
-    retry_count INTEGER NOT NULL DEFAULT 0,
-    next_retry_at REAL NOT NULL DEFAULT 0,
-    created_at REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_url_usage_status ON pending_url_usage(status);
+%(pending_url_usage)s
 
 CREATE TABLE IF NOT EXISTS pending_screenshots (
     id TEXT PRIMARY KEY,
@@ -240,7 +262,10 @@ CREATE TABLE IF NOT EXISTS pending_screenshots (
 );
 CREATE INDEX IF NOT EXISTS idx_screenshots_status ON pending_screenshots(status, next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_screenshots_entry ON pending_screenshots(time_entry_id);
-"""
+""" % {
+    "pending_app_usage": PENDING_APP_USAGE_DDL,
+    "pending_url_usage": PENDING_URL_USAGE_DDL,
+}
 
 #: Columns added after the original schema shipped. Applied idempotently so an
 #: existing ~/.monitra/cache.db upgrades in place without losing queued work.
@@ -255,7 +280,44 @@ MIGRATIONS = [
     ("activity_samples", "keyboard_strokes", "INTEGER NOT NULL DEFAULT 0"),
     ("activity_samples", "mouse_clicks", "INTEGER NOT NULL DEFAULT 0"),
     ("activity_samples", "mouse_movements", "INTEGER NOT NULL DEFAULT 0"),
+    # The timer session key a segment captured before the backend issued an
+    # entry id is adopted by. See the `pending_app_usage` schema comment.
+    ("pending_app_usage", "client_op", "TEXT"),
+    ("pending_url_usage", "client_op", "TEXT"),
 ]
+
+#: Indexes over columns `MIGRATIONS` adds, created after it has run.
+POST_MIGRATION_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_app_usage_client_op ON pending_app_usage(client_op)",
+    "CREATE INDEX IF NOT EXISTS idx_url_usage_client_op ON pending_url_usage(client_op)",
+)
+
+#: Tables whose `time_entry_id` shipped as NOT NULL and must become nullable.
+#:
+#: SQLite cannot relax a column constraint in place, so these are rebuilt --
+#: the standard create/copy/drop/rename, run inside one transaction so a
+#: failure leaves the original table untouched rather than a half-migrated
+#: one. Keyed by table name; the value is the column list to carry across,
+#: which is every column of the *new* schema (`client_op` has already been
+#: added by `MIGRATIONS` above by the time this runs).
+NULLABLE_ENTRY_ID_REBUILDS = {
+    "pending_app_usage": (
+        PENDING_APP_USAGE_DDL,
+        (
+            "id", "time_entry_id", "client_op", "application_name", "window_title",
+            "duration_seconds", "recorded_at", "status", "retry_count",
+            "next_retry_at", "created_at",
+        ),
+    ),
+    "pending_url_usage": (
+        PENDING_URL_USAGE_DDL,
+        (
+            "id", "time_entry_id", "client_op", "browser_name", "domain", "url",
+            "page_title", "duration_seconds", "recorded_at", "client_event_id",
+            "status", "retry_count", "next_retry_at", "created_at",
+        ),
+    ),
+}
 
 
 class StorageManager:
@@ -371,7 +433,73 @@ class StorageManager:
             if column not in columns:
                 log.info("migrating %s: adding column %s", table, column)
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        for table in NULLABLE_ENTRY_ID_REBUILDS:
+            if table in existing_tables:
+                self._relax_entry_id_constraint(conn, table)
+        # Indexes over columns that `MIGRATIONS` adds. They cannot live in
+        # SCHEMA, which runs before those columns exist on an upgraded
+        # database, and they are recreated here after a rebuild drops them.
+        for statement in POST_MIGRATION_INDEXES:
+            conn.execute(statement)
         log.info("storage ready at %s", self._path)
+
+    def _relax_entry_id_constraint(self, conn: sqlite3.Connection, table: str) -> None:
+        """Make `table.time_entry_id` nullable, preserving every queued row.
+
+        A no-op once the column is already nullable, so it costs one
+        ``PRAGMA table_info`` per launch and runs its rebuild exactly once
+        per installation. The rebuild is a single transaction: either the
+        new table is in place with all the rows, or the original is still
+        there untouched. Queued telemetry is measured time that cannot be
+        recaptured, so it is never dropped to simplify a migration.
+        """
+        info = list(conn.execute(f"PRAGMA table_info({table})"))
+        entry_id = next((row for row in info if row["name"] == "time_entry_id"), None)
+        if entry_id is None or not entry_id["notnull"]:
+            return
+
+        ddl, column_names = NULLABLE_ENTRY_ID_REBUILDS[table]
+        columns = ", ".join(column_names)
+        staging = f"{table}_pre_nullable"
+        # An index keeps its own name when its table is renamed, so the
+        # originals have to go before the DDL below can recreate them under
+        # the same names. Read while there is no transaction open.
+        index_names = [
+            row["name"] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=? "
+                "AND name IS NOT NULL AND sql IS NOT NULL",
+                (table,),
+            )
+        ]
+        log.info("migrating %s: making time_entry_id nullable", table)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # A previous attempt that died between the rename and the commit
+            # would have been rolled back, but drop defensively rather than
+            # failing the launch on a name collision.
+            conn.execute(f"DROP TABLE IF EXISTS {staging}")
+            conn.execute(f"ALTER TABLE {table} RENAME TO {staging}")
+            for index_name in index_names:
+                conn.execute(f"DROP INDEX IF EXISTS {index_name}")
+            # Recreated from the same DDL a fresh installation uses, one
+            # statement at a time -- `executescript` would commit the open
+            # transaction out from under this rebuild.
+            for statement in (s.strip() for s in ddl.split(";")):
+                if statement:
+                    conn.execute(statement)
+            conn.execute(
+                f"INSERT INTO {table} ({columns}) "
+                f"SELECT {columns} FROM {staging}"
+            )
+            conn.execute(f"DROP TABLE {staging}")
+        except BaseException:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.DatabaseError:
+                log.exception("rollback of the %s rebuild failed", table)
+            raise
+        else:
+            conn.execute("COMMIT")
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
 

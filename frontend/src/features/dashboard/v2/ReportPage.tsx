@@ -241,7 +241,24 @@ export const ReportPage: React.FC = () => {
   // Distribution: the five largest groups by tracked time, from the same
   // grouped response the ranked bars use, so the two can never disagree.
   const DONUT_COLORS = ["#F59E0B", "#3B82F6", "#8B5CF6", "#10B981", "#EF4444"];
-  const donutTotalSeconds = totalTrackedSeconds; // Total from the summary card!
+
+  /**
+   * The whole this chart's parts are parts *of*: every row the current
+   * filters match, which is what `total_seconds` on the list response
+   * measures.
+   *
+   * It used to be the summary strip's total instead. On the Projects and
+   * Tasks tabs those agree, because both count session time. On the Apps and
+   * URLs tabs they do not: the rows there count application and browser time,
+   * which the desktop measures separately from the session and which covers
+   * only the part of the day it could actually observe — a browser reports no
+   * URL on Firefox without accessibility, and no URL at all on macOS or
+   * Linux. Subtracting the top five apps from the whole *session* therefore
+   * swept every one of those unmeasured seconds into the remainder and drew
+   * it as a single enormous unnamed arc. The gap is real and is now reported
+   * as itself, below, instead of being disguised as an application.
+   */
+  const donutTotalSeconds = listData?.total_seconds ?? 0;
 
   const donutSlices = finalGrouped.slice(0, 5).map((item: any, index: number) => ({
     label: item.name,
@@ -250,15 +267,32 @@ export const ReportPage: React.FC = () => {
     color: DONUT_COLORS[index % DONUT_COLORS.length],
   }));
 
+  // Everything ranked below the top five, named for what it actually is: the
+  // rest of this tab's own rows, and how many of them. Not a category, and
+  // never a home for time that no row accounts for.
+  const rankedTotal = listData?.total ?? finalGrouped.length;
   const top5Seconds = donutSlices.reduce((sum: number, s: any) => sum + s.seconds, 0);
-  if (finalGrouped.length > 5 && donutTotalSeconds > top5Seconds) {
+  const remainderSeconds = donutTotalSeconds - top5Seconds;
+  if (rankedTotal > 5 && remainderSeconds > 0) {
     donutSlices.push({
-      label: "Others",
-      value: (donutTotalSeconds - top5Seconds) / 3600,
-      seconds: donutTotalSeconds - top5Seconds,
-      color: "#94A3B8" // Gray for others
+      label: `Other ${groupNounPlural} (${rankedTotal - 5})`,
+      value: remainderSeconds / 3600,
+      seconds: remainderSeconds,
+      color: "#94A3B8",
     });
   }
+
+  /**
+   * Apps and URLs are measured separately from the session, so the two totals
+   * can honestly differ. Saying so — with the real numbers — is the diagnostic
+   * that used to be hidden inside the "Others" arc. Projects and Tasks are the
+   * same measure as the summary, so there is nothing to reconcile there.
+   */
+  const isUsageDimension = reportId === "apps" || reportId === "urls";
+  const unmeasuredSeconds = Math.max(0, totalTrackedSeconds - donutTotalSeconds);
+  const measuredShare = totalTrackedSeconds
+    ? (donutTotalSeconds / totalTrackedSeconds) * 100
+    : null;
 
   return (
     <V2Shell
@@ -501,9 +535,9 @@ export const ReportPage: React.FC = () => {
                       <li key={slice.label} className="flex min-w-0 items-start justify-between gap-3 text-[12px]">
                         <div className="flex min-w-0 flex-1 items-start gap-2">
                           <span className="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} />
-                          {/* "Others" is an aggregate of several apps, not an
-                              app -- there is no one mark that stands for it. */}
-                          {reportId === "apps" && slice.label !== "Others" && (
+                          {/* The remainder arc aggregates several apps, so no
+                              one mark stands for it. */}
+                          {reportId === "apps" && !slice.label.startsWith("Other ") && (
                             <AppIcon name={slice.label} size={18} />
                           )}
                           <span className="min-w-0 break-all font-bold leading-4 text-[#0F172A]">{slice.label}</span>
@@ -517,6 +551,25 @@ export const ReportPage: React.FC = () => {
                   </ul>
                 </div>
               </div>
+              {/* The honest reconciliation. Application and browser time is
+                  measured by the desktop client while it can see the
+                  foreground window; session time is the whole timer. Where
+                  they differ, say by how much and why, rather than drawing
+                  the difference as though it were an application. */}
+              {isUsageDimension && donutTotalSeconds > 0 && unmeasuredSeconds > 0 && (
+                <p className="mt-5 border-t border-[#E2E8F0] pt-4 text-[11px] leading-4 text-[#64748B]">
+                  {formatHMS(donutTotalSeconds)} of {reportId === "apps" ? "application" : "browser"}{" "}
+                  activity was recorded against {formatHMS(totalTrackedSeconds)} of tracked time
+                  {measuredShare !== null && <> ({measuredShare.toFixed(1)}%)</>}. The remaining{" "}
+                  {formatHMS(unmeasuredSeconds)} was tracked but not attributed to
+                  {reportId === "apps" ? " an application" : " a web address"} — the desktop client
+                  was not running, the machine reported no foreground window, or
+                  {reportId === "apps"
+                    ? " the operating system refused the process query"
+                    : " the browser exposed no address bar (Firefox without accessibility, and all of macOS and Linux)"}
+                  .
+                </p>
+              )}
             </section>
 
           </div>

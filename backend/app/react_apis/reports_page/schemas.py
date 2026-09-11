@@ -136,6 +136,23 @@ class Page(BaseModel, Generic[ItemT]):
     limit: int = Field(..., examples=[20])
     total: int = Field(..., description="Total matching rows across all pages.", examples=[100])
     pages: int = Field(..., description="Total number of pages at this limit.", examples=[5])
+    total_seconds: int = Field(
+        ...,
+        description="Seconds held by every matching row, not just this page. This is the "
+                    "denominator for a part-to-whole chart of this tab: its slices and its "
+                    "whole then come from the same measure. Do not use the /summary "
+                    "endpoint's total for that on the App and URL tabs -- summary counts "
+                    "session time, while those tabs count separately-measured application "
+                    "and browser time, and dividing one by the other draws every unmeasured "
+                    "second as an unnamed remainder.",
+        examples=[154800],
+    )
+    total_hours: float = Field(
+        ...,
+        description="total_seconds as hours, 2dp. Prefer total_seconds when rendering a "
+                    "duration -- decimal hours have already lost precision.",
+        examples=[43.0],
+    )
 
 
 ProjectReportPage = Page[ProjectReportItem]

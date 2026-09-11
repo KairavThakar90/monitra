@@ -1,7 +1,8 @@
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import List, Optional
 from datetime import datetime
 
+from app.core.activity_identity import canonical_application_name, canonical_domain
 from app.core.validation import Identifier, OptionalIdempotencyKey, OptionalUrl
 
 #: Bounds on captured page titles. Like window titles, these come from other
@@ -38,6 +39,35 @@ class URLUsageCreate(BaseModel):
     duration_seconds: int = Field(..., ge=0, description="Duration spent in seconds")
     recorded_at: Optional[datetime] = Field(None, description="Time event was recorded by desktop")
     client_event_id: OptionalIdempotencyKey = Field(None, description="Client idempotency key")
+
+    @field_validator("browser_name", mode="after")
+    @classmethod
+    def _canonicalize_browser(cls, value: str) -> str:
+        """Name the browser the same way application usage names it.
+
+        The two tables describe the same session from two angles, so a
+        browser that appears as "Brave" in application usage must not appear
+        as something else here. Both go through one catalogue.
+        """
+        canonical = canonical_application_name(value)
+        if not canonical:
+            raise ValueError("browser_name must identify a browser")
+        return canonical
+
+    @field_validator("domain", mode="after")
+    @classmethod
+    def _canonicalize_domain(cls, value: str) -> str:
+        """Group a site under one hostname.
+
+        ``www.`` is a routing prefix, not a different site; left on, the
+        same site arrives as two report rows each holding part of the time.
+        No other label is stripped -- ``docs.google.com`` is genuinely not
+        ``mail.google.com``.
+        """
+        canonical = canonical_domain(value)
+        if not canonical:
+            raise ValueError("domain must identify a site")
+        return canonical
 
 
 class URLUsageBatchCreate(BaseModel):
