@@ -9,7 +9,7 @@ import random
 from PySide6.QtCore import Qt, QRectF, QSize, QTimer, Signal
 from PySide6.QtGui import QFont, QColor, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QLineEdit,
     QScrollArea, QGridLayout, QPushButton, QSizePolicy, QStackedWidget,
     QDialog, QProgressBar
 )
@@ -19,6 +19,7 @@ from background_services.public_api import (
     ACTIVITY_DESKTOP_DAYS, DateAvailability, SCREENSHOT_DESKTOP_DAYS,
 )
 from core.logging_setup import get_logger
+from core.validation import SEARCH_MAX_LENGTH, validate_search_term
 from core.time_format import ist_clock, ist_today
 
 log = get_logger("ui.activity")
@@ -936,6 +937,30 @@ class ScreenshotsTabView(QWidget):
 #: list below it.
 PAGE_SIZE = 6
 
+#: The fields a search looks at, per row type. They are exactly the strings the
+#: row puts on screen -- searching for something visible must find it, and
+#: searching for something invisible must not, or the filter looks broken.
+SEARCH_FIELDS = {
+    "apps": ("name", "application_name", "subtitle"),
+    "urls": ("title", "domain", "url"),
+}
+
+
+def matches_search(item: Dict[str, Any], term: str, fields) -> bool:
+    """Whether one row matches `term`, which is already normalised and folded.
+
+    Plain case-insensitive substring, deliberately: this filters a list already
+    in memory, so there is no query to build and nothing to escape. A user
+    searching for "100%" is looking for a row containing "100%", and gets it.
+    """
+    if not term:
+        return True
+    for field in fields:
+        value = item.get(field)
+        if isinstance(value, str) and term in value.casefold():
+            return True
+    return False
+
 
 def _make_load_more_button(remaining: int, parent: QWidget) -> QPushButton:
     """The list tabs' "Load more" control. It only reveals rows that are
@@ -975,6 +1000,10 @@ class AppsTabView(QWidget):
         self._apps = []
         self._mode = "data"
         self._visible_count = PAGE_SIZE
+        #: The active search term, already normalised and case-folded. Empty
+        #: means "show everything"; it is never None, so every read is a plain
+        #: substring test.
+        self._filter = ""
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -997,6 +1026,27 @@ class AppsTabView(QWidget):
     def _show_more(self) -> None:
         self._visible_count += PAGE_SIZE
         self.render_view()
+
+    def set_filter(self, term: str) -> None:
+        """Show only rows matching `term`. Empty shows everything.
+
+        A changed term starts the reveal count again: the count belongs to the
+        list on screen, and carrying "show 18" over to a filtered list of four
+        would offer a Load More button for rows that do not exist.
+        """
+        term = (term or "").casefold()
+        if term == self._filter:
+            return
+        self._filter = term
+        self._visible_count = PAGE_SIZE
+        self.render_view()
+
+    def visible_items(self) -> List[Dict[str, Any]]:
+        """The rows the filter admits, in their original order."""
+        return [
+            item for item in self._apps
+            if matches_search(item, self._filter, SEARCH_FIELDS["apps"])
+        ]
 
     def render_view(self) -> None:
         while self.layout.count():
@@ -1036,7 +1086,20 @@ class AppsTabView(QWidget):
                 button.clicked.connect(self.profile_requested.emit)
             self.layout.addWidget(container)
         else:
-            apps_to_show = self._apps[: self._visible_count]
+            matching = self.visible_items()
+            if self._filter and not matching:
+                # An honest empty state for a search that found nothing. It is
+                # distinct from "no activity recorded": the data is there, the
+                # filter simply excludes all of it.
+                container, _ = _make_state_panel(
+                    self, "apps",
+                    "No applications match your search",
+                    "No tracked application on this date matches that text. Clear the search to see them all.",
+                )
+                self.layout.addWidget(container)
+                return
+
+            apps_to_show = matching[: self._visible_count]
             list_widget = QWidget(self)
             list_layout = QVBoxLayout(list_widget)
             list_layout.setContentsMargins(0, 0, 0, 0)
@@ -1047,7 +1110,7 @@ class AppsTabView(QWidget):
                 row = AppRowWidget(app, parent=list_widget)
                 list_layout.addWidget(row)
 
-            remaining = len(self._apps) - len(apps_to_show)
+            remaining = len(matching) - len(apps_to_show)
             if remaining > 0:
                 more = _make_load_more_button(remaining, list_widget)
                 more.clicked.connect(self._show_more)
@@ -1067,6 +1130,10 @@ class URLsTabView(QWidget):
         self._urls = []
         self._mode = "data"
         self._visible_count = PAGE_SIZE
+        #: The active search term, already normalised and case-folded. Empty
+        #: means "show everything"; it is never None, so every read is a plain
+        #: substring test.
+        self._filter = ""
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -1087,6 +1154,27 @@ class URLsTabView(QWidget):
     def _show_more(self) -> None:
         self._visible_count += PAGE_SIZE
         self.render_view()
+
+    def set_filter(self, term: str) -> None:
+        """Show only rows matching `term`. Empty shows everything.
+
+        A changed term starts the reveal count again: the count belongs to the
+        list on screen, and carrying "show 18" over to a filtered list of four
+        would offer a Load More button for rows that do not exist.
+        """
+        term = (term or "").casefold()
+        if term == self._filter:
+            return
+        self._filter = term
+        self._visible_count = PAGE_SIZE
+        self.render_view()
+
+    def visible_items(self) -> List[Dict[str, Any]]:
+        """The rows the filter admits, in their original order."""
+        return [
+            item for item in self._urls
+            if matches_search(item, self._filter, SEARCH_FIELDS["urls"])
+        ]
 
     def render_view(self) -> None:
         while self.layout.count():
@@ -1126,7 +1214,20 @@ class URLsTabView(QWidget):
                 button.clicked.connect(self.profile_requested.emit)
             self.layout.addWidget(container)
         else:
-            urls_to_show = self._urls[: self._visible_count]
+            matching = self.visible_items()
+            if self._filter and not matching:
+                # An honest empty state for a search that found nothing. It is
+                # distinct from "no activity recorded": the data is there, the
+                # filter simply excludes all of it.
+                container, _ = _make_state_panel(
+                    self, "language",
+                    "No websites match your search",
+                    "No tracked website on this date matches that text. Clear the search to see them all.",
+                )
+                self.layout.addWidget(container)
+                return
+
+            urls_to_show = matching[: self._visible_count]
             list_widget = QWidget(self)
             list_layout = QVBoxLayout(list_widget)
             list_layout.setContentsMargins(0, 0, 0, 0)
@@ -1137,7 +1238,7 @@ class URLsTabView(QWidget):
                 row = URLRowWidget(url, parent=list_widget)
                 list_layout.addWidget(row)
 
-            remaining = len(self._urls) - len(urls_to_show)
+            remaining = len(matching) - len(urls_to_show)
             if remaining > 0:
                 more = _make_load_more_button(remaining, list_widget)
                 more.clicked.connect(self._show_more)
@@ -1167,6 +1268,9 @@ class ActivitySection(QWidget):
     #: finished - six new OS threads a minute, from before the user had even
     #: logged in. Activity data does not change fast enough to justify that.
     AUTO_REFRESH_MS = 60_000
+
+    #: How long typing must pause before the lists are rebuilt.
+    SEARCH_DEBOUNCE_MS = 150
 
     #: The user asked to see a date the desktop does not keep locally. Carries
     #: the tab name ("screenshots" / "apps" / "urls") and the selected date, so
@@ -1380,6 +1484,65 @@ class ActivitySection(QWidget):
         div.setFixedHeight(1)
         card_layout.addWidget(div)
 
+        # Search bar. It filters the Apps and URLs lists that are already in
+        # memory -- no request, no query -- so it is hidden on Screenshots,
+        # which has nothing text-shaped to match against.
+        self._search_bar = QWidget(self.card)
+        search_layout = QHBoxLayout(self._search_bar)
+        search_layout.setContentsMargins(20, 12, 20, 0)
+        search_layout.setSpacing(8)
+
+        self.search_input = QLineEdit(self._search_bar)
+        self.search_input.setObjectName("ActivitySearchInput")
+        self.search_input.setClearButtonEnabled(True)
+        # The established idiom for a leading icon in this app, rather than a
+        # second one built out of a frame and a label.
+        icons.line_edit_icon_action(self.search_input, "search", TEXT_MUTED, 16)
+        # A minimum, not a fixed height: the padding below is part of the box,
+        # and pinning the height while padding it is what clipped the
+        # descenders off the login fields.
+        self.search_input.setMinimumHeight(38)
+        # The catalogue's limit, not one invented here, and applied as the same
+        # upper bound the backend uses -- a client stopping short of it would
+        # refuse a term the server would have accepted.
+        self.search_input.setMaxLength(SEARCH_MAX_LENGTH)
+        self.search_input.setStyleSheet(f"""
+            QLineEdit#ActivitySearchInput {{
+                background: {CARD_BG};
+                border: 1px solid {BORDER_LIGHT};
+                border-radius: 9px;
+                padding: 7px 10px;
+                color: {TEXT_PRIMARY};
+                font-size: 13px;
+                selection-background-color: {PRIMARY};
+            }}
+            QLineEdit#ActivitySearchInput:focus {{
+                border-color: {PRIMARY};
+            }}
+            QLineEdit#ActivitySearchInput:disabled {{
+                background: {CONTENT_BG};
+                color: {TEXT_MUTED};
+            }}
+        """)
+        self.search_input.textChanged.connect(self._on_search_text_changed)
+        search_layout.addWidget(self.search_input, 1)
+
+        self._search_error = QLabel("", self._search_bar)
+        self._search_error.setFont(QFont("Segoe UI", 8))
+        self._search_error.setStyleSheet(f"color: {ERROR}; background: transparent;")
+        self._search_error.hide()
+        search_layout.addWidget(self._search_error)
+
+        card_layout.addWidget(self._search_bar)
+
+        # Rebuilding a list of rows is real work, so a fast typist should not
+        # pay for it on every keystroke. A UI-thread timer only -- the filter
+        # touches nothing but widgets, and background work belongs to the pool.
+        self._search_debounce = QTimer(self)
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(self.SEARCH_DEBOUNCE_MS)
+        self._search_debounce.timeout.connect(self._apply_search)
+
         # Tabs Inner Content area
         self._scroll_area = QScrollArea(self.card)
         self._scroll_area.setWidgetResizable(True)
@@ -1426,6 +1589,7 @@ class ActivitySection(QWidget):
 
         # Apply initial active tab stylesheet
         self._update_tab_styling()
+        self._update_search_visibility()
 
     def _update_tab_styling(self) -> None:
         """Material-style underline tabs: active tab gets the brand color
@@ -1471,9 +1635,57 @@ class ActivitySection(QWidget):
                     }}
                 """)
 
+    # ── Search ────────────────────────────────────────────────────────────────
+
+    def _on_search_text_changed(self, _text: str) -> None:
+        self._search_debounce.start()
+
+    def _apply_search(self) -> None:
+        """Validate what was typed, then filter both usage lists with it.
+
+        The term goes through the shared catalogue rule rather than a check
+        written here, so the desktop agrees with the backend and the web client
+        about what a search box may contain. A rejected term is reported and
+        the lists are left as they are -- never quietly scrubbed into something
+        the user did not type.
+        """
+        result = validate_search_term(self.search_input.text())
+        if not result.ok:
+            self._search_error.setText(result.error or "Invalid search.")
+            self._search_error.show()
+            return
+
+        self._search_error.hide()
+        term = result.value or ""
+        self.view_apps.set_filter(term)
+        self.view_urls.set_filter(term)
+
+    #: Shown on the tab that cannot be searched, so the box explains itself
+    #: instead of vanishing.
+    SEARCH_PLACEHOLDER = "Search applications and websites"
+    SEARCH_UNAVAILABLE = "Search is available on the Apps and URLs tabs"
+
+    def _update_search_visibility(self) -> None:
+        """Keep the box on screen everywhere, enabled only where it can filter.
+
+        It was hidden on Screenshots at first, which is tidier but made the
+        feature impossible to find: the Activity section opens on Screenshots,
+        so the search box did not exist until you happened to click one of the
+        other two tabs. A control that explains why it is inert beats one that
+        disappears.
+        """
+        searchable = self._active_tab in ("apps", "urls")
+        self.search_input.setEnabled(searchable)
+        self.search_input.setPlaceholderText(
+            self.SEARCH_PLACEHOLDER if searchable else self.SEARCH_UNAVAILABLE
+        )
+        if not searchable:
+            self._search_error.hide()
+
     def switch_tab(self, tab_name: str) -> None:
         self._active_tab = tab_name
         self._update_tab_styling()
+        self._update_search_visibility()
 
         if tab_name == "screenshots":
             self.tab_stack.setCurrentWidget(self.view_ss)
