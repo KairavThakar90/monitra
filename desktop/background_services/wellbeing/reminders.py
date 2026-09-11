@@ -52,19 +52,19 @@ INTERVAL_REMINDERS: tuple[IntervalReminder, ...] = (
         key="rule_20_20_20",
         title="👁️ Follow the 20-20-20 Rule",
         body="Every 20 minutes, look at something about 20 feet away for 20 seconds.",
-        every_minutes=20,
+        every_minutes=2,
     ),
     IntervalReminder(
         key="eye_blink",
         title="👀 Blink Your Eyes",
         body="Take a moment to blink regularly and relax your eyes.",
-        every_minutes=30,
+        every_minutes=3,
     ),
     IntervalReminder(
         key="hydrate",
         title="💧 Drink Water",
         body="Keep a water bottle nearby and stay hydrated throughout the day.",
-        every_minutes=60,
+        every_minutes=6,
     ),
     IntervalReminder(
         key="posture",

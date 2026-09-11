@@ -92,6 +92,13 @@ class WellbeingService(LoopService):
         self._daily_fired: Optional[Dict[str, str]] = None
         self._last_tick: Optional[float] = None
         self._gated = True
+        #: The gate reason already written to the log, so a hold is reported
+        #: once rather than every tick. `_gated` cannot serve here: it starts
+        #: True, so a service gated from startup -- the ordinary case, since
+        #: the session is still being restored -- would never log anything at
+        #: all, and "no reminders" would be indistinguishable from "reminders
+        #: held because nobody is signed in".
+        self._held_reason: Optional[str] = None
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -104,6 +111,7 @@ class WellbeingService(LoopService):
         self._daily_fired = None
         self._last_tick = None
         self._gated = True
+        self._held_reason = None
 
     # ── Clocks ────────────────────────────────────────────────────────────────
     #
@@ -244,11 +252,13 @@ class WellbeingService(LoopService):
     def tick(self) -> Optional[int]:
         reason = self._gate_reason()
         if reason is not None:
-            if not self._gated:
+            if self._held_reason != reason:
                 self.log.info("reminders held: %s", reason)
+                self._held_reason = reason
             self._gated = True
             self._last_tick = None
             return None
+        self._held_reason = None
 
         now = self._now_monotonic()
         gap = None if self._last_tick is None else now - self._last_tick
@@ -262,6 +272,14 @@ class WellbeingService(LoopService):
                 )
             self._gated = False
             self._schedule_intervals(now)
+            # The cadence starts here, not at start-up, and it is the moment a
+            # reader of the log needs in order to work out when the first
+            # reminder is due -- without it the service is silent for the whole
+            # of its shortest interval and looks broken.
+            self.log.info(
+                "reminder cadence running; next due in %d minutes",
+                min(r.every_minutes for r in INTERVAL_REMINDERS),
+            )
             return None
 
         # Time-of-day reminders first: their window is minutes wide, while an

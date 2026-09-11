@@ -423,3 +423,50 @@ def test_the_service_declares_a_stop_budget_and_a_name():
     assert issubclass(WellbeingService, LoopService)
     assert WellbeingService.name == "wellbeing"
     assert WellbeingService.stop_timeout_ms > 0
+
+
+# ── Diagnosability ────────────────────────────────────────────────────────────
+#
+# A service that is held before it ever runs used to say nothing whatsoever:
+# `_gated` starts True, so the "held" branch never fired, and the cadence
+# restart was not logged either. The whole feature was therefore silent in the
+# log whether it was working or not, which is how "I get no reminders" became
+# undiagnosable.
+
+def test_a_service_held_from_startup_says_so_once(caplog):
+    service, _ = make_service(signed_in=False)
+
+    with caplog.at_level("INFO", logger="monitra.wellbeing"):
+        service.tick()
+        run_for(service, 5)
+
+    held = [r for r in caplog.records if "reminders held" in r.getMessage()]
+    assert len(held) == 1, "the hold must be reported exactly once, not per tick"
+    assert "not signed in" in held[0].getMessage()
+
+
+def test_the_cadence_start_is_logged_with_the_first_due_time(caplog):
+    service, _ = make_service()
+
+    with caplog.at_level("INFO", logger="monitra.wellbeing"):
+        service.tick()
+
+    started = [r for r in caplog.records if "cadence running" in r.getMessage()]
+    assert len(started) == 1
+    soonest = min(r.every_minutes for r in INTERVAL_REMINDERS)
+    assert f"{soonest} minutes" in started[0].getMessage()
+
+
+def test_a_hold_is_reported_again_after_reminders_resume(caplog):
+    """Signing out, back in, and out again must not be swallowed as a repeat."""
+    service, _ = make_service(signed_in=False)
+
+    with caplog.at_level("INFO", logger="monitra.wellbeing"):
+        service.tick()
+        service.runtime.api_client.access_token = "token"
+        service.tick()
+        service.runtime.api_client.access_token = None
+        service.tick()
+
+    held = [r for r in caplog.records if "reminders held" in r.getMessage()]
+    assert len(held) == 2
