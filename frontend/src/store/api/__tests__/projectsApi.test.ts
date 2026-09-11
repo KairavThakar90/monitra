@@ -155,6 +155,39 @@ describe('createTask', () => {
     expect(added.id).toBe(CREATED_TASK.id);
   });
 
+  it('keeps the patched row in the cache even while the report is being refetched', async () => {
+    /**
+     * Worth stating because of what it does *not* prove, which is the defect a
+     * real browser found while every test above was green.
+     *
+     * The Task Listing screen used to call `refetch()` immediately after
+     * creating a task, and the new row then took 8.1s to appear — exactly when
+     * the report answered. The cache was never the problem: as this test shows,
+     * the patch is written and survives the refetch. The screen was the problem.
+     * While a query is re-fetching, `useQuery` keeps serving the snapshot it
+     * held when the previous request fulfilled, so a cache patch written
+     * mid-flight does not reach the component until the new response lands.
+     *
+     * That behaviour lives in the hook, so it cannot be reproduced here — this
+     * project has no DOM test tooling. The screen simply must not refetch after
+     * creating a task, and the browser check is what holds it to that.
+     */
+    await store.dispatch(
+      baseApi.util.upsertQueryData('getProjectTaskSummary' as never, summaryArgs as never, summaryPage() as never),
+    );
+    await createTask();
+    expect(summaryCache().projects[0].tasks).toHaveLength(2);
+
+    // A refetch whose response never arrives, so the in-flight state is observable.
+    vi.mocked(fetch).mockImplementation(() => new Promise<Response>(() => {}));
+    void store.dispatch(
+      reportsApi.endpoints.getProjectTaskSummary.initiate(summaryArgs, { forceRefetch: true }),
+    );
+    await Promise.resolve();
+
+    expect(summaryCache().projects[0].tasks).toHaveLength(2);
+  });
+
   it('leaves a project it cannot see on the current page alone', async () => {
     const otherPage = summaryPage();
     otherPage.projects[0].id = 99;

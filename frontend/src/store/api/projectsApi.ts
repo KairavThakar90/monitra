@@ -123,8 +123,13 @@ const patchProjectLists = (
  * the refetch landed: the "task takes a few seconds to appear" report.
  *
  * The tracked total is a real zero, not a placeholder: a task created a moment
- * ago has had no time booked against it. The background refetch still runs and
- * replaces this row with the server's own.
+ * ago has had no time booked against it, and its project's total is unchanged.
+ * That is why the caller does not refetch the report afterwards. The patched
+ * row is already what the report would return, and re-running the query would
+ * put the delay straight back: while a query is re-fetching, `useQuery` keeps
+ * serving the snapshot it held when the previous request fulfilled, so a patch
+ * written mid-flight stays in the cache but never reaches the screen until the
+ * new response lands.
  */
 const patchTaskSummaries = (
   parts: ThunkParts,
@@ -143,7 +148,10 @@ const patchTaskSummaries = (
     project.tasks.push({
       id: task.id,
       task_name: task.name,
-      task_created_date: task.created_at,
+      // The report returns a calendar date (`created_at.date()` server-side),
+      // not a timestamp. Storing the same shape keeps the patched row and the
+      // fetched one identical rather than merely equivalent.
+      task_created_date: String(task.created_at).slice(0, 10),
       total_tracked_seconds: 0,
       total_tracked_hours: 0,
       total_tracked_time: '00:00:00',
