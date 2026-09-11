@@ -101,6 +101,11 @@ export const ENDPOINTS = {
     MY: `${API_BASE_URL}/feedback/my`,
     MY_BY_ID: (id: string | number) => `${API_BASE_URL}/feedback/my/${id}`,
     GET_BY_ID: (id: string | number) => `${API_BASE_URL}/feedback/${id}`,
+    // Admin only. Moves one feedback to Working or Resolved and emails the
+    // person who submitted it; the recipient is resolved server-side from the
+    // feedback's own submitter, so this carries an id and a status and nothing
+    // that could name a recipient.
+    STATUS: (id: string | number) => `${API_BASE_URL}/feedback/${id}/status`,
   },
   // Desktop downloads. Unauthenticated: someone installing Monitra for the
   // first time has no account yet. These are asked for "the latest", never for

@@ -1,8 +1,19 @@
 import React, { useState } from "react";
-import { FEEDBACK_CATEGORY_LABELS } from "../../store/api/feedbackApi";
+import { FEEDBACK_CATEGORY_LABELS, useUpdateFeedbackStatusMutation } from "../../store/api/feedbackApi";
 import type { Feedback } from "../../store/api/feedbackApi";
+import { useFeedback } from "../../components/FeedbackProvider";
 import { formatISTDate } from "../../utils/duration";
 import { CATEGORY_STYLES } from "./feedbackFilters";
+import {
+  ACTION_LABELS,
+  canPerformAction,
+  confirmationFor,
+  errorMessage,
+  isActionComplete,
+  statusLabel,
+  successMessage,
+  type FeedbackAction,
+} from "./feedbackActions";
 
 /**
  * The feedback list, shared by the member and the organization-wide page.
@@ -12,8 +23,16 @@ import { CATEGORY_STYLES } from "./feedbackFilters";
  * on the member screen: a person reading their own submissions already knows
  * who sent them, and an id column there is noise, not information.
  *
- * The row controls are currently visual-only. Feedback carries no workflow
- * status yet, so Working and Resolved do not change data.
+ * `canManage` turns the row controls from labels into buttons. It is false for
+ * HR and Leader, who see the same rows and the same states read-only, and the
+ * page never renders the actions column at all for a member. It decides what
+ * this screen *offers*; what it is *allowed* to do is decided by
+ * `PATCH /feedback/{id}/status`, which refuses anyone who is not an
+ * administrator whatever the browser sends.
+ *
+ * The decisions behind the controls — who may press what, whether a press
+ * would change anything, and how each outcome is worded — live in
+ * `feedbackActions.ts` and are tested there.
  *
  * A wide table cannot shrink below its content, so on a narrow screen the rows
  * are rendered as stacked cards instead of being cut off.
@@ -69,6 +88,129 @@ const DescriptionCell: React.FC<{ message: string }> = ({ message }) => {
   return <div className="line-clamp-2 break-words">{message}</div>;
 };
 
+/**
+ * The palette each workflow control is drawn in.
+ *
+ * Unchanged from the colours the buttons already carried — amber for Working,
+ * emerald for Resolved — so the screen looks the same until something on it
+ * has actually happened. `done` inverts the same hue into a solid fill, which
+ * is how a row says "this is where it is now" without a new column.
+ */
+const ACTION_STYLES: Record<FeedbackAction, { idle: string; done: string }> = {
+  in_progress: {
+    idle: "border-[#F59E0B]/30 bg-[#FFFBEB] text-[#B45309] hover:bg-[#FEF3C7]",
+    done: "border-[#B45309] bg-[#B45309] text-white",
+  },
+  resolved: {
+    idle: "border-[#10B981]/30 bg-[#ECFDF5] text-[#047857] hover:bg-[#D1FAE5]",
+    done: "border-[#047857] bg-[#047857] text-white",
+  },
+};
+
+const actionButton =
+  "rounded-lg border px-3 py-1.5 text-[11px] font-bold transition disabled:cursor-not-allowed";
+
+/**
+ * The Working / Resolved / View controls for one row.
+ *
+ * `pending` is held per row rather than per table, so updating one row does
+ * not freeze the rest of the list — and holding it at all is what stops a
+ * double-click sending two requests. The buttons are also disabled once their
+ * state is reached, so the second press of an already-Resolved row never
+ * becomes a request the server has to refuse.
+ *
+ * Without `canManage` the same two controls render as static state markers:
+ * HR sees exactly where every piece of feedback stands and has nothing to
+ * press, which is a clearer account of their access than a button that
+ * answers 403.
+ */
+const RowActions: React.FC<{
+  item: Feedback;
+  canManage: boolean;
+  onView: () => void;
+}> = ({ item, canManage, onView }) => {
+  const { showToast, confirmAction } = useFeedback();
+  const [updateStatus] = useUpdateFeedbackStatusMutation();
+  const [pending, setPending] = useState<FeedbackAction | null>(null);
+
+  const perform = async (action: FeedbackAction) => {
+    // Re-checked here and not only in `disabled`: a rapid double-click can
+    // land the second event before React has re-rendered with the new state.
+    if (!canPerformAction(item.status, action, pending)) return;
+
+    const { title, message } = confirmationFor(action, item.employee_name);
+    if (!(await confirmAction(title, message))) return;
+
+    setPending(action);
+    try {
+      const updated = await updateStatus({ id: item.id, status: action }).unwrap();
+      showToast(
+        successMessage(action, item.employee_name, updated.notification_queued),
+        "success",
+      );
+    } catch (err) {
+      console.error("Failed to update feedback status", err);
+      showToast(errorMessage((err as { status?: number } | null)?.status), "error");
+    } finally {
+      // Cleared whatever happened: a failed request must leave the button
+      // pressable again, or a transient error would strand the row.
+      setPending(null);
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap justify-end gap-1.5">
+      {(["in_progress", "resolved"] as const).map((action) => {
+        const complete = isActionComplete(item.status, action);
+        // A resolved row shows Resolved as reached and Working as spent, so
+        // the pair reads as a finished sequence rather than one live control
+        // beside one dead one.
+        const reached = item.status === action || (item.status === "resolved" && action === "in_progress");
+        const busy = pending === action;
+        const styles = ACTION_STYLES[action];
+
+        if (!canManage) {
+          return (
+            <span
+              key={action}
+              className={`${actionButton} ${reached ? styles.done : `${styles.idle} opacity-60`}`}
+            >
+              {reached ? `✓ ${ACTION_LABELS[action]}` : ACTION_LABELS[action]}
+            </span>
+          );
+        }
+
+        return (
+          <button
+            key={action}
+            type="button"
+            onClick={() => void perform(action)}
+            disabled={!canPerformAction(item.status, action, pending)}
+            aria-busy={busy}
+            title={
+              complete
+                ? `This feedback is already marked ${ACTION_LABELS[action]}.`
+                : `Notify ${item.employee_name} that their feedback is ${ACTION_LABELS[action]}.`
+            }
+            className={`${actionButton} ${reached ? styles.done : styles.idle} ${
+              complete && !reached ? "opacity-45" : ""
+            } ${busy ? "opacity-70" : ""}`}
+          >
+            {busy ? "Sending…" : reached ? `✓ ${ACTION_LABELS[action]}` : ACTION_LABELS[action]}
+          </button>
+        );
+      })}
+      <button
+        type="button"
+        onClick={onView}
+        className="rounded-lg border border-[#2563EB]/25 bg-[#EFF6FF] px-3 py-1.5 text-[11px] font-bold text-[#2563EB] transition hover:bg-[#DBEAFE]"
+      >
+        View
+      </button>
+    </div>
+  );
+};
+
 const Submitter: React.FC<{ item: Feedback }> = ({ item }) => {
   const hue = avatarHue(item.employee_name || "");
   return (
@@ -87,11 +229,12 @@ const Submitter: React.FC<{ item: Feedback }> = ({ item }) => {
   );
 };
 
-export const FeedbackTable: React.FC<{ items: Feedback[]; showEmployee?: boolean; showActions?: boolean }> = ({
-  items,
-  showEmployee = true,
-  showActions = false,
-}) => {
+export const FeedbackTable: React.FC<{
+  items: Feedback[];
+  showEmployee?: boolean;
+  showActions?: boolean;
+  canManage?: boolean;
+}> = ({ items, showEmployee = true, showActions = false, canManage = false }) => {
   const [selectedDescription, setSelectedDescription] = useState<Feedback | null>(null);
 
   return (
@@ -146,27 +289,11 @@ export const FeedbackTable: React.FC<{ items: Feedback[]; showEmployee?: boolean
                 </td>
                 {showActions && (
                   <td className="px-5 py-3.5 text-right align-top">
-                    <div className="flex justify-end gap-1.5">
-                      <button
-                        type="button"
-                        className="rounded-lg border border-[#F59E0B]/30 bg-[#FFFBEB] px-3 py-1.5 text-[11px] font-bold text-[#B45309] transition hover:bg-[#FEF3C7]"
-                      >
-                        Working
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-lg border border-[#10B981]/30 bg-[#ECFDF5] px-3 py-1.5 text-[11px] font-bold text-[#047857] transition hover:bg-[#D1FAE5]"
-                      >
-                        Resolved
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedDescription(item)}
-                        className="rounded-lg border border-[#2563EB]/25 bg-[#EFF6FF] px-3 py-1.5 text-[11px] font-bold text-[#2563EB] transition hover:bg-[#DBEAFE]"
-                      >
-                        View
-                      </button>
-                    </div>
+                    <RowActions
+                      item={item}
+                      canManage={canManage}
+                      onView={() => setSelectedDescription(item)}
+                    />
                   </td>
                 )}
               </tr>
@@ -194,26 +321,12 @@ export const FeedbackTable: React.FC<{ items: Feedback[]; showEmployee?: boolean
           {showActions ? (
             <>
               <p className="mt-3 line-clamp-2 break-words text-[13px] leading-5 text-[#334155]">{item.message}</p>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                <button
-                  type="button"
-                  className="rounded-lg border border-[#F59E0B]/30 bg-[#FFFBEB] px-3 py-1.5 text-[11px] font-bold text-[#B45309] transition hover:bg-[#FEF3C7]"
-                >
-                  Working
-                </button>
-                <button
-                  type="button"
-                  className="rounded-lg border border-[#10B981]/30 bg-[#ECFDF5] px-3 py-1.5 text-[11px] font-bold text-[#047857] transition hover:bg-[#D1FAE5]"
-                >
-                  Resolved
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedDescription(item)}
-                  className="rounded-lg border border-[#2563EB]/25 bg-[#EFF6FF] px-3 py-1.5 text-[11px] font-bold text-[#2563EB] transition hover:bg-[#DBEAFE]"
-                >
-                  View
-                </button>
+              <div className="mt-2">
+                <RowActions
+                  item={item}
+                  canManage={canManage}
+                  onView={() => setSelectedDescription(item)}
+                />
               </div>
             </>
           ) : (
@@ -249,10 +362,21 @@ export const FeedbackTable: React.FC<{ items: Feedback[]; showEmployee?: boolean
               </button>
             </div>
             <div className="overflow-y-auto px-6 py-5">
-              <div className="mb-4 rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] p-3">
-                <div className="text-[10px] font-bold uppercase tracking-wider text-[#94A3B8]">Category</div>
-                <div className="mt-1 text-[13px] font-bold text-[#0F172A]">
-                  {FEEDBACK_CATEGORY_LABELS[selectedDescription.category] ?? selectedDescription.category}
+              {/* Category and where the submission currently stands. The status
+                  is read from the row rather than from whatever the last click
+                  asked for, so the dialog cannot disagree with the table. */}
+              <div className="mb-4 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#94A3B8]">Category</div>
+                  <div className="mt-1 text-[13px] font-bold text-[#0F172A]">
+                    {FEEDBACK_CATEGORY_LABELS[selectedDescription.category] ?? selectedDescription.category}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#94A3B8]">Status</div>
+                  <div className="mt-1 text-[13px] font-bold text-[#0F172A]">
+                    {statusLabel(selectedDescription)}
+                  </div>
                 </div>
               </div>
               <p className="whitespace-pre-wrap break-words text-[13px] leading-6 text-[#334155]">

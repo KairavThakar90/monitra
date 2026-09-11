@@ -2,17 +2,23 @@ import { baseApi } from './baseApi';
 import { ENDPOINTS } from '../../api/endpoints';
 
 /**
- * Feedback & Help, read-only.
+ * Feedback & Help.
  *
- * Feedback is *submitted* from the Monitra desktop client; the dashboard shows
- * it and nothing else. There is deliberately no mutation endpoint here — no
- * approve, no status, no response — because the backend offers none.
+ * Feedback is *submitted* from the Monitra desktop client; the dashboard reads
+ * it and — for an administrator only — moves it through the support workflow.
  *
- * The two queries differ only in who they are allowed to read. `getMyFeedback`
+ * The queries differ only in who they are allowed to read. `getMyFeedback`
  * takes no user id: the backend derives the owner from the access token, so
  * there is nothing a caller could change to see somebody else's messages.
  * `getAllFeedback` is answered only for Admin, HR and Leader and is scoped to
  * the caller's own organization.
+ *
+ * `updateFeedbackStatus` is the one mutation, and its argument list is the
+ * point: an id and a status. It carries no recipient, because the employee who
+ * gets the email is resolved from the feedback row server-side — the dashboard
+ * does not know the address and has no way to supply one. The endpoint refuses
+ * any caller who is not an administrator, so hiding the buttons from HR is a
+ * courtesy to HR rather than the thing that stops them.
  */
 
 export type FeedbackCategory =
@@ -23,14 +29,39 @@ export type FeedbackCategory =
   | 'account_login_issue'
   | 'other';
 
+/**
+ * The support workflow's states. `new` is where every submission starts;
+ * `in_progress` and `resolved` are what the two Admin buttons produce.
+ * `reviewing` and `closed` exist in the backend enum and nothing sets them —
+ * they are listed so an unexpected value is a typed case rather than a crash.
+ */
+export type FeedbackStatus = 'new' | 'reviewing' | 'in_progress' | 'resolved' | 'closed';
+
 export interface Feedback {
   id: number;
   employee_id: number;
   employee_name: string;
   category: FeedbackCategory;
   message: string;
+  status: FeedbackStatus;
   created_at: string;
   updated_at: string | null;
+}
+
+/** The status update's response: the refreshed row, plus what it caused. */
+export interface FeedbackStatusUpdateResponse extends Feedback {
+  /**
+   * False when the row was already in the requested state and no second email
+   * was queued — which is what a double-click or a replayed request produces.
+   * The UI words its toast from this rather than assuming a send.
+   */
+  notification_queued: boolean;
+}
+
+export interface FeedbackStatusUpdateArgs {
+  id: number;
+  /** `in_progress` is the Working button; `resolved` is the other one. */
+  status: 'in_progress' | 'resolved';
 }
 
 export interface FeedbackListResponse {
@@ -130,6 +161,29 @@ export const feedbackApi = baseApi.injectEndpoints({
         fetchEveryPage(ENDPOINTS.FEEDBACK.MY, baseQuery as never) as never,
       providesTags: [{ type: 'Feedback' as const, id: 'MINE' }],
     }),
+
+    /**
+     * Mark one feedback Working or Resolved. Admin only, enforced server-side.
+     *
+     * Both list tags are invalidated rather than the row being patched in
+     * place. The server owns the workflow — it can legitimately answer with a
+     * status the browser did not ask for, and it decides whether an email was
+     * actually queued — so the list is re-read from it instead of the UI
+     * writing what it assumed. `MINE` goes too: an administrator's own
+     * feedback appears in both lists, and leaving one stale would show the
+     * same row in two different states on two screens.
+     */
+    updateFeedbackStatus: builder.mutation<FeedbackStatusUpdateResponse, FeedbackStatusUpdateArgs>({
+      query: ({ id, status }) => ({
+        url: ENDPOINTS.FEEDBACK.STATUS(id),
+        method: 'PATCH',
+        body: { status },
+      }),
+      invalidatesTags: [
+        { type: 'Feedback' as const, id: 'ALL' },
+        { type: 'Feedback' as const, id: 'MINE' },
+      ],
+    }),
   }),
 });
 
@@ -138,4 +192,5 @@ export const {
   useGetAllFeedbackQuery,
   useGetAllFeedbackItemsQuery,
   useGetMyFeedbackItemsQuery,
+  useUpdateFeedbackStatusMutation,
 } = feedbackApi;
