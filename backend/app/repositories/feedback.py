@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 from sqlalchemy import func, select
@@ -136,3 +137,58 @@ class FeedbackRepository:
             )
         ).first()
         return (row[0], row[1], row[2]) if row else None
+
+    # ------------------------------------------------------------------
+    # The Admin status workflow.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def get_with_submitter_for_organization(
+        db: Session, *, feedback_id: int, organization_id: int
+    ) -> Optional[Tuple[FeedbackRequest, User]]:
+        """One feedback row and the whole user who submitted it, scoped to a tenant.
+
+        The full `User` rather than the (id, name) pair the listing rows carry,
+        because this is what the notification's recipient is derived from: the
+        address comes off the joined user record and therefore off the
+        database, never off the request. The join is an inner join, so a
+        feedback whose submitter has been deleted simply does not load — and
+        that is the right answer for a workflow whose entire output is an email
+        to that person.
+
+        Scoped by `organization_id` in the same statement as the id, so a row
+        belonging to another tenant is never loaded and is answered as a 404
+        rather than as a permission error.
+        """
+        row = db.execute(
+            select(FeedbackRequest, User)
+            .join(User, User.id == FeedbackRequest.user_id)
+            .where(
+                FeedbackRequest.id == feedback_id,
+                FeedbackRequest.organization_id == organization_id,
+            )
+        ).first()
+        return (row[0], row[1]) if row else None
+
+    @staticmethod
+    def set_status(
+        db: Session,
+        *,
+        feedback: FeedbackRequest,
+        status: str,
+        changed_by: Optional[int],
+        changed_at: datetime,
+    ) -> FeedbackRequest:
+        """Move one already-loaded row to a new status, recording who and when.
+
+        Takes the instance rather than an id because the caller has already
+        loaded it under the tenant scope and has already decided the transition
+        is allowed; re-fetching here would only offer a second, unscoped way to
+        reach the same row.
+        """
+        feedback.status = status
+        feedback.status_changed_at = changed_at
+        feedback.status_changed_by = changed_by
+        db.commit()
+        db.refresh(feedback)
+        return feedback

@@ -127,12 +127,13 @@ class _Row:
     """Stands in for a `feedback_requests` row the repository returns."""
 
     def __init__(self, feedback_id=1, category="suggestion", message="hi",
-                 created_at="2026-09-01T10:00:00Z", updated_at=None):
+                 created_at="2026-09-01T10:00:00Z", updated_at=None, status="new"):
         self.id = feedback_id
         self.category = category
         self.message = message
         self.created_at = created_at
         self.updated_at = updated_at
+        self.status = status
 
 
 class TestFeedbackReadAccess(unittest.TestCase):
@@ -161,7 +162,14 @@ class TestFeedbackReadAccess(unittest.TestCase):
         self.assertEqual(item["id"], 7)
         self.assertEqual(item["employee_id"], 42)
         self.assertEqual(item["employee_name"], "Ada")
-        self.assertNotIn("status", item)
+        # `status` is part of a listing row now that the Admin workflow exists.
+        # It used to be asserted *absent*, which pinned the read-only design
+        # this feature replaces: a screen that offers Working and Resolved has
+        # to be able to show which of them a row is already in, and the server
+        # is the only thing entitled to say. Showing it on `/feedback/my` is
+        # intentional too — the submitter is emailed about each transition, so
+        # the state is already theirs to know.
+        self.assertEqual(item["status"], "new")
 
     def test_another_users_feedback_id_is_a_404_not_that_users_feedback(self):
         with patch(f"{SVC}.FeedbackRepository") as repo:
