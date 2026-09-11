@@ -238,15 +238,23 @@ class TestWelcomeEmailContent(unittest.TestCase):
             self.assertIn(title, html)
 
     def test_the_call_to_action_appears_only_when_a_real_url_is_configured(self):
-        self.assertNotIn("Open Monitra", self.render(MONITRA_APP_URL="").html)
+        self.assertNotIn("Download Monitra", self.render(MONITRA_APP_URL="").html)
         self.assertNotIn(
-            "Open Monitra", self.render(MONITRA_APP_URL="http://localhost:5173").html,
+            "Download Monitra", self.render(MONITRA_APP_URL="http://localhost:5173").html,
             "an http:// or localhost URL must never become a button in a sent email",
         )
-        self.assertIn(
-            'href="https://monitra.example.com"',
-            self.render(MONITRA_APP_URL="https://monitra.example.com").html,
-        )
+
+    def test_the_button_sends_a_new_user_to_the_public_download_page(self):
+        # Not the app root: a brand-new account has no desktop client yet, and
+        # the root would bounce them to /login — the thing they need the app to
+        # do. `/download` is public for exactly this reason.
+        html = self.render(MONITRA_APP_URL="https://monitra.example.com").html
+        self.assertIn('href="https://monitra.example.com/download"', html)
+        self.assertIn("Download Monitra", html)
+
+    def test_the_plain_text_alternative_carries_the_same_link(self):
+        text = self.render(MONITRA_APP_URL="https://monitra.example.com").text
+        self.assertIn("Download Monitra: https://monitra.example.com/download", text)
 
     def test_it_has_a_plain_text_alternative(self):
         message = self.render()

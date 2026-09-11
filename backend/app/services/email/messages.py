@@ -184,6 +184,19 @@ def _frame_context(subject: str, preheader: str, footer_note: str) -> dict[str, 
 # Workflow 1 — welcome
 # ----------------------------------------------------------------------
 
+def welcome_cta_url() -> Optional[str]:
+    """Where "Download Monitra" sends a newly welcomed user, or None.
+
+    The public download page. Only built when MONITRA_APP_URL holds a real
+    https:// URL — an http:// or localhost value resolves on the reader's
+    machine, not this server, so there is no button rather than a broken one.
+    """
+    base = (settings.MONITRA_APP_URL or "").strip().rstrip("/")
+    if not base.startswith("https://"):
+        return None
+    return f"{base}{DOWNLOAD_PAGE_PATH}"
+
+
 def welcome_subject() -> str:
     return clean_subject("Welcome to Monitra — Your Workforce Productivity Companion")
 
@@ -223,15 +236,22 @@ def build_welcome_email(payload: dict[str, Any], recipients: list[str]) -> Outgo
         for title, body in WELCOME_FEATURES
     )
 
-    app_url = (settings.MONITRA_APP_URL or "").strip()
+    # The download page, not the app root. A welcome goes to somebody who has
+    # just been given an account and does not have the desktop client yet, so
+    # the next thing they need is the installer — and `/download` is public
+    # precisely so a first-time user is not asked to sign in before they can
+    # get the thing they sign in with. The app root would bounce them to
+    # /login, which is a worse first step and, for a brand-new account, a
+    # confusing one.
+    app_url = welcome_cta_url()
     cta_block = Markup("")
-    if app_url.startswith("https://"):
+    if app_url:
         cta_block = Markup(
             '<table role="presentation" cellpadding="0" cellspacing="0" border="0" class="st-cta">'
             '<tr><td align="center" style="background-color:#2563EB;border-radius:8px;">'
             '<a href="{url}" style="display:inline-block;padding:13px 30px;'
             'font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;'
-            'color:#FFFFFF;text-decoration:none;">Open Monitra</a>'
+            'color:#FFFFFF;text-decoration:none;">Download Monitra</a>'
             '</td></tr></table>'
         ).format(url=app_url)
 
@@ -252,8 +272,8 @@ def build_welcome_email(payload: dict[str, Any], recipients: list[str]) -> Outgo
         "What you can do with it:",
     ]
     text_lines += [f"  - {title}: {body}" for title, body in WELCOME_FEATURES]
-    if app_url.startswith("https://"):
-        text_lines += ["", f"Open Monitra: {app_url}"]
+    if app_url:
+        text_lines += ["", f"Download Monitra: {app_url}"]
     if (settings.MONITRA_SUPPORT_EMAIL or "").strip():
         text_lines += ["", f"Need a hand? Write to {settings.MONITRA_SUPPORT_EMAIL.strip()}."]
     text_lines += ["", "Monitra — Staff Management System", "Store Transform"]
