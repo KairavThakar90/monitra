@@ -44,6 +44,17 @@ CATEGORY_LABELS = {
     "other": "Other",
 }
 
+#: How much of a feedback message the notification shows before it is cut off
+#: and the reader is sent to the dashboard for the rest. The notification is a
+#: prompt to go and read, not the archive — and a mailbox is a poor place to
+#: keep somebody's full text anyway.
+MESSAGE_PREVIEW_LENGTH = 50
+
+#: Where the "Read full feedback" button points, appended to MONITRA_APP_URL.
+#: `/admin/feedback` is the dashboard's Admin/HR feedback list — the same route
+#: `FeedbackAdminRoute` guards — which is exactly who this notification goes to.
+FEEDBACK_DASHBOARD_PATH = "/admin/feedback"
+
 #: What the welcome email says Monitra does. Four, because the feature list is
 #: an orientation and not a manual.
 WELCOME_FEATURES = (
@@ -301,9 +312,24 @@ def build_feedback_email(payload: dict[str, Any], recipients: list[str]) -> Outg
         ("Submission date", day),
     ])
 
+    preview, truncated = preview_message(message)
+    # The ellipsis is appended as markup, after the preview text has been
+    # escaped, so it is a typographic mark and not something the user could
+    # have typed to fake one.
+    message_html = paragraphs(preview)
+    if truncated:
+        message_html = message_html + Markup(
+            '<span style="color:#9AA3AF;"> …</span>'
+        )
+
     html = render_page(
         "feedback.html",
-        {**frame, "detail_rows": rows, "message_html": paragraphs(message)},
+        {
+            **frame,
+            "detail_rows": rows,
+            "message_html": message_html,
+            "cta_block": _feedback_cta(truncated),
+        },
     )
 
     # The same six fields, in the same order. The two alternatives of one
@@ -321,11 +347,15 @@ def build_feedback_email(payload: dict[str, Any], recipients: list[str]) -> Outg
         "",
         "Message",
         "-" * 48,
-        message,
+        f"{preview}…" if truncated else preview,
         "-" * 48,
-        "",
-        "Automated notification — Monitra, Store Transform.",
     ]
+    if (dashboard_url := feedback_dashboard_url()):
+        text_lines += [
+            "",
+            f"{'Read the full feedback' if truncated else 'Open in Monitra'}: {dashboard_url}",
+        ]
+    text_lines += ["", "Automated notification — Monitra, Store Transform."]
 
     return OutgoingEmail(
         to=recipients,
@@ -336,6 +366,68 @@ def build_feedback_email(payload: dict[str, Any], recipients: list[str]) -> Outg
         reply_to=_reply_to(payload),
         inline_images=frame["_inline_images"],
     )
+
+
+def feedback_dashboard_url() -> Optional[str]:
+    """The dashboard's feedback page, or None when no web address is configured.
+
+    Built from MONITRA_APP_URL, and only when that holds a real https:// URL.
+    A button in an email that goes to `http://localhost:5173` — the development
+    default — resolves on the *reader's* machine, which is either nothing at all
+    or, worse, something else of theirs. No URL means no button.
+    """
+    base = (settings.MONITRA_APP_URL or "").strip().rstrip("/")
+    if not base.startswith("https://"):
+        return None
+    return f"{base}{FEEDBACK_DASHBOARD_PATH}"
+
+
+def _feedback_cta(truncated: bool) -> Markup:
+    """The "Read full feedback" button, when there is somewhere to send people.
+
+    Rendered whenever a dashboard URL is configured, not only when the message
+    was cut: a reader who wants to reply, mark it handled or see the rest of
+    that person's history wants the link either way. The label changes so it
+    does not promise "the full message" when the full message is already above.
+    """
+    url = feedback_dashboard_url()
+    if url is None:
+        return Markup("")
+    label = "Read full feedback" if truncated else "Open in Monitra"
+    return Markup(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+        'class="st-cta" style="margin:24px 0 0 0;">'
+        '<tr><td align="center" style="background-color:#2563EB;border-radius:8px;">'
+        '<a href="{url}" style="display:inline-block;padding:12px 26px;'
+        'font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;'
+        'color:#FFFFFF;text-decoration:none;">{label}</a>'
+        '</td></tr></table>'
+    ).format(url=url, label=label)
+
+
+def preview_message(message: str, limit: int = MESSAGE_PREVIEW_LENGTH) -> tuple[str, bool]:
+    """A message shortened for the notification. Returns (text, was_truncated).
+
+    Whitespace is collapsed first, so a message whose first fifty characters are
+    mostly newlines does not produce a preview that looks empty. The cut falls
+    back to the last word boundary when there is one reasonably close, because
+    "The timer resets when I resume fr…" reads worse than stopping a word
+    earlier — but a fifty-character word is still cut at fifty rather than
+    disappearing.
+
+    Nothing here changes what is stored: the outbox payload keeps the full text
+    the user wrote, and the dashboard shows all of it. This shortens one
+    rendering of it.
+    """
+    collapsed = " ".join((message or "").split())
+    if len(collapsed) <= limit:
+        return collapsed, False
+
+    cut = collapsed[:limit].rstrip()
+    boundary = cut.rfind(" ")
+    if boundary >= limit * 0.6:
+        cut = cut[:boundary].rstrip()
+    return cut, True
 
 
 def _sender_display_name(who: str) -> str:

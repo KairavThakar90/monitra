@@ -404,6 +404,82 @@ class TestFeedbackEmailContent(unittest.TestCase):
         for absent in ("FB-17", "User ID", "Username", "Role", "Source"):
             self.assertNotIn(absent, html, f"{absent!r} should not be in the body")
 
+    def test_a_long_message_is_cut_to_a_preview_with_an_ellipsis(self):
+        long_message = (
+            "The timer resets to zero every single time I resume the machine "
+            "from sleep, and the hours I tracked before that are gone."
+        )
+        html = self.build(message=long_message).html
+        self.assertIn("…", html)
+        self.assertNotIn("the hours I tracked before that are gone", html)
+        # The preview itself never exceeds the limit.
+        preview, truncated = messages.preview_message(long_message)
+        self.assertTrue(truncated)
+        self.assertLessEqual(len(preview), messages.MESSAGE_PREVIEW_LENGTH)
+        self.assertIn(preview, html)
+
+    def test_a_short_message_is_shown_whole_with_no_ellipsis(self):
+        html = self.build(message="Timer resets on resume.").html
+        self.assertIn("Timer resets on resume.", html)
+        self.assertNotIn("…", html)
+
+    def test_a_message_exactly_at_the_limit_is_not_truncated(self):
+        exact = "x" * messages.MESSAGE_PREVIEW_LENGTH
+        self.assertEqual(messages.preview_message(exact), (exact, False))
+
+    def test_the_preview_prefers_a_word_boundary_but_never_disappears(self):
+        # A sentence is cut a word early rather than mid-word...
+        preview, _ = messages.preview_message("The timer resets when I resume from sleep every time")
+        self.assertFalse(preview.endswith(" "))
+        self.assertTrue(preview.split()[-1] in "The timer resets when I resume from sleep every time")
+        # ...but one very long word still yields a preview rather than nothing.
+        long_word, truncated = messages.preview_message("x" * 300)
+        self.assertTrue(truncated)
+        self.assertEqual(len(long_word), messages.MESSAGE_PREVIEW_LENGTH)
+
+    def test_a_message_of_only_newlines_does_not_produce_an_empty_preview(self):
+        preview, _ = messages.preview_message("\n\n\n   hello there   \n\n")
+        self.assertEqual(preview, "hello there")
+
+    def test_the_truncated_preview_is_still_escaped(self):
+        html = self.build(message="<script>alert(1)</script> " + "x" * 200).html
+        self.assertNotIn("<script>", html)
+        self.assertIn("&lt;script&gt;", html)
+
+    def test_the_button_points_at_the_dashboard_feedback_page(self):
+        with email_settings(MONITRA_APP_URL="https://staff.example.com"):
+            html = messages.build_feedback_email(
+                {"feedback_id": 1, "category": "other", "message": "x" * 200,
+                 "submitted_at": "2026-09-10T12:00:00+00:00"},
+                ["admin@example.com"],
+            ).html
+        self.assertIn('href="https://staff.example.com/admin/feedback"', html)
+        self.assertIn("Read full feedback", html)
+
+    def test_there_is_no_button_when_no_web_address_is_configured(self):
+        for configured in ("", "http://localhost:5173", "staff.example.com"):
+            with self.subTest(url=configured):
+                with email_settings(MONITRA_APP_URL=configured):
+                    html = messages.build_feedback_email(
+                        {"feedback_id": 1, "category": "other", "message": "hi",
+                         "submitted_at": "2026-09-10T12:00:00+00:00"},
+                        ["admin@example.com"],
+                    ).html
+                self.assertNotIn("/admin/feedback", html)
+                self.assertNotIn("localhost", html)
+
+    def test_the_button_is_shown_even_when_nothing_was_truncated(self):
+        # A reader who wants to reply or mark it handled wants the link either
+        # way; only the label changes.
+        with email_settings(MONITRA_APP_URL="https://staff.example.com"):
+            html = messages.build_feedback_email(
+                {"feedback_id": 1, "category": "other", "message": "Short.",
+                 "submitted_at": "2026-09-10T12:00:00+00:00"},
+                ["admin@example.com"],
+            ).html
+        self.assertIn("/admin/feedback", html)
+        self.assertIn("Open in Monitra", html)
+
     def test_the_plain_text_alternative_carries_the_same_six_fields(self):
         text = self.build().text
         for expected in self.EXPECTED_FIELDS:
