@@ -123,7 +123,8 @@ export async function ssoLoginAPI(
     throw new Error(errorDetail);
   }
 
-  return response.json();
+  const data = (await response.json()) as TokenPair;
+  return { ...data, user: normalizeUserProfile(data.user) };
 }
 
 export async function refreshSessionAPI(refreshToken: string): Promise<TokenPair> {
@@ -137,7 +138,8 @@ export async function refreshSessionAPI(refreshToken: string): Promise<TokenPair
     throw new Error("Session expired");
   }
 
-  return response.json();
+  const data = (await response.json()) as TokenPair;
+  return { ...data, user: normalizeUserProfile(data.user) };
 }
 
 export async function logoutAPI(refreshToken: string | null): Promise<void> {
@@ -161,6 +163,12 @@ export interface UserRead {
   is_active: boolean;
 }
 
+/** Keep profiles from older deployments compatible with the canonical role name. */
+const normalizeUserProfile = (user: UserRead): UserRead => ({
+  ...user,
+  role_name: user.role_name.trim().toLowerCase() === "admin" ? "administrator" : user.role_name,
+});
+
 export async function getMeAPI(token: string): Promise<UserRead> {
   const response = await fetch(ENDPOINTS.AUTH.ME, {
     method: "GET",
@@ -177,5 +185,5 @@ export async function getMeAPI(token: string): Promise<UserRead> {
     throw new Error("Failed to fetch user profile");
   }
 
-  return response.json();
+  return normalizeUserProfile((await response.json()) as UserRead);
 }

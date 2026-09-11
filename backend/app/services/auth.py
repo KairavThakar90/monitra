@@ -455,8 +455,14 @@ class AuthService:
         if not user or not user.password_hash or not verify_password(password, user.password_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password")
 
+        # Canonicalise rows created before the role rename so local development
+        # accounts receive the same profile as provider-authenticated accounts.
+        role_was_legacy_admin = user.role_name == "admin"
+        if role_was_legacy_admin:
+            user.role_name = "administrator"
+
         resolved_permissions = {p: True for p in ROLE_PERMISSIONS.get(user.role_name, {})}
-        if user.permissions != resolved_permissions:
+        if role_was_legacy_admin or user.permissions != resolved_permissions:
             user.permissions = resolved_permissions
             db.commit()
             db.refresh(user)

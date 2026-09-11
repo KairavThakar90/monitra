@@ -12,8 +12,8 @@ import { CATEGORY_STYLES } from "./feedbackFilters";
  * on the member screen: a person reading their own submissions already knows
  * who sent them, and an id column there is noise, not information.
  *
- * Strictly read-only. Feedback carries no workflow -- no status, no assignee,
- * no reply -- so there is deliberately no row action anywhere on this screen.
+ * The row controls are currently visual-only. Feedback carries no workflow
+ * status yet, so Working and Resolved do not change data.
  *
  * A wide table cannot shrink below its content, so on a narrow screen the rows
  * are rendered as stacked cards instead of being cut off.
@@ -111,7 +111,7 @@ export const FeedbackTable: React.FC<{ items: Feedback[]; showEmployee?: boolean
             <col style={{ width: 190 }} />
             <col />
             <col style={{ width: 130 }} />
-            {showActions && <col style={{ width: 150 }} />}
+            {showActions && <col style={{ width: 270 }} />}
           </colgroup>
           <thead className="border-b border-[#E2E8F0] bg-[#F8FAFC]">
             <tr>
@@ -146,13 +146,27 @@ export const FeedbackTable: React.FC<{ items: Feedback[]; showEmployee?: boolean
                 </td>
                 {showActions && (
                   <td className="px-5 py-3.5 text-right align-top">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedDescription(item)}
-                      className="rounded-lg border border-[#2563EB]/25 bg-[#EFF6FF] px-3 py-1.5 text-[11px] font-bold text-[#2563EB] transition hover:bg-[#DBEAFE]"
-                    >
-                      View
-                    </button>
+                    <div className="flex justify-end gap-1.5">
+                      <button
+                        type="button"
+                        className="rounded-lg border border-[#F59E0B]/30 bg-[#FFFBEB] px-3 py-1.5 text-[11px] font-bold text-[#B45309] transition hover:bg-[#FEF3C7]"
+                      >
+                        Working
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-lg border border-[#10B981]/30 bg-[#ECFDF5] px-3 py-1.5 text-[11px] font-bold text-[#047857] transition hover:bg-[#D1FAE5]"
+                      >
+                        Resolved
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedDescription(item)}
+                        className="rounded-lg border border-[#2563EB]/25 bg-[#EFF6FF] px-3 py-1.5 text-[11px] font-bold text-[#2563EB] transition hover:bg-[#DBEAFE]"
+                      >
+                        View
+                      </button>
+                    </div>
                   </td>
                 )}
               </tr>
@@ -180,13 +194,27 @@ export const FeedbackTable: React.FC<{ items: Feedback[]; showEmployee?: boolean
           {showActions ? (
             <>
               <p className="mt-3 line-clamp-2 break-words text-[13px] leading-5 text-[#334155]">{item.message}</p>
-              <button
-                type="button"
-                onClick={() => setSelectedDescription(item)}
-                className="mt-2 rounded-lg border border-[#2563EB]/25 bg-[#EFF6FF] px-3 py-1.5 text-[11px] font-bold text-[#2563EB] transition hover:bg-[#DBEAFE]"
-              >
-                View
-              </button>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  className="rounded-lg border border-[#F59E0B]/30 bg-[#FFFBEB] px-3 py-1.5 text-[11px] font-bold text-[#B45309] transition hover:bg-[#FEF3C7]"
+                >
+                  Working
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border border-[#10B981]/30 bg-[#ECFDF5] px-3 py-1.5 text-[11px] font-bold text-[#047857] transition hover:bg-[#D1FAE5]"
+                >
+                  Resolved
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedDescription(item)}
+                  className="rounded-lg border border-[#2563EB]/25 bg-[#EFF6FF] px-3 py-1.5 text-[11px] font-bold text-[#2563EB] transition hover:bg-[#DBEAFE]"
+                >
+                  View
+                </button>
+              </div>
             </>
           ) : (
             <p className="mt-3 whitespace-pre-wrap break-words text-[13px] leading-5 text-[#334155]">{item.message}</p>
