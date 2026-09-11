@@ -13,6 +13,9 @@ from app.models.task_assignee import TaskAssignee
 from app.repositories.task_assignee import TaskAssigneeRepository
 
 from app.repositories.user import UserRepository
+from app.services.task_scope import (
+    is_task_scoped, may_view_task, visible_task_condition,
+)
 
 class TaskService:
     @staticmethod
@@ -38,8 +41,15 @@ class TaskService:
             created_by_user_id=current_user.id
         )
 
-        # 4. If creator is an employee, auto-assign the task to them
-        if current_user.role_name == "employee":
+        # 4. A creator who only sees their own work owns what they create.
+        #
+        # Was `role_name == "employee"`. Widened to the same predicate the
+        # visibility rule uses, because the two have to agree: a narrow-scoped
+        # caller whose new task is left unassigned would have created *shared*
+        # project work (see task_scope), visible to every other member -- which
+        # is the leak this change exists to close. The identity comes from the
+        # bearer token, never from the payload.
+        if is_task_scoped(current_user):
             TaskAssigneeRepository.add(db, task.id, current_user.id, current_user.id)
         # 5. If assignee_id is specified (and belongs to the same organization), assign it
         elif task_in.assignee_id is not None:
@@ -54,27 +64,27 @@ class TaskService:
         # 1. Enforce project exists in caller's organization and user is authorized to access it
         ProjectService.get_project(db, project_id, current_user)
         
-        # 2. List tasks based on role
-        if current_user.role_name in ["org_admin", "admin", "super_admin", "manager"]:
-            tasks = list(db.scalars(
-                select(Task)
-                .where(Task.project_id == project_id)
-                .where(Task.status != "archived")
-            ).all())
-        else:
-            # Project membership -- or, for a leader, leadership -- grants
-            # visibility to all of that project's tasks, including unassigned
-            # default ones. `ProjectService.get_project` above has already
-            # refused a project this caller may not read, so reaching here means
-            # the project is theirs and its tasks are too. The `else` used to
-            # return an empty list for every role it did not name, which left a
-            # leader looking at a project with no tasks in it.
-            tasks = list(db.scalars(
-                select(Task)
-                .where(Task.project_id == project_id)
-                .where(Task.organization_id == current_user.organization_id)
-                .where(Task.status != "archived")
-            ).all())
+        # 2. List the tasks of that project this caller may see.
+        #
+        # Opening the project is not the same authority as seeing everything
+        # inside it. This used to branch on role only to choose between two
+        # queries that both returned *every* task in the project, so two
+        # employees on one project each saw the other's tasks -- the desktop
+        # data-isolation defect. `task_scope` decides instead: a manager, a
+        # leader or HR is unrestricted here (None), and everybody else is
+        # limited to what they created, what is assigned to them, and the
+        # project's unassigned shared work. The filter runs in the database,
+        # so the rows fetched are already the authorised ones.
+        query = (
+            select(Task)
+            .where(Task.project_id == project_id)
+            .where(Task.organization_id == current_user.organization_id)
+            .where(Task.status != "archived")
+        )
+        condition = visible_task_condition(current_user)
+        if condition is not None:
+            query = query.where(condition)
+        tasks = list(db.scalars(query).all())
 
         # 3. Populate assignees for every task in ONE query.
         #
@@ -106,10 +116,25 @@ class TaskService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Task not found"
             )
-            
-        # ProjectService.get_project already verifies employee membership,
-        # so task visibility is based on project membership rather than assignment.
-        # 3. Populate assignees
+
+        # 3. And verify it is a task this caller may see.
+        #
+        # This is the chokepoint, not merely one more read to secure:
+        # update_task and archive_task below both start here, and so do
+        # TimeEntryService.start_timer and the manual-time-entry paths. Guarding
+        # it is what stops a modified client starting a timer, or booking time,
+        # against a task id it was never shown.
+        #
+        # 404 rather than 403, matching ProjectService: whether somebody else's
+        # task exists is not this caller's to learn, and an id that answers
+        # "forbidden" confirms the row is there.
+        if not may_view_task(db, current_user, task):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Task not found"
+            )
+
+        # 4. Populate assignees
         task.assignees = list(db.scalars(
             select(TaskAssignee).where(TaskAssignee.task_id == task.id)
         ).all())
