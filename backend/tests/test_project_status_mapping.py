@@ -26,6 +26,7 @@ from app.schemas.project_management import BillingType, ProjectCreate, TaskCreat
 from app.services.project_management import (
     PROJECT_STATUS_NAMES, TASK_STATUS_NAMES, ProjectManagementService,
 )
+from tests.status_catalog_stub import rows, status_catalog
 
 
 def _status_row(row_id, name):
@@ -66,23 +67,27 @@ class StatusKeyTests(unittest.TestCase):
 class CreateProjectTests(unittest.TestCase):
     """The 500, reproduced: status rows numbered other than 1-4."""
 
-    def _create(self, project_status, todo_status):
+    def _create(self, project_status_id, project_status_name, todo_id, todo_name):
         db = MagicMock()
-        db.get.return_value = project_status
         leader = User(id=2, organization_id=1, role_name="project_leader", permissions={})
-        # In order: _users(leader), the membership read-back after the flush,
-        # then the TaskStatus scan for the Todo row. _users(employees) returns
-        # early on an empty id list and never queries. Everything after is
-        # _detail_payload reading the project back; it has nothing to find, so
-        # an exhausted script answers with no rows.
-        answers = [[leader], [], [todo_status]]
+        # In order: _users(leader), then the membership read-back after the
+        # flush. _users(employees) returns early on an empty id list and never
+        # queries, and both status tables are served by the catalogue below
+        # rather than read here. Everything after is _detail_payload reading
+        # the project back; it has nothing to find, so an exhausted script
+        # answers with no rows.
+        answers = [[leader], []]
         db.scalars.return_value.all.side_effect = lambda: answers.pop(0) if answers else []
         payload = ProjectCreate(
-            project_name="Migration", status_id=project_status.id, leader_id=2,
+            project_name="Migration", status_id=project_status_id, leader_id=2,
             employee_ids=[], deadline=date.today() + timedelta(days=30),
             billing_type=BillingType.free,
         )
-        ProjectManagementService.create(db, _user(), payload)
+        with status_catalog(
+            project_statuses=rows((project_status_id, project_status_name)),
+            task_statuses=rows((todo_id, todo_name)),
+        ):
+            ProjectManagementService.create(db, _user(), payload)
         added = [call.args[0] for call in db.add.call_args_list]
         project = next(item for item in added if isinstance(item, Project))
         tasks = [item for item in added if isinstance(item, Task)]
@@ -90,12 +95,12 @@ class CreateProjectTests(unittest.TestCase):
 
     def test_a_project_status_row_numbered_differently_still_creates(self):
         """id 57, not 1: the exact shape that raised KeyError -> HTTP 500."""
-        project, _ = self._create(_status_row(57, "Active"), _status_row(61, "Todo"))
+        project, _ = self._create(57, "Active", 61, "Todo")
         self.assertEqual(project.status, "active")
         self.assertEqual(project.status_id, 57)
 
     def test_the_default_tasks_follow_the_todo_row_whatever_its_id(self):
-        _, tasks = self._create(_status_row(57, "Active"), _status_row(61, "Todo"))
+        _, tasks = self._create(57, "Active", 61, "Todo")
         self.assertTrue(tasks)
         for task in tasks:
             self.assertEqual(task.status, "todo")
@@ -103,13 +108,13 @@ class CreateProjectTests(unittest.TestCase):
 
     def test_a_todo_row_named_to_do_is_found(self):
         """`name == "Todo"` made this an explicit 'not configured' 500."""
-        _, tasks = self._create(_status_row(1, "Active"), _status_row(2, "To Do"))
+        _, tasks = self._create(1, "Active", 2, "To Do")
         self.assertTrue(tasks)
         self.assertEqual(tasks[0].status, "todo")
 
     def test_a_pending_project_stores_the_legacy_pending_string(self):
         """The value the projects_status_check constraint has to accept."""
-        project, _ = self._create(_status_row(88, "Pending"), _status_row(61, "Todo"))
+        project, _ = self._create(88, "Pending", 61, "Todo")
         self.assertEqual(project.status, "pending")
 
 
@@ -117,11 +122,11 @@ class CreateTaskTests(unittest.TestCase):
     def test_in_progress_maps_to_the_legacy_underscored_string(self):
         db = MagicMock()
         db.scalar.return_value = Project(id=7, organization_id=1, status="active")
-        db.get.return_value = _status_row(42, "In Progress")
 
-        ProjectManagementService.create_task(
-            db, _user(), 7, TaskCreate(name="Write the report", status_id=42)
-        )
+        with status_catalog(task_statuses=rows((42, "In Progress"))):
+            ProjectManagementService.create_task(
+                db, _user(), 7, TaskCreate(name="Write the report", status_id=42)
+            )
 
         task = next(
             call.args[0] for call in db.add.call_args_list

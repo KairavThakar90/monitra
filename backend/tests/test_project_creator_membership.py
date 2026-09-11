@@ -28,16 +28,11 @@ from app.models.project_member import ProjectMember
 from app.models.user import User
 from app.schemas.project_management import BillingType, ProjectCreate
 from app.services.project_management import ProjectManagementService
+from tests.status_catalog_stub import rows, status_catalog
 
 ACTOR_ID = 1
 LEADER_ID = 2
 OTHER_ID = 3
-
-
-def _status_row(row_id, name):
-    item = MagicMock(id=row_id)
-    item.name = name
-    return item
 
 
 def _actor():
@@ -48,17 +43,17 @@ def _create(existing_member_ids, employee_ids):
     """Run create() with the database reporting `existing_member_ids` already
     present on the new project -- which is what the trigger leaves behind."""
     db = MagicMock()
-    db.get.return_value = _status_row(1, "Active")
 
     leader = User(id=LEADER_ID, organization_id=1, role_name="project_leader", permissions={})
     employees = [
         User(id=item_id, organization_id=1, role_name="employee", permissions={})
         for item_id in employee_ids
     ]
-    # In order: _users(leader), _users(employees), the membership read-back,
-    # then the TaskStatus scan. Everything after is _detail_payload, which has
-    # nothing to find.
-    answers = [[leader], employees, list(existing_member_ids), [_status_row(1, "Todo")]]
+    # In order: _users(leader), _users(employees), then the membership
+    # read-back. Both status tables come from the catalogue rather than from
+    # this script. Everything after is _detail_payload, which has nothing to
+    # find.
+    answers = [[leader], employees, list(existing_member_ids)]
     db.scalars.return_value.all.side_effect = lambda: answers.pop(0) if answers else []
 
     payload = ProjectCreate(
@@ -67,7 +62,10 @@ def _create(existing_member_ids, employee_ids):
         deadline=date.today() + timedelta(days=20),
         billing_type=BillingType.free,
     )
-    ProjectManagementService.create(db, _actor(), payload)
+    with status_catalog(
+        project_statuses=rows((1, "Active")), task_statuses=rows((1, "Todo"))
+    ):
+        ProjectManagementService.create(db, _actor(), payload)
 
     added = [call.args[0] for call in db.add.call_args_list]
     members = [item for item in added if isinstance(item, ProjectMember)]
