@@ -393,7 +393,7 @@ class DashboardWindow(QWidget):
         self._task_section.error_occurred.connect(self._on_error)
         self._task_section.active_timer_conflict.connect(self._reconcile_active_timer)
         self._task_section.task_action_succeeded.connect(self._on_task_action_succeeded)
-        self._task_section.refresh_requested.connect(self.refresh_data)
+        self._task_section.task_mutated.connect(self._on_task_mutated)
         # The Request (manual time entry) button lives in the top bar, but
         # the dialog and its submission stay in TaskSection -- this is the
         # only wire between them.
@@ -1071,6 +1071,66 @@ class DashboardWindow(QWidget):
             return
         self.api.cache.cache_tasks(project_id, tasks)
         self._render_tasks(tasks, from_cache=False)
+
+    def _on_task_mutated(self, kind: str, project_id: int, payload: object) -> None:
+        """Show the result of a task CRUD call on the list already on screen.
+
+        `payload` is the server's own response to the request that made the
+        change, so nothing here is guessed: a created task is the row the
+        backend just wrote, with the id, status and assignee it chose. It goes
+        straight into the cache and the view, and a targeted reload follows to
+        reconcile anything derived.
+
+        Before this, a task mutation emitted a blanket refresh -- projects,
+        task statuses, the day's time entries and the tasks, four requests --
+        and the row appeared only when the last of them came back. That is the
+        "after creating a task it takes a few seconds to appear" report.
+
+        Note what is *not* done here: the tracked-time column is not invented.
+        `_render_tasks` reads banked seconds from the time entries already
+        loaded, so a task created a moment ago shows the zero it has actually
+        earned.
+        """
+        # A slow mutation whose project is no longer selected must not
+        # overwrite the newer selection, nor trigger a load for it.
+        if not self._current_project or self._current_project.get("id") != project_id:
+            log.debug("discarding task mutation for project %s; selection moved on", project_id)
+            return
+
+        tasks = list(self._project_tasks or [])
+        task_id = payload.get("id") if isinstance(payload, dict) else None
+
+        if task_id is None:
+            # Nothing identifiable came back. Rather than guess, let the
+            # reload below be the whole answer.
+            log.debug("task mutation %s returned no id; relying on the reload", kind)
+            self._load_tasks(project_id)
+            return
+
+        if kind == "created":
+            if not any(task.get("id") == task_id for task in tasks):
+                tasks.append(payload)
+        elif kind == "updated":
+            index = next(
+                (i for i, task in enumerate(tasks) if task.get("id") == task_id), None
+            )
+            if index is None:
+                tasks.append(payload)
+            else:
+                tasks[index] = payload
+        elif kind == "deleted":
+            tasks = [task for task in tasks if task.get("id") != task_id]
+        else:
+            log.warning("unknown task mutation kind %r; reloading instead", kind)
+            self._load_tasks(project_id)
+            return
+
+        self.api.cache.cache_tasks(project_id, tasks)
+        self._render_tasks(tasks, from_cache=False)
+        # Reconcile. This is the same targeted load a project selection makes,
+        # de-duplicated on its own key, and it no longer stands between the
+        # user and their own edit.
+        self._load_tasks(project_id)
 
     def _on_tasks_error(self, exc: BaseException) -> None:
         if getattr(self._task_section, "_has_loaded_tasks", False):

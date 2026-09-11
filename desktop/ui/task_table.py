@@ -1444,7 +1444,13 @@ class TaskSection(QWidget):
     error_occurred = Signal(str)
     active_timer_conflict = Signal()
     task_action_succeeded = Signal(str)  # Success notification message
-    refresh_requested = Signal()
+    #: A task CRUD call succeeded: (kind, project_id, server payload), where
+    #: kind is "created", "updated" or "deleted". DashboardWindow owns the task
+    #: list and the cache, so it applies this and then reconciles; this widget
+    #: does not write either. Replaces a blanket `refresh_requested`, which
+    #: re-fetched projects, statuses, the day's time entries and the tasks
+    #: before the user could see their own edit.
+    task_mutated = Signal(str, int, object)
     #: Whether adding a task is possible right now (a project is loaded).
     #: The Add Task button lives in the top bar; this is how its enabled
     #: state follows the selection without the top bar knowing about tasks.
@@ -1531,18 +1537,28 @@ class TaskSection(QWidget):
     def is_admin(self) -> bool:
         return self.user_role in ["administrator", "org_admin", "super_admin"]
 
-    def _run_task_mutation(self, call, success_message: str, key: str) -> None:
+    def _run_task_mutation(
+        self, call, success_message: str, key: str, *, kind: str, project_id: int
+    ) -> None:
         """
         Run a task CRUD call on the shared bounded pool.
 
         `key` de-duplicates: a double-click cannot produce two creates. On
-        success the list is refreshed so the change is reflected without the
-        widget guessing at what the server did.
+        success the server's own answer is handed to DashboardWindow through
+        `task_mutated`, which applies it to the list already on screen and
+        then reconciles with a targeted reload.
+
+        This used to emit `refresh_requested`, which ran the whole refresh
+        round -- projects, task statuses, the day's time entries and the tasks
+        -- and the new row appeared only when the last of those returned. The
+        widget is still not guessing at what the server did: it is showing
+        exactly what the server just said, which is the response to the very
+        request that made the change.
         """
-        def on_success(_result) -> None:
+        def on_success(result) -> None:
             self.api.notify(success_message, NotificationLevel.SUCCESS, key=f"task-mut-{key}")
             self.task_action_succeeded.emit(success_message)
-            self.refresh_requested.emit()
+            self.task_mutated.emit(kind, project_id, result)
 
         def on_error(exc: BaseException) -> None:
             self.api.notify(str(exc), NotificationLevel.ERROR, key=f"task-mut-err-{key}")
@@ -2123,6 +2139,8 @@ class TaskSection(QWidget):
             ),
             success_message="Task created successfully.",
             key=f"create-task:{project_id}:{data['task_name']}",
+            kind="created",
+            project_id=project_id,
         )
 
     # ── Manual time entry ─────────────────────────────────────────────────────
@@ -2226,6 +2244,8 @@ class TaskSection(QWidget):
                 ),
                 success_message="Task updated successfully.",
                 key=f"update-task:{task_id}",
+                kind="updated",
+                project_id=row.project_id,
             )
 
     def _handle_duplicate_request(self, row: TaskRow) -> None:
@@ -2242,6 +2262,8 @@ class TaskSection(QWidget):
             ),
             success_message="Task duplicated successfully.",
             key=f"duplicate-task:{row.task.get('id')}",
+            kind="created",
+            project_id=row.project_id,
         )
 
     def _handle_delete_request(self, row: TaskRow) -> None:
@@ -2253,5 +2275,7 @@ class TaskSection(QWidget):
                 lambda: self.task_service.delete_task(row.project_id, task_id),
                 success_message="Task deleted successfully.",
                 key=f"delete-task:{task_id}",
+                kind="deleted",
+                project_id=row.project_id,
             )
 
