@@ -155,6 +155,7 @@ export interface UserRead {
   username: string;
   email: string;
   name: string;
+  designation?: string | null;
   role_name: string;
   permissions: Record<string, boolean>;
   is_active: boolean;
