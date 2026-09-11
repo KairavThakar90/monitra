@@ -51,7 +51,12 @@ export interface Project {
   organization_id: number;
   created_at: string;
   updated_at: string;
-  tasks: ProjectTask[];
+  /**
+   * `null` when the request passed `include_tasks=false` — not the same thing
+   * as `[]`, which means the project genuinely has no tasks. Screens that only
+   * need the number read `task_count`, which is always populated.
+   */
+  tasks: ProjectTask[] | null;
   employee_count: number;
   task_count: number;
 }
@@ -107,6 +112,45 @@ const patchProjectLists = (
   };
 };
 
+/**
+ * Shows a newly created task on the Task Listing screen without waiting for
+ * the report behind it to be re-fetched.
+ *
+ * That screen does not render `getProjects` at all — it renders
+ * `getProjectTaskSummary`, which joins every task to the time tracked against
+ * it and takes the better part of a second to answer. Patching only the
+ * project caches therefore left the author staring at an unchanged page until
+ * the refetch landed: the "task takes a few seconds to appear" report.
+ *
+ * The tracked total is a real zero, not a placeholder: a task created a moment
+ * ago has had no time booked against it. The background refetch still runs and
+ * replaces this row with the server's own.
+ */
+const patchTaskSummaries = (
+  parts: ThunkParts,
+  projectId: number,
+  task: ProjectTask,
+) =>
+  patchEveryCachedQuery(parts, 'getProjectTaskSummary', (draft) => {
+    const project = draft?.projects?.find((candidate: any) => candidate.id === projectId);
+    // The project is not on the page being viewed (another page, or filtered
+    // out). Nothing to show, and inventing a row for it would be worse.
+    if (!project) return;
+    if (!Array.isArray(project.tasks)) return;
+    if (project.tasks.some((existing: any) => existing.id === task.id)) return;
+    // The report orders a project's tasks oldest first, so the newest belongs
+    // at the end — where the server will also put it.
+    project.tasks.push({
+      id: task.id,
+      task_name: task.name,
+      task_created_date: task.created_at,
+      total_tracked_seconds: 0,
+      total_tracked_hours: 0,
+      total_tracked_time: '00:00:00',
+    });
+    project.total_task_count = (project.total_task_count || 0) + 1;
+  });
+
 export const projectsApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
     getProjectMetadata: builder.query<ProjectMetadata, void>({
@@ -131,17 +175,30 @@ export const projectsApi = baseApi.injectEndpoints({
           : [{ type: 'Project' as const, id: 'LIST' }],
     }),
 
-    getAllProjects: builder.query<Project[], void>({
-      async queryFn(_arg, _api, _extraOptions, baseQuery) {
-        const firstResult = await baseQuery(`${ENDPOINTS.PROJECTS.GET_ALL}?page=1&limit=100`);
+    /**
+     * Every project the caller can see, across all pages.
+     *
+     * `includeTasks` defaults to false because most callers are filter
+     * pickers and project dropdowns that render a name and nothing else. With
+     * it on, the response carries every active task of every project — which
+     * for a real organisation is the bulk of the payload, fetched to display
+     * none of it. The two variants are cached separately, so a screen that
+     * does need the tasks (MemberTasks, MemberTimeTracking) asks for them
+     * explicitly and does not have to share a cache entry with the pickers.
+     */
+    getAllProjects: builder.query<Project[], { includeTasks?: boolean } | void>({
+      async queryFn(arg, _api, _extraOptions, baseQuery) {
+        const includeTasks = (arg || {}).includeTasks === true;
+        const page = (pageNumber: number) =>
+          `${ENDPOINTS.PROJECTS.GET_ALL}?page=${pageNumber}&limit=100&include_tasks=${includeTasks}`;
+
+        const firstResult = await baseQuery(page(1));
         if (firstResult.error) return { error: firstResult.error };
 
         const firstResponse = firstResult.data as ProjectListResponse;
         const totalPages = firstResponse.pagination?.total_pages || 1;
         const remainingResults = await Promise.all(
-          Array.from({ length: totalPages - 1 }, (_, index) =>
-            baseQuery(`${ENDPOINTS.PROJECTS.GET_ALL}?page=${index + 2}&limit=100`),
-          ),
+          Array.from({ length: totalPages - 1 }, (_, index) => baseQuery(page(index + 2))),
         );
         const failedResult = remainingResults.find((result) => result.error);
         if (failedResult?.error) return { error: failedResult.error };
@@ -291,11 +348,15 @@ export const projectsApi = baseApi.injectEndpoints({
           patchProjectLists({ dispatch, getState }, (items) => {
             const project = items.find((candidate) => candidate.id === projectId);
             if (!project) return;
-            project.tasks = project.tasks || [];
+            project.task_count = (project.task_count || 0) + 1;
+            // A `null` array means this cache entry was fetched with
+            // `include_tasks=false`. Starting one here would turn "you did not
+            // ask for the tasks" into "this project has exactly one task".
+            if (!Array.isArray(project.tasks)) return;
             if (project.tasks.some((task) => task.id === data.id)) return;
             project.tasks.push(data);
-            project.task_count = (project.task_count || 0) + 1;
           });
+          patchTaskSummaries({ dispatch, getState }, projectId, data);
         } catch {
           // Surfaced by the caller.
         }

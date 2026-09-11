@@ -203,7 +203,7 @@ export const AdminTaskListing: React.FC = () => {
   const { data: allProjects } = useGetAllProjectsQuery();
   const { data: metadata } = useGetProjectMetadataQuery();
   const { data: employeesData } = useGetAssignableEmployeesQuery();
-  const [createTask] = useCreateTaskMutation();
+  const [createTask, { isLoading: isCreatingTask }] = useCreateTaskMutation();
   const { showToast } = useFeedback();
 
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -299,6 +299,10 @@ export const AdminTaskListing: React.FC = () => {
       setFormError(null);
       taskForm.clear();
       showToast("Task created successfully.", "success");
+      // The row is already on screen: `createTask` puts the created task into
+      // this report's cache as soon as the server confirms it. This refetch is
+      // the reconciliation behind that — it runs in the background with the
+      // rows still showing, and only the small inline indicator marks it.
       refetch();
     } catch (err: any) {
       console.error(err);
@@ -713,9 +717,10 @@ export const AdminTaskListing: React.FC = () => {
                 <button
                   type="submit"
                   form="task-form"
-                  className="flex-1 rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] py-3 text-sm font-bold text-white transition hover:opacity-90 shadow-md"
+                  disabled={isCreatingTask}
+                  className="flex-1 rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] py-3 text-sm font-bold text-white transition hover:opacity-90 shadow-md disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Create Task
+                  {isCreatingTask ? "Creating…" : "Create Task"}
                 </button>
               </div>
             </div>
