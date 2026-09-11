@@ -121,7 +121,7 @@ def test_a_site_is_found_by_its_domain(qapp):
 
     assert _names_on_screen(view, URLRowWidget) == ["GitHub"]
 
-
+  
 def test_a_site_is_found_by_a_fragment_of_its_url(qapp):
     """The URL is shown under the title, and is often the only thing the user
     remembers -- searching the visible path must work."""
