@@ -13,6 +13,7 @@ import {
 } from "../dashboard/v2/filters";
 import type { DateRange } from "../dashboard/v2/filters";
 import { series } from "../dashboard/v2/theme";
+import { buildDistribution, describeCoverage } from "../dashboard/v2/distribution";
 import {
   useGetReactReportsSummaryQuery,
   useGetReactReportsListQuery,
@@ -153,41 +154,23 @@ export const MemberReports: React.FC = () => {
   const totalSeconds = Math.round((summaryData?.total_hours || 0) * 3600);
   const avgActivity = summaryData?.avg_activity ?? null;
 
-  /**
-   * The population this chart's slices are drawn from: every row the filters
-   * match, which is what `total_seconds` on the list response measures.
-   *
-   * It used to be the summary strip's total. On the Apps and URLs tabs that is
-   * a different measure — application and browser time is captured separately
-   * from the session and covers only what the desktop could observe — so the
-   * remainder silently absorbed every unattributed second of the day and drew
-   * it as one huge unnamed arc. See the same comment in the admin ReportPage.
-   */
+  // The population this chart's slices are drawn from is the list response's
+  // own scope-wide total, never the summary strip's. See distribution.ts.
   const distributionSeconds = listData?.total_seconds ?? 0;
   const isUsageDimension = reportId === "apps" || reportId === "urls";
-  const unmeasuredSeconds = Math.max(0, totalSeconds - distributionSeconds);
+  const coverage = describeCoverage(distributionSeconds, totalSeconds);
 
-  const donutSlices = useMemo(() => {
-    const named = rows.slice(0, 5).map((row, index) => ({
-      label: row.name,
-      value: row.hours,
-      color: DONUT_COLORS[index % DONUT_COLORS.length],
-    }));
-    // The rest of this tab's own rows, named for what it is and how many
-    // rows it covers -- not a category, and never a home for time no row
-    // accounts for.
-    const rankedTotal = listData?.total ?? rows.length;
-    const restSeconds =
-      (listData?.total_seconds ?? 0) - named.reduce((sum, slice) => sum + slice.value * 3600, 0);
-    if (rankedTotal > 5 && restSeconds > 1) {
-      named.push({
-        label: `Other ${config?.dimensionLabel.toLowerCase()}s (${rankedTotal - 5})`,
-        value: Math.round((restSeconds / 3600) * 100) / 100,
-        color: "#94A3B8",
-      });
-    }
-    return named;
-  }, [rows, listData, config]);
+  const donutSlices = useMemo(
+    () =>
+      buildDistribution({
+        rows,
+        totalSeconds: listData?.total_seconds ?? 0,
+        rowCount: listData?.total ?? rows.length,
+        dimensionLabel: (config?.dimensionLabel ?? "row").toLowerCase(),
+        colors: DONUT_COLORS,
+      }),
+    [rows, listData, config]
+  );
 
   if (!config) return <Navigate to="/member/reports/projects" replace />;
 
@@ -396,7 +379,7 @@ export const MemberReports: React.FC = () => {
                     // The remainder arc aggregates several apps; no one mark
                     // stands for it.
                     icon:
-                      reportId === "apps" && !slice.label.startsWith("Other ") ? (
+                      reportId === "apps" && !slice.isRemainder ? (
                         <AppIcon name={slice.label} size={16} />
                       ) : undefined,
                   }))}
@@ -404,12 +387,12 @@ export const MemberReports: React.FC = () => {
                 {/* Where application/browser capture covers less of the day
                     than the timer did, say so with the real numbers instead
                     of drawing the difference as an application. */}
-                {isUsageDimension && distributionSeconds > 0 && unmeasuredSeconds > 0 && (
+                {isUsageDimension && coverage.hasGap && (
                   <p className="max-w-md text-center text-[11px] leading-4 text-[#64748B]">
                     {formatHMS(distributionSeconds)} of{" "}
                     {reportId === "apps" ? "application" : "browser"} activity was recorded against{" "}
                     {formatHMS(totalSeconds)} of your tracked time. The remaining{" "}
-                    {formatHMS(unmeasuredSeconds)} was tracked but not attributed to
+                    {formatHMS(coverage.unmeasuredSeconds)} was tracked but not attributed to
                     {reportId === "apps" ? " an application" : " a web address"}.
                   </p>
                 )}
