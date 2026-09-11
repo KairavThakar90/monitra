@@ -180,20 +180,13 @@ QFrame#LoginCard {{
     border-radius: 16px;
     border: 1px solid {BORDER_LIGHT};
 }}
-QLineEdit#LoginInput {{
-    border: 1.5px solid {BORDER_LIGHT};
-    border-radius: 8px;
-    padding: 10px 14px;
-    background: #F8FAFC;
-    font-size: 13px;
-    color: {TEXT_PRIMARY};
-    selection-background-color: {PRIMARY};
-}}
-QLineEdit#LoginInput:focus {{
-    border-color: {PRIMARY};
-    background: white;
-    outline: none;
-}}
+/* The login inputs are styled by `_Field` in ui/login_window.py, which owns
+   the bordered frame, the icon tile and the focus ring around both. The rules
+   that used to live here styled a bare QLineEdit from before that frame
+   existed, and their `padding: 10px 14px` survived the move: a padded rule
+   here merges with the frame's own rule, leaving the text rect ~12px tall for
+   a 17px font, which sheared the descenders off `g`, `y` and `p` in a typed
+   email address. Style a login field in `_Field`, not here. */
 QPushButton#LoginBtn {{
     background-color: {PRIMARY};
     color: white;

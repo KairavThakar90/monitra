@@ -126,6 +126,11 @@ class _Field(QFrame):
             QLineEdit#LoginInput {{
                 background: transparent;
                 border: none;
+                /* The frame supplies the padding; the input must claim none of
+                   its own. Padding here is subtracted from the text rect, and
+                   the frame's fixed height leaves no slack to absorb it, so
+                   any value above zero clips the glyph descenders. */
+                padding: 0;
                 color: {TEXT_PRIMARY};
                 font-size: 13px;
                 selection-background-color: {PRIMARY_LIGHT};
