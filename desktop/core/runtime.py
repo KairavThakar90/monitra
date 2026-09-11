@@ -67,6 +67,7 @@ from core.logging_setup import (
     bump_session_generation, configure_logging, get_logger,
     install_excepthook, session_generation,
 )
+from background_services.wellbeing import WellbeingService
 from core.service import ServiceManager, ServiceState
 from core.tasks import TaskRunner
 from storage.manager import StorageManager, get_storage_manager
@@ -157,6 +158,13 @@ class ApplicationRuntime(QObject):
         # (notifications, network) and therefore stops before them.
         self.updates: UpdateService = self.services.register(
             UpdateService(self, self.update_api, self.cache)
+        )
+        # Wellbeing reminders. Like UpdateService it only reads -- the
+        # notification service and the session -- and nothing in the runtime
+        # depends on it, so it is registered after what it reads and therefore
+        # stops before them.
+        self.wellbeing: WellbeingService = self.services.register(
+            WellbeingService(self, self.cache)
         )
         self.sync: SyncService = self.services.register(
             SyncService(self, self.cache, self.time_entry_service, self.task_service)
