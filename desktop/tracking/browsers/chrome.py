@@ -17,13 +17,25 @@ class ChromeAdapter(BaseBrowserAdapter):
         "brave", "brave.exe",
         "vivaldi", "vivaldi.exe",
         "opera", "opera.exe",
+        "opera_gx", "opera_gx.exe",
         # macOS: NSWorkspace's localizedName() for each app -- a display
         # name, not an executable name, so it looks nothing like the
         # Windows entries above.
-        "google chrome", "brave browser", "opera",
+        "google chrome", "brave browser", "opera", "vivaldi",
     })
 
     TITLE_SUFFIXES = (
         " - Google Chrome", " - Chrome", " - Brave",
         " - Vivaldi", " - Opera", " - New Tab",
+    )
+
+    # Chrome itself writes *no* marker into the window title -- a window opened
+    # with --incognito reports the plain 'Wikipedia - Google Chrome'. These
+    # cover the Chromium forks that do decorate the title, and cost nothing
+    # where the browser does not; the private verdict itself never comes from
+    # here, it comes from the BrowserRootView reading in `private_mode`.
+    PRIVATE_TITLE_DECORATIONS = (
+        " - Incognito", " (Incognito)",
+        " - Private", " (Private)",
+        " - Private Window", " (Private Window)",
     )

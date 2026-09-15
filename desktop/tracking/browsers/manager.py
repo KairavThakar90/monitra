@@ -7,6 +7,7 @@ from tracking.browsers.base import BaseBrowserAdapter, UrlSource
 from tracking.browsers.chrome import ChromeAdapter
 from tracking.browsers.edge import EdgeAdapter
 from tracking.browsers.firefox import FirefoxAdapter
+from tracking.browsers.private_mode import PrivateState, PrivateWindowDetector
 
 KNOWN_SITE_DOMAINS = {
     "github": "github.com",
@@ -98,6 +99,12 @@ class BrowserObservation(NamedTuple):
 
     `domain` and `url` are None together, exactly when `url_source` is
     `UrlSource.UNAVAILABLE`. Consumers must not invent a stand-in for them.
+
+    `is_private` is three-valued for the same reason: True and False are
+    findings, None is "this platform or browser could not tell us". Private
+    browsing is otherwise an ordinary observation — same fields, same
+    pipeline, same storage — because it is ordinary browsing that happened in
+    a different kind of window.
     """
 
     browser_name: str
@@ -105,6 +112,10 @@ class BrowserObservation(NamedTuple):
     url: Optional[str]
     page_title: Optional[str]
     url_source: str
+    is_private: Optional[bool] = None
+    #: The browser's own word for the private state ("incognito",
+    #: "inprivate"), for logs. None when the window is not private.
+    private_marker: Optional[str] = None
 
     @property
     def has_url(self) -> bool:
@@ -114,12 +125,20 @@ class BrowserObservation(NamedTuple):
 class BrowserManager:
     """Coordinates browser detection and URL extraction across registered adapters."""
 
-    def __init__(self, adapters: Optional[List[BaseBrowserAdapter]] = None) -> None:
+    def __init__(
+        self,
+        adapters: Optional[List[BaseBrowserAdapter]] = None,
+        private_detector: Optional[PrivateWindowDetector] = None,
+    ) -> None:
         self.adapters: List[BaseBrowserAdapter] = adapters or [
             ChromeAdapter(),
             EdgeAdapter(),
             FirefoxAdapter(),
         ]
+        #: One detector for every browser: private state is read the same way
+        #: whichever Chromium build is in front, and a second instance would
+        #: just be a second cache of the same verdicts.
+        self.private_detector = private_detector or PrivateWindowDetector()
 
     def get_adapter(self, app_name: str) -> Optional[BaseBrowserAdapter]:
         if not app_name:
@@ -154,6 +173,14 @@ class BrowserManager:
         _adapter_name, raw_url, page_title, url_source = adapter.extract_url_info(
             hwnd, window_title
         )
+
+        # Read before the URL is normalised, so the private state travels with
+        # the observation whether or not a URL could be read. A private window
+        # whose address bar is unreadable still has to be recorded as browser
+        # usage -- private browsing must never be the reason activity vanishes.
+        private_state, private_marker = self.private_detector.detect(
+            hwnd, window_title, is_firefox=adapter.IS_GECKO
+        )
         # The adapter knows how to *read* a Chromium omnibox; it does not
         # know which Chromium browser this is. `ChromeAdapter` serves Chrome,
         # Brave, Vivaldi and Opera, and reported all four as "Google Chrome"
@@ -180,6 +207,8 @@ class BrowserManager:
             url=normalized_url,
             page_title=page_title or window_title,
             url_source=url_source,
+            is_private=PrivateState.to_bool(private_state),
+            private_marker=private_marker,
         )
 
 

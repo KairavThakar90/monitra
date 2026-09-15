@@ -10,6 +10,20 @@ outside a signed-in user's session:
     scheduler calling this on a timer is what makes "the email eventually goes
     out" true rather than likely.
 
+``/internal/reports/weekly/run``
+    Queues the Monday weekly productivity report for every eligible user. Like
+    the sweeper it is a scheduler's entry point rather than a user's, and like
+    the sweeper it only *queues* — delivery stays with the sweeper above, so
+    there is one delivery path in this system and not two. It is idempotent on
+    ``(weekly_report, week:<start>:user:<id>)``, which is what makes calling it
+    twice harmless and a manual re-run safe.
+
+``/internal/reports/weekly/preview``
+    Renders one user's weekly report as HTML without queueing or sending it,
+    so the message can be checked with eyes on a Tuesday instead of on a
+    Monday. It returns one named employee's productivity figures, so it sits
+    behind the same token as everything else here.
+
 ``/email-assets/{filename}``
     Serves the logos, for deployments that set EMAIL_ASSET_BASE_URL and want
     the templates to reference hosted images instead of embedding them. It
@@ -29,17 +43,19 @@ from __future__ import annotations
 
 import hmac
 import logging
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.schemas.email_notification import DispatchResult
+from app.schemas.email_notification import DispatchResult, WeeklyReportRunResult
 from app.services.email import EmailOutboxService
 from app.services.email import assets as email_assets
+from app.services.weekly_report import WeeklyReportService
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -146,6 +162,122 @@ def dispatch_email_notifications_get(
     side-effecting operation as the POST above.
     """
     return dispatch_email_notifications(limit=limit, _=None, db=db)
+
+
+@router.post(
+    "/internal/reports/weekly/run",
+    response_model=WeeklyReportRunResult,
+    summary="Queue the weekly productivity report for every eligible user (scheduler only).",
+    description=(
+        "Resolves the previous completed week, aggregates it per organisation "
+        "and queues one report per eligible user. It does **not** send: the "
+        "dispatch sweeper above delivers what this queues, with the same "
+        "retry, backoff and attempt accounting as every other Monitra email.\n\n"
+        "Safe to call twice. Each report is keyed on `(weekly_report, "
+        "week:<start>:user:<id>)`, so a scheduler retry, a platform replay or "
+        "a deliberate re-run finds the row that already exists and queues "
+        "nothing — the `already_queued` count is how that shows up.\n\n"
+        "`week_start` reports a specific week instead of the previous one "
+        "(any date inside it will do); `user_id` restricts the run to one "
+        "person; `dry_run` computes and queues nothing. The three together are "
+        "the supported way to exercise this without waiting for Monday.\n\n"
+        "Authenticate with `EMAIL_DISPATCH_TOKEN`, in either the "
+        "`X-Email-Dispatch-Token` header or as a bearer token."
+    ),
+    responses={
+        401: {"description": "Missing or incorrect dispatch token."},
+        503: {"description": "EMAIL_DISPATCH_TOKEN is not configured."},
+    },
+)
+def run_weekly_reports(
+    week_start: Optional[date] = Query(
+        None,
+        description=(
+            "Any date inside the week to report on. Normalised to that week's "
+            "first day, so a mid-week value cannot produce a partial period. "
+            "Defaults to the previous completed week."
+        ),
+    ),
+    user_id: Optional[int] = Query(
+        None, ge=1, description="Restrict the run to one user, for a controlled test run.",
+    ),
+    dry_run: bool = Query(
+        False, description="Aggregate and report the tally without queueing anything.",
+    ),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    return WeeklyReportRunResult(**{
+        key: value
+        for key, value in WeeklyReportService.run(
+            db, week_start=week_start, user_id=user_id, dry_run=dry_run,
+        ).items()
+        if key in WeeklyReportRunResult.model_fields
+    })
+
+
+@router.get(
+    "/internal/reports/weekly/run",
+    response_model=WeeklyReportRunResult,
+    include_in_schema=False,
+    summary="Queue the weekly productivity report (scheduler only).",
+)
+def run_weekly_reports_get(
+    week_start: Optional[date] = Query(None),
+    user_id: Optional[int] = Query(None, ge=1),
+    dry_run: bool = Query(False),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    """GET alias for schedulers that can only issue a GET.
+
+    Vercel Cron is one of them, and this is the entry point its weekly
+    schedule calls. Kept out of the OpenAPI schema so it does not read as an
+    ordinary, safely repeatable GET — it is the same authenticated,
+    side-effecting operation as the POST above.
+    """
+    return run_weekly_reports(
+        week_start=week_start, user_id=user_id, dry_run=dry_run, _=None, db=db,
+    )
+
+
+@router.get(
+    "/internal/reports/weekly/preview",
+    include_in_schema=False,
+    summary="Render one user's weekly report without queueing or sending it.",
+    response_class=HTMLResponse,
+)
+def preview_weekly_report(
+    user_id: int = Query(..., ge=1, description="The user whose week to render."),
+    week_start: Optional[date] = Query(
+        None, description="Any date inside the week. Defaults to the previous completed week.",
+    ),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    """The exact HTML that user would be sent, for eyes-on verification.
+
+    This exists so that "does the email render, do both logos appear, is the
+    week right, do the figures match the dashboard" can be answered on a
+    Tuesday afternoon without mailing anybody — the alternative being to wait
+    for a Monday or to send test mail to real staff.
+
+    It renders and returns; it queues nothing, sends nothing and writes
+    nothing. It is behind the same dispatch token as the run endpoint, because
+    what it returns is one named employee's productivity data and that is not
+    something to leave on an open URL.
+    """
+    from app.services.email import messages
+    from app.services.email.workflows import build_weekly_report_preview
+
+    payload = build_weekly_report_preview(db, user_id=user_id, week_start=week_start)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No eligible user with that id.",
+        )
+    message = messages.build_weekly_report_email(payload, ["preview@example.invalid"])
+    return HTMLResponse(content=message.html)
 
 
 @router.get(

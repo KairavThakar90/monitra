@@ -15,13 +15,15 @@ class TimeEntryScreenshotRepository:
         time_entry_id: int,
         file_path: str,
         monitor_number: int,
-        captured_at: Optional[datetime] = None
+        captured_at: Optional[datetime] = None,
+        display_count: int = 1
     ) -> TimeEntryScreenshot:
         screenshot = TimeEntryScreenshot(
             organization_id=organization_id,
             time_entry_id=time_entry_id,
             file_path=file_path,
             monitor_number=monitor_number,
+            display_count=display_count,
             captured_at=captured_at if captured_at is not None else datetime.now(timezone.utc)
         )
         db.add(screenshot)
@@ -45,6 +47,7 @@ class TimeEntryScreenshotRepository:
         height: Optional[int],
         monitor_number: int,
         client_screenshot_id: Optional[str],
+        display_count: int = 1,
     ) -> TimeEntryScreenshot:
         """Record a screenshot whose bytes are already in Drive."""
         screenshot = TimeEntryScreenshot(
@@ -60,6 +63,7 @@ class TimeEntryScreenshotRepository:
             width=width,
             height=height,
             monitor_number=monitor_number,
+            display_count=display_count,
             client_screenshot_id=client_screenshot_id,
             upload_status='uploaded',
             uploaded_at=datetime.now(timezone.utc),

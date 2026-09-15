@@ -210,8 +210,21 @@ These are **unimplemented features**, deliberately left out of the stability wor
    macOS/Linux have no address-bar reader at all. Where no URL can be read, the observation is
    `UrlSource.UNAVAILABLE` and **no URL record is written** — the time is still captured as
    application usage against the browser. Never substitute a placeholder domain here.
-3. **Screenshot capture** was never implemented client-side. That tab shows an honest empty
-   state.
+3. **Screenshot capture — implemented (2026-09-07).** `background_services/screenshot/`
+   captures one screenshot at a random instant inside every epoch-aligned 10-minute
+   window, for as long as — and only as long as — a timer is running. Windows are
+   epoch-aligned rather than derived from the previous capture, so a slow upload cannot
+   move the next one; capture runs on `TaskRunner` and upload is drained by
+   `SyncService`, so no network call is ever on the scheduler's path. Captures are held
+   in a durable queue (`pending_screenshots`) and the local file is deleted **only**
+   after the backend confirms it stored the image. A capture taken before the backend
+   has issued an entry id is adopted by the tracking session's `client_op` — the same
+   mechanism `pending_app_usage` and `pending_url_usage` use. Both halves of that
+   adoption are required and neither is optional: `ScreenshotService.bind_entry_id`
+   covers a session that is still running, and `SyncService._adopt_session_telemetry`
+   covers a start confirmed through the durable queue, which may land after the session
+   has already stopped. Never key that adoption on the capture's window — a session is
+   not one window long.
 4. **Tray/taskbar behaviour is unverified on a real display** — all automated runs are headless.
 5. `.github/CODEOWNERS` still contains placeholder handles.
 6. **Auto-update — implemented (2026-09-08), but not yet safe to publish for real

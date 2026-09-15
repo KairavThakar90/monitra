@@ -36,6 +36,21 @@ class URLUsageCreate(BaseModel):
     page_title: Optional[str] = Field(
         None, max_length=PAGE_TITLE_MAX_LENGTH, description="Page title"
     )
+    #: Whether the browsing happened in a private/incognito window.
+    #:
+    #: Three-valued, and the default is None rather than False: a client that
+    #: cannot determine the state -- no UI Automation, an unsupported browser,
+    #: or a build older than the detector -- omits the field, and NULL is then
+    #: stored. Defaulting to False here would turn "nobody looked" into a
+    #: positive claim that the window was not private, which is exactly what
+    #: the desktop is careful not to say.
+    is_private: Optional[bool] = Field(
+        None,
+        description=(
+            "True/False when the client determined the window's private state; "
+            "omitted when it could not be determined"
+        ),
+    )
     duration_seconds: int = Field(..., ge=0, description="Duration spent in seconds")
     recorded_at: Optional[datetime] = Field(None, description="Time event was recorded by desktop")
     client_event_id: OptionalIdempotencyKey = Field(None, description="Client idempotency key")
@@ -86,6 +101,9 @@ class URLUsageRecord(BaseModel):
     domain: str
     url: Optional[str] = None
     page_title: Optional[str] = None
+    #: None means the client could not determine it, not that it was not
+    #: private. Rows written before private detection existed carry NULL.
+    is_private: Optional[bool] = None
     duration_seconds: int
     recorded_at: datetime
     created_at: datetime

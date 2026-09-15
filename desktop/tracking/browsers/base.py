@@ -44,6 +44,21 @@ class BaseBrowserAdapter(ABC):
     #: Titles that carry no page identity at all.
     EMPTY_TITLES: frozenset = frozenset({"new tab"})
 
+    #: Decorations a *private* window adds to the title, stripped before the
+    #: page title is stored. Without these a private window's page title keeps
+    #: the browser's own marker in it ("Search - Bing - [InPrivate]"), which
+    #: would both look wrong in a report and split a page's segment from its
+    #: normal-window self for no reason. Stripped in addition to
+    #: `TITLE_SUFFIXES`, not instead of them.
+    PRIVATE_TITLE_DECORATIONS: Tuple[str, ...] = ()
+
+    #: Whether this adapter's browser is Gecko rather than Chromium. Private
+    #: state is read from a Chromium view tree that Firefox does not have, so
+    #: the detector needs to know which mechanism applies. Declared on the
+    #: adapter that knows, rather than re-sniffed from the process name at the
+    #: point of use.
+    IS_GECKO: bool = False
+
     #: Matches the " and 3 more pages" that Chromium appends when a window
     #: has several tabs, optionally followed by the profile name Edge adds
     #: after it ("Hubstaff - Dashboard and 12 more pages - Personal"). Both
@@ -77,10 +92,28 @@ class BaseBrowserAdapter(ABC):
     # ── Title handling ────────────────────────────────────────────────────────
 
     def _clean_title(self, window_title: str) -> Optional[str]:
-        """Strip the browser's own decorations off the page title."""
+        """Strip the browser's own decorations off the page title.
+
+        Private-window decorations go first: Edge writes its marker *before*
+        the browser name ("… - [InPrivate] - Microsoft Edge"), so a suffix
+        pass that ran first would find no match and leave the marker embedded
+        in the stored page title.
+        """
         if not window_title:
             return None
         title = window_title.strip()
+        stripped_private = False
+        for decoration in self.PRIVATE_TITLE_DECORATIONS:
+            if decoration in title:
+                title = title.replace(decoration, "")
+                stripped_private = True
+        if stripped_private:
+            # Removing a decoration from the middle of the title leaves the
+            # separators that surrounded it ("A -  - B"). Collapsed only on
+            # this path, so an ordinary title that genuinely contains a dash
+            # is never rewritten.
+            title = re.sub(r"\s*-\s*-\s*", " - ", title)
+            title = re.sub(r"\s{2,}", " ", title).strip().strip("-").strip()
         for suffix in self.TITLE_SUFFIXES:
             if title.endswith(suffix):
                 title = title[: -len(suffix)].strip()

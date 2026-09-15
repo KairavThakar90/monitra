@@ -7,6 +7,7 @@ from tracking.browsers.manager import (
     BrowserObservation,
     get_browser_manager,
 )
+from tracking.browsers.private_mode import PrivateState, PrivateWindowDetector
 
 __all__ = [
     "BaseBrowserAdapter",
@@ -16,5 +17,7 @@ __all__ = [
     "FirefoxAdapter",
     "BrowserManager",
     "BrowserObservation",
+    "PrivateState",
+    "PrivateWindowDetector",
     "get_browser_manager",
 ]

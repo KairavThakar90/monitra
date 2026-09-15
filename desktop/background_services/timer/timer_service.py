@@ -764,6 +764,9 @@ class TimerService(BaseService):
 
     @Slot(str, str, dict)
     def _on_sync_action_completed(self, action_id: str, action_type: str, result: dict) -> None:
+        if action_type == "start_timer":
+            self._on_queued_start_completed(result)
+            return
         if action_type != "stop_timer":
             return
         entry = result if isinstance(result, dict) and result.get("id") else None
@@ -772,6 +775,50 @@ class TimerService(BaseService):
             action_id, (entry or {}).get("id"), (entry or {}).get("total_seconds"),
         )
         self.timer_finalized.emit({"session": {}, "entry": entry})
+
+    def _on_queued_start_completed(self, result: dict) -> None:
+        """A start that failed over to the durable queue has landed.
+
+        Before this existed, nothing here reacted to a queued start at all —
+        the subscription dropped every action type but `stop_timer`. The entry
+        id reached the queued *stop*, so the session was billed correctly and
+        the defect was invisible in the timer, but the sub-trackers were never
+        told: `_bind_trackers_to_entry` has exactly one caller, on the
+        in-process success path. Every screenshot, application segment and URL
+        segment of an offline or timed-out start therefore stayed unattributed
+        and was never uploaded.
+
+        `SyncService` has already adopted the rows those trackers had written,
+        which is the half that must not depend on this session still existing.
+        This half tells a session that is *still running* what its id is, so
+        the captures it has yet to take carry it from the start rather than
+        being adopted after the fact.
+
+        Keyed on `client_op` for the reason the in-process path is: the user
+        may have stopped and started the same task again while this was in
+        flight, and binding the older entry onto the newer session would make
+        its stop finalise the wrong entry.
+        """
+        entry = result.get("entry") if isinstance(result, dict) else None
+        entry_id = (result or {}).get("entry_id")
+        client_op = (result or {}).get("client_op")
+        if not entry_id or not client_op:
+            return
+        if not self._session or self._session.get("client_op") != client_op:
+            # No live session owns this start. Nothing to bind in memory; the
+            # durable adoption in SyncService has already covered the rows.
+            self.log.info(
+                "queued start for %s landed as entry %s after its session ended",
+                client_op, entry_id,
+            )
+            return
+        self.log.info(
+            "queued start for %s landed as entry %s; binding the live session",
+            client_op, entry_id,
+        )
+        self._bind_canonical_entry(
+            entry if isinstance(entry, dict) else {"id": entry_id}
+        )
 
     # ── Recovery ──────────────────────────────────────────────────────────────
 

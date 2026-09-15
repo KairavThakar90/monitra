@@ -5,6 +5,10 @@ from typing import List, Optional
 
 class TimeEntryScreenshotBase(BaseModel):
     monitor_number: int = 1
+    #: Displays composited into this one image. Defaults to 1, which is both
+    #: the single-monitor case and the honest reading of any row written
+    #: before merged capture existed.
+    display_count: int = Field(1, ge=1, le=16)
 
 
 class TimeEntryScreenshotCreate(TimeEntryScreenshotBase):
@@ -65,11 +69,19 @@ class ScreenshotDeleteResponse(BaseModel):
 
 
 class ScreenshotView(BaseModel):
-    """One screenshot as the timeline and grid render it."""
+    """One screenshot as the timeline and grid render it.
+
+    One entry per capture, always. A two-monitor capture is a single wide
+    image here, not two views, so a client must never present it as more than
+    one screenshot.
+    """
 
     id: int
     captured_at: datetime
     monitor_number: int
+    #: Displays inside this image. The client uses it to label the capture and
+    #: to choose how to fit a wide image into a thumbnail.
+    display_count: int = 1
     width: Optional[int] = None
     height: Optional[int] = None
     file_size_bytes: Optional[int] = None

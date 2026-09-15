@@ -28,9 +28,38 @@ WINDOW_DURATION_MINUTES = 10
 #: 3 and 5 are supported by construction (see the module docstring).
 SCREENSHOTS_PER_WINDOW = 1
 
-#: Final image geometry. Every stored screenshot is exactly this, so the grid
-#: and timeline can lay out without measuring each file.
+#: Final image geometry for a single-display capture: exactly this, square.
+#: A one-monitor machine — which is most of them — produces byte-for-byte what
+#: it always has, so nothing about the existing grid, timeline or stored
+#: history changes.
+#:
+#: On a multi-display machine this is no longer the finished size but the
+#: *scale reference*: the merged image is sized so the primary display inside
+#: it occupies the same pixels it would have occupied alone (see
+#: `compositor.output_size`). Two 1920x1080 monitors therefore produce a
+#: 2000x563 image rather than a 1000x1000 one in which neither screen can be
+#: read. Consumers read `width`/`height` from the row; nothing may assume the
+#: stored image is square.
 IMAGE_SIZE = 1000
+
+#: Hard ceiling on the long edge of a merged multi-display image. Reached only
+#: by an unusual wall of screens: three 4K monitors side by side scale to
+#: 3000x562, comfortably inside it. It exists so no desk arrangement can
+#: produce an image too large to encode, upload or render.
+MAX_CANVAS_LONG_EDGE = 4000
+
+#: Upper bound on the scaled compression target (see
+#: `compositor.target_file_bytes`). The target grows with canvas area so a
+#: multi-monitor capture is not compressed into illegibility, and stops here.
+MAX_TARGET_FILE_BYTES = 420 * 1024
+
+#: How many times a display that failed to capture is retried inside one
+#: screenshot event, before the event proceeds without it. A grab can fail for
+#: a moment — a display going to sleep, a mode switch, a full-screen exclusive
+#: application — and one cheap retry recovers most of those. It is bounded
+#: because this runs on the shared task pool: a capture must finish, not keep
+#: trying.
+DISPLAY_CAPTURE_RETRIES = 1
 
 #: WebP quality bounds for the adaptive compressor. It starts at
 #: `WEBP_QUALITY_START` and steps down by `WEBP_QUALITY_STEP` while the encoded
@@ -169,3 +198,34 @@ def fallback_quality_min() -> int:
     """The lowest WebP quality the fallback may encode at."""
     return _int_env("MONITRA_SCREENSHOT_FALLBACK_MIN_QUALITY",
                     FALLBACK_QUALITY_MIN, minimum=1)
+
+
+def max_canvas_long_edge() -> int:
+    """Long-edge cap for a merged multi-display image."""
+    return _int_env("MONITRA_SCREENSHOT_MAX_LONG_EDGE",
+                    MAX_CANVAS_LONG_EDGE, minimum=IMAGE_SIZE)
+
+
+def max_target_file_bytes() -> int:
+    """Upper bound on the area-scaled compression target."""
+    return _int_env("MONITRA_SCREENSHOT_MAX_TARGET_BYTES",
+                    MAX_TARGET_FILE_BYTES, minimum=TARGET_FILE_BYTES)
+
+
+def multi_display_enabled() -> bool:
+    """
+    Whether displays beyond the primary are captured at all.
+
+    A kill switch, not a feature flag: if a fleet machine turns out to have a
+    display arrangement that composes badly, support can set
+    `MONITRA_SCREENSHOT_MULTI_DISPLAY=0` and that client immediately returns to
+    capturing the primary display alone — the exact behaviour it had before
+    multi-display support existed — without a downgrade or a rebuild.
+    """
+    return _bool_env("MONITRA_SCREENSHOT_MULTI_DISPLAY", True)
+
+
+def display_capture_retries() -> int:
+    """Retries for a single failed display inside one screenshot event."""
+    return _int_env("MONITRA_SCREENSHOT_DISPLAY_RETRIES",
+                    DISPLAY_CAPTURE_RETRIES, minimum=0)

@@ -42,7 +42,12 @@ const WindowCard: React.FC<{
             <AuthedImage
               url={ENDPOINTS.TIME_ENTRY_SCREENSHOTS.VIEW(cover.id)}
               alt={`Screen of ${subjectName} captured at ${formatISTTime12(cover.captured_at)}`}
-              className="aspect-video w-full bg-[#0F172A] object-cover"
+              className={`aspect-video w-full bg-[#0F172A] ${
+                // A merged multi-display capture is far wider than this 16:9
+                // tile, so cropping it to fill would hide the outer monitors
+                // completely. Single-display captures keep the original fit.
+                cover.display_count > 1 ? 'object-contain' : 'object-cover'
+              }`}
               frameClassName="aspect-video w-full"
             />
           </button>
@@ -55,9 +60,14 @@ const WindowCard: React.FC<{
         )}
 
         {captureWindow.screenshot_count > 0 && (
-          <span className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-white px-3 py-1 text-[11px] font-bold text-[#2563EB] shadow">
-            {captureWindow.screenshot_count} screen
+          // Counts the captures in this window, not the screens in the image.
+          // The old wording was "1 screen", which now sits directly on top of a
+          // merged picture of two monitors and plainly contradicts it. The
+          // display count is a separate fact, so it gets its own badge.
+          <span className="absolute bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-white px-3 py-1 text-[11px] font-bold text-[#2563EB] shadow">
+            {captureWindow.screenshot_count} capture
             {captureWindow.screenshot_count === 1 ? '' : 's'}
+            {cover && cover.display_count > 1 && ` · ${cover.display_count} displays`}
           </span>
         )}
       </div>

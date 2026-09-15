@@ -13,6 +13,8 @@ export interface TimeEntryScreenshot {
    */
   file_path: string;
   monitor_number: number;
+  /** Displays composited into this one image; 1 for a single-monitor capture. */
+  display_count: number;
   created_at: string;
 }
 
@@ -31,6 +33,12 @@ export interface ScreenshotView {
   id: number;
   captured_at: string;
   monitor_number: number;
+  /**
+   * Physical displays composited into this one image. A capture is always a
+   * single screenshot; this says how many screens are inside it, and is what
+   * the UI labels and lays out by. Rows predating merged capture read 1.
+   */
+  display_count: number;
   width: number | null;
   height: number | null;
   file_size_bytes: number | null;

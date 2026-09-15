@@ -128,7 +128,13 @@ export const ScreenshotLightbox: React.FC<{
           </p>
           <p className="mt-0.5 text-xs font-medium text-[#94A3B8]">
             {formatISTDate(shot.captured_at)} · {formatISTTime12(captureWindow.window_start)} –{' '}
-            {formatISTTime12(captureWindow.window_end)} · Monitor {shot.monitor_number}
+            {formatISTTime12(captureWindow.window_end)} ·{' '}
+            {/* A merged capture is one image of several screens, so naming a
+                single monitor number would be wrong. Single-display captures
+                keep the label they have always had. */}
+            {shot.display_count > 1
+              ? `${shot.display_count} displays`
+              : `Monitor ${shot.monitor_number}`}
           </p>
         </div>
 

@@ -13,6 +13,7 @@ chevron, the calendar, a programmatic call, and the midnight rollover.
 """
 from datetime import timedelta
 
+import pytest
 from PySide6.QtCore import QDate
 
 from core.time_format import ist_today
@@ -113,6 +114,106 @@ def test_the_calendar_popup_caps_at_today(qapp):
     today = ist_today()
 
     assert calendar.maximumDate() == QDate(today.year, today.month, today.day)
+
+
+class TestCalendarHeader:
+    """The month/year strip at the top of the picker.
+
+    Qt draws a `QToolButton`'s menu indicator in the button's bottom-right
+    corner once a stylesheet applies to the widget, which put the month
+    button's chevron under the baseline of the month name and hard against
+    its last letter -- "September⌄", reported from a screenshot. It is
+    replaced with the app's own `expand_more` icon, laid out after the text.
+
+    These assertions are about the mechanism rather than the pixels: that the
+    indicator is off, that the icon is on, that it is laid out after the word,
+    and -- the part a screenshot of the initial state would miss -- that none
+    of it is undone when Qt rewrites the button's text on a month change.
+    """
+
+    @pytest.fixture
+    def picker(self, qapp):
+        """A calendar whose owning TopBar is held for the test's lifetime.
+
+        Without the reference the bar is collected the moment it goes out of
+        scope and Qt deletes the calendar with it, so a later `findChild`
+        result is a dangling C++ object.
+        """
+        bar = TopBar()
+        yield bar.build_calendar()
+        bar.deleteLater()
+
+    @staticmethod
+    def _month_button(calendar):
+        from PySide6.QtWidgets import QToolButton
+
+        return calendar.findChild(QToolButton, TopBar._NAV_MONTH_BUTTON)
+
+    def test_the_month_button_carries_a_real_chevron_icon(self, picker):
+        month = self._month_button(picker)
+
+        assert month is not None, "Qt renamed the month button; the header needs revisiting"
+        assert not month.icon().isNull()
+
+    def test_qts_own_menu_indicator_is_switched_off(self, picker):
+        """Both halves are required. Leaving the indicator on while adding an
+        icon would draw two chevrons, one of them still in the corner."""
+        assert "menu-indicator" in picker.styleSheet()
+        assert "image: none" in picker.styleSheet()
+
+    def test_the_chevron_is_laid_out_after_the_month_name(self, picker):
+        """`ToolButtonTextBesideIcon` puts the icon first; `RightToLeft` on
+        this one button is the only thing that reverses it, so a change that
+        drops it would silently move the chevron in front of the word."""
+        from PySide6.QtCore import Qt
+
+        month = self._month_button(picker)
+
+        assert month.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        assert month.layoutDirection() == Qt.LayoutDirection.RightToLeft
+
+    def test_the_chevron_survives_changing_month(self, picker):
+        """Qt calls `setText` on this button whenever the shown month changes.
+        The fix has to outlive that, or it holds only until the first click."""
+        from PySide6.QtCore import Qt
+
+        month = self._month_button(picker)
+        before = month.text()
+
+        picker.showPreviousMonth()
+
+        assert month.text() != before, "the month really did change"
+        assert not month.icon().isNull()
+        assert month.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        assert month.layoutDirection() == Qt.LayoutDirection.RightToLeft
+
+    def test_the_navigation_arrows_use_the_apps_own_chevrons(self, picker):
+        """The same glyphs as the date pill this popup drops from, rather than
+        a second drawing of the same idea two widgets apart."""
+        from PySide6.QtWidgets import QToolButton
+
+        for name in (TopBar._NAV_PREV_BUTTON, TopBar._NAV_NEXT_BUTTON):
+            button = picker.findChild(QToolButton, name)
+            assert button is not None and not button.icon().isNull(), name
+
+    def test_the_month_list_and_year_editor_are_styled(self, picker):
+        """They are children of the calendar, so without being named here they
+        opened with the desktop's default chrome inside a styled app."""
+        sheet = picker.styleSheet()
+
+        assert "QCalendarWidget QMenu" in sheet
+        assert "QCalendarWidget QSpinBox" in sheet
+
+    def test_a_qt_build_without_the_named_children_still_builds(self, qapp, monkeypatch):
+        """The object names are Qt internals. If a future Qt renames one the
+        picker must come back plainer, never broken."""
+        from PySide6.QtWidgets import QCalendarWidget
+
+        monkeypatch.setattr(QCalendarWidget, "findChild", lambda *a, **k: None)
+
+        calendar = TopBar().build_calendar()
+
+        assert calendar.maximumDate().isValid(), "the picker is still usable"
 
 
 def test_the_calendar_refuses_a_future_date_set_on_it_directly(qapp):
