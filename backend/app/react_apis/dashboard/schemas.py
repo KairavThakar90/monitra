@@ -49,7 +49,14 @@ class DashboardSummary(BaseModel):
         description="Alias of `activity`, kept so the card can bind to the name it displays.",
         examples=[73.42],
     )
-    total_hours: float = Field(..., description="Tracked hours in the selected scope.", examples=[77.25])
+    total_seconds: int = Field(
+        ...,
+        description="Exact tracked seconds in the selected scope. Prefer this over total_hours "
+                    "when rendering a duration: 2dp hours has a 36-second granularity, so a "
+                    "short session rounds to a different number than the entry it came from.",
+        examples=[278100],
+    )
+    total_hours: float = Field(..., description="total_seconds as hours, 2dp.", examples=[77.25])
     active_projects: int = Field(
         ...,
         description="Distinct non-archived projects with tracked time in the selected scope. "

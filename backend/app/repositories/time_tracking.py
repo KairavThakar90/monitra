@@ -12,6 +12,10 @@ from app.models.user import User
 from app.repositories.time_entry_adjustment import TimeEntryAdjustmentRepository
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
+#: The calendar that "a day of tracked time" is measured in -- the same zone
+#: `app.core.time_format.IST` names for Python-side date logic.
+REPORTING_TIMEZONE = "Asia/Kolkata"
+
 
 class TimeTrackingRepository:
     @staticmethod
@@ -68,7 +72,15 @@ class TimeTrackingRepository:
             ))
 
         adjustments = TimeEntryAdjustmentRepository.net_totals_subquery()
-        work_date = func.date(TimeEntry.start_time).label("work_date")
+        # The IST calendar day, not the database session's. The filter bounds
+        # above are IST midnights expressed in UTC; grouping by
+        # `date(start_time)` on a UTC-session database put every entry
+        # started between 00:00 and 05:30 IST on the previous day's row, so
+        # the day list disagreed with the reports page (which already groups
+        # in Asia/Kolkata) about the same entries.
+        work_date = func.date(
+            func.timezone(REPORTING_TIMEZONE, TimeEntry.start_time)
+        ).label("work_date")
         query = (
             select(
                 TimeEntry.user_id.label("employee_id"),

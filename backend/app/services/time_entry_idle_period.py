@@ -47,7 +47,6 @@ from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.time_format import elapsed_seconds
@@ -578,20 +577,13 @@ class TimeEntryIdlePeriodService:
 
     @staticmethod
     def _refresh_task_rollup(db: Session, task_id: int) -> None:
-        """Recompute `tasks.time_tracked_seconds` from completed entries --
-        the same rollup `TimeEntryService.stop_timer` performs, so a
-        reassignment does not leave the destination task stale."""
-        total = db.scalar(
-            select(func.coalesce(func.sum(TimeEntry.total_seconds), 0)).where(
-                TimeEntry.task_id == task_id,
-                TimeEntry.status.in_(["stopped", "completed"]),
-            )
-        ) or 0
-        task = db.scalar(select(Task).where(Task.id == task_id))
-        if task:
-            task.time_tracked_seconds = int(total)
-            db.add(task)
-            db.flush()
+        """Recompute `tasks.time_tracked_seconds` -- the same rollup
+        `TimeEntryService.stop_timer` performs (completed entries, net of
+        adjustments), so a reassignment does not leave the destination task
+        stale and the task card agrees with the reports."""
+        from app.services.time_entry import TimeEntryService
+
+        TimeEntryService.refresh_task_rollup(db, task_id)
 
     # ------------------------------------------------------------------
     # Reads

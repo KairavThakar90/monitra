@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, update
 from typing import List, Optional, Tuple
 from datetime import datetime
 from app.models.time_entry import TimeEntry
@@ -11,10 +11,27 @@ class TimeEntryRepository:
 
     @staticmethod
     def get_active_for_user(db: Session, user_id: int) -> Optional[TimeEntry]:
+        # The partial unique index `uq_active_time_entry` guarantees at most
+        # one row matches; the ORDER BY only makes the answer deterministic on
+        # a database that was never migrated.
         return db.scalar(
             select(TimeEntry).where(
                 TimeEntry.user_id == user_id,
                 TimeEntry.end_time.is_(None)
+            ).order_by(TimeEntry.start_time.desc(), TimeEntry.id.desc())
+        )
+
+    @staticmethod
+    def get_by_client_op(db: Session, user_id: int, client_op: str) -> Optional[TimeEntry]:
+        """The entry a client's tracking session already created, if any.
+
+        This is the idempotent-start lookup: the same key from the same user
+        always resolves to the same row (unique index
+        `uq_time_entries_user_client_op`)."""
+        return db.scalar(
+            select(TimeEntry).where(
+                TimeEntry.user_id == user_id,
+                TimeEntry.client_op == client_op,
             )
         )
 
@@ -60,6 +77,35 @@ class TimeEntryRepository:
         return max(0, int(total or 0))
 
     @staticmethod
+    def task_net_tracked_seconds(db: Session, task_id: int) -> int:
+        """Completed seconds banked against a task, net of adjustments.
+
+        The one rollup behind `tasks.time_tracked_seconds`. It applies the
+        same signed `time_entry_adjustments` netting the reports, the
+        dashboard and the day total use, so a task card can never disagree
+        with a report about the same task -- which it did while this summed
+        raw `total_seconds` and every other surface deducted idle time.
+        """
+        from app.repositories.time_entry_adjustment import TimeEntryAdjustmentRepository
+
+        adjustments = TimeEntryAdjustmentRepository.net_totals_subquery()
+        net_seconds = func.greatest(
+            TimeEntry.total_seconds + func.coalesce(adjustments.c.adj_seconds, 0),
+            0,
+        )
+        total = db.scalar(
+            select(func.coalesce(func.sum(net_seconds), 0))
+            .select_from(TimeEntry)
+            .outerjoin(adjustments, adjustments.c.time_entry_id == TimeEntry.id)
+            .where(
+                TimeEntry.task_id == task_id,
+                TimeEntry.end_time.is_not(None),
+                TimeEntry.status.in_(["stopped", "completed"]),
+            )
+        )
+        return max(0, int(total or 0))
+
+    @staticmethod
     def create(
         db: Session,
         organization_id: int,
@@ -68,8 +114,18 @@ class TimeEntryRepository:
         task_id: int,
         start_time: datetime,
         is_billable: bool = False,
-        description: Optional[str] = None
+        description: Optional[str] = None,
+        client_op: Optional[str] = None,
     ) -> TimeEntry:
+        """Insert a running entry and commit.
+
+        Raises `sqlalchemy.exc.IntegrityError` when the user already has a
+        running entry (`uq_active_time_entry`) or the client key is already
+        used (`uq_time_entries_user_client_op`). The session is rolled back
+        before the error propagates, so the caller can query again.
+        """
+        from sqlalchemy.exc import IntegrityError
+
         db_entry = TimeEntry(
             organization_id=organization_id,
             user_id=user_id,
@@ -79,10 +135,15 @@ class TimeEntryRepository:
             status='running',
             is_manual=False,
             is_billable=is_billable,
-            description=description
+            description=description,
+            client_op=client_op,
         )
         db.add(db_entry)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise
         db.refresh(db_entry)
         return db_entry
 
@@ -93,12 +154,31 @@ class TimeEntryRepository:
         end_time: datetime,
         total_seconds: int,
         description: Optional[str] = None
-    ) -> TimeEntry:
-        time_entry.end_time = end_time
-        time_entry.total_seconds = total_seconds
-        time_entry.status = 'stopped'
+    ) -> Optional[TimeEntry]:
+        """Finalise a running entry atomically.
+
+        A compare-and-set: the UPDATE is conditioned on `end_time IS NULL`, so
+        two stops racing for the same entry cannot both write -- the second
+        finds no row to update. Returns None in that case (the caller re-reads
+        the row the winner wrote) and the committed entry otherwise. Anything
+        the caller flushed earlier in this session (resolved idle periods and
+        their deductions) commits in the same transaction.
+        """
+        values = {
+            "end_time": end_time,
+            "total_seconds": total_seconds,
+            "status": "stopped",
+        }
         if description is not None:
-            time_entry.description = description
+            values["description"] = description
+        result = db.execute(
+            update(TimeEntry)
+            .where(TimeEntry.id == time_entry.id, TimeEntry.end_time.is_(None))
+            .values(**values)
+        )
+        if result.rowcount == 0:
+            db.rollback()
+            return None
         db.commit()
         db.refresh(time_entry)
         return time_entry
@@ -117,7 +197,7 @@ class TimeEntryRepository:
         limit: int = 100
     ) -> Tuple[List[TimeEntry], int]:
         conditions = [TimeEntry.organization_id == organization_id]
-        
+
         if user_id is not None:
             conditions.append(TimeEntry.user_id == user_id)
         if project_id is not None:
@@ -136,8 +216,8 @@ class TimeEntryRepository:
             conditions.append(TimeEntry.start_time < end_date)
 
         query = select(TimeEntry).where(and_(*conditions))
-        
+
         count = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-        
+
         results = db.scalars(query.order_by(TimeEntry.start_time.desc()).offset(skip).limit(limit)).all()
         return list(results), count

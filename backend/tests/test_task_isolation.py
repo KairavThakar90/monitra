@@ -548,7 +548,7 @@ class TimerAuthorizationTests(TaskIsolationCase):
             result = TimeEntryService.start_timer(
                 self.db, PROJECT, self.ids["A"], None, None, _user(USER_A),
             )
-        self.assertEqual(result, "entry")
+        self.assertEqual(result, ("entry", True))
         created.assert_called_once()
 
     def test_a_user_can_start_a_timer_on_the_shared_task(self):
@@ -562,7 +562,7 @@ class TimerAuthorizationTests(TaskIsolationCase):
             result = TimeEntryService.start_timer(
                 self.db, PROJECT, self.ids["shared"], None, None, _user(USER_B),
             )
-        self.assertEqual(result, "entry")
+        self.assertEqual(result, ("entry", True))
 
 
 if __name__ == "__main__":

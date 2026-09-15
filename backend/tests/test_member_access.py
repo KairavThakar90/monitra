@@ -51,8 +51,9 @@ class _CapturedFilters:
 DASHBOARD_PAYLOAD = {
     "filters": {"start_date": "2026-09-01", "end_date": "2026-09-07",
                 "project_id": [], "task_id": [], "member_id": [77]},
-    "summary": {"activity": None, "monthly_activity": None, "total_hours": 0.0,
-                "active_projects": 0, "team_members": 0, "total_tasks": 0},
+    "summary": {"activity": None, "monthly_activity": None, "total_seconds": 0,
+                "total_hours": 0.0, "active_projects": 0, "team_members": 0,
+                "total_tasks": 0},
     "time_tracked": {"interval": "day", "data": []},
     # `total_seconds`/`total_hours` are the scope-wide totals every ranked
     # page now carries -- the denominator a part-to-whole chart divides by.

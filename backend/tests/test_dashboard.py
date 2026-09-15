@@ -133,6 +133,9 @@ class SummaryTests(unittest.TestCase):
         with patch.object(DashboardRepository, "summary", return_value=row):
             summary = DashboardService.summary(None, _filters())
         self.assertEqual(summary["total_hours"], 77.25)
+        # The exact figure travels beside the rounded one: the "Time Worked"
+        # card renders seconds, so a 10-second session is not shown as 0.00h.
+        self.assertEqual(summary["total_seconds"], 278100)
         self.assertEqual(summary["active_projects"], 17)
         self.assertEqual(summary["team_members"], 24)
         # The card is labelled "Monthly Activity" but carries the selected range.

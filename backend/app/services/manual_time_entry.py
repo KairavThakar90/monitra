@@ -6,6 +6,7 @@ from app.models.manual_time_entry import ManualTimeEntry
 from app.models.project import Project
 from app.models.task import Task
 from app.models.user import User
+from app.core.time_format import ist_today
 from app.repositories.manual_time_entry import ManualTimeEntryRepository
 from app.services.task import TaskService
 from app.schemas.manual_time_entry import ManualTimeEntryCreate, ManualTimeEntryUpdate
@@ -64,8 +65,10 @@ class ManualTimeEntryService:
         TaskService.get_task(db, entry_in.project_id, entry_in.task_id, current_user)
 
         # 2. work_date cannot be a future date
-        today_utc = datetime.now(timezone.utc).date()
-        if entry_in.work_date > today_utc:
+        # "Today" is the IST calendar day, the same one every date filter in
+        # the system means. The UTC date lags it by 5h30m, which refused a
+        # legitimately-today entry logged before 05:30 IST as "in the future".
+        if entry_in.work_date > ist_today():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Work date cannot be in the future"
@@ -193,7 +196,7 @@ class ManualTimeEntryService:
             TaskService.get_task(db, project_id, task_id, current_user)
 
         work_date = update_data.get("work_date", entry.work_date)
-        if work_date > datetime.now(timezone.utc).date():
+        if work_date > ist_today():
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Work date cannot be in the future")
 
         time_fields_changed = any(k in update_data for k in ("start_time", "end_time", "work_date", "total_seconds"))

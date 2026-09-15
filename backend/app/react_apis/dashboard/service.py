@@ -32,6 +32,7 @@ class DashboardService:
             "activity": metrics["avg_activity"],
             # Same number under the name the UI card displays.
             "monthly_activity": metrics["avg_activity"],
+            "total_seconds": metrics["total_seconds"],
             "total_hours": metrics["total_hours"],
             "active_projects": int(row.active_projects or 0),
             "team_members": metrics["total_members"],
