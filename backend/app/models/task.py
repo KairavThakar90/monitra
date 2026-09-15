@@ -1,5 +1,5 @@
 from app.models.project import Project
-from sqlalchemy import BigInteger, String, Text, Integer, Date, TIMESTAMP, Numeric, Identity, ForeignKeyConstraint, text, func
+from sqlalchemy import BigInteger, String, Text, Integer, Date, TIMESTAMP, Numeric, Identity, ForeignKeyConstraint, Index, text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import date, datetime
 from typing import Optional
@@ -24,17 +24,28 @@ class Task(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     completed_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: The client's own key for the submission that created this task -- the
+    #: desktop's ``client_op``. It is what makes *create* idempotent: a create
+    #: whose response was lost is retried with the same key and answered with
+    #: the task that already exists, instead of producing a second row with
+    #: the same name. Unique per organization; NULL for tasks created without
+    #: one (the web client, older desktop builds, the default project tasks).
+    client_op: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), 
-        nullable=False, 
-        server_default=func.now(), 
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
         onupdate=func.now()
     )
 
     __table_args__ = (
         ForeignKeyConstraint(['organization_id'], ['organizations.id'], name='fk_tasks_organization', ondelete='CASCADE'),
         ForeignKeyConstraint(['project_id'], ['projects.id'], name='fk_tasks_project', ondelete='CASCADE'),
+        Index(
+            'uq_tasks_org_client_op', 'organization_id', 'client_op',
+            unique=True, postgresql_where=text('client_op IS NOT NULL'),
+        ),
     )
 
     # Relationships

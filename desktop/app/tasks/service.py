@@ -70,6 +70,7 @@ class TaskService:
         task_name: str,
         assignee_id: Optional[int] = None,
         status_id: int = 1,
+        client_op: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create a new task nested under the specified project.
@@ -81,6 +82,12 @@ class TaskService:
         refused with HTTP 400 for every admin and leader -- which is what
         made task creation look account-specific.
 
+        `client_op` is this submission's own key. A create whose reply was
+        lost -- the server committed it, the response never arrived -- is
+        retried with the same key and answered with the task it already
+        created, instead of a second task with the same name. An older
+        backend ignores the field.
+
         The creating user is never sent -- the backend derives it from the
         bearer token, which is the only identity that can be trusted.
         """
@@ -90,6 +97,8 @@ class TaskService:
         }
         if assignee_id is not None:
             payload["assignee_id"] = assignee_id
+        if client_op:
+            payload["client_op"] = client_op
         try:
             response = self.api_client.post(f"/api/v1/projects/{project_id}/tasks", json_data=payload)
             return response.json()

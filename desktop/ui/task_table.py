@@ -14,8 +14,9 @@ than here: the timer commits locally the instant the user acts and reconciles
 with the backend afterwards, so the UI is immediate without the widget having
 to guess at, or duplicate, the authoritative state.
 """
+import uuid
 from datetime import date, datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Callable, Optional, List, Dict, Any, Tuple
 
 from PySide6.QtCore import Qt, Signal, QByteArray, QDate, QTime
 from PySide6.QtGui import QFont, QColor, QPainter
@@ -1503,6 +1504,13 @@ class TaskSection(QWidget):
         #: only ever cover the one project currently displayed.
         self._all_projects: List[Dict[str, Any]] = []
         self._manual_entry_dialog: Optional["ManualTimeEntryDialog"] = None
+        #: The idempotency key of each task creation that has not succeeded
+        #: yet, by (project id, task name). A create whose reply was lost is
+        #: retried by the user typing the same name again; reusing the key
+        #: lets the backend answer with the task it already created instead
+        #: of a second one. Cleared on success, so creating a genuinely new
+        #: task with the same name later gets a fresh key.
+        self._pending_create_ops: Dict[Tuple[int, str], str] = {}
 
         # Subscribe to the authoritative timer. No local tick timer exists:
         # elapsed time is published by the service, never counted here.
@@ -1538,7 +1546,8 @@ class TaskSection(QWidget):
         return self.user_role in ["administrator", "org_admin", "super_admin"]
 
     def _run_task_mutation(
-        self, call, success_message: str, key: str, *, kind: str, project_id: int
+        self, call, success_message: str, key: str, *, kind: str, project_id: int,
+        after_success: Optional[Callable[[], None]] = None,
     ) -> None:
         """
         Run a task CRUD call on the shared bounded pool.
@@ -1556,6 +1565,8 @@ class TaskSection(QWidget):
         request that made the change.
         """
         def on_success(result) -> None:
+            if after_success is not None:
+                after_success()
             self.api.notify(success_message, NotificationLevel.SUCCESS, key=f"task-mut-{key}")
             self.task_action_succeeded.emit(success_message)
             self.task_mutated.emit(kind, project_id, result)
@@ -1565,6 +1576,20 @@ class TaskSection(QWidget):
             self.error_occurred.emit(str(exc))
 
         self.api.run_in_background(call, on_success=on_success, on_error=on_error, key=key)
+
+    def _client_op_for_create(self, project_id: int, task_name: str) -> str:
+        """The idempotency key for creating `task_name` in `project_id`.
+
+        The same key is handed out again until a create with it succeeds, so
+        a retry after a lost reply names the submission the backend already
+        applied. See `_pending_create_ops`.
+        """
+        op_key = (project_id, task_name)
+        client_op = self._pending_create_ops.get(op_key)
+        if client_op is None:
+            client_op = f"task:{uuid.uuid4().hex}"
+            self._pending_create_ops[op_key] = client_op
+        return client_op
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -2123,15 +2148,18 @@ class TaskSection(QWidget):
         # HTTP 400: the backend only accepts an employee as an assignee, so
         # an admin's own id was always refused.
         assignee_id = self._user_id if self.user_role == "employee" else None
+        task_name = data["task_name"]
+        client_op = self._client_op_for_create(project_id, task_name)
 
         self._run_task_mutation(
             lambda: self.task_service.create_task(
-                project_id, data["task_name"], assignee_id
+                project_id, task_name, assignee_id, client_op=client_op
             ),
             success_message="Task created successfully.",
-            key=f"create-task:{project_id}:{data['task_name']}",
+            key=f"create-task:{project_id}:{task_name}",
             kind="created",
             project_id=project_id,
+            after_success=lambda: self._pending_create_ops.pop((project_id, task_name), None),
         )
 
     # ── Manual time entry ─────────────────────────────────────────────────────

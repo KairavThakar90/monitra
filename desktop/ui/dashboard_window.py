@@ -62,8 +62,33 @@ log = get_logger("dashboard")
 #: its cached tasks already drawn instead of on an empty task area.
 LAST_PROJECT_KEY = "dashboard.last_project_id"
 
-#: Background refresh cadence for project/task data while the window is open.
+#: Background refresh cadence for project/task data while the window is open,
+#: against a backend that has no change fingerprint (`/api/v1/sync/revision`
+#: answering 404). Re-downloading every list this often is the only way such
+#: a backend can be kept current.
 REFRESH_INTERVAL_MS = 120_000
+
+#: The same cadence once the backend's change fingerprint is known to work.
+#: Convergence no longer depends on it -- the probe below notices a change
+#: within its own interval and triggers a refresh -- so the full round becomes
+#: a safety net, run rarely enough that a fleet of idle clients is idle.
+REFRESH_INTERVAL_WITH_PROBE_MS = 300_000
+
+#: How often to ask the backend whether anything this user can see has
+#: changed. One small request (a fingerprint, no rows); the lists themselves
+#: are re-read only when the answer moves. This is what makes a project
+#: created on the web, or a membership removed, reach an open desktop within
+#: half a minute without anyone pressing Refresh -- and without the lists
+#: being polled.
+SYNC_PROBE_INTERVAL_MS = 30_000
+
+#: A refresh round that has not reported back after this long is abandoned so
+#: the next one can run. Every fetch in a round has a 10s request timeout, so
+#: a healthy round is over in seconds; this exists because the round is
+#: reference-counted, and a count that never reaches zero -- a callback that
+#: raised before it could report, a task dropped with its callbacks -- used to
+#: block every later refresh silently for the rest of the session.
+REFRESH_STALE_AFTER_S = 90.0
 
 
 def _is_finished(entry: Dict[str, Any]) -> bool:
@@ -259,6 +284,21 @@ class DashboardWindow(QWidget):
         #: advanced once a refresh finishes with every fetch successful.
         self._refresh_outstanding = 0
         self._refresh_failed = False
+        #: When the refresh round in flight was started (monotonic), for the
+        #: REFRESH_STALE_AFTER_S watchdog.
+        self._refresh_started_at = 0.0
+
+        #: The backend's change fingerprint as last seen, and whether the
+        #: backend offers one at all (None until the first probe answers).
+        self._sync_revision: Optional[str] = None
+        self._sync_probe_supported: Optional[bool] = None
+
+        #: Bumped on every local task mutation. A task-list fetch records the
+        #: value when it is submitted and is discarded on arrival if the
+        #: value has moved since: the list it carries predates a change the
+        #: user has already seen applied, and painting it would make the new
+        #: task vanish until the next refresh.
+        self._task_list_version = 0
 
         #: Today's persisted activity, as last read from the backend and the
         #: local upload queue. `None` means it has never been read this
@@ -320,6 +360,12 @@ class DashboardWindow(QWidget):
         # and destroyed with the window.
         self._activity_timer = QTimer(self)
         self._activity_timer.timeout.connect(self._load_today_activity)
+
+        # The change probe. A UI-only timer scheduling one de-duplicated
+        # background request; it refreshes nothing itself and runs only while
+        # signed in.
+        self._sync_probe_timer = QTimer(self)
+        self._sync_probe_timer.timeout.connect(self._probe_sync_revision)
 
     # ── Construction ──────────────────────────────────────────────────────────
 
@@ -507,6 +553,11 @@ class DashboardWindow(QWidget):
         # emits once per capture -- at most one per ten-minute window -- so
         # this cannot become a stream of toasts.
         self.api.screenshots.screenshot_captured.connect(self._on_screenshot_captured)
+
+        # The machine came back from sleep. Once per resume, from the
+        # recovery service's own heartbeat: every timer above was paused
+        # with the machine, so everything on screen is as old as the sleep.
+        self.api.lifecycle.system_resumed.connect(self._on_system_resumed)
 
     def _on_unwanted_activity_alert(self, message: str) -> None:
         self.api.notify(message, NotificationLevel.WARNING, key="unwanted-activity")
@@ -905,6 +956,11 @@ class DashboardWindow(QWidget):
 
         self._refresh_timer.start(REFRESH_INTERVAL_MS)
         self._activity_timer.start(ACTIVITY_FALLBACK_INTERVAL_MS)
+        # Nothing is known about the backend's fingerprint for this session
+        # yet: the first probe records it, later ones compare against it.
+        self._sync_revision = None
+        self._sync_probe_supported = None
+        self._sync_probe_timer.start(SYNC_PROBE_INTERVAL_MS)
 
         # One bootstrap, not three. refresh_data() already fans out projects,
         # task statuses, the day's time entries and today's activity -- and
@@ -931,12 +987,17 @@ class DashboardWindow(QWidget):
         self._active = False
         self._refresh_timer.stop()
         self._activity_timer.stop()
+        self._sync_probe_timer.stop()
         self._activity_section.set_enabled(False)
         self.api.cancel_key("load-today-activity")
         self.api.cancel_key("load-projects")
-        self.api.cancel_key("load-tasks")
-        self.api.cancel_key("load-today")
+        # Parameterised families: `load-tasks:{project_id}`, `load-today:{date}`.
+        # Cancelling the bare name matched nothing, so these ran on after
+        # logout (their results were still dropped by the session guard).
+        self.api.cancel_keys_with_prefix("load-tasks:")
+        self.api.cancel_keys_with_prefix("load-today:")
         self.api.cancel_key("load-statuses")
+        self.api.cancel_key("sync-probe")
         self.api.cancel_key("check-active-timer")
         self.api.cancel_key("idle-reassign-projects")
         self.api.cancel_key(SUBMIT_KEY)
@@ -961,6 +1022,8 @@ class DashboardWindow(QWidget):
         self._activity_snapshot = None
         self._activity_last_fetch = 0.0
         self._pending_active_timer = None
+        self._sync_revision = None
+        self._sync_probe_supported = None
         self._sidebar.set_projects([])
         self._sidebar.set_timer_active(False)
         self._sidebar.set_active_timer_project(None)
@@ -985,6 +1048,10 @@ class DashboardWindow(QWidget):
             self._sidebar.set_projects(cached)
             self._task_section.set_all_projects(cached)
             self._status_bar.set_message("Loaded projects from cache.")
+            self._sync_log(
+                "cache.loaded", projects=len(cached),
+                age_seconds=self._cache_age_for_log(),
+            )
             self._apply_active_timer_if_ready()
             self._select_initial_project()
         else:
@@ -1025,22 +1092,43 @@ class DashboardWindow(QWidget):
         A thin wrapper over api.run_in_background so every loader reports
         success or failure the same way, without any of them growing a second
         code path for the refresh case.
+
+        `on_done` runs whatever the handler does. A handler that raised used
+        to skip it, which left the refresh round's outstanding count one too
+        high for ever: every later refresh -- periodic, on reconnect, and the
+        button -- was then dropped as "already in flight", silently, until the
+        user signed out. The exception is still logged by the task runner.
         """
         def succeeded(result: Any) -> None:
-            on_success(result)
-            if on_done is not None:
-                on_done(True)
+            try:
+                on_success(result)
+            finally:
+                if on_done is not None:
+                    on_done(True)
 
         def failed(exc: BaseException) -> None:
-            on_error(exc)
-            if on_done is not None:
-                on_done(False)
+            try:
+                on_error(exc)
+            finally:
+                if on_done is not None:
+                    on_done(False)
 
         return self.api.run_in_background(
             call, on_success=succeeded, on_error=failed, key=key
         ) is not None
 
     def _on_projects_loaded(self, projects: list) -> None:
+        """The backend's current project list: reconcile everything derived.
+
+        The server is authoritative. Whatever is selected has to be
+        re-checked against the list it just sent, because the list is the
+        only thing that knows a project has gone: archived on the web, or
+        this user removed from it. Before this the selection was simply left
+        alone, so a removed project stayed selected with its cached tasks on
+        screen while every refresh asked the backend for them, got 404, and
+        reported "showing cached tasks -- retrying" until the user signed out.
+        """
+        self._sync_log("server.received", resource="projects", count=len(projects))
         self._projects = projects
         self._sidebar.set_projects(projects)
         self._task_section.set_all_projects(projects)
@@ -1049,11 +1137,57 @@ class DashboardWindow(QWidget):
             # The count now lives in the sidebar's "PROJECTS (N)" header --
             # repeating it here would just be stale, duplicate information.
             self._status_bar.set_message("Ready")
+            self._reconcile_selection(projects)
             self._apply_active_timer_if_ready()
             self._select_initial_project()
         else:
             self._status_bar.set_message("No projects found.", TEXT_MUTED)
+            if self._current_project:
+                self._drop_project_selection(self._current_project.get("id"))
             self._task_section.clear()
+
+    def _reconcile_selection(self, projects: list) -> None:
+        """Keep the selection pointing at the server's copy of the project.
+
+        Three cases. The selected project is still listed: adopt the fresh
+        record (its name or members may have changed) without disturbing the
+        selection. It is not listed: it is no longer this user's, so the
+        selection and its cached tasks go, and the usual initial selection
+        picks a valid one. Nothing selected: nothing to do.
+        """
+        current = self._current_project
+        if not current:
+            return
+        current_id = current.get("id")
+        fresh = next((p for p in projects if p.get("id") == current_id), None)
+        if fresh is None:
+            self._sync_log("selection.dropped", project=current_id, reason="not in server list")
+            self._drop_project_selection(current_id)
+            self._status_bar.set_message(
+                "The project you were viewing is no longer available to you.", WARNING
+            )
+            return
+        if fresh is not current:
+            self._current_project = fresh
+
+    def _drop_project_selection(self, project_id: Optional[int]) -> None:
+        """Clear a selection whose project the server no longer lists.
+
+        The running timer, if any, is deliberately left alone: a project
+        sync must never stop, switch or reset tracked time. The backend will
+        refuse work against a project the user has lost, and the timer
+        service reconciles that on its own path.
+        """
+        self._current_project = None
+        self._project_tasks = []
+        self._task_section.clear()
+        if project_id is not None:
+            self.api.cancel_key(f"load-tasks:{project_id}")
+            try:
+                self.api.cache.forget_project_tasks(project_id)
+            except Exception:  # noqa: BLE001
+                log.exception("could not drop cached tasks for project %s", project_id)
+        self._update_stat_cards()
 
     def _on_projects_error(self, exc: BaseException) -> None:
         # Cached data stays on screen. A failed request must not blank a view
@@ -1062,14 +1196,41 @@ class DashboardWindow(QWidget):
         # It must not touch the connectivity pill either: one failed request is
         # not a connectivity measurement. Ask NetworkService to probe now and
         # let it decide -- it owns that state.
+        self._sync_log("refresh.failed", resource="projects", error=str(exc))
         if self._projects:
             self.api.network.check_now()
-            self._status_bar.set_message("Showing cached projects — retrying.", WARNING)
+            age = self._cache_age_for_log()
+            self._status_bar.set_message(
+                f"Showing projects from {self._describe_age(age)} — retrying.", WARNING
+            )
             return
         self._sidebar.set_projects_message("Unable to load projects")
         self._status_bar.set_message(f"Could not load projects: {exc}", ERROR)
         if "session expired" in str(exc).lower():
             self.unauthorized_error.emit()
+
+    def _cache_age_for_log(self) -> Optional[int]:
+        try:
+            age = self.api.cache.projects_cache_age_seconds()
+        except Exception:  # noqa: BLE001
+            log.debug("could not read the projects cache age", exc_info=True)
+            return None
+        return int(age) if age is not None else None
+
+    @staticmethod
+    def _describe_age(age_seconds: Optional[int]) -> str:
+        """`age_seconds` in words a status bar can show: "2 minutes ago"."""
+        if age_seconds is None:
+            return "the local cache"
+        if age_seconds < 90:
+            return "a moment ago"
+        minutes = age_seconds // 60
+        if minutes < 90:
+            return f"{minutes} minutes ago"
+        hours = minutes // 60
+        if hours < 36:
+            return f"{hours} hours ago"
+        return f"{hours // 24} days ago"
 
     def _remembered_project_id(self) -> Optional[int]:
         """The project this user was last in, if it is still one of theirs."""
@@ -1142,20 +1303,37 @@ class DashboardWindow(QWidget):
     def _load_tasks(
         self, project_id: int, on_done: Optional[Callable[[bool], None]] = None
     ) -> bool:
+        version = self._task_list_version
         return self._run_load(
             lambda: self.task_service.get_tasks_for_project(project_id),
-            lambda tasks: self._on_tasks_loaded(project_id, tasks),
+            lambda tasks: self._on_tasks_loaded(project_id, tasks, version),
             self._on_tasks_error,
             key=f"load-tasks:{project_id}",
             on_done=on_done,
         )
 
-    def _on_tasks_loaded(self, project_id: int, tasks: list) -> None:
+    def _on_tasks_loaded(
+        self, project_id: int, tasks: list, version: Optional[int] = None
+    ) -> None:
         # Ignore a response for a project the user has since navigated away
         # from: a slow reply must never overwrite a newer selection.
         if not self._current_project or self._current_project.get("id") != project_id:
             log.debug("discarding tasks for project %s; selection moved on", project_id)
             return
+        if version is not None and version != self._task_list_version:
+            # The user created, edited or deleted a task while this list was
+            # in flight, so it predates a change already on screen. Painting
+            # it would undo that change until the next refresh -- the
+            # "my new task disappeared" report. Discard it and read again;
+            # the reload the mutation asked for was de-duplicated against
+            # this very request, so nothing else will.
+            self._sync_log(
+                "server.discarded", resource="tasks", project=project_id,
+                reason="a local change landed while the list was in flight",
+            )
+            self._load_tasks(project_id)
+            return
+        self._sync_log("server.received", resource="tasks", project=project_id, count=len(tasks))
         self.api.cache.cache_tasks(project_id, tasks)
         self._render_tasks(tasks, from_cache=False)
 
@@ -1183,6 +1361,11 @@ class DashboardWindow(QWidget):
         if not self._current_project or self._current_project.get("id") != project_id:
             log.debug("discarding task mutation for project %s; selection moved on", project_id)
             return
+
+        # Any list fetched before this moment is now stale; see _on_tasks_loaded.
+        self._task_list_version += 1
+        self._sync_log("mutation.applied", kind=kind, project=project_id,
+                       task=payload.get("id") if isinstance(payload, dict) else None)
 
         tasks = list(self._project_tasks or [])
         task_id = payload.get("id") if isinstance(payload, dict) else None
@@ -1561,16 +1744,27 @@ class DashboardWindow(QWidget):
         # up -- the reported "data appears after a delay". See
         # NetworkState.WORTH_TRYING.
         if self.api.network_state() not in NetworkState.WORTH_TRYING:
-            log.debug("skipping refresh; network is %s", self.api.network_state())
+            self._sync_log("refresh.skipped", reason=f"network {self.api.network_state()}")
             self._status_bar.set_message(
                 "Offline — showing the last data received.", WARNING
             )
             return
         if self._refresh_outstanding:
-            log.debug("refresh already in flight; ignoring")
-            return
+            age = monotonic() - self._refresh_started_at
+            if age < REFRESH_STALE_AFTER_S:
+                log.debug("refresh already in flight; ignoring")
+                return
+            # The watchdog. See REFRESH_STALE_AFTER_S: a round that never
+            # reported back must not block every later one.
+            log.error(
+                "refresh round abandoned: %d fetch(es) never reported back in %.0fs; "
+                "runtime health: %s", self._refresh_outstanding, age, self.api.health_report(),
+            )
+            self._refresh_outstanding = 0
 
         self._refresh_failed = False
+        self._refresh_started_at = monotonic()
+        self._sync_log("refresh.started", project=(self._current_project or {}).get("id"))
         # Today's activity is refreshed alongside, but not counted as a step
         # of the round: it keeps the last good value on a failed read instead
         # of surfacing an error, so it has no success or failure to report.
@@ -1598,12 +1792,14 @@ class DashboardWindow(QWidget):
         if self._refresh_outstanding:
             return
 
+        elapsed_ms = int((monotonic() - self._refresh_started_at) * 1000)
         if self._refresh_failed:
             # The failing loader has already reported it and kept the cached
             # view on screen. Claiming a sync that did not happen would be
             # worse than showing the older timestamp.
-            log.info("refresh completed with errors; last-sync left unchanged")
+            self._sync_log("refresh.completed", outcome="partial-failure", elapsed_ms=elapsed_ms)
             return
+        self._sync_log("refresh.completed", outcome="ok", elapsed_ms=elapsed_ms)
         self.api.note_pull_succeeded()
         self._status_bar.set_message("Refreshed.")
 
@@ -1617,6 +1813,126 @@ class DashboardWindow(QWidget):
             key="load-statuses",
             on_done=on_done,
         )
+
+    # ── Change probe ──────────────────────────────────────────────────────────
+
+    def _probe_sync_revision(self) -> None:
+        """Ask the backend whether anything this user can see has changed.
+
+        One small request on the shared pool, de-duplicated by key. The
+        lists are re-read only when the fingerprint moves, which is how a
+        change made on the web reaches an open desktop within
+        SYNC_PROBE_INTERVAL_MS without the lists being polled.
+
+        Skipped while offline (there is nothing to compare against), while a
+        refresh round is already in flight (it will fetch the current state
+        anyway), and once the backend has answered that it has no such
+        endpoint (an older deployment: the periodic full refresh is then the
+        only mechanism, and it keeps its shorter cadence).
+        """
+        if not self._active or self._sync_probe_supported is False:
+            return
+        if self.api.network_state() not in NetworkState.WORTH_TRYING:
+            return
+        if self._refresh_outstanding:
+            return
+        self.api.run_in_background(
+            self.project_service.get_sync_revision,
+            on_success=self._on_sync_revision,
+            on_error=self._on_sync_revision_error,
+            key="sync-probe",
+        )
+
+    def _on_sync_revision(self, payload: Optional[Dict[str, Any]]) -> None:
+        if not self._active:
+            return
+        if not isinstance(payload, dict) or not payload.get("revision"):
+            # No endpoint on this backend. Said once; the full refresh keeps
+            # the shorter cadence it started with.
+            if self._sync_probe_supported is not False:
+                self._sync_probe_supported = False
+                self._sync_probe_timer.stop()
+                self._sync_log("probe.unsupported", refresh_interval_ms=REFRESH_INTERVAL_MS)
+            return
+        if self._sync_probe_supported is not True:
+            self._sync_probe_supported = True
+            self._set_refresh_cadence(REFRESH_INTERVAL_WITH_PROBE_MS)
+
+        revision = str(payload.get("revision"))
+        previous = self._sync_revision
+        self._sync_revision = revision
+        if previous is None:
+            components = payload.get("components")
+            self._sync_components = dict(components) if isinstance(components, dict) else {}
+            self._sync_log("probe.baseline", revision=revision)
+            return
+        if revision == previous:
+            log.debug("sync probe: unchanged (%s)", revision)
+            return
+        self._sync_log(
+            "probe.changed", previous=previous, revision=revision,
+            components=self._changed_components(payload),
+        )
+        self.refresh_data()
+
+    def _changed_components(self, payload: Dict[str, Any]) -> str:
+        """Which parts of the fingerprint moved, for the log line."""
+        components = payload.get("components")
+        if not isinstance(components, dict):
+            return "?"
+        previous = getattr(self, "_sync_components", None) or {}
+        self._sync_components = dict(components)
+        moved = [name for name, value in components.items() if previous.get(name) != value]
+        return ",".join(moved) if previous else "first-comparison"
+
+    def _on_sync_revision_error(self, exc: BaseException) -> None:
+        # Not worth a status-bar message: the probe is a convenience on top
+        # of the refresh cadence, and the network service will notice a real
+        # outage on its own. A dead session is the exception.
+        self._sync_log("probe.failed", error=str(exc))
+        if "session expired" in str(exc).lower():
+            self.unauthorized_error.emit()
+
+    def _set_refresh_cadence(self, interval_ms: int) -> None:
+        if self._refresh_timer.interval() == interval_ms:
+            return
+        self._sync_log("refresh.cadence", interval_ms=interval_ms)
+        self._refresh_timer.setInterval(interval_ms)
+        if self._active and not self._refresh_timer.isActive():
+            self._refresh_timer.start()
+
+    # ── Sleep / wake ──────────────────────────────────────────────────────────
+
+    def _on_system_resumed(self, gap_seconds: float) -> None:
+        """The machine slept for `gap_seconds`; everything on screen is that old.
+
+        The runtime has already asked the network service to probe. If the
+        backend is reachable this refresh runs now; if the probe is still
+        deciding, the refresh is skipped here and the network service's own
+        recovery edge triggers it instead. Either way nothing waits out a
+        timer that was paused with the machine.
+        """
+        if not self._active:
+            return
+        self._sync_log("resume", gap_seconds=int(gap_seconds))
+        self._activity_last_fetch = 0.0
+        self.refresh_data()
+
+    # ── Diagnostics ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _sync_log(event: str, **fields: Any) -> None:
+        """One `sync event=... k=v` line per synchronisation outcome.
+
+        The same shape as the timer's `timing event=` lines, so a support
+        engineer can grep one log for the whole story of a session: cache
+        painted, refresh started, what the server sent, what was discarded
+        and why, what the probe saw. Never a token, never a payload.
+        """
+        log.info("sync %s", " ".join(
+            f"{key}={value}" for key, value in [("event", event), *fields.items()]
+            if value is not None
+        ))
 
     # ── Timer ─────────────────────────────────────────────────────────────────
 

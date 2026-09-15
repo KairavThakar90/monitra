@@ -188,10 +188,14 @@ class TestSilentRefresh(_CacheTestCase):
                 self.assertEqual(self.session.refresh_token, "refresh-1")
                 self.assertIsNotNone(self.cache.load_session())
 
-    def test_refresh_without_a_stored_token_is_a_no_op(self):
+    def test_refresh_without_a_stored_token_ends_the_session(self):
+        """A rejected access token with nothing to renew it from is a session
+        that is over -- not a moment to retry later. Returning False here
+        used to read identically to "the server is down"."""
         self.session.start_session("old-access", {"id": 7})
         self.session._refresh_token = None
-        self.assertFalse(self.auth.refresh_session())
+        with self.assertRaises(SessionExpiredError):
+            self.auth.refresh_session()
         self.api_client.post.assert_not_called()
 
 

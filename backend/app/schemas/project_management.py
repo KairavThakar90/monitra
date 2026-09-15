@@ -5,6 +5,8 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.validation import OptionalIdempotencyKey
+
 
 class BillingType(str, Enum):
     fixed = "fixed"
@@ -135,6 +137,10 @@ class TaskCreate(BaseModel):
     #: this endpoint then refused for every admin.
     assignee_id: Optional[int] = Field(None, gt=0)
     status_id: int = Field(..., gt=0)
+    #: The client's own key for this submission. A create retried with a key
+    #: the organization has already seen is answered with the task that key
+    #: produced, never with a second task -- see `Task.client_op`.
+    client_op: OptionalIdempotencyKey = None
 
     @field_validator("name")
     @classmethod
@@ -207,3 +213,18 @@ class Pagination(BaseModel):
 class ProjectListResponse(BaseModel):
     items: list[ProjectListItem]
     pagination: Pagination
+
+
+class SyncRevisionRead(BaseModel):
+    """A fingerprint of everything the desktop renders for this caller.
+
+    `revision` changes whenever a project, task, membership, assignment or
+    one of the caller's own time entries that this caller can see is created,
+    updated, archived or removed. It carries no data of its own: a client
+    compares it with the value it last saw and re-reads the real endpoints
+    only when the two differ. `components` names which part moved, for
+    diagnostics.
+    """
+    revision: str
+    components: dict[str, str]
+    server_time: datetime
