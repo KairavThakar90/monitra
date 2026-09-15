@@ -224,6 +224,22 @@ class ScreenshotService(BaseService):
         with self._auth_lock:
             return self._generation
 
+    def _entry_id_for(self, generation: int, fallback: Optional[int]) -> Optional[int]:
+        """The freshest entry id for `generation`, or `fallback`.
+
+        Read at the moment a row is written, so an id that arrived while the
+        capture was still being encoded reaches the row that capture produces.
+
+        Only the *current* generation can answer: a stop and any task switch
+        both advance it, so a match means this is still the same tracking
+        session, and a capture can never be attributed to a task that was not
+        the one running when it was taken.
+        """
+        with self._auth_lock:
+            if generation == self._generation and self._entry_id is not None:
+                return self._entry_id
+        return fallback
+
     def _check_authorized(
         self, generation: int
     ) -> Tuple[bool, Optional[int], Optional[str], str]:
@@ -437,6 +453,19 @@ class ScreenshotService(BaseService):
             return None
 
         window_start = _iso(scheduler.window_bounds(index, config.window_seconds())[0])
+
+        # Attribution is read again here rather than reused from the check at
+        # the top. The grab and the encode take a second or more on a dense
+        # screen, and the backend's entry id can land inside that second: the
+        # `bind_entry_id` that ran when it arrived had no row to adopt yet, and
+        # the row written afterwards would keep the stale `None` forever --
+        # withheld by the uploader, adopted by nothing, never uploaded. That is
+        # not theoretical; it was observed in a real desktop run, one second
+        # after the id arrived.
+        #
+        # The generation must still match, so this can only ever pick up the id
+        # of the session this capture was authorised for, never a later one.
+        entry_id = self._entry_id_for(generation, entry_id)
 
         try:
             self._cache.save_screenshot(
