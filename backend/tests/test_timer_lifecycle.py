@@ -398,6 +398,11 @@ class RouteTests(unittest.TestCase):
         app.dependency_overrides[get_db] = lambda: None
         self.client = TestClient(app)
         self.addCleanup(app.dependency_overrides.clear)
+        # No database here: the adjustment lookup the routes make is stubbed.
+        net = patch("app.repositories.time_entry_adjustment.TimeEntryAdjustmentRepository.net_for_entries",
+                    return_value={})
+        net.start()
+        self.addCleanup(net.stop)
 
     def test_a_created_start_is_201_and_a_replay_is_200(self):
         entry = _entry(id=61, client_op="timer:3:k")
@@ -563,3 +568,44 @@ class DayGroupingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NetSecondsTests(unittest.TestCase):
+    """Entries carry the netted figure every report shows, so a client that
+    sums them agrees with the web. The desktop summed raw `total_seconds`
+    and showed 02:29:37 where the web, netting one discarded idle period,
+    showed 02:08:00."""
+
+    def test_net_seconds_applies_the_entrys_adjustments(self):
+        read = TimeEntryRead.model_validate(
+            _entry(end_time=datetime.now(UTC), total_seconds=4198, status="stopped")
+        )
+        read.adjustment_seconds = -1297
+        self.assertEqual(read.net_seconds, 2901)
+        read.adjustment_seconds = -9999
+        self.assertEqual(read.net_seconds, 0)
+        self.assertEqual(TimeEntryRead.model_validate(_entry(total_seconds=5, end_time=datetime.now(UTC))).net_seconds, 5)
+
+    def test_to_read_fills_adjustments_with_one_query(self):
+        entries = [_entry(id=1, total_seconds=100, end_time=datetime.now(UTC)),
+                   _entry(id=2, total_seconds=200, end_time=datetime.now(UTC))]
+        with patch("app.repositories.time_entry_adjustment.TimeEntryAdjustmentRepository.net_for_entries",
+                   return_value={1: -40}) as net:
+            reads = TimeEntryService.to_read(MagicMock(), entries)
+        net.assert_called_once()
+        self.assertEqual([r.net_seconds for r in reads], [60, 200])
+        self.assertEqual([r.adjustment_seconds for r in reads], [-40, 0])
+
+    def test_the_list_route_serialises_net_seconds(self):
+        app.dependency_overrides[get_current_user] = lambda: _user()
+        app.dependency_overrides[get_db] = lambda: None
+        self.addCleanup(app.dependency_overrides.clear)
+        entry = _entry(id=5, total_seconds=4198, end_time=datetime.now(UTC), status="stopped")
+        with patch("app.api.time_entry.TimeEntryService.list_time_entries", return_value=([entry], 1)), \
+             patch("app.repositories.time_entry_adjustment.TimeEntryAdjustmentRepository.net_for_entries",
+                   return_value={5: -1297}):
+            response = TestClient(app).get("/time-entries")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()[0]["adjustment_seconds"], -1297)
+        self.assertEqual(response.json()[0]["net_seconds"], 2901)
+        self.assertEqual(response.json()[0]["total_seconds"], 4198)

@@ -104,6 +104,23 @@ class TimeEntryAdjustmentRepository:
         )
 
     @staticmethod
+    def net_for_entries(db: Session, time_entry_ids) -> dict:
+        """`{time_entry_id: net adjustment seconds}` for the given ids, in one
+        query. Entries with no adjustments are absent (read as 0)."""
+        ids = [int(i) for i in time_entry_ids if i is not None]
+        if not ids:
+            return {}
+        rows = db.execute(
+            select(
+                TimeEntryAdjustment.time_entry_id,
+                func.sum(TimeEntryAdjustment.adjustment_seconds),
+            )
+            .where(TimeEntryAdjustment.time_entry_id.in_(ids))
+            .group_by(TimeEntryAdjustment.time_entry_id)
+        ).all()
+        return {int(entry_id): int(total or 0) for entry_id, total in rows}
+
+    @staticmethod
     def sum_for_entry(db: Session, time_entry_id: int) -> int:
         """Total signed adjustment seconds for one time entry (0 if none)."""
         return int(

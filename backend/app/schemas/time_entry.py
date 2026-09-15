@@ -67,8 +67,27 @@ class TimeEntryRead(BaseModel):
     client_op: str | None = None
     created_at: datetime
     updated_at: datetime
+    #: Net signed seconds from `time_entry_adjustments` for this entry:
+    #: discarded idle time, reassigned idle time and unwanted-activity
+    #: deductions. `total_seconds` is never edited, so this is what turns
+    #: the raw measurement into the figure every report shows. Zero when
+    #: nothing was deducted; filled in by the routes from one grouped query.
+    adjustment_seconds: int = 0
 
     model_config = ConfigDict(from_attributes=True)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def net_seconds(self) -> int:
+        """
+        Reportable seconds for this entry: `elapsed_seconds` plus the net
+        adjustments, floored at zero -- the same netting the dashboard, the
+        reports and the day total apply. A client that sums entries must sum
+        this, not `total_seconds`: summing the raw column showed the desktop
+        a day 21 minutes longer than the web after one idle period was
+        discarded.
+        """
+        return max(0, self.elapsed_seconds + int(self.adjustment_seconds))
 
     @computed_field  # type: ignore[prop-decorator]
     @property

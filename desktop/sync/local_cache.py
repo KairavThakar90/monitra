@@ -360,6 +360,8 @@ class LocalCache:
                 data = json.loads(row["data"])
                 if task_id is not None and data.get("task_id") == task_id:
                     data["total_seconds"] = data.get("total_seconds", 0) + elapsed_seconds
+                    if data.get("net_seconds") is not None:
+                        data["net_seconds"] = data["net_seconds"] + elapsed_seconds
                     data["status"] = "completed"
                     conn.execute(
                         "UPDATE time_entries_today SET data = ?, cached_at = ? WHERE id = ?",

@@ -65,6 +65,27 @@ LAST_PROJECT_KEY = "dashboard.last_project_id"
 #: Background refresh cadence for project/task data while the window is open.
 REFRESH_INTERVAL_MS = 120_000
 
+
+def _is_finished(entry: Dict[str, Any]) -> bool:
+    return entry.get("status") in ("stopped", "completed") or bool(entry.get("end_time"))
+
+
+def banked_seconds(entry: Dict[str, Any]) -> int:
+    """The seconds a completed entry contributes to a total.
+
+    `net_seconds` is the backend's netted figure -- `total_seconds` plus the
+    entry's signed adjustments (discarded idle time, reassigned idle time,
+    unwanted-activity deductions), the same number every report shows.
+    Summing the raw `total_seconds` instead put the desktop 21 minutes above
+    the web for the same day after one idle period was discarded. An entry
+    from an older backend, or one folded locally, carries no `net_seconds`
+    and reads as its raw total.
+    """
+    net = entry.get("net_seconds")
+    if net is None:
+        return int(entry.get("total_seconds") or 0)
+    return max(0, int(net))
+
 #: Fallback cadence for re-reading today's persisted activity. While a timer
 #: runs the card is driven by ActivityService's own signals — the completed
 #: window (once a minute) and the live percentage (every few seconds) — so
@@ -1229,12 +1250,7 @@ class DashboardWindow(QWidget):
         seconds come from TimerService, exactly as the sidebar total does,
         and only for today -- a past date shows its completed hours alone.
         """
-        entries = self._today_time_entries
-        finished = [
-            e for e in entries
-            if e.get("status") in ("stopped", "completed") or e.get("end_time")
-        ]
-        banked = sum(e.get("total_seconds", 0) for e in finished)
+        banked = self._banked_today()
 
         viewing_today = is_live_date(self._current_date)
         running = self.api.is_timer_running()
@@ -1377,9 +1393,13 @@ class DashboardWindow(QWidget):
             task_id = entry.get("task_id")
             if not task_id:
                 continue
-            if entry.get("status") in ("stopped", "completed") or entry.get("end_time"):
-                totals[task_id] = totals.get(task_id, 0) + entry.get("total_seconds", 0)
+            if _is_finished(entry):
+                totals[task_id] = totals.get(task_id, 0) + banked_seconds(entry)
         return totals
+
+    def _banked_today(self) -> int:
+        """Completed seconds for the displayed day, netted like every report."""
+        return sum(banked_seconds(e) for e in self._today_time_entries if _is_finished(e))
 
     def _load_today_time(
         self,
@@ -1462,6 +1482,9 @@ class DashboardWindow(QWidget):
                     entry["total_seconds"] = max(
                         0, round((stopped_at - started).total_seconds())
                     )
+                    entry["net_seconds"] = max(
+                        0, entry["total_seconds"] + int(entry.get("adjustment_seconds") or 0)
+                    )
                     entry["pending_stop"] = True
             overlaid.append(entry)
         return overlaid
@@ -1471,11 +1494,7 @@ class DashboardWindow(QWidget):
     ) -> None:
         entries = self._overlay_pending_stops(entries)
         self._today_time_entries = entries
-        banked = sum(
-            e.get("total_seconds", 0)
-            for e in entries
-            if e.get("status") in ("stopped", "completed") or e.get("end_time")
-        )
+        banked = self._banked_today()
 
         # Add the live session only for today, and take its value from the
         # timer service rather than from any widget.
@@ -1677,12 +1696,7 @@ class DashboardWindow(QWidget):
         """
         if not is_live_date(self._current_date):
             return
-        banked = sum(
-            e.get("total_seconds", 0)
-            for e in self._today_time_entries
-            if e.get("status") in ("stopped", "completed") or e.get("end_time")
-        )
-        self._sidebar.set_total_seconds(banked + elapsed)
+        self._sidebar.set_total_seconds(self._banked_today() + elapsed)
         self._update_stat_cards()
 
     def _on_timer_recovered(self, session: dict) -> None:

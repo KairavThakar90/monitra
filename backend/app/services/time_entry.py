@@ -351,6 +351,28 @@ class TimeEntryService:
             db.add(task)
             db.flush()
 
+    # ── Serialisation ────────────────────────────────────────────────────
+
+    @staticmethod
+    def to_read(db: Session, entries):
+        """`TimeEntryRead` objects with `adjustment_seconds` filled in.
+
+        Every route that returns entries goes through here, so a client that
+        sums what it is given sums the same netted figure the reports show.
+        One grouped query for the whole page, not one per row.
+        """
+        from app.repositories.time_entry_adjustment import TimeEntryAdjustmentRepository
+        from app.schemas.time_entry import TimeEntryRead
+
+        items = list(entries)
+        net = TimeEntryAdjustmentRepository.net_for_entries(db, [e.id for e in items])
+        out = []
+        for entry in items:
+            read = TimeEntryRead.model_validate(entry)
+            read.adjustment_seconds = net.get(int(entry.id), 0)
+            out.append(read)
+        return out
+
     # ── Reads ────────────────────────────────────────────────────────────
 
     @staticmethod

@@ -17,6 +17,10 @@ def _request_id(request: Request) -> Optional[str]:
     return value[:64] if value else None
 
 
+def _one(db: Session, entry) -> TimeEntryRead:
+    return TimeEntryService.to_read(db, [entry])[0]
+
+
 @router.post(
     "/start",
     response_model=TimeEntryRead,
@@ -49,7 +53,7 @@ def start_timer(
     if not created:
         # Idempotent replay: nothing was created, so say so.
         response.status_code = status.HTTP_200_OK
-    return entry
+    return _one(db, entry)
 
 @router.post("/{id}/stop", response_model=TimeEntryRead)
 def stop_timer(
@@ -68,7 +72,7 @@ def stop_timer(
         client_time=payload.client_time,
         request_id=_request_id(request),
     )
-    return entry
+    return _one(db, entry)
 
 @router.get("", response_model=List[TimeEntryRead])
 def list_time_entries(
@@ -95,7 +99,7 @@ def list_time_entries(
         limit=limit,
         current_user=current_user
     )
-    return entries
+    return TimeEntryService.to_read(db, entries)
 
 # Declared before `/{id}` so the literal path is not read as an entry id.
 @router.get("/active", response_model=ActiveTimeEntryRead)
@@ -111,7 +115,7 @@ def get_active_time_entry(
     """
     entry = TimeEntryService.get_active_entry(db, current_user)
     return ActiveTimeEntryRead(
-        entry=TimeEntryRead.model_validate(entry) if entry is not None else None,
+        entry=_one(db, entry) if entry is not None else None,
         server_time=datetime.now(timezone.utc),
     )
 
@@ -121,4 +125,4 @@ def get_time_entry(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    return TimeEntryService.get_time_entry(db, id, current_user)
+    return _one(db, TimeEntryService.get_time_entry(db, id, current_user))

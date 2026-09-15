@@ -559,3 +559,29 @@ def test_pending_stop_payload_is_the_queued_stop_for_that_entry(cache):
     assert cache.pending_stop_payload_for_entry(5)["stopped_at"] == "2026-09-15T10:00:00+00:00"
     assert cache.pending_stop_payload_for_entry(6) is None
     assert cache.has_pending_stop_for_entry(5) is True
+
+
+# ── totals are netted like every report ──────────────────────────────────────
+
+def test_totals_sum_the_backends_net_seconds_not_the_raw_column(dashboard):
+    """One idle period discarded on a 1:09:58 entry: the web showed 02:08:00
+    and the desktop 02:29:37, because it summed `total_seconds`."""
+    from ui.dashboard_window import banked_seconds
+
+    day = ist_today().isoformat()
+    entries = [
+        {"id": 1, "task_id": 10, "status": "stopped", "total_seconds": 2721, "net_seconds": 2721,
+         "adjustment_seconds": 0, "start_time": f"{day}T05:00:00+00:00", "end_time": f"{day}T05:45:00+00:00"},
+        {"id": 2, "task_id": 11, "status": "stopped", "total_seconds": 4198, "net_seconds": 2901,
+         "adjustment_seconds": -1297, "start_time": f"{day}T06:00:00+00:00", "end_time": f"{day}T07:10:00+00:00"},
+        # An older backend sends no net figure: the raw total stands.
+        {"id": 3, "task_id": 11, "status": "stopped", "total_seconds": 34,
+         "start_time": f"{day}T07:20:00+00:00", "end_time": f"{day}T07:21:00+00:00"},
+    ]
+    assert [banked_seconds(e) for e in entries] == [2721, 2901, 34]
+    dashboard._current_date = ist_today()
+    dashboard._apply_time_entries(entries, ist_today(), update_cache=False)
+    assert dashboard._banked_today() == 5656
+    assert dashboard._banked_seconds_by_task() == {10: 2721, 11: 2935}
+    dashboard._update_stat_cards()
+    assert dashboard._stat_cards.total_card._value.full_text() == "01:34:16"
