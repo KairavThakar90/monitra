@@ -164,6 +164,29 @@ class Settings(BaseSettings):
     #: once-per-user guarantee does not depend on this flag.
     RELEASE_EMAIL_ENABLED: bool = True
 
+    # ── Weekly productivity report ────────────────────────────────────────
+    #: Whether the Monday sweep queues anything at all. A runtime kill switch
+    #: for the whole workflow — as with every other email flag here, the
+    #: once-per-user-per-week guarantee does not depend on it: that is the
+    #: outbox's unique (notification_type, dedupe_key).
+    WEEKLY_REPORT_ENABLED: bool = True
+    #: The calendar the report period is cut on. Defaults to the timezone the
+    #: rest of this system already reports in (`app.core.time_format.IST`), so
+    #: a week in the email is the same week the dashboard shows. Changing it
+    #: moves the Monday/Sunday boundary and nothing else — stored timestamps
+    #: stay UTC.
+    WEEKLY_REPORT_TIMEZONE: str = "Asia/Kolkata"
+    #: When the sweep is meant to run, in WEEKLY_REPORT_TIMEZONE. These do not
+    #: schedule anything by themselves — a serverless deployment has no
+    #: resident process to hold a timer, so the actual trigger is the cron
+    #: entry in `vercel.json`. They are the single source that entry is
+    #: derived from: `weekly_cron_expression()` converts them to the UTC cron
+    #: line, and a test asserts `vercel.json` still matches, so the two cannot
+    #: drift apart silently.
+    WEEKLY_REPORT_DAY: str = "monday"
+    WEEKLY_REPORT_HOUR: int = 9
+    WEEKLY_REPORT_MINUTE: int = 0
+
     # ── Email delivery mechanics ──────────────────────────────────────────
     #: How many times one notification may be attempted before it is parked as
     #: `failed`. With the backoff below, six attempts span roughly six hours.

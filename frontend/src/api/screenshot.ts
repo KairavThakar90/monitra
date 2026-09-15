@@ -9,6 +9,8 @@ export interface TimeEntryScreenshotRead {
   captured_at: string;
   file_path: string;
   monitor_number: number;
+  /** Displays composited into this one image; 1 for a single-monitor capture. */
+  display_count: number;
   created_at: string;
 }
 

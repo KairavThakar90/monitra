@@ -24,7 +24,9 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.email_notification import (
     TYPE_FEEDBACK, TYPE_FEEDBACK_STATUS, TYPE_RELEASE, TYPE_WELCOME,
+    TYPE_WEEKLY_REPORT,
 )
+from app.repositories.email_notification import EmailNotificationRepository
 from app.repositories.user import UserRepository
 from app.services.email import messages
 from app.services.email.outbox import EmailOutboxService
@@ -341,3 +343,180 @@ def queue_feedback_status_notification(db: Session, feedback, submitter) -> Opti
             getattr(feedback, "id", "?"), exc_info=True,
         )
         return None
+
+
+# ----------------------------------------------------------------------
+# Workflow 5 — weekly productivity report
+# ----------------------------------------------------------------------
+
+def weekly_report_dedupe_key(week_start, user_id: int) -> str:
+    """The weekly report's identity: one person, one report week.
+
+    The *week* is in the key, never the day the job ran and never a timestamp.
+    That is the whole duplicate-protection story for this workflow: a Vercel
+    retry, a scheduler that fires twice, a deployment part-way through the
+    sweep, a manual re-run and a network failure that leaves the caller unsure
+    all compute ``week:2026-09-08:user:42`` and collapse onto the single row
+    that already exists. The following Monday computes a different key, so the
+    next genuine report is still delivered.
+    """
+    week = week_start.isoformat() if hasattr(week_start, "isoformat") else str(week_start)
+    return f"week:{week}:user:{user_id}"
+
+
+def _day_payload(day) -> Optional[dict[str, Any]]:
+    """One day figure as the template wants it: a weekday name and its number.
+
+    The calendar date is deliberately dropped. "Wednesday" is what the email
+    says, and carrying the date as well would only invite the two to disagree
+    after a template edit.
+    """
+    if day is None:
+        return None
+    return {
+        "name": day.weekday_name,
+        "total_seconds": day.total_seconds,
+        "activity": day.activity,
+    }
+
+
+def _weekly_report_payload(*, user, period, metrics) -> dict[str, Any]:
+    """Everything the weekly email shows, and nothing else.
+
+    **The figures belong to `user`, and that is checked rather than assumed.**
+    The recipient's address and the aggregated week are paired here and only
+    here, so the one way to mail somebody another employee's productivity data
+    would be to pass a mismatched pair — which is refused below rather than
+    rendered.
+    """
+    if getattr(metrics, "user_id", None) != getattr(user, "id", None):
+        # A programming error, not a runtime condition — but the failure mode
+        # is mailing somebody else's productivity data to this person, so it is
+        # refused loudly here rather than rendered.
+        raise ValueError(
+            "Weekly report metrics do not belong to the recipient "
+            f"(metrics user {getattr(metrics, 'user_id', None)!r}, "
+            f"recipient {getattr(user, 'id', None)!r})."
+        )
+
+    return {
+        # Only what the email shows. No project or task ids, no permission
+        # map, no token — a queued row is a durable copy of whatever is put in
+        # it, and this one describes a person's working week.
+        "user_id": user.id,
+        "name": getattr(user, "name", None),
+        "week_start": period.start_date.isoformat(),
+        "week_end": period.end_date.isoformat(),
+        "period_label": period.label,
+        "period_short": period.short_label,
+        "timezone": period.timezone_name,
+        "total_seconds": metrics.total_seconds,
+        "active_seconds": metrics.active_seconds,
+        "idle_seconds": metrics.idle_seconds,
+        "average_activity": metrics.average_activity,
+        "project_count": metrics.project_count,
+        "has_activity": metrics.has_activity,
+        "highest_activity_day": _day_payload(metrics.highest_activity_day),
+        "lowest_activity_day": _day_payload(metrics.lowest_activity_day),
+        # Which of the two Reports screens this person is allowed to open.
+        # Both guards redirect rather than refuse, and an admin sent to the
+        # member route loses the date range on the way — so the button has to
+        # know. Stored as a plain boolean; the permission map itself never
+        # goes into an outbox row.
+        "can_view_all_time": bool(
+            (getattr(user, "permissions", None) or {}).get("time_entries:view_all")
+        ),
+    }
+
+
+def queue_weekly_report(db: Session, *, user, period, metrics) -> tuple[Optional[int], bool]:
+    """Queue one user's weekly report. Returns ``(notification_id, created)``.
+
+    `created` is False when this person's report for this week was already
+    queued by an earlier run. It is read back before the insert purely so the
+    run can *report* "already queued" separately from "queued" — the
+    duplicate-prevention guarantee itself is the outbox's unique constraint,
+    not this lookup, so a lost race costs an inaccurate tally and never a
+    second email.
+
+    One notification per user, addressed to that user alone. Never a shared
+    message with everybody in the recipient list: a weekly report is somebody's
+    own productivity data, a copied address list would hand each reader the
+    roster, and a single failure would cost every recipient their report
+    instead of one.
+    """
+    payload = _weekly_report_payload(user=user, period=period, metrics=metrics)
+
+    recipients = resolve_user_recipient(getattr(user, "email", "") or "")
+    if not recipients:
+        logger.warning(
+            "WEEKLY_REPORT_SKIPPED: user=%s reason=no_usable_email", getattr(user, "id", None),
+        )
+        return None, False
+
+    dedupe_key = weekly_report_dedupe_key(period.start_date, user.id)
+    existing = EmailNotificationRepository.get_by_event(
+        db, notification_type=TYPE_WEEKLY_REPORT, dedupe_key=dedupe_key,
+    )
+
+    row = EmailOutboxService.enqueue(
+        db,
+        notification_type=TYPE_WEEKLY_REPORT,
+        dedupe_key=dedupe_key,
+        recipients=recipients,
+        subject=messages.weekly_report_subject(payload),
+        payload=payload,
+        organization_id=getattr(user, "organization_id", None),
+        user_id=user.id,
+    )
+    if row is None:
+        return None, False
+
+    if existing is not None:
+        logger.info(
+            "WEEKLY_REPORT_ALREADY_QUEUED: user=%s week=%s notification=%s status=%s",
+            user.id, period.start_date, row.id, existing.status,
+        )
+        return row.id, False
+
+    logger.info(
+        "WEEKLY_REPORT_QUEUED: user=%s week=%s→%s notification=%s status=%s",
+        user.id, period.start_date, period.end_date, row.id, row.status,
+    )
+    return row.id, True
+
+
+def build_weekly_report_preview(db: Session, *, user_id: int, week_start=None) -> Optional[dict[str, Any]]:
+    """The payload one user's weekly report *would* carry, without queueing it.
+
+    Shares every step of the real path — the same eligibility rule, the same
+    period resolution, the same aggregation, the same payload shape — and
+    stops short of the outbox. That is what makes a preview worth looking at:
+    a separate rendering path could look perfect while the mailed one was
+    wrong.
+
+    Returns None when the id does not name an eligible user, so a preview
+    cannot be used to read the productivity figures of a disabled or deleted
+    account.
+    """
+    from app.services.weekly_report import (
+        WeeklyReportService, build_week_metrics, previous_week, week_containing,
+    )
+
+    users = WeeklyReportService.eligible_users(db, user_id=user_id)
+    if not users:
+        return None
+    user = users[0]
+
+    organization_id = getattr(user, "organization_id", None)
+    if organization_id is None:
+        return None
+
+    period = week_containing(week_start) if week_start else previous_week()
+    metrics = build_week_metrics(
+        db,
+        organization_id=organization_id,
+        user_ids=[user.id],
+        period=period,
+    )[user.id]
+    return _weekly_report_payload(user=user, period=period, metrics=metrics)

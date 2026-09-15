@@ -16,4 +16,9 @@ class EdgeAdapter(BaseBrowserAdapter):
         " - Microsoft​ Edge", " - Microsoft Edge", " - Edge",
     )
 
+    # Edge puts its private marker in the *middle* of the window title, before
+    # the browser name: 'Search - Microsoft Bing - [InPrivate] - Microsoft Edge'.
+    # Confirmed against a real InPrivate window, not assumed.
+    PRIVATE_TITLE_DECORATIONS = (" - [InPrivate]", "[InPrivate]", "[InPrivate] ")
+
     EMPTY_TITLES = frozenset({"new tab", "start"})

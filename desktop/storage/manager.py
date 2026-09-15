@@ -108,6 +108,11 @@ CREATE TABLE IF NOT EXISTS pending_url_usage (
     domain TEXT NOT NULL,
     url TEXT,
     page_title TEXT,
+    -- Whether this browsing happened in a private/incognito window.
+    -- Deliberately nullable: 1 and 0 are findings, NULL is "this platform or
+    -- this browser could not tell us", which is a different thing from "no".
+    -- Storing 0 for an unreadable state would assert something never observed.
+    is_private INTEGER,
     duration_seconds INTEGER NOT NULL,
     recorded_at TEXT NOT NULL,
     client_event_id TEXT NOT NULL UNIQUE,
@@ -247,9 +252,18 @@ CREATE TABLE IF NOT EXISTS pending_screenshots (
     client_screenshot_id TEXT NOT NULL UNIQUE,
     local_file_path TEXT NOT NULL,
     time_entry_id INTEGER,
+    -- The timer session this capture belongs to. A capture taken before the
+    -- backend has issued an entry id is adopted by this key once it arrives,
+    -- exactly as `pending_app_usage` and `pending_url_usage` are. Window-based
+    -- adoption preceded it and could only ever claim a session's first window.
+    client_op TEXT,
     captured_at TEXT NOT NULL,
     window_start TEXT NOT NULL,
     monitor_number INTEGER NOT NULL DEFAULT 1,
+    -- How many physical displays are composited into this one image. A
+    -- screenshot event produces exactly one row whatever the display count;
+    -- this describes that single image, it never multiplies it.
+    display_count INTEGER NOT NULL DEFAULT 1,
     width INTEGER NOT NULL,
     height INTEGER NOT NULL,
     file_size_bytes INTEGER NOT NULL,
@@ -284,12 +298,25 @@ MIGRATIONS = [
     # entry id is adopted by. See the `pending_app_usage` schema comment.
     ("pending_app_usage", "client_op", "TEXT"),
     ("pending_url_usage", "client_op", "TEXT"),
+    # The same key for screenshots. Existing rows keep NULL, which is honest:
+    # a capture queued by an older build genuinely has no session key, and
+    # `adopt_unattributed_screenshots` is what rescues those.
+    ("pending_screenshots", "client_op", "TEXT"),
+    # How many displays one merged capture contains. Rows queued by a build
+    # that captured only the primary display default to 1, which is exactly
+    # what they are — no backfill is needed or possible.
+    ("pending_screenshots", "display_count", "INTEGER NOT NULL DEFAULT 1"),
+    # Private/incognito browsing state. NULL on every existing row, meaning
+    # "not observed", which is the truth for anything captured before this
+    # could be detected — it must not read as "was not private".
+    ("pending_url_usage", "is_private", "INTEGER"),
 ]
 
 #: Indexes over columns `MIGRATIONS` adds, created after it has run.
 POST_MIGRATION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_app_usage_client_op ON pending_app_usage(client_op)",
     "CREATE INDEX IF NOT EXISTS idx_url_usage_client_op ON pending_url_usage(client_op)",
+    "CREATE INDEX IF NOT EXISTS idx_screenshots_client_op ON pending_screenshots(client_op)",
 )
 
 #: Tables whose `time_entry_id` shipped as NOT NULL and must become nullable.
@@ -313,8 +340,9 @@ NULLABLE_ENTRY_ID_REBUILDS = {
         PENDING_URL_USAGE_DDL,
         (
             "id", "time_entry_id", "client_op", "browser_name", "domain", "url",
-            "page_title", "duration_seconds", "recorded_at", "client_event_id",
-            "status", "retry_count", "next_retry_at", "created_at",
+            "page_title", "is_private", "duration_seconds", "recorded_at",
+            "client_event_id", "status", "retry_count", "next_retry_at",
+            "created_at",
         ),
     ),
 }

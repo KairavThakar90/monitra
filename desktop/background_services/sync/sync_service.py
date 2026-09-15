@@ -391,12 +391,60 @@ class SyncService(LoopService):
         client_op = payload.get("client_op")
         if client_op and entry_id:
             self._cache.resolve_entry_id_for_client_op(client_op, entry_id)
+            self._adopt_session_telemetry(client_op, entry_id)
         return {
             "entry_id": entry_id,
             "entry": entry if isinstance(entry, dict) else None,
             "project_id": payload["project_id"],
             "task_id": payload["task_id"],
+            # Carried so TimerService can bind a session that is *still
+            # running* — this result is the only notice it gets that a queued
+            # start landed.
+            "client_op": client_op,
         }
+
+    def _adopt_session_telemetry(self, client_op: str, entry_id: int) -> None:
+        """Attribute everything this session captured before it had an id.
+
+        A start that failed over to this queue is confirmed here and nowhere
+        else, and by the time it lands the tracking session may have stopped,
+        the trackers may hold no state, and the process may even be a later
+        one. So the adoption is done against the durable queues directly,
+        keyed on the session's own `client_op`, rather than through any
+        tracker's in-memory view.
+
+        This is what was missing, and it cost every screenshot of every queued
+        start: `_bind_trackers_to_entry` is reachable only from the in-process
+        start callback, so an offline or timed-out start bound nothing at all.
+        The captures stayed in `pending_screenshots` with a NULL entry id,
+        `get_pending_screenshots` correctly withheld them, and nothing ever
+        filled the id in — the images sat on disk until the account was logged
+        out, never reaching Drive or the database, with no error anywhere.
+
+        Idempotent in both directions: each binder matches only rows that still
+        have no entry id, so re-running after `TimerService` has already bound
+        the live session updates nothing. Failures are logged and swallowed —
+        a start that genuinely succeeded must still be recorded as completed,
+        or it would be retried and the adoption is retried at the next launch
+        anyway.
+        """
+        for label, bind in (
+            ("screenshot", self._cache.bind_screenshots_to_client_op),
+            ("application usage", self._cache.bind_app_usage_to_entry),
+            ("browser usage", self._cache.bind_url_usage_to_entry),
+        ):
+            try:
+                adopted = bind(client_op, entry_id)
+            except Exception:  # noqa: BLE001
+                self.log.exception(
+                    "could not attribute queued %s to entry %s", label, entry_id
+                )
+                continue
+            if adopted:
+                self.log.info(
+                    "attributed %d queued %s record(s) to entry %s",
+                    adopted, label, entry_id,
+                )
 
     def _handle_stop_timer(self, payload, deferrals: int = 0):
         entry_id = payload.get("entry_id")
@@ -555,6 +603,14 @@ class SyncService(LoopService):
                     "domain": r["domain"],
                     "url": r["url"],
                     "page_title": r["page_title"],
+                    # Three-valued on purpose: omitted entirely when the
+                    # client could not determine the browser's private state,
+                    # so the backend stores NULL rather than being told "not
+                    # private" by a client that never looked.
+                    **(
+                        {"is_private": bool(r["is_private"])}
+                        if r.get("is_private") is not None else {}
+                    ),
                     "duration_seconds": r["duration_seconds"],
                     "recorded_at": r["recorded_at"],
                     "client_event_id": r["client_event_id"],
@@ -768,6 +824,7 @@ class SyncService(LoopService):
             "client_screenshot_id": record["client_screenshot_id"],
             "captured_at": record["captured_at"],
             "monitor_number": record["monitor_number"],
+            "display_count": record.get("display_count", 1),
             "width": record["width"],
             "height": record["height"],
             "file_size_bytes": record["file_size_bytes"],

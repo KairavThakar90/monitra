@@ -102,9 +102,13 @@ class ScreenshotService(BaseService):
 
         self._tracking = False
         self._entry_id: Optional[int] = None
-        #: The window a session's first captures belong to, used to attribute
-        #: them once the backend issues an entry id.
-        self._session_window_start: Optional[str] = None
+        #: The tracking session's own stable key. Captures taken before the
+        #: backend issues an entry id are held against it and adopted when it
+        #: arrives. This replaced an earlier scheme that recorded only the
+        #: window tracking began in and could therefore adopt only that one
+        #: window — every later window of a queued start stayed unattributed
+        #: and never uploaded at all.
+        self._client_op: Optional[str] = None
 
         #: Capture authorisation, written on the GUI thread and read on a pool
         #: thread, so it is guarded rather than read raw. `_generation` counts
@@ -133,13 +137,7 @@ class ScreenshotService(BaseService):
         # Arming and authorising are the same act: nothing else in this class
         # may set `_authorized`, so there is no path from "the app is open" or
         # "the service started" to a capture.
-        self._authorize(session.get("entry_id"))
-        self._session_window_start = _iso(
-            scheduler.window_bounds(
-                scheduler.window_index(time.time(), config.window_seconds()),
-                config.window_seconds(),
-            )[0]
-        )
+        self._authorize(session.get("entry_id"), session.get("client_op"))
         self.log.info(
             "screenshot capture started for entry %s (%d per %ds window)",
             self._entry_id, config.screenshots_per_window(), config.window_seconds(),
@@ -152,19 +150,28 @@ class ScreenshotService(BaseService):
         """
         Attach the backend entry id once it arrives.
 
-        Captures already queued for this session's window are attributed to the
-        entry, so a screenshot taken in the first seconds of tracking — or
-        during an offline start — is uploaded rather than stranded.
+        Every capture this session has already queued is attributed to the
+        entry, so a screenshot taken in the first seconds of tracking — or at
+        any point during an offline start — is uploaded rather than stranded.
+
+        This is the *live-session* half of the adoption. It cannot be the only
+        half: a start that failed over to the durable queue is confirmed by
+        `SyncService`, which may be minutes later and may land after the user
+        has already stopped, when this service holds no session state at all.
+        `SyncService._handle_start_timer` therefore performs the same adoption
+        directly against the cache. Both are keyed on `client_op` and both are
+        idempotent — binding rows that are already bound updates nothing.
         """
         # Same tracking session, so the generation is deliberately *not*
         # advanced — an offline start legitimately schedules captures before
         # the backend has issued an id, and bumping here would abort them.
         with self._auth_lock:
             self._entry_id = entry_id
-        if not self._session_window_start:
+            client_op = self._client_op
+        if not client_op:
             return
         try:
-            bound = self._cache.bind_screenshots_to_entry(self._session_window_start, entry_id)
+            bound = self._cache.bind_screenshots_to_client_op(client_op, entry_id)
         except Exception:  # noqa: BLE001
             self.log.exception("could not bind queued screenshots to entry %s", entry_id)
             return
@@ -188,21 +195,21 @@ class ScreenshotService(BaseService):
         self._tracking = False
         self._planned_index = None
         self._planned_times = []
-        self._session_window_start = None
         self._revoke()
 
     # ── Capture authorisation ─────────────────────────────────────────────────
 
-    def _authorize(self, entry_id: Optional[int]) -> None:
+    def _authorize(self, entry_id: Optional[int], client_op: Optional[str]) -> None:
         """Open a new tracking generation and permit captures in it."""
         with self._auth_lock:
             self._generation += 1
             self._authorized = True
             self._entry_id = entry_id
+            self._client_op = client_op
             generation = self._generation
         self.log.info(
-            "screenshot scheduler started: time_entry_id=%s generation=%d",
-            entry_id, generation,
+            "screenshot scheduler started: time_entry_id=%s client_op=%s generation=%d",
+            entry_id, client_op, generation,
         )
 
     def _revoke(self) -> None:
@@ -211,12 +218,31 @@ class ScreenshotService(BaseService):
             self._generation += 1
             self._authorized = False
             self._entry_id = None
+            self._client_op = None
 
     def _current_generation(self) -> int:
         with self._auth_lock:
             return self._generation
 
-    def _check_authorized(self, generation: int) -> Tuple[bool, Optional[int], str]:
+    def _entry_id_for(self, generation: int, fallback: Optional[int]) -> Optional[int]:
+        """The freshest entry id for `generation`, or `fallback`.
+
+        Read at the moment a row is written, so an id that arrived while the
+        capture was still being encoded reaches the row that capture produces.
+
+        Only the *current* generation can answer: a stop and any task switch
+        both advance it, so a match means this is still the same tracking
+        session, and a capture can never be attributed to a task that was not
+        the one running when it was taken.
+        """
+        with self._auth_lock:
+            if generation == self._generation and self._entry_id is not None:
+                return self._entry_id
+        return fallback
+
+    def _check_authorized(
+        self, generation: int
+    ) -> Tuple[bool, Optional[int], Optional[str], str]:
         """
         Whether a capture scheduled in `generation` may still take the screen.
 
@@ -232,14 +258,20 @@ class ScreenshotService(BaseService):
         returned here is what the screenshot is recorded against, so a capture
         can never be attributed to a task that is no longer the one running.
 
-        :return: (allowed, current entry id, reason when not allowed)
+        The session key is returned alongside it for the same reason: a capture
+        taken before the id arrives is stored against `client_op` so the
+        adoption can find it later, and reading both under one lock is what
+        guarantees the pair describes a single session rather than two halves
+        of a switch that happened in between.
+
+        :return: (allowed, current entry id, session key, reason when not allowed)
         """
         with self._auth_lock:
             if not self._authorized:
-                return False, None, "timer_stopped"
+                return False, None, None, "timer_stopped"
             if generation != self._generation:
-                return False, None, "stale_scheduler_generation"
-            return True, self._entry_id, ""
+                return False, None, None, "stale_scheduler_generation"
+            return True, self._entry_id, self._client_op, ""
 
     # ── Window budget ─────────────────────────────────────────────────────────
 
@@ -397,16 +429,20 @@ class ScreenshotService(BaseService):
         they were not tracking, which is the thing this rule exists to prevent
         — deleting the file afterwards does not undo that.
         """
-        allowed, entry_id, reason = self._check_authorized(generation)
+        allowed, entry_id, client_op, reason = self._check_authorized(generation)
         if not allowed:
             self.log.info("screenshot capture aborted: reason=%s", reason)
             return None
 
-        raw = capture.capture_primary_monitor()
-        if raw is None:
+        # One capture event reads every attached display and produces exactly
+        # one image. The display count is metadata on that single event — it
+        # never becomes a second capture, a second queue row or a second
+        # upload, whatever the machine has plugged in.
+        merged = capture.capture_all_displays()
+        if merged is None:
             return None  # already logged; the window's budget is deliberately not spent
 
-        processed = image_processor.process(raw)
+        processed = image_processor.process_merged(merged)
         if processed is None or not processed.data:
             return None
 
@@ -418,6 +454,19 @@ class ScreenshotService(BaseService):
 
         window_start = _iso(scheduler.window_bounds(index, config.window_seconds())[0])
 
+        # Attribution is read again here rather than reused from the check at
+        # the top. The grab and the encode take a second or more on a dense
+        # screen, and the backend's entry id can land inside that second: the
+        # `bind_entry_id` that ran when it arrived had no row to adopt yet, and
+        # the row written afterwards would keep the stale `None` forever --
+        # withheld by the uploader, adopted by nothing, never uploaded. That is
+        # not theoretical; it was observed in a real desktop run, one second
+        # after the id arrived.
+        #
+        # The generation must still match, so this can only ever pick up the id
+        # of the session this capture was authorised for, never a later one.
+        entry_id = self._entry_id_for(generation, entry_id)
+
         try:
             self._cache.save_screenshot(
                 client_screenshot_id=client_screenshot_id,
@@ -428,7 +477,9 @@ class ScreenshotService(BaseService):
                 height=processed.height,
                 file_size_bytes=processed.size_bytes,
                 time_entry_id=entry_id,
-                monitor_number=raw.monitor_number,
+                monitor_number=merged.monitor_number,
+                display_count=processed.display_count,
+                client_op=client_op,
             )
         except Exception:  # noqa: BLE001
             self.log.exception("could not queue screenshot %s", client_screenshot_id)
@@ -437,9 +488,11 @@ class ScreenshotService(BaseService):
 
         self._record_capture(index)
         self.log.info(
-            "captured screenshot %s for entry %s (%dx%d, %d bytes, quality %d, "
-            "primary_size=%d fallback_triggered=%s target_size=%d attempts=%d)",
-            client_screenshot_id, entry_id, processed.width, processed.height,
+            "SCREENSHOT_QUEUED id=%s entry=%s display_count=%d displays_expected=%d "
+            "size=%dx%d bytes=%d quality=%d primary_size=%d fallback_triggered=%s "
+            "target_size=%d attempts=%d",
+            client_screenshot_id, entry_id, processed.display_count,
+            merged.displays_expected, processed.width, processed.height,
             processed.size_bytes, processed.quality,
             processed.primary_size_bytes, processed.fallback_applied,
             processed.fallback_target_bytes, processed.fallback_attempts,
@@ -450,6 +503,7 @@ class ScreenshotService(BaseService):
             "captured_at": captured_at.isoformat(),
             "window_start": window_start,
             "file_size_bytes": processed.size_bytes,
+            "display_count": processed.display_count,
         }
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────

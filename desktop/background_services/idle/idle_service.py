@@ -124,7 +124,7 @@ class IdleService(LoopService):
         self._idle_enabled = True
         self._idle_minutes = 5
         self._config_loaded = False
-        self._config_read_at = 0.0
+        self._config_read_at = time.monotonic()
 
         # ── State machine ────────────────────────────────────────────────────
         self._state = IdleState.MONITORING
@@ -451,6 +451,7 @@ class IdleService(LoopService):
         self._recovery_checked.clear()
         self._last_entry_id = None
         self._config_loaded = False
+        self._config_read_at = time.monotonic()
         self._monitoring_since = time.monotonic()
         self._clear_pending()
 

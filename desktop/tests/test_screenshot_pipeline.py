@@ -14,8 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from background_services.screenshot import config, image_processor, store
-from background_services.screenshot.capture import RawCapture
+from background_services.screenshot import compositor, config, image_processor, store
+from background_services.screenshot.capture import MergedCapture, RawCapture
+from background_services.screenshot.compositor import Placement
+from background_services.screenshot.displays import Display
 
 pytest.importorskip("PIL", reason="Pillow is required to process screenshots")
 
@@ -54,6 +56,23 @@ def _noisy(width: int, height: int) -> RawCapture:
         pixels=bytes(rng.randrange(256) for _ in range(width * height * 4)),
         width=width, height=height, monitor_number=1,
     )
+
+
+def _single_display_merge(width: int, height: int) -> MergedCapture:
+    """One display, as `capture_all_displays` reports it.
+
+    The merged path routes a one-display capture straight back to `process`,
+    so this is the shape the ordinary single-monitor machine still takes.
+    """
+    display = Display(number=1, left=0, top=0, width=width, height=height,
+                      is_primary=True)
+    placement = Placement(
+        display=display,
+        pixels=bytes([40, 80, 120, 255] * (width * height)),
+        width=width, height=height,
+    )
+    bounds = compositor.canvas_bounds([display])
+    return MergedCapture(placements=[placement], bounds=bounds, displays=[display])
 
 
 class TestImageProcessing:
@@ -143,8 +162,13 @@ class TestFallbackCompression:
         assert processed.size_bytes != processed.primary_size_bytes
 
     def test_the_fallback_never_changes_the_geometry_or_the_format(self, monkeypatch):
-        # The backend rejects anything that is not exactly 1000x1000 WebP, so a
-        # fallback that resized would silently strand every capture it touched.
+        # A single-display capture is stored at exactly 1000x1000, and the
+        # queue row, the upload metadata and the grid all carry that geometry.
+        # A fallback that resized would make every one of them disagree with
+        # the bytes. (The backend no longer demands that exact square -- a
+        # merged multi-display capture is legitimately wider -- but it does
+        # check the image's real dimensions, so a silent resize here would
+        # still contradict what was recorded.)
         from PIL import Image
 
         monkeypatch.setenv("MONITRA_SCREENSHOT_FALLBACK_TRIGGER_BYTES", "1024")
@@ -210,6 +234,229 @@ class TestFallbackCompression:
 
 def _close(a, b, tolerance: int = 12) -> bool:
     return all(abs(x - y) <= tolerance for x, y in zip(a, b))
+
+
+class TestMultiDisplayImage:
+    """A merged capture is one image, sized so every display stays readable."""
+
+    def _merge(self, geometries):
+        """`geometries` is a list of (left, top, width, height)."""
+        displays, placements = [], []
+        for index, (left, top, width, height) in enumerate(geometries, start=1):
+            display = Display(number=index, left=left, top=top, width=width,
+                              height=height, is_primary=(index == 1))
+            displays.append(display)
+            placements.append(Placement(
+                display=display,
+                pixels=bytes([40, 80, 120, 255] * (width * height)),
+                width=width, height=height,
+            ))
+        return MergedCapture(
+            placements=placements,
+            bounds=compositor.canvas_bounds(displays),
+            displays=displays,
+        )
+
+    def test_a_single_display_still_produces_the_1000x1000_square(self):
+        # The backward-compatibility guarantee: a one-monitor machine, which
+        # is most of them, gets exactly what it always got.
+        processed = image_processor.process_merged(self._merge([(0, 0, 1920, 1080)]))
+        assert (processed.width, processed.height) == (1000, 1000)
+        assert processed.display_count == 1
+
+    def test_two_displays_produce_one_image_at_the_desks_aspect_ratio(self):
+        processed = image_processor.process_merged(
+            self._merge([(0, 0, 1920, 1080), (1920, 0, 1920, 1080)])
+        )
+        assert processed.display_count == 2
+        assert (processed.width, processed.height) == (2000, 562)
+        with io.BytesIO(processed.data) as buffer:
+            from PIL import Image
+            assert Image.open(buffer).size == (2000, 562)
+
+    def test_three_displays_are_still_exactly_one_image(self):
+        processed = image_processor.process_merged(self._merge([
+            (0, 0, 1920, 1080), (1920, 0, 1920, 1080), (3840, 0, 1920, 1080),
+        ]))
+        assert processed.display_count == 3
+        assert (processed.width, processed.height) == (3000, 562)
+
+    def test_each_display_keeps_the_width_it_would_have_had_on_its_own(self):
+        # The legibility contract, stated as arithmetic: adding a monitor must
+        # not shrink the one that was already there.
+        alone = image_processor.process_merged(self._merge([(0, 0, 1920, 1080)]))
+        paired = image_processor.process_merged(
+            self._merge([(0, 0, 1920, 1080), (1920, 0, 1920, 1080)])
+        )
+        assert paired.width / 2 == pytest.approx(alone.width, abs=1)
+
+    def test_a_display_left_of_primary_is_not_cropped_away(self):
+        processed = image_processor.process_merged(
+            self._merge([(0, 0, 1920, 1080), (-1920, 0, 1920, 1080)])
+        )
+        assert (processed.width, processed.height) == (2000, 562)
+
+    def test_a_portrait_second_monitor_keeps_the_canvas_tall(self):
+        processed = image_processor.process_merged(
+            self._merge([(0, 0, 1920, 1080), (1920, 0, 1080, 1920)])
+        )
+        # 3000x1920 of desk, scaled by 1000/1920.
+        assert (processed.width, processed.height) == (1562, 1000)
+
+    def _deskish(self, width: int, height: int, seed: int) -> bytes:
+        """A frame that encodes like a desktop rather than like static.
+
+        Pure random noise is incompressible and would drive *any* budget to the
+        quality floor, so it cannot distinguish a well-funded merged image from
+        a starved one. Real screens are large flat regions with detailed
+        patches, which is what this approximates: banded blocks with a noisy
+        stripe through them.
+        """
+        rng = random.Random(seed)
+        row_cache = {}
+        out = bytearray()
+        for y in range(height):
+            band = y // 40
+            if band not in row_cache:
+                base = bytes([(band * 17) % 256, (band * 29) % 256, 90, 255])
+                row = bytearray(base * width)
+                # A detailed strip, like a window of text.
+                for x in range(0, width // 4):
+                    offset = x * 4
+                    row[offset:offset + 4] = bytes(
+                        [rng.randrange(256), rng.randrange(256), rng.randrange(256), 255]
+                    )
+                row_cache[band] = bytes(row)
+            out += row_cache[band]
+        return bytes(out)
+
+    def test_a_merged_image_keeps_the_quality_a_single_display_would_have_had(self):
+        # The legibility contract: a second monitor must not cost quality. The
+        # budget is per display, so the encoder has no more reason to step the
+        # quality down for two screens than it had for one.
+        def build(count):
+            displays, placements = [], []
+            for index in range(1, count + 1):
+                display = Display(number=index, left=(index - 1) * 1920, top=0,
+                                  width=1920, height=1080, is_primary=(index == 1))
+                displays.append(display)
+                placements.append(Placement(
+                    display=display,
+                    pixels=self._deskish(1920, 1080, seed=20260915 + index),
+                    width=1920, height=1080,
+                ))
+            return MergedCapture(
+                placements=placements,
+                bounds=compositor.canvas_bounds(displays), displays=displays,
+            )
+
+        alone = image_processor.process_merged(build(1))
+        paired = image_processor.process_merged(build(2))
+        assert paired.quality >= alone.quality
+        assert paired.quality > config.WEBP_QUALITY_MIN
+
+    def test_a_capture_with_no_displays_produces_nothing(self):
+        empty = MergedCapture(placements=[], bounds=None, displays=[])
+        assert image_processor.process_merged(empty) is None
+
+    def _partial(self, geometries, captured):
+        """A capture where only `captured` display numbers were readable."""
+        displays, placements = [], []
+        for index, (left, top, width, height) in enumerate(geometries, start=1):
+            display = Display(number=index, left=left, top=top, width=width,
+                              height=height, is_primary=(index == 1))
+            displays.append(display)
+            if index in captured:
+                placements.append(Placement(
+                    display=display,
+                    pixels=bytes([40, 80, 120, 255] * (width * height)),
+                    width=width, height=height,
+                ))
+        return MergedCapture(
+            placements=placements,
+            bounds=compositor.canvas_bounds(displays), displays=displays,
+        )
+
+    def test_one_dead_display_does_not_lose_the_whole_screenshot(self):
+        merged = self._partial(
+            [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)], captured={1}
+        )
+        assert merged.complete is False
+        assert (merged.display_count, merged.displays_expected) == (1, 2)
+        processed = image_processor.process_merged(merged)
+        assert processed is not None
+        # The surviving screen at full size, honestly labelled as one display,
+        # rather than half a canvas of grey at half the resolution.
+        assert (processed.width, processed.height) == (1000, 1000)
+        assert processed.display_count == 1
+
+    def test_with_three_displays_a_failed_one_leaves_its_region_blank(self):
+        merged = self._partial(
+            [(0, 0, 1920, 1080), (1920, 0, 1920, 1080), (3840, 0, 1920, 1080)],
+            captured={1, 3},
+        )
+        processed = image_processor.process_merged(merged)
+        # Still the full three-display canvas: the middle screen is missing,
+        # and its area is pad colour rather than anything invented.
+        assert (processed.width, processed.height) == (3000, 562)
+        assert processed.display_count == 2
+
+    def test_a_capture_where_every_display_failed_produces_nothing(self):
+        merged = self._partial([(0, 0, 1920, 1080), (1920, 0, 1920, 1080)], captured=set())
+        assert image_processor.process_merged(merged) is None
+
+    def test_the_legacy_monitor_number_follows_the_primary_display(self):
+        merged = self._partial(
+            [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)], captured={1, 2}
+        )
+        assert merged.monitor_number == 1
+        # If the primary is the one that failed, the column names a display
+        # that is actually in the image rather than one that is not.
+        without_primary = self._partial(
+            [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)], captured={2}
+        )
+        assert without_primary.monitor_number == 2
+
+
+class TestOneEventOneScreenshot:
+    """However many displays, a capture event yields exactly one queue row."""
+
+    def test_a_three_display_capture_queues_a_single_row(self, cache, cache_root):
+        path = store.write_screenshot("multi-1", b"webp-bytes")
+        cache.save_screenshot(
+            client_screenshot_id="multi-1", local_file_path=str(path),
+            captured_at="2026-09-15T10:06:24+00:00",
+            window_start="2026-09-15T10:00:00+00:00",
+            width=3000, height=562, file_size_bytes=90_000,
+            time_entry_id=100, monitor_number=1, display_count=3,
+        )
+        pending = cache.get_pending_screenshots()
+        assert len(pending) == 1
+        assert pending[0]["display_count"] == 3
+        assert cache.count_screenshots_by_status() == {"pending": 1}
+
+    def test_the_display_count_reaches_the_upload_metadata(self, cache, cache_root):
+        path = store.write_screenshot("multi-2", b"webp-bytes")
+        cache.save_screenshot(
+            client_screenshot_id="multi-2", local_file_path=str(path),
+            captured_at="2026-09-15T10:06:24+00:00",
+            window_start="2026-09-15T10:00:00+00:00",
+            width=2000, height=562, file_size_bytes=80_000,
+            time_entry_id=100, display_count=2,
+        )
+        assert cache.get_pending_screenshots()[0]["display_count"] == 2
+
+    def test_a_row_written_without_a_display_count_reads_as_one(self, cache, cache_root):
+        # Rows queued by an older build genuinely contain one display.
+        path = store.write_screenshot("legacy-1", b"webp-bytes")
+        cache.save_screenshot(
+            client_screenshot_id="legacy-1", local_file_path=str(path),
+            captured_at="2026-09-15T10:06:24+00:00",
+            window_start="2026-09-15T10:00:00+00:00",
+            width=1000, height=1000, file_size_bytes=50_000,
+            time_entry_id=100,
+        )
+        assert cache.get_pending_screenshots()[0]["display_count"] == 1
 
 
 class TestDailyCache:
@@ -315,19 +562,55 @@ class TestQueue:
     def test_a_capture_with_no_entry_id_waits_to_be_attributed(self, cache):
         # A capture taken before the backend issued an entry id has nothing to
         # upload against; uploading it against `None` would be rejected.
-        self._queue(cache, time_entry_id=None)
+        self._queue(cache, time_entry_id=None, client_op="op-1")
         assert cache.get_pending_screenshots() == []
 
-        bound = cache.bind_screenshots_to_entry("2026-09-07T10:00:00+00:00", 555)
+        bound = cache.bind_screenshots_to_client_op("op-1", 555)
         assert bound == 1
         assert cache.get_pending_screenshots()[0]["time_entry_id"] == 555
 
-    def test_only_captures_from_the_matching_window_are_adopted(self, cache):
-        self._queue(cache, client_screenshot_id="a", time_entry_id=None,
-                    window_start="2026-09-07T10:00:00+00:00")
-        self._queue(cache, client_screenshot_id="b", time_entry_id=None,
-                    window_start="2026-09-07T09:00:00+00:00")
-        assert cache.bind_screenshots_to_entry("2026-09-07T10:00:00+00:00", 555) == 1
+    def test_only_captures_from_the_same_session_are_adopted(self, cache):
+        self._queue(cache, client_screenshot_id="a", time_entry_id=None, client_op="op-1")
+        self._queue(cache, client_screenshot_id="b", time_entry_id=None, client_op="op-2")
+        assert cache.bind_screenshots_to_client_op("op-1", 555) == 1
+        remaining = {r["client_screenshot_id"] for r in cache.get_pending_screenshots()}
+        assert remaining == {"a"}
+
+    def test_every_window_of_a_long_offline_session_is_adopted(self, cache):
+        # The regression that cost real captures. Adoption used to match on the
+        # window tracking *began* in, so a queued start that took longer than
+        # one window to land stranded every capture after the first: the
+        # uploader withholds a row with no entry id and nothing else ever
+        # filled it in. A session is not one window long.
+        for index, window in enumerate(
+            ("10:00:00", "10:10:00", "10:20:00", "10:30:00")
+        ):
+            self._queue(
+                cache, client_screenshot_id=f"w{index}", time_entry_id=None,
+                client_op="op-long", window_start=f"2026-09-07T{window}+00:00",
+            )
+        assert cache.bind_screenshots_to_client_op("op-long", 777) == 4
+        assert len(cache.get_pending_screenshots()) == 4
+
+    def test_a_capture_that_can_never_upload_is_counted_separately(self, cache):
+        # It shows as `pending`, which reads as "about to upload" -- but the
+        # uploader withholds it, so only an adoption can release it. A count
+        # that does not fall is the visible form of a stalled session.
+        self._queue(cache, time_entry_id=None, client_op="op-1")
+        assert cache.count_screenshots_by_status() == {"pending": 1}
+        assert cache.count_unattributed_screenshots() == 1
+
+        cache.bind_screenshots_to_client_op("op-1", 555)
+        assert cache.count_unattributed_screenshots() == 0
+
+    def test_adoption_is_idempotent_and_never_resteals_a_bound_capture(self, cache):
+        # Both halves of the adoption run: the live session's binder and the
+        # sync service's durable one. Whichever is second must change nothing,
+        # and must never move a capture onto a different entry.
+        self._queue(cache, time_entry_id=None, client_op="op-1")
+        assert cache.bind_screenshots_to_client_op("op-1", 555) == 1
+        assert cache.bind_screenshots_to_client_op("op-1", 999) == 0
+        assert cache.get_pending_screenshots()[0]["time_entry_id"] == 555
 
     def test_completing_a_screenshot_returns_the_file_to_delete(self, cache):
         self._queue(cache)
@@ -576,10 +859,10 @@ class TestTimerIntegration:
 
         def fake_grab():
             grabs["count"] += 1
-            return _raw(640, 480)
+            return _single_display_merge(640, 480)
 
         monkeypatch.setattr(module.capture, "supported", lambda: True)
-        monkeypatch.setattr(module.capture, "capture_primary_monitor", fake_grab)
+        monkeypatch.setattr(module.capture, "capture_all_displays", fake_grab)
         # Only `time.time()` is used here, so a stub with that one name keeps
         # the freeze local to this module instead of patching the clock
         # process-wide.
@@ -660,7 +943,7 @@ class TestTimerIntegration:
     def test_a_capture_taken_before_the_entry_id_arrives_is_attributed_later(self, service, cache):
         svc, _ = service
         svc.runtime.timer.active_session = lambda: {}
-        svc.start_tracker({"entry_id": None})
+        svc.start_tracker({"entry_id": None, "client_op": "op-1"})
         self._fire_now(svc)
 
         # Queued but not yet uploadable.
@@ -668,6 +951,38 @@ class TestTimerIntegration:
         svc.bind_entry_id(777)
         pending = cache.get_pending_screenshots()
         assert len(pending) == 1 and pending[0]["time_entry_id"] == 777
+
+    def test_a_capture_is_stored_against_the_session_not_against_its_window(self, service, cache):
+        # Adoption is keyed on the tracking session, because a session is not
+        # one window long: an offline start that takes half an hour to land
+        # takes captures in several windows and every one of them belongs to
+        # the same entry. Keying on the window tracking began in stranded all
+        # but the first, permanently.
+        svc, _ = service
+        svc.runtime.timer.active_session = lambda: {}
+        svc.start_tracker({"entry_id": None, "client_op": "op-1"})
+        self._fire_now(svc)
+
+        row = cache.storage.query_one(
+            "SELECT client_op, time_entry_id FROM pending_screenshots"
+        )
+        assert row["client_op"] == "op-1"
+        assert row["time_entry_id"] is None
+
+    def test_a_capture_is_not_adopted_by_a_later_session(self, service, cache):
+        # Stop and start the same task again and the entry ids differ. A
+        # capture from the first session must never be uploaded against the
+        # second's entry — that would attribute one task's screen to another.
+        svc, _ = service
+        svc.runtime.timer.active_session = lambda: {}
+        svc.start_tracker({"entry_id": None, "client_op": "op-first"})
+        self._fire_now(svc)
+        svc.stop_tracker()
+
+        svc.start_tracker({"entry_id": None, "client_op": "op-second"})
+        svc.bind_entry_id(999)
+        assert cache.get_pending_screenshots() == []
+        assert cache.count_unattributed_screenshots() == 1
 
     def test_a_machine_that_cannot_capture_queues_nothing_and_says_so(self, service, cache, monkeypatch):
         # No placeholder image, exactly as there is no placeholder domain in
@@ -753,3 +1068,111 @@ class TestTimerIntegration:
 
         assert submitted == ["screenshot-capture"]
         assert grabs["count"] == 0, "no capture ran outside the pool submission"
+
+
+class TestQueuedStartAdoption:
+    """The failure that lost every screenshot of an offline tracking session.
+
+    A start request that does not succeed in-process fails over to the durable
+    action queue. `SyncService` is then the only thing that ever learns the
+    entry id — and it used to write that id onto the queued *stop* and nowhere
+    else. `TimerService._bind_trackers_to_entry` has a single caller, on the
+    in-process success path, so the sub-trackers were never told.
+
+    The result was silent and total: the captures were taken, compressed and
+    written to the durable queue correctly, but with `time_entry_id` NULL.
+    `get_pending_screenshots` withholds such a row (uploading against `None`
+    would be refused), nothing ever filled the id in, and the images were
+    protected from every cleanup path precisely because they were still queued.
+    They simply never reached Google Drive or the database, with no error
+    raised anywhere and the timer itself behaving perfectly.
+
+    Which users this hit was not random: it was whoever's Start round trip
+    missed — flaky wifi, a VPN, a proxy, or a cold serverless backend — which
+    is exactly the "works for some people and not others" report.
+    """
+
+    @pytest.fixture
+    def sync(self, cache):
+        from types import SimpleNamespace
+
+        from background_services.sync.sync_service import SyncService
+
+        started = {}
+
+        def start_time_entry(project_id, task_id, started_at=None, client_op=None):
+            started["client_op"] = client_op
+            return {"id": 4242, "start_time": started_at}
+
+        entries = SimpleNamespace(start_time_entry=start_time_entry)
+        runtime = SimpleNamespace(storage=cache.storage, queue_floor_generation=0)
+        service = SyncService(runtime, cache, entries, SimpleNamespace())
+        return service, started
+
+    def _capture(self, cache, client_op, name, window):
+        cache.save_screenshot(
+            client_screenshot_id=name,
+            local_file_path=f"/tmp/{name}.webp",
+            captured_at=f"2026-09-07T{window}+00:00",
+            window_start=f"2026-09-07T{window}+00:00",
+            width=1000, height=1000, file_size_bytes=4096,
+            time_entry_id=None, client_op=client_op,
+        )
+
+    def test_a_queued_start_attributes_every_capture_it_left_behind(self, sync, cache):
+        service, _ = sync
+        # Thirty-one minutes of offline tracking: four windows, four captures,
+        # none of which could know the entry id when it was taken.
+        for index, window in enumerate(("10:00:00", "10:10:00", "10:20:00", "10:30:00")):
+            self._capture(cache, "op-offline", f"shot-{index}", window)
+
+        assert cache.get_pending_screenshots() == [], "unattributed captures must not upload"
+        assert cache.count_unattributed_screenshots() == 4
+
+        service._handle_start_timer({
+            "project_id": 1, "task_id": 2,
+            "started_at": "2026-09-07T10:00:00+00:00",
+            "client_op": "op-offline",
+        })
+
+        pending = cache.get_pending_screenshots()
+        assert len(pending) == 4, "every window's capture must now be uploadable"
+        assert {row["time_entry_id"] for row in pending} == {4242}
+        assert cache.count_unattributed_screenshots() == 0
+
+    def test_the_resolved_entry_id_is_carried_back_for_a_live_session(self, sync, cache):
+        # TimerService needs it to bind a session that is still running, so
+        # captures taken *after* the start lands carry the id from the start.
+        service, _ = sync
+        result = service._handle_start_timer({
+            "project_id": 1, "task_id": 2, "started_at": None, "client_op": "op-live",
+        })
+        assert result["entry_id"] == 4242
+        assert result["client_op"] == "op-live"
+
+    def test_another_session_s_captures_are_never_adopted(self, sync, cache):
+        service, _ = sync
+        self._capture(cache, "op-mine", "mine", "10:00:00")
+        self._capture(cache, "op-theirs", "theirs", "10:00:00")
+
+        service._handle_start_timer({
+            "project_id": 1, "task_id": 2, "started_at": None, "client_op": "op-mine",
+        })
+
+        pending = cache.get_pending_screenshots()
+        assert [row["client_screenshot_id"] for row in pending] == ["mine"]
+        assert cache.count_unattributed_screenshots() == 1
+
+    def test_a_start_still_completes_when_adoption_fails(self, sync, cache, monkeypatch):
+        # The start genuinely succeeded on the backend. Failing the action here
+        # would retry a start that already created an entry; the adoption is
+        # retried at the next launch instead.
+        service, _ = sync
+        monkeypatch.setattr(
+            cache, "bind_screenshots_to_client_op",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("database is locked")),
+        )
+        result = service._handle_start_timer({
+            "project_id": 1, "task_id": 2, "started_at": None, "client_op": "op-x",
+        })
+        assert result["entry_id"] == 4242

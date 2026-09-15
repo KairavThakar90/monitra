@@ -480,18 +480,122 @@ class TopBar(QFrame):
                 outline: none;
             }}
             QCalendarWidget QAbstractItemView:disabled {{ color: {TEXT_MUTED}; }}
+            /* The header strip. Given the card background and a hairline under
+               it so the month/year row reads as a header rather than floating
+               over the grid. */
+            QCalendarWidget QWidget#qt_calendar_navigationbar {{
+                background: {CARD_BG};
+                border-bottom: 1px solid {BORDER_LIGHT};
+            }}
+            /* 600 is the date pill's own DemiBold (see `_date_btn`), so the
+               popup's header carries the same weight as the control it drops
+               from. Qt's untouched default here was a heavier bold that
+               matched nothing else in the window. */
             QCalendarWidget QToolButton {{
                 color: {TEXT_PRIMARY};
                 background: transparent;
                 border: none;
-                padding: 4px 8px;
-            }}
-            QCalendarWidget QToolButton:hover {{
-                background: {CONTENT_BG};
                 border-radius: 6px;
+                padding: 4px 10px;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+            QCalendarWidget QToolButton:hover {{ background: {CONTENT_BG}; }}
+            QCalendarWidget QToolButton:pressed {{ background: {BORDER_LIGHT}; }}
+            /* Qt's own menu indicator, removed. See `_style_navigation_bar`:
+               the month button carries the app's `expand_more` chevron as a
+               real icon instead. */
+            QCalendarWidget QToolButton::menu-indicator {{ image: none; width: 0; }}
+            /* The month list that opens from the month button, and the spin box
+               that replaces the year button when it is clicked. Both are
+               children of the calendar and inherited the desktop's default
+               chrome until they were named here. */
+            QCalendarWidget QMenu {{
+                background: {CARD_BG};
+                border: 1px solid {BORDER_MID};
+                border-radius: 8px;
+                padding: 4px;
+            }}
+            QCalendarWidget QMenu::item {{
+                color: {TEXT_PRIMARY};
+                padding: 5px 22px 5px 12px;
+                border-radius: 5px;
+            }}
+            QCalendarWidget QMenu::item:selected {{
+                background: {PRIMARY_LIGHT};
+                color: {PRIMARY};
+            }}
+            QCalendarWidget QSpinBox {{
+                color: {TEXT_PRIMARY};
+                background: {CARD_BG};
+                border: 1px solid {BORDER_MID};
+                border-radius: 6px;
+                padding: 2px 4px;
+                font-size: 12.5px;
+                font-weight: 600;
             }}
         """)
+        self._style_navigation_bar(calendar)
         return calendar
+
+    #: Object names Qt gives the calendar's navigation-bar children. They are
+    #: internals, so every lookup below is guarded: a Qt version that renamed
+    #: one must leave the picker working and merely less polished, never
+    #: broken. The stylesheet above does the bulk of the styling for exactly
+    #: that reason; this method only adds what a stylesheet cannot express.
+    _NAV_MONTH_BUTTON = "qt_calendar_monthbutton"
+    _NAV_PREV_BUTTON = "qt_calendar_prevmonth"
+    _NAV_NEXT_BUTTON = "qt_calendar_nextmonth"
+
+    @staticmethod
+    def _style_navigation_bar(calendar: QCalendarWidget) -> None:
+        """Give the month button a real chevron, and the arrows our own glyphs.
+
+        The month button is a `QToolButton` in `InstantPopup` mode, so Qt draws
+        a menu indicator on it. Once any stylesheet applies to the widget that
+        indicator is drawn by the stylesheet engine, which places it in the
+        button's **bottom-right corner** — under the baseline of the month name
+        and hard against it, which is the cramped, slightly-dropped "September ⌄"
+        in the reported screenshot. Padding cannot fix it: the corner is where
+        the subcontrol is anchored, and the app has no stylesheet-addressable
+        image for it (the icon set is generated in memory, not files on disk).
+
+        So the indicator is switched off in the stylesheet and the button is
+        given the app's own `expand_more` icon instead. `RightToLeft` on this
+        one button is what puts that icon *after* the text — Qt lays
+        `ToolButtonTextBesideIcon` out icon-first, and there is no other way to
+        reverse it. It affects only this button's internal layout; the popup
+        still opens under it, because Qt positions a tool button's menu from
+        the button's own rect rather than from its layout direction.
+
+        The prev/next arrows are given the same `chevron_left`/`chevron_right`
+        the date row beside them uses, so the header does not carry two
+        different drawings of the same idea.
+        """
+        month = calendar.findChild(QToolButton, TopBar._NAV_MONTH_BUTTON)
+        if month is not None:
+            # 14px, not the 16 the arrows use: this one sits against a word
+            # rather than alone in a hit area, and the Material glyph carries
+            # its own margin inside the box, so a larger icon only widens the
+            # gap between the month name and its chevron.
+            month.setIcon(icons.icon("expand_more", TEXT_SECONDARY, 14))
+            month.setIconSize(QSize(14, 14))
+            month.setToolButtonStyle(
+                Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+            )
+            month.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        else:
+            log.debug("calendar month button not found; leaving Qt's own header")
+
+        for name, glyph in (
+            (TopBar._NAV_PREV_BUTTON, "chevron_left"),
+            (TopBar._NAV_NEXT_BUTTON, "chevron_right"),
+        ):
+            button = calendar.findChild(QToolButton, name)
+            if button is None:
+                continue
+            button.setIcon(icons.icon(glyph, TEXT_SECONDARY, 18))
+            button.setIconSize(QSize(18, 18))
 
     def _open_calendar(self) -> None:
         """Pop the date picker under the date button."""

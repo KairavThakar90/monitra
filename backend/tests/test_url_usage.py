@@ -275,3 +275,142 @@ class TestURLUsageService(unittest.TestCase):
         d2, u2 = normalize_url("https://github.com/Test?q=1", "github.com")
         self.assertEqual(d2, "github.com")
         self.assertEqual(u2, "https://github.com/Test?q=1")
+
+
+class TestPrivateBrowsing(unittest.TestCase):
+    """`is_private` is three-valued and is part of a run's identity.
+
+    The desktop detects private/incognito windows and records the state
+    alongside ordinary URL usage — same table, same idempotency key, same
+    batch endpoint. Two properties matter here: an undetermined state must not
+    become "not private", and private browsing must not be aggregated into a
+    normal-window record.
+    """
+
+    def setUp(self):
+        self.db = MagicMock()
+        self.current_user = User(
+            id=1, organization_id=10, permissions={"time_entries:view_all": False}
+        )
+        self.active_time_entry = TimeEntry(
+            id=100, organization_id=10, user_id=1, status="running", end_time=None
+        )
+
+    def _payload(self, **overrides):
+        base = dict(
+            time_entry_id=100, browser_name="Google Chrome", domain="wikipedia.org",
+            url="https://wikipedia.org/wiki/Privacy", duration_seconds=15,
+        )
+        base.update(overrides)
+        return URLUsageCreate(**base)
+
+    def test_an_omitted_private_state_is_none_not_false(self):
+        # A client that could not determine the state omits the field. NULL is
+        # "not observed"; false would be a claim nobody made.
+        assert self._payload().is_private is None
+
+    def test_a_private_flag_is_accepted_and_preserved(self):
+        assert self._payload(is_private=True).is_private is True
+        assert self._payload(is_private=False).is_private is False
+
+    @patch("app.repositories.time_entry.TimeEntryRepository.get_by_id")
+    @patch("app.repositories.url_usage_repository.URLUsageRepository.get_by_client_event_id")
+    @patch("app.repositories.url_usage_repository.URLUsageRepository.get_latest_record")
+    @patch("app.repositories.url_usage_repository.URLUsageRepository.create")
+    def test_the_private_state_reaches_the_stored_record(
+        self, mock_create, mock_latest, mock_client_id, mock_entry
+    ):
+        mock_entry.return_value = self.active_time_entry
+        mock_client_id.return_value = None
+        mock_latest.return_value = None
+
+        URLUsageService.record_usage(self.db, self._payload(is_private=True), self.current_user)
+        assert mock_create.call_args.kwargs["is_private"] is True
+
+    @patch("app.repositories.time_entry.TimeEntryRepository.get_by_id")
+    @patch("app.repositories.url_usage_repository.URLUsageRepository.get_by_client_event_id")
+    @patch("app.repositories.url_usage_repository.URLUsageRepository.get_latest_record")
+    @patch("app.repositories.url_usage_repository.URLUsageRepository.create")
+    @patch("app.repositories.url_usage_repository.URLUsageRepository.update_duration_and_time")
+    def test_private_browsing_is_not_aggregated_into_a_normal_record(
+        self, mock_update, mock_create, mock_latest, mock_client_id, mock_entry
+    ):
+        # The same page, seconds apart, first in a normal window and then in an
+        # incognito one. Aggregating them would produce a single row whose
+        # is_private described only whichever half was written first.
+        mock_entry.return_value = self.active_time_entry
+        mock_client_id.return_value = None
+        now = datetime.now(timezone.utc)
+        mock_latest.return_value = TimeEntryUrlUsage(
+            id=10, organization_id=10, time_entry_id=100,
+            browser_name="Google Chrome", domain="wikipedia.org",
+            url="https://wikipedia.org/wiki/Privacy", is_private=False,
+            duration_seconds=10, recorded_at=now - timedelta(seconds=10),
+        )
+
+        URLUsageService.record_usage(
+            self.db, self._payload(is_private=True, recorded_at=now), self.current_user
+        )
+        mock_update.assert_not_called()
+        mock_create.assert_called_once()
+        assert mock_create.call_args.kwargs["is_private"] is True
+
+    @patch("app.repositories.time_entry.TimeEntryRepository.get_by_id")
+    @patch("app.repositories.url_usage_repository.URLUsageRepository.get_by_client_event_id")
+    @patch("app.repositories.url_usage_repository.URLUsageRepository.get_latest_record")
+    @patch("app.repositories.url_usage_repository.URLUsageRepository.update_duration_and_time")
+    def test_consecutive_private_browsing_of_one_page_still_aggregates(
+        self, mock_update, mock_latest, mock_client_id, mock_entry
+    ):
+        # Splitting on the state must not stop a continuous private session
+        # from being aggregated the way a normal one is.
+        mock_entry.return_value = self.active_time_entry
+        mock_client_id.return_value = None
+        now = datetime.now(timezone.utc)
+        latest = TimeEntryUrlUsage(
+            id=10, organization_id=10, time_entry_id=100,
+            browser_name="Google Chrome", domain="wikipedia.org",
+            url="https://wikipedia.org/wiki/Privacy", is_private=True,
+            duration_seconds=10, recorded_at=now - timedelta(seconds=10),
+        )
+        mock_latest.return_value = latest
+        mock_update.return_value = latest
+
+        URLUsageService.record_usage(
+            self.db, self._payload(is_private=True, recorded_at=now), self.current_user
+        )
+        mock_update.assert_called_once()
+
+    @patch("app.repositories.time_entry.TimeEntryRepository.get_by_id")
+    @patch("app.repositories.url_usage_repository.URLUsageRepository.get_by_client_event_id")
+    @patch("app.repositories.url_usage_repository.URLUsageRepository.get_latest_record")
+    @patch("app.repositories.url_usage_repository.URLUsageRepository.create")
+    def test_a_batch_carries_the_private_state_of_each_record(
+        self, mock_create, mock_latest, mock_client_id, mock_entry
+    ):
+        mock_entry.return_value = self.active_time_entry
+        mock_client_id.return_value = None
+        mock_latest.return_value = None
+
+        batch = URLUsageBatchCreate(records=[
+            self._payload(is_private=True, client_event_id="ev-private"),
+            self._payload(domain="example.com", url="https://example.com",
+                          is_private=False, client_event_id="ev-normal"),
+            self._payload(domain="example.org", url="https://example.org",
+                          client_event_id="ev-unknown"),
+        ])
+        accepted, failed = URLUsageService.batch_record_usage(
+            self.db, batch, self.current_user
+        )
+        assert (accepted, failed) == (3, 0)
+        states = [c.kwargs["is_private"] for c in mock_create.call_args_list]
+        assert states == [True, False, None]
+
+    def test_a_record_written_by_an_older_client_reads_as_unknown(self):
+        # No is_private in the payload at all: the field is absent from the
+        # JSON an older desktop sends, and must not default to false.
+        payload = URLUsageCreate.model_validate({
+            "time_entry_id": 100, "browser_name": "Google Chrome",
+            "domain": "example.com", "duration_seconds": 5,
+        })
+        assert payload.is_private is None

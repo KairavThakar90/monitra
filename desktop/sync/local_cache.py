@@ -1266,12 +1266,20 @@ class LocalCache:
         recorded_at: str,
         client_event_id: Optional[str] = None,
         client_op: Optional[str] = None,
+        is_private: Optional[bool] = None,
     ) -> str:
         """Queue one measured browser session for upload.
 
         `time_entry_id` may be None, exactly as in `save_app_usage`: the
         session is held against its timer session's `client_op` and adopted
         by `bind_url_usage_to_entry` when the backend issues the id.
+
+        `is_private` is the browser's private/incognito state and is stored
+        with three values, not two: True, False, and None for "could not be
+        determined on this platform or browser". A private session is an
+        ordinary URL row in every other respect — same queue, same retry, same
+        idempotency key — because it is ordinary browsing that simply happened
+        in a different kind of window.
         """
         record_id = str(uuid.uuid4())
         event_id = client_event_id or str(uuid.uuid4())
@@ -1279,9 +1287,11 @@ class LocalCache:
         self._storage.execute(
             """INSERT INTO pending_url_usage
                (id, time_entry_id, client_op, browser_name, domain, url, page_title,
-                duration_seconds, recorded_at, client_event_id, status, retry_count, next_retry_at, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
+                is_private, duration_seconds, recorded_at, client_event_id, status,
+                retry_count, next_retry_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
             (record_id, time_entry_id, client_op, browser_name, domain, url, page_title,
+             None if is_private is None else int(bool(is_private)),
              duration_seconds, recorded_at, event_id, now, now),
         )
         return record_id
@@ -1311,7 +1321,8 @@ class LocalCache:
         """
         rows = self._storage.query_all(
             """SELECT id, time_entry_id, browser_name, domain, url, page_title,
-                      duration_seconds, recorded_at, client_event_id, retry_count
+                      is_private, duration_seconds, recorded_at, client_event_id,
+                      retry_count
                FROM pending_url_usage
                WHERE status = 'pending' AND next_retry_at <= ?
                  AND time_entry_id IS NOT NULL
@@ -1334,7 +1345,7 @@ class LocalCache:
         """
         rows = self._storage.query_all(
             """SELECT id, time_entry_id, browser_name, domain, url, page_title,
-                      duration_seconds, recorded_at, client_event_id, status
+                      is_private, duration_seconds, recorded_at, client_event_id, status
                FROM pending_url_usage
                WHERE substr(recorded_at, 1, 19) >= ?
                  AND substr(recorded_at, 1, 19) < ?
@@ -1415,24 +1426,41 @@ class LocalCache:
         file_size_bytes: int,
         time_entry_id: Optional[int] = None,
         monitor_number: int = 1,
+        client_op: Optional[str] = None,
+        display_count: int = 1,
     ) -> str:
         """
         Register a captured screenshot for upload.
 
+        Exactly one row per capture event, whatever the machine has plugged in.
+        A three-monitor desk produces one merged image, one row here, one
+        upload and one Drive file; `display_count` says how many displays that
+        single image contains. It is metadata *about* the screenshot, and the
+        moment it were allowed to become a row count instead, the queue, the
+        backend's idempotency key and the grid would all start disagreeing
+        about how many screenshots a window produced.
+
         `client_screenshot_id` is the UUID the backend de-duplicates on, and it
         is UNIQUE here too, so a retry that re-registers the same capture
         cannot produce two queue rows for one file.
+
+        `client_op` is the timer session's own stable key. A capture taken
+        before the backend has issued an entry id is held against it and
+        adopted by `bind_screenshots_to_client_op` when the id arrives -- the
+        same treatment `pending_app_usage` and `pending_url_usage` already get.
         """
         now = time.time()
         self._storage.execute(
             """INSERT OR IGNORE INTO pending_screenshots
-               (id, client_screenshot_id, local_file_path, time_entry_id, captured_at,
-                window_start, monitor_number, width, height, file_size_bytes,
-                status, retry_count, next_retry_at, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)""",
+               (id, client_screenshot_id, local_file_path, time_entry_id, client_op,
+                captured_at, window_start, monitor_number, display_count, width, height,
+                file_size_bytes, status, retry_count, next_retry_at,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)""",
             (client_screenshot_id, client_screenshot_id, local_file_path, time_entry_id,
-             captured_at, window_start, monitor_number, width, height, file_size_bytes,
-             now, now, now),
+             client_op, captured_at, window_start, monitor_number,
+             max(1, int(display_count or 1)), width, height,
+             file_size_bytes, now, now, now),
         )
         return client_screenshot_id
 
@@ -1446,8 +1474,8 @@ class LocalCache:
         """
         rows = self._storage.query_all(
             """SELECT id, client_screenshot_id, local_file_path, time_entry_id,
-                      captured_at, window_start, monitor_number, width, height,
-                      file_size_bytes, retry_count
+                      captured_at, window_start, monitor_number, display_count,
+                      width, height, file_size_bytes, retry_count
                FROM pending_screenshots
                WHERE status = 'pending' AND next_retry_at <= ?
                  AND time_entry_id IS NOT NULL
@@ -1520,24 +1548,50 @@ class LocalCache:
         corrupt local file). Returns the path it held."""
         return self.complete_screenshot(record_id)
 
-    def bind_screenshots_to_entry(self, window_start: str, time_entry_id: int) -> int:
+    def bind_screenshots_to_client_op(self, client_op: str, time_entry_id: int) -> int:
         """
         Attribute screenshots captured before the backend issued an entry id.
 
         The same problem the activity pipeline solves with held events: a
         capture taken in the first seconds of a session, or during an offline
-        start, has no entry to belong to yet. Matching on the window the
-        capture was scheduled in keeps the attribution honest — only captures
-        from the session's own window are adopted.
+        start, has no entry to belong to yet. Matching on the session's own
+        `client_op` keeps the attribution honest — only captures this tracking
+        session took are adopted, and a capture can never be attributed to a
+        task that was not the one running when it was taken.
+
+        This deliberately replaced an earlier binder keyed on `window_start`.
+        That one could adopt only the single window tracking *began* in, so a
+        queued start that took longer than ten minutes to land stranded every
+        capture after the first window: `get_pending_screenshots` withholds a
+        row with no entry id, nothing else ever filled it in, and the images
+        sat on disk forever without reaching Drive or the database. Keying on
+        the session covers every window the session actually ran for.
 
         :return: how many rows were bound.
         """
+        if not client_op:
+            return 0
         cursor = self._storage.execute(
             "UPDATE pending_screenshots SET time_entry_id = ?, updated_at = ? "
-            "WHERE time_entry_id IS NULL AND window_start = ?",
-            (time_entry_id, time.time(), window_start),
+            "WHERE time_entry_id IS NULL AND client_op = ?",
+            (time_entry_id, time.time(), client_op),
         )
         return cursor.rowcount or 0
+
+    def count_unattributed_screenshots(self) -> int:
+        """Captures that cannot upload because no entry id ever reached them.
+
+        Reported separately from `count_screenshots_by_status`, where these
+        rows appear as `pending` and so read as "about to upload". They are
+        not: `get_pending_screenshots` withholds them, and only an adoption can
+        release them. A non-zero count that does not fall is the signature of a
+        capture stranded by a start whose confirmation never arrived, which is
+        precisely the failure that used to be invisible.
+        """
+        row = self._storage.query_one(
+            "SELECT COUNT(*) AS cnt FROM pending_screenshots WHERE time_entry_id IS NULL"
+        )
+        return int(row["cnt"]) if row else 0
 
     def reset_uploading_screenshots(self) -> int:
         """Return claims interrupted by a crash or shutdown to the pending pool."""

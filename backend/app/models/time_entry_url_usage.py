@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Integer, String, Text, TIMESTAMP, Identity, ForeignKeyConstraint, CheckConstraint, func
+from sqlalchemy import Boolean, BigInteger, Integer, String, Text, TIMESTAMP, Identity, ForeignKeyConstraint, CheckConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 from app.core.database import Base
@@ -13,6 +13,17 @@ class TimeEntryUrlUsage(Base):
     domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
     page_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    #: Whether this browsing happened in a private/incognito window.
+    #:
+    #: Nullable on purpose, and the three states are distinct: True and False
+    #: are findings the client actually made, NULL means the client could not
+    #: determine it -- a platform with no UI Automation, a browser that exposes
+    #: no marker, or a row written before the desktop could detect it at all.
+    #: Storing False for an unobserved window would assert something nobody
+    #: checked, which is the same defect class as a placeholder domain.
+    is_private: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
     duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     recorded_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now(), index=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
