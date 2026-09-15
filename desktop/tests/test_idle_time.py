@@ -37,6 +37,7 @@ class FakeIdleApi:
         self.reassigns = []
         self.pending_lookups = []
         self.config = {"idle_enabled": True, "idle_minutes": 5}
+        self.config_calls = 0
         self.report_result = None
         self.report_error = None
         self.resolve_error = None
@@ -44,6 +45,7 @@ class FakeIdleApi:
         self.pending_result = None
 
     def get_config(self):
+        self.config_calls += 1
         return dict(self.config)
 
     def report_idle_period(self, time_entry_id, idle_started_at, idle_detected_at,
@@ -196,6 +198,15 @@ def open_period(service):
 
 def test_defaults_to_the_five_minute_configuration(idle):
     assert idle.idle_config() == {"idle_enabled": True, "idle_minutes": 5}
+
+
+def test_idle_config_refresh_does_not_fire_immediately_on_startup(idle):
+    """A fresh service should wait for the normal refresh interval before probing."""
+    idle.tick()
+    assert idle.api.config_calls == 0
+    idle._config_read_at = time.monotonic() - (15 * 60 + 1)
+    idle.tick()
+    assert idle.api.config_calls == 1
 
 
 def test_custom_threshold_is_read_from_the_profile(idle):
