@@ -370,31 +370,54 @@ subscribe to it. There is no second monitor.
 Pipeline, end to end:
 
 ```
-InputProbe (presence)  +  InputEventCounter (pynput counts)
+InputProbe (presence)  +  InputEventCounter (the counts)
   →  per-second sample  →  60s aggregation window
   →  activity_samples table  →  SyncService batch upload
   →  POST /time-entries/{id}/activity/batch  →  UI / reports
 ```
 
-`activity_percent = active_seconds / window_seconds`, computed from what was
-actually measured. Raw counts are stored alongside it so the displayed number is
-auditable against its inputs.
+`activity_percent` is a weighted score over the keystrokes, clicks and
+movements actually counted in the window, scaled to the window's real length
+(`calculate_activity_percentage`). It is **not** `active_seconds /
+window_seconds`: presence saturates — anyone moving a mouse scores 100% — and
+`GetLastInputInfo` sees input this process cannot, so that formula could report
+100% for a window with no observed events at all. `active_seconds` is still
+recorded alongside, because presence is a real measurement; it is just not this
+number. The raw counts are stored with it so the displayed value is auditable
+against its inputs.
 
-Two capture mechanisms feed the same window, both owned by `ActivityService`:
+The two mechanisms answer **different questions**. They are not two sources for
+one number, and must never be summed:
 
-- **InputProbe** (`input_probe.py`): "did input occur this second" —
-  Windows `GetLastInputInfo`, two cheap syscalls, drives the percentage.
-- **InputEventCounter** (`input_counter.py`): true keystroke/click/movement
-  counts via pynput global listeners, on Windows and macOS, feeding the
-  backend's `keyboard_strokes`/`mouse_clicks`/`mouse_movements` columns and
-  the unwanted-activity rules' watched-key tallies. Listeners run **only
-  between `start_tracker()` and `stop_tracker()`** — no capture outside a
-  session — and only aggregate counts survive the callbacks; what was typed
-  is never stored or transmitted. On macOS the probe is unsupported, so a
-  second with any counted event is treated as active — the percentage works
-  there through the counter. macOS requires the user to grant Input
-  Monitoring permission; when denied, counts read zero and activity falls
-  back to unmeasured (never a crash, never a fabricated number).
+- **InputProbe** (`input_probe.py`): "was the user there this second, and did
+  the pointer move" — `GetLastInputInfo` plus `GetCursorPos`, two cheap
+  syscalls, no hook, no thread. It feeds `active_seconds` and idle detection.
+  It holds **no counters**: it once kept its own keystroke/click/movement
+  tallies behind a second pair of Win32 hooks, which `ActivityService` added
+  to the counter's. See DO_NOT_DO.md — the hooks never installed, so the
+  tallies were a permanent zero and the `keyboard` flag built on them had
+  degenerated into "present and the cursor did not move".
+- **InputEventCounter** (`input_counter.py`): the single source of
+  keystroke/click/movement counts, feeding the backend's
+  `keyboard_strokes`/`mouse_clicks`/`mouse_movements` columns, the activity
+  percentage, and the unwanted-activity rules' watched-key tallies. pynput
+  global listeners on Windows; a listen-only Quartz event tap on macOS
+  (`mac_input_tap.py` — pynput's keyboard listener SIGTRAPs the process
+  there). Listeners run **only between `start_tracker()` and
+  `stop_tracker()`** — no capture outside a session — and only aggregate
+  counts survive the callbacks; what was typed is never stored or
+  transmitted. On macOS the probe is unsupported, so a second with any
+  counted event is treated as active — the percentage works there through the
+  counter. macOS requires the user to grant Input Monitoring permission; when
+  denied, counts read zero and activity falls back to unmeasured (never a
+  crash, never a fabricated number).
+
+**One press is one press.** A held key produces a stream of key-down events
+with no key-up between them — Windows auto-repeat, macOS's repeated
+`kCGEventKeyDown`. The counter counts a key when it goes down and not again
+until it has come back up (Windows), and drops events flagged
+`kCGKeyboardEventAutorepeat` (macOS). Without that, leaning on one key read as
+a minute of maximal typing.
 
 **The percentage is never fabricated.** If neither mechanism works on the
 platform, windows are recorded as unmeasured and the UI says so. If no timer is
@@ -405,8 +428,20 @@ running, nothing is recorded.
 `unwanted_activity.py` holds a declarative rule list (`DetectionRule`: key,
 threshold, rolling window, cooldown, deduct-after, deduction seconds — default:
 CTRL ≥ 15 presses/60s). The monitor is composed into `ActivityService` (no
-thread of its own; fed from the service's tick). One threshold crossing = one
-*occurrence*: an event row is queued for
+thread of its own; fed from the service's tick).
+
+**What the rules count is a *bare* press** — a watched key pressed and released
+with no other key, click or scroll while it was held. That distinction is the
+whole difference between the behaviour these rules exist to notice (a key
+mashed to fake presence) and ordinary work: CTRL+T, CTRL+TAB, CTRL+W and
+CTRL+click are how anyone works with several browser tabs open, and counting
+them tripped the threshold on real work — alerting the user and deducting ten
+minutes from time they had genuinely worked. A chorded press still counts
+toward the keystroke total; it was a real keystroke. It just is not evidence of
+repetition. `InputEventCounter` makes that call (it is the only component that
+sees individual events) and tallies a watched key on its release.
+
+One threshold crossing = one *occurrence*: an event row is queued for
 `POST /time-entries/{id}/unwanted-activity`, the user is warned once
 (cooldown-throttled at the rule, de-duplicated again by NotificationService),
 and every third occurrence queues a 600s deduction for

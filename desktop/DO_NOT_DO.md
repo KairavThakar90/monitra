@@ -440,6 +440,86 @@ data was absent, which made unimplemented features look like working ones.
 If activity capture is unsupported on the platform, record the window as
 unmeasured and say so. Never substitute a plausible-looking number.
 
+### ❌ Do not open a second input-capture path beside the counter
+
+```python
+# input_probe.py: its own WH_KEYBOARD_LL / WH_MOUSE_LL hooks and tallies
+self._kbd_hook = _user32.SetWindowsHookExW(
+    WH_KEYBOARD_LL, self._kbd_proc, _kernel32.GetModuleHandleW(None), 0
+)
+
+# activity_service.py tick(): both sources added into one total
+self._keyboard_strokes += counts["keystrokes"]              # InputEventCounter
+self._keyboard_strokes += sample.get("keyboard_strokes", 0)  # InputProbe
+```
+
+**What it caused:** nothing visible, which is why it survived — and it is the
+more instructive half of the story. `SetWindowsHookExW` was called through
+`ctypes` with no `argtypes` or `restype`, so the `HMODULE` from
+`GetModuleHandleW` was truncated to a 32-bit `c_int`. Both hooks returned NULL
+on every 64-bit Windows. Measured on Windows 11: `_kbd_hook = 0`,
+`_mouse_hook = 0`, and zero counted events for injected input that an
+identically shaped hook with correct declarations counted perfectly.
+
+So the probe contributed a permanent `0` to a sum that was written to add two
+capture paths together — a double count waiting for someone to "fix" the
+hooks. Meanwhile the one thing built on those dead tallies,
+
+```python
+"keyboard": k_strokes > 0 or (active and not moved)
+```
+
+had silently degenerated into *"the user was present and the cursor did not
+move"*, reported as though the keyboard had been measured. Reading a page and
+scrolling with the wheel were recorded as typing.
+
+The hook thread could not be stopped either: `stop()` cleared a flag that a
+thread parked in `GetMessageW` never got to read, so it ran for the life of the
+process, servicing hooks that did not exist.
+
+**Instead:** `InputEventCounter` is the only thing in this process that counts
+input. `InputProbe` answers presence — `GetLastInputInfo` and `GetCursorPos`,
+no hook, no thread, no counters — and which *kind* of input a second contained
+comes from the counter, which actually sees the events.
+
+### ❌ Do not count an OS auto-repeat as a press
+
+```python
+def _on_press(self, key):          # fires for every WM_KEYDOWN
+    self._keystrokes += 1
+    if name in self._watch_keys:
+        self._watched[name] += 1
+```
+
+**What it caused:** a held key produces a stream of key-down events with no
+key-up between them. Measured on Windows 11: holding CTRL for about a second
+produced **30** counted presses from one real press — twice the whole 15-press
+threshold of the unwanted-activity rule. Leaning on one key raised a "repeated
+inactive/unwanted activity" warning, stored an event against the time entry,
+and on every third occurrence deducted **ten minutes** of genuinely worked
+time. It also meant holding an arrow key or backspace scored a minute of
+maximal typing in the activity percentage.
+
+**Instead:** count a key when it goes down and not again until it has come back
+up (`on_release` is not optional), and drop macOS events flagged
+`kCGKeyboardEventAutorepeat`. Bound the held state by time, so one missed
+key-up cannot wedge a key off for ever.
+
+### ❌ Do not treat a modifier in a chord as a bare key press
+
+**What it caused:** the reported defect. CTRL+T, CTRL+TAB, CTRL+W and
+CTRL+click are how anybody works with several browser tabs open. Ten such
+chords tallied **50** CTRL presses, so ordinary work crossed a threshold meant
+to catch a key being mashed to fake presence — and the user was warned and had
+time deducted for working.
+
+**Instead:** a watched key is tallied on release, and only if no other key,
+click or scroll occurred while it was held. It still counts toward the
+keystroke total either way — it was a real keystroke — it just is not evidence
+of repetition. Mouse *movement* deliberately does not excuse a hold: it is
+continuous and noisy, and letting it count would turn the rule off for anyone
+resting a hand on the mouse.
+
 ---
 
 ## Naming

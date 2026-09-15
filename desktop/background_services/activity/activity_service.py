@@ -90,16 +90,20 @@ class ActivityService(LoopService):
     Samples user input once per second while a timer is running and flushes an
     aggregated window to storage every `WINDOW_SECONDS`.
 
-    Two capture mechanisms feed the same window:
-    - InputProbe (presence): "did input occur this second" — drives the
-      activity percentage, exactly as before.
-    - InputEventCounter (pynput): true keystroke/click/movement counts for
-      the backend's time_entry_activity columns, plus the watched-key
-      tallies the unwanted-activity rules consume. Its listeners run ONLY
-      between start_tracker() and stop_tracker(). On a platform where the
-      probe is unsupported (macOS) but the counter works, a second with
-      any counted event is treated as active, so the percentage works
-      there too instead of reading unmeasured.
+    Two capture mechanisms feed the same window, and they answer different
+    questions — they are not two sources for one number:
+
+    - InputProbe (presence): "was the user there this second, and did the
+      pointer move". No counters; see its docstring for why it no longer has
+      any.
+    - InputEventCounter: the single source of keystroke/click/movement
+      counts, for the backend's time_entry_activity columns, for the
+      activity percentage, and for the watched-key tallies the
+      unwanted-activity rules consume. Its listeners run ONLY between
+      start_tracker() and stop_tracker(). On a platform where the probe is
+      unsupported (macOS) but the counter works, a second with any counted
+      event is treated as active, so the percentage works there too instead
+      of reading unmeasured.
 
     Signals:
         activity_window_recorded(dict)  — one completed window
@@ -128,6 +132,10 @@ class ActivityService(LoopService):
         self.interval_ms = self.SAMPLE_INTERVAL_MS
 
         self._entry_id: Optional[int] = None
+        #: The timer session's own stable key. Windows sampled before the
+        #: backend has issued an entry id are written against it and adopted
+        #: later -- see `_flush_window` and `bind_entry_id`.
+        self._client_op: Optional[str] = None
         self._tracking = False
         self._window_start: Optional[str] = None
         self._sampled = 0
@@ -197,13 +205,32 @@ class ActivityService(LoopService):
         self._mouse_movements = 0
 
     def _flush_window(self) -> None:
+        """Write the sampled window to the local queue and start a new one.
+
+        A window with no entry id yet is still written, against this
+        session's `client_op`; the adoption binds it once the backend issues
+        the id. Holding it open instead is what used to happen, and it broke
+        an offline session in two ways: `_sampled` grew past WINDOW_SECONDS
+        for as long as the session stayed unattributed, so the whole session
+        landed as ONE sample -- measured at `window_seconds = 7200` for two
+        hours offline, which the backend refuses outright (its schema caps a
+        window at 3600) so the session's activity was never stored at all --
+        and everything measured so far lived only in memory, where a crash
+        took it.
+
+        Without a client_op there is nothing that could ever adopt the row,
+        so the window is held rather than written somewhere it can never be
+        attributed. That is the same rule `AppUsageService._flush_segment`
+        applies, for the same reason.
+        """
         if self._sampled <= 0 or self._window_start is None:
             self._reset_window()
             return
 
-        if self._entry_id is None:
+        if self._entry_id is None and not self._client_op:
             self.log.debug(
-                "holding a %ds activity window until a time entry id is available",
+                "holding a %ds activity window: no entry id and no session key "
+                "to attribute it with",
                 self._sampled,
             )
             return
@@ -233,6 +260,7 @@ class ActivityService(LoopService):
                 mouse_clicks=self._mouse_clicks,
                 mouse_movements=self._mouse_movements,
                 activity_percent=act_percent,
+                client_op=self._client_op,
             )
         except Exception:  # noqa: BLE001
             self.log.exception("could not persist activity window")
@@ -248,6 +276,7 @@ class ActivityService(LoopService):
 
     def start_tracker(self, session: Dict[str, Any]) -> None:
         self._entry_id = session.get("entry_id")
+        self._client_op = session.get("client_op")
         self._tracking = True
         self._reset_window()
         self._held_events = []
@@ -263,12 +292,38 @@ class ActivityService(LoopService):
         """
         Attach a backend entry id that arrived after tracking began.
 
-        Windows sampled before the backend replied are retained and attributed
-        to this entry, so the first minute of a session is not lost — and so
-        are any unwanted-activity events detected in that gap.
+        Windows already written against this session's `client_op` belong to
+        the same entry, so they are adopted here — the same treatment
+        `AppUsageService.bind_entry_id` gives a segment measured before the
+        entry existed. Unwanted-activity events detected in that gap are
+        written now for the same reason.
+
+        This covers a session that is still running. A start confirmed
+        through the durable queue may land after the session has stopped, and
+        `SyncService._adopt_session_telemetry` covers that; both are
+        idempotent, and both are required.
         """
         self._entry_id = entry_id
+        self._adopt_queued_windows(entry_id)
         self._persist_held_events()
+
+    def _adopt_queued_windows(self, entry_id: int) -> None:
+        if not self._client_op:
+            return
+        try:
+            adopted = self._cache.bind_activity_samples_to_entry(
+                self._client_op, entry_id
+            )
+        except Exception:  # noqa: BLE001
+            self.log.exception(
+                "could not bind buffered activity windows to entry %s", entry_id
+            )
+        else:
+            if adopted:
+                self.log.info(
+                    "bound %d buffered activity window(s) to entry %s",
+                    adopted, entry_id,
+                )
 
     def stop_tracker(self) -> None:
         self._flush_window()
@@ -277,6 +332,7 @@ class ActivityService(LoopService):
         self._monitor.stop_session()
         self._tracking = False
         self._entry_id = None
+        self._client_op = None
         self._window_start = None
         self._held_events = []
 
@@ -334,7 +390,14 @@ class ActivityService(LoopService):
 
         if self._entry_id is None:
             session = self.runtime.timer.active_session() or {}
-            self._entry_id = session.get("entry_id")
+            entry_id = session.get("entry_id")
+            if self._client_op is None:
+                self._client_op = session.get("client_op")
+            if entry_id is not None:
+                # Adopt through the same path as bind_entry_id, so an id
+                # noticed here rather than delivered to us still releases the
+                # windows already queued against this session's client_op.
+                self.bind_entry_id(entry_id)
 
         counts = self._counter.snapshot_and_reset()
         counted_any = (
@@ -348,23 +411,20 @@ class ActivityService(LoopService):
         if sample is None:
             if not self._counter.supported:
                 return self.SAMPLE_INTERVAL_MS
-            sample = {
-                "active": counted_any,
-                "keyboard": counts["keystrokes"] > 0,
-                "mouse": counts["clicks"] > 0 or counts["movements"] > 0,
-            }
+            sample = {"active": counted_any, "mouse": counts["movements"] > 0}
 
         self._sampled += 1
         if sample.get("active") or counted_any:
             self._active += 1
+        # Which *kind* of input a second contained comes from the counter,
+        # the only thing in this process that sees individual events. The
+        # probe contributes presence and pointer movement and nothing else:
+        # it used to report "present and the cursor did not move" as a
+        # keyboard second, which measured nothing about the keyboard.
         if sample.get("mouse") or counts["clicks"] > 0 or counts["movements"] > 0:
             self._mouse_events += 1
-        if sample.get("keyboard") or counts["keystrokes"] > 0:
+        if counts["keystrokes"] > 0:
             self._key_events += 1
-
-        self._keyboard_strokes += sample.get("keyboard_strokes", 0)
-        self._mouse_clicks += sample.get("mouse_clicks", 0)
-        self._mouse_movements += sample.get("mouse_movements", 0)
 
         self._monitor.feed(self._counter.drain_watched_presses())
 

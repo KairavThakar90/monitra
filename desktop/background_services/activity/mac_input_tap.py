@@ -119,10 +119,18 @@ class MacInputTap:
 
     def __init__(
         self,
-        on_key: Callable[[Optional[str]], None],
+        on_key: Callable[[Optional[str], bool], None],
         on_click: Callable[[], None],
         on_move: Callable[[], None],
     ) -> None:
+        """`on_key(name, pressed)` is called for each key event.
+
+        `pressed` is True for a key going down and False for one coming up.
+        Only modifiers report a release: a `flagsChanged` event carries both
+        edges, whereas an ordinary key is delivered as `keyDown` alone. That
+        is enough, because the keys the unwanted-activity rules watch are
+        modifiers, and they are the ones whose holds have to be tracked.
+        """
         self._on_key = on_key
         self._on_click = on_click
         self._on_move = on_move
@@ -286,7 +294,8 @@ class MacInputTap:
             kCGEventLeftMouseDragged, kCGEventMouseMoved,
             kCGEventOtherMouseDown, kCGEventRightMouseDown,
             kCGEventRightMouseDragged, kCGEventTapDisabledByTimeout,
-            kCGEventTapDisabledByUserInput, kCGKeyboardEventKeycode,
+            kCGEventTapDisabledByUserInput, kCGKeyboardEventAutorepeat,
+            kCGKeyboardEventKeycode,
         )
 
         # The system disables a tap that misbehaves or when the user's input
@@ -300,18 +309,27 @@ class MacInputTap:
             return
 
         if event_type == kCGEventKeyDown:
+            # A held key repeats as a stream of keyDown events. That is the
+            # OS repeating one press, not the user making several, and
+            # counting each of them turned a leaned-on arrow key into a
+            # minute of maximal "activity". macOS marks them, so they are
+            # simply dropped.
+            if int(CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat)):
+                return
             keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
-            self._on_key(_KEYCODE_NAMES.get(int(keycode)))
+            self._on_key(_KEYCODE_NAMES.get(int(keycode)), True)
             return
 
         if event_type == kCGEventFlagsChanged:
-            # Fires on both press and release. Count only the press: the
-            # corresponding flag bit is set in the resulting state.
+            # Fires on both press and release; the corresponding flag bit is
+            # set in the resulting state on a press and clear on a release.
+            # Both edges are reported: the caller needs the release to know
+            # whether the modifier was held alone or as part of a shortcut.
             keycode = int(CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode))
             name = _KEYCODE_NAMES.get(keycode)
             mask = _MODIFIER_MASKS.get(name or "")
-            if name and mask and (int(CGEventGetFlags(event)) & mask):
-                self._on_key(name)
+            if name and mask:
+                self._on_key(name, bool(int(CGEventGetFlags(event)) & mask))
             return
 
         if event_type in (kCGEventLeftMouseDown, kCGEventRightMouseDown,

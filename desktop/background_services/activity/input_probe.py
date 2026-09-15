@@ -1,16 +1,45 @@
 """
-input_probe — OS-level user-input detection and counter tracking.
+input_probe — OS-level *presence* detection: "was there any input?"
 
-Tracks:
-- Total keyboard strokes
-- Total mouse clicks
-- Total mouse movements
+This answers one question, cheaply, with two syscalls and no hook:
+`GetLastInputInfo` for "when did the user last touch anything", plus
+`GetCursorPos` for "has the pointer moved since the last sample". It is what
+drives `active_seconds` and the idle-detection threshold.
+
+**It does not count events, and must not start doing so.** Counting keystrokes,
+clicks and movements belongs to `input_counter.py`, which owns the one global
+listener in this process. This module used to install a second pair of
+`WH_KEYBOARD_LL` / `WH_MOUSE_LL` hooks of its own and keep its own
+`keyboard_strokes` / `mouse_clicks` / `mouse_movements` tallies, which
+`ActivityService` then *added* to the counter's — two capture paths summed into
+one number.
+
+They never actually double-counted, for a worse reason: the hooks were never
+installed. `SetWindowsHookExW` was called through `ctypes` with no `argtypes`
+or `restype` declared, so the `HMODULE` from `GetModuleHandleW` was truncated
+to a 32-bit `c_int` before being passed. Both calls returned NULL on every
+64-bit Windows. Measured on Windows 11: `_kbd_hook = 0`, `_mouse_hook = 0`, and
+zero counted events for injected input that an identically-shaped hook with
+correct declarations counted perfectly.
+
+So the counters were dead code contributing a permanent `0`, and the one thing
+built on top of them --
+
+    "keyboard": k_strokes > 0 or (active and not moved)
+
+-- had degenerated into "the user was present and the cursor did not move",
+reported as though the keyboard had been measured. That is a fabricated metric,
+and the fix is not to repair the hooks (which would have produced the double
+count the summation was already set up for) but to delete them: there is one
+owner of input counting, and this is not it.
+
+The hook thread went with them. It could not be stopped -- `stop()` cleared a
+flag that a thread parked in `GetMessageW` never got to read -- so it ran for
+the life of the process, servicing hooks that did not exist.
 """
 from __future__ import annotations
 
 import sys
-import threading
-import time
 from typing import Optional, Tuple, Dict, Any
 
 from core.logging_setup import get_logger
@@ -29,139 +58,27 @@ if _IS_WINDOWS:  # pragma: no cover - platform specific
     class _POINT(ctypes.Structure):
         _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
 
-    class _MSLLHOOKSTRUCT(ctypes.Structure):
-        _fields_ = [
-            ("pt", _POINT),
-            ("mouseData", wintypes.DWORD),
-            ("flags", wintypes.DWORD),
-            ("time", wintypes.DWORD),
-            ("dwExtraInfo", ctypes.c_ulonglong)
-        ]
-
-    class _KBDLLHOOKSTRUCT(ctypes.Structure):
-        _fields_ = [
-            ("vkCode", wintypes.DWORD),
-            ("scanCode", wintypes.DWORD),
-            ("flags", wintypes.DWORD),
-            ("time", wintypes.DWORD),
-            ("dwExtraInfo", ctypes.c_ulonglong)
-        ]
-
     _user32 = ctypes.windll.user32
     _kernel32 = ctypes.windll.kernel32
 
-    # Win32 Constants
-    WH_KEYBOARD_LL = 13
-    WH_MOUSE_LL = 14
-
-    WM_KEYDOWN = 0x0100
-    WM_SYSKEYDOWN = 0x0104
-
-    WM_LBUTTONDOWN = 0x0201
-    WM_RBUTTONDOWN = 0x0204
-    WM_MBUTTONDOWN = 0x0207
-
-    WM_MOUSEMOVE = 0x0200
-
 
 class InputProbe:
-    """Samples system-wide input counts and state."""
+    """Samples whether the user was present, never how much they did."""
 
     def __init__(self) -> None:
         self._supported = _IS_WINDOWS
         self._last_cursor: Optional[Tuple[int, int]] = None
 
-        self._lock = threading.Lock()
-        self._keyboard_strokes = 0
-        self._mouse_clicks = 0
-        self._mouse_movements = 0
-
-        self._hook_thread: Optional[threading.Thread] = None
-        self._running = False
-        self._kbd_hook = None
-        self._mouse_hook = None
-
-        if self._supported:
-            self._start_hook_listener()
-        else:
+        if not self._supported:
             log.warning(
-                "system-wide input detection is unavailable on %s; "
-                "activity will be recorded as unmeasured",
+                "system-wide presence detection is unavailable on %s; "
+                "activity falls back to the input counter",
                 sys.platform,
             )
 
     @property
     def supported(self) -> bool:
         return self._supported
-
-    def _start_hook_listener(self) -> None:
-        """Start Win32 low-level hooks in a background daemon thread."""
-        if self._running:
-            return
-        self._running = True
-        self._hook_thread = threading.Thread(target=self._hook_loop, daemon=True, name="InputHookThread")
-        self._hook_thread.start()
-
-    def _hook_loop(self) -> None:  # pragma: no cover - platform specific
-        if not _IS_WINDOWS:
-            return
-
-        HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
-
-        def low_level_keyboard_proc(nCode: int, wParam: int, lParam: int) -> int:
-            if nCode >= 0:
-                if wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
-                    with self._lock:
-                        self._keyboard_strokes += 1
-            return _user32.CallNextHookEx(None, nCode, wParam, lParam)
-
-        last_pos = [None]
-
-        def low_level_mouse_proc(nCode: int, wParam: int, lParam: int) -> int:
-            if nCode >= 0:
-                if wParam in (WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN):
-                    with self._lock:
-                        self._mouse_clicks += 1
-                elif wParam == WM_MOUSEMOVE:
-                    ms_struct = _MSLLHOOKSTRUCT.from_address(lParam)
-                    curr_pos = (ms_struct.pt.x, ms_struct.pt.y)
-                    if last_pos[0] is not None:
-                        dx = curr_pos[0] - last_pos[0][0]
-                        dy = curr_pos[1] - last_pos[0][1]
-                        if (dx * dx + dy * dy) > 16:  # > 4px movement threshold
-                            with self._lock:
-                                self._mouse_movements += 1
-                            last_pos[0] = curr_pos
-                    else:
-                        last_pos[0] = curr_pos
-            return _user32.CallNextHookEx(None, nCode, wParam, lParam)
-
-        try:
-            self._kbd_proc = HOOKPROC(low_level_keyboard_proc)
-            self._mouse_proc = HOOKPROC(low_level_mouse_proc)
-
-            self._kbd_hook = _user32.SetWindowsHookExW(
-                WH_KEYBOARD_LL, self._kbd_proc, _kernel32.GetModuleHandleW(None), 0
-            )
-            self._mouse_hook = _user32.SetWindowsHookExW(
-                WH_MOUSE_LL, self._mouse_proc, _kernel32.GetModuleHandleW(None), 0
-            )
-
-            msg = wintypes.MSG()
-            while self._running:
-                b_ret = _user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
-                if b_ret <= 0:
-                    break
-                _user32.TranslateMessage(ctypes.byref(msg))
-                _user32.DispatchMessageW(ctypes.byref(msg))
-
-        except Exception:
-            log.exception("Error in Win32 input hook loop")
-        finally:
-            if self._kbd_hook:
-                _user32.UnhookWindowsHookEx(self._kbd_hook)
-            if self._mouse_hook:
-                _user32.UnhookWindowsHookEx(self._mouse_hook)
 
     def idle_seconds(self) -> Optional[float]:
         """Seconds since the last system-wide keyboard or mouse input.
@@ -208,36 +125,27 @@ class InputProbe:
 
     def sample(self, window_seconds: float) -> Optional[Dict[str, Any]]:
         """
-        Snapshot input event counts and active status.
-        Resets count snapshot for next interval.
+        Was the user present during the last `window_seconds`, and did the
+        pointer move?
+
+        Returns None where the platform cannot answer, which the caller must
+        read as "unknown" and not as "idle".
+
+        Two keys only. There is deliberately no `keyboard` key: this probe
+        cannot distinguish a keystroke from a mouse wheel, and the version
+        that pretended it could reported presence-without-cursor-movement as
+        keyboard use. Whether a second contained typing is answered by the
+        input counter, which actually sees key events.
         """
         if not self._supported:
             return None
 
         idle = self._idle_seconds()
         moved = self._cursor_moved()
-
-        with self._lock:
-            k_strokes = self._keyboard_strokes
-            m_clicks = self._mouse_clicks
-            m_moves = self._mouse_movements
-
-            # Reset internal interval counters
-            self._keyboard_strokes = 0
-            self._mouse_clicks = 0
-            self._mouse_movements = 0
-
-        # Fallback activity check if hooks registered 0
-        active = (idle is not None and idle < window_seconds) or moved or k_strokes > 0 or m_clicks > 0 or m_moves > 0
-
         return {
-            "active": active,
-            "mouse": moved or m_clicks > 0 or m_moves > 0,
-            "keyboard": k_strokes > 0 or (active and not moved),
-            "keyboard_strokes": k_strokes,
-            "mouse_clicks": m_clicks,
-            "mouse_movements": m_moves
+            "active": (idle is not None and idle < window_seconds) or moved,
+            "mouse": moved,
         }
 
     def stop(self) -> None:
-        self._running = False
+        """Nothing to stop: this probe owns no thread, hook or listener."""

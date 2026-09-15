@@ -432,6 +432,7 @@ class SyncService(LoopService):
             ("screenshot", self._cache.bind_screenshots_to_client_op),
             ("application usage", self._cache.bind_app_usage_to_entry),
             ("browser usage", self._cache.bind_url_usage_to_entry),
+            ("activity window", self._cache.bind_activity_samples_to_entry),
         ):
             try:
                 adopted = bind(client_op, entry_id)

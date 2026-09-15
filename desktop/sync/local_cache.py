@@ -958,7 +958,7 @@ class LocalCache:
 
     def save_activity_sample(
         self,
-        time_entry_id: int,
+        time_entry_id: Optional[int],
         window_start: str,
         window_seconds: int,
         active_seconds: int,
@@ -968,6 +968,7 @@ class LocalCache:
         mouse_clicks: int = 0,
         mouse_movements: int = 0,
         activity_percent: Optional[int] = None,
+        client_op: Optional[str] = None,
     ) -> str:
         """
         Persist one aggregated activity window.
@@ -975,8 +976,16 @@ class LocalCache:
         `activity_percent` is stored alongside the raw counts so the value the
         user sees is auditable against the inputs it was derived from.
         `keyboard_strokes`/`mouse_clicks`/`mouse_movements` are true event
-        counts from the input hook; `key_events`/`mouse_events` remain the
-        original seconds-with-input counters that drive the percentage.
+        counts from the input counter; `key_events`/`mouse_events` are the
+        seconds-with-input counters kept alongside them.
+
+        `time_entry_id` may be None for a window measured before the backend
+        issued one -- an offline start, or the first minute of a session while
+        the start request is still in flight -- exactly as for
+        `save_app_usage`. Such a row waits in the queue, is withheld from the
+        uploader, and is adopted by `bind_activity_samples_to_entry` once the
+        id arrives. `client_op` is the timer session's stable key and is what
+        makes that adoption possible.
         """
         if activity_percent is not None:
             percent = max(0, min(100, activity_percent))
@@ -989,13 +998,13 @@ class LocalCache:
         now = time.time()
         self._storage.execute(
             """INSERT INTO activity_samples
-               (id, time_entry_id, window_start, window_seconds, active_seconds,
+               (id, time_entry_id, client_op, window_start, window_seconds, active_seconds,
                 key_events, mouse_events, keyboard_strokes, mouse_clicks, mouse_movements,
                 activity_percent, status, retry_count, next_retry_at, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
-            (record_id, time_entry_id, window_start, window_seconds, active_seconds,
-             key_events, mouse_events, keyboard_strokes, mouse_clicks, mouse_movements,
-             percent, now, now),
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
+            (record_id, time_entry_id, client_op, window_start, window_seconds,
+             active_seconds, key_events, mouse_events, keyboard_strokes,
+             mouse_clicks, mouse_movements, percent, now, now),
         )
         return record_id
 
@@ -1005,6 +1014,12 @@ class LocalCache:
         """Activity windows ready to upload, oldest first.
 
         Bounded: see `TELEMETRY_FETCH_LIMIT`.
+
+        Rows still waiting for their entry id are skipped rather than
+        uploaded: the endpoint is per-entry, so there is nowhere to send them
+        yet. They stay 'pending' and are picked up on a later pass, once
+        `bind_activity_samples_to_entry` has adopted them. Same treatment, and
+        the same reason, as `get_pending_app_usage`.
         """
         rows = self._storage.query_all(
             """SELECT id, time_entry_id, window_start, window_seconds, active_seconds,
@@ -1012,11 +1027,45 @@ class LocalCache:
                       activity_percent, retry_count
                FROM activity_samples
                WHERE status = 'pending' AND next_retry_at <= ?
+                 AND time_entry_id IS NOT NULL
                ORDER BY created_at ASC
                LIMIT ?""",
             (time.time(), limit),
         )
         return [dict(row) for row in rows]
+
+    def bind_activity_samples_to_entry(self, client_op: str, time_entry_id: int) -> int:
+        """
+        Attribute activity windows captured before the backend issued an id.
+
+        The same problem and the same answer as `bind_app_usage_to_entry`.
+        The ``time_entry_id IS NULL`` guard makes a repeated bind a no-op
+        rather than a way to re-point rows that are already attributed, so
+        this is safe to call from both the live session (`bind_entry_id`) and
+        the durable queue (`SyncService._adopt_session_telemetry`) -- and both
+        are needed, because a start that failed over to the queue is confirmed
+        only there, possibly after the session has already stopped.
+
+        :return: how many rows were bound.
+        """
+        if not client_op:
+            return 0
+        cursor = self._storage.execute(
+            "UPDATE activity_samples SET time_entry_id = ? "
+            "WHERE time_entry_id IS NULL AND client_op = ?",
+            (time_entry_id, client_op),
+        )
+        return cursor.rowcount or 0
+
+    def count_unattributed_activity_samples(self) -> int:
+        """Windows queued with no entry id, which only an adoption can
+        release. Exists so this class of stall is visible rather than
+        looking like an upload that is merely slow -- the same role
+        `count_unattributed_screenshots` plays."""
+        row = self._storage.query_one(
+            "SELECT COUNT(*) AS n FROM activity_samples WHERE time_entry_id IS NULL"
+        )
+        return int(row["n"]) if row else 0
 
     def complete_activity_samples(self, ids: List[str]) -> None:
         if not ids:
