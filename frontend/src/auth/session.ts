@@ -25,7 +25,7 @@ export const ensureSessionExpiry = (): number | null => {
     localStorage.setItem(SESSION_EXPIRES_AT_KEY, String(expiresAt));
     return expiresAt;
   }
-
+ 
   return null;
 };
 
