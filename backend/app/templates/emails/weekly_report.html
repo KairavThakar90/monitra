@@ -1,0 +1,48 @@
+<!--
+  Your Monitra Weekly Report — sent every Monday, covering the previous
+  completed week.
+
+  No credential, no token and no link that signs anybody in appears here, and
+  nothing in this template is another employee's data: every value is
+  aggregated for the single recipient this message is addressed to.
+
+  The sections below are markup built in `messages.build_weekly_report_email`
+  rather than logic in the template, because the renderer deliberately has no
+  conditionals — a value is escaped unless it was constructed as Markup in
+  Python. A section that has nothing to say arrives here as empty markup and
+  leaves no heading behind.
+-->
+<h1 class="st-h1" style="margin:0 0 6px 0;font-family:Helvetica,Arial,sans-serif;font-size:28px;line-height:36px;font-weight:700;color:#0F172A;letter-spacing:-0.4px;">
+  {{ greeting }}
+</h1>
+
+<p style="margin:0 0 18px 0;font-family:Helvetica,Arial,sans-serif;font-size:17px;line-height:26px;font-weight:600;color:#1F2937;">
+  Your Monitra Weekly Productivity Report
+</p>
+
+<!-- The period, stated once and prominently. A weekly report that does not
+     say which week it is about is a support ticket waiting to happen. -->
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 22px 0;">
+  <tr>
+    <td style="padding:8px 16px;background-color:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;">
+      <p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#1D4ED8;">Week of</p>
+      <p style="margin:2px 0 0 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;color:#1E3A8A;">{{ period_label }}</p>
+    </td>
+  </tr>
+</table>
+
+<p style="margin:0 0 24px 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:25px;color:#4B5563;">
+  {{ lead }}
+</p>
+
+{{ summary_table }}
+
+{{ cta_block }}
+
+<p style="margin:26px 0 0 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:25px;color:#4B5563;">
+  {{ closing_note }}
+</p>
+
+<p style="margin:16px 0 0 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:24px;color:#6B7280;">
+  Keep tracking. Keep improving.
+</p>

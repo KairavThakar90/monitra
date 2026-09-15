@@ -65,6 +65,13 @@ TYPE_FEEDBACK_STATUS = "feedback_status"
 #: several rows (Windows, macOS arm64, macOS x86_64…) and publishing the second
 #: artifact must not send a second announcement.
 TYPE_RELEASE = "release"
+#: "Your Monitra Weekly Report", one per user per report week. Keyed on the
+#: *week start*, never on the day the job ran: a scheduler retry, a Vercel
+#: replay, a redeployment mid-sweep and a deliberate re-run all compute
+#: `week:2026-09-08:user:42` and collapse onto the one row that already exists.
+#: Putting the run date in the key instead would make every retry a new event,
+#: which is precisely the duplicate this prevents.
+TYPE_WEEKLY_REPORT = "weekly_report"
 
 
 class EmailNotification(Base):

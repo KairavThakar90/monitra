@@ -19,7 +19,11 @@
   "crons": [
     {
       "path": "/internal/email/dispatch",
-      "schedule": "0 * * * *"
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/internal/reports/weekly/run",
+      "schedule": "30 3 * * 1"
     }
   ]
 }

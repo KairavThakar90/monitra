@@ -14,11 +14,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 from markupsafe import Markup
 
 from app.core.config import settings
 from app.core.time_format import IST, to_ist
+from app.models.email_notification import TYPE_WEEKLY_REPORT
 from app.services.email import assets
 from app.services.email.provider import (
     EmailAddressError, OutgoingEmail, assert_header_safe, normalise_address,
@@ -845,3 +847,280 @@ BUILDERS = {
     "feedback_status": build_feedback_status_email,
     "release": build_release_email,
 }
+
+
+# ----------------------------------------------------------------------
+# Workflow 5 — weekly productivity report
+# ----------------------------------------------------------------------
+
+#: The two Reports screens, and which permission opens which. Both route
+#: guards *redirect* rather than refuse, and an administrator sent to the
+#: member route is bounced to `/dashboard` — losing the date range on the way
+#: — so the button has to be pointed at the right one from the start.
+WEEKLY_REPORT_MEMBER_PATH = "/member/reports/projects"
+WEEKLY_REPORT_ADMIN_PATH = "/dashboard/reports/projects"
+
+
+def format_duration(total_seconds: Any) -> str:
+    """A tracked duration as "38h 42m".
+
+    Whole minutes, because a weekly total reported to the second invites a
+    reader to reconcile it against a dashboard that rounds differently. The
+    exact figure is in the database and on the Reports page; this is the
+    summary's rendering of it.
+
+    Not `format_hms`: "38:42:00" is the right shape for a timesheet row and
+    the wrong one for a sentence. Both describe the same stored seconds.
+    """
+    try:
+        seconds = max(0, int(total_seconds or 0))
+    except (TypeError, ValueError):
+        seconds = 0
+    hours, remainder = divmod(seconds, 3600)
+    return f"{hours}h {remainder // 60}m"
+
+
+def format_activity(value: Any) -> str:
+    """An activity percentage as "78%", or "No activity" when none was sampled.
+
+    ``None`` means *not measured* — a week of approved manual entries carries
+    no activity samples at all — and it is reported as such rather than as 0%,
+    which would read as "you were idle all week" about somebody who worked.
+    """
+    if value is None:
+        return "No activity"
+    try:
+        return f"{round(float(value))}%"
+    except (TypeError, ValueError):
+        return "No activity"
+
+
+def weekly_report_subject(payload: dict[str, Any]) -> str:
+    """"Your Monitra Weekly Report — 08 Sep–14 Sep".
+
+    Carries the period because a reader with four of these in a folder needs
+    to tell them apart, and deliberately carries no figure: an hours total on
+    a lock screen is somebody's performance shown to whoever is standing there.
+    """
+    period = str(payload.get("period_short") or "").strip()
+    return clean_subject(
+        f"Your Monitra Weekly Report — {period}" if period
+        else "Your Monitra Weekly Report"
+    )
+
+
+def weekly_report_dashboard_url(payload: dict[str, Any]) -> Optional[str]:
+    """Where "View Detailed Report" sends this reader, or None.
+
+    An existing route with existing query parameters — the Reports page reads
+    ``?start=``/``?end=`` already, which is how the dashboard hands its picked
+    span to it — so the button opens the very week the email describes rather
+    than the page's default last-seven-days. No route is invented here.
+
+    Built only when MONITRA_APP_URL holds a real https:// URL, for the reason
+    every other call to action in this module is: `http://localhost:5173`
+    resolves on the *reader's* machine, and a button that goes nowhere is
+    worse than no button.
+    """
+    base = (settings.MONITRA_APP_URL or "").strip().rstrip("/")
+    if not base.startswith("https://"):
+        return None
+
+    path = (
+        WEEKLY_REPORT_ADMIN_PATH if payload.get("can_view_all_time")
+        else WEEKLY_REPORT_MEMBER_PATH
+    )
+    start = str(payload.get("week_start") or "").strip()
+    end = str(payload.get("week_end") or "").strip()
+    if not (start and end):
+        return f"{base}{path}"
+    return f"{base}{path}?{urlencode({'start': start, 'end': end})}"
+
+
+def _rows_table(rows: Markup) -> Markup:
+    """The one table the weekly email is. Empty markup for an empty body."""
+    if not rows:
+        return Markup("")
+    return Markup(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" '
+        'style="margin:0;border:1px solid #EDF0F5;border-radius:10px;">{rows}</table>'
+    ).format(rows=rows)
+
+
+def _weekly_summary_table(payload: dict[str, Any]) -> Markup:
+    """Every figure the weekly email reports, as a single label/value table.
+
+    One table rather than a card grid and four sections: a weekly summary is
+    read down a column in ten seconds, and splitting eight numbers across four
+    headed blocks made the message longer without making any of it clearer.
+
+    Rows are omitted rather than zero-filled when the underlying data cannot
+    support them — `detail_rows` drops a `None` value entirely, so an absent
+    measurement leaves no row behind instead of printing a figure that would
+    read as one.
+
+    Projects are reported as a count and not as a list. The detail belongs to
+    the dashboard the button goes to; repeating a slice of it here made the
+    summary longer without answering anything the count does not.
+    """
+    idle_seconds = payload.get("idle_seconds")
+    highest = payload.get("highest_activity_day") or {}
+    lowest = payload.get("lowest_activity_day") or {}
+
+    return _rows_table(detail_rows([
+        ("Total tracked time", format_duration(payload.get("total_seconds"))),
+        # Active and idle appear only when idle time was actually recorded. A
+        # flat "Idle time 0h 0m" cannot distinguish "you were never idle" from
+        # "no idle period was ever captured on your machine", and the second is
+        # not something to state as a measurement.
+        ("Active time", format_duration(payload.get("active_seconds")) if idle_seconds else None),
+        ("Idle time", format_duration(idle_seconds) if idle_seconds else None),
+        ("Average activity", format_activity(payload.get("average_activity"))),
+        ("Highest activity day", highest.get("name")),
+        ("Lowest activity day", lowest.get("name")),
+        ("Projects", str(int(payload.get("project_count") or 0))),
+    ]))
+
+
+def _weekly_cta(payload: dict[str, Any]) -> Markup:
+    url = weekly_report_dashboard_url(payload)
+    if url is None:
+        return Markup("")
+    return Markup(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+        'class="st-cta" style="margin:30px 0 0 0;">'
+        '<tr><td align="center" style="background-color:#2563EB;border-radius:8px;">'
+        '<a href="{url}" style="display:inline-block;padding:13px 30px;'
+        'font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;'
+        'color:#FFFFFF;text-decoration:none;">View Detailed Report</a>'
+        '</td></tr></table>'
+    ).format(url=url)
+
+
+def _weekly_text_lines(payload: dict[str, Any], has_activity: bool) -> list[str]:
+    """The plain-text alternative. The same figures, in the same order.
+
+    A reader on a text-only client must not be given a different account of
+    their week from the one the HTML shows.
+    """
+    period = str(payload.get("period_label") or "")
+    lines = [
+        "YOUR MONITRA WEEKLY PRODUCTIVITY REPORT",
+        "",
+        _greeting(payload.get("name")),
+        "",
+        f"Week of {period}" if period else "",
+        "",
+    ]
+
+    if not has_activity:
+        lines += [
+            f"You had no tracked activity during {period}." if period
+            else "You had no tracked activity last week.",
+            "",
+        ]
+
+    # The same rows as the HTML table, in the same order. A reader on a
+    # text-only client must not get a different account of their week.
+    lines += ["-" * 48, f"  Total tracked time    {format_duration(payload.get('total_seconds'))}"]
+    if payload.get("idle_seconds"):
+        lines += [
+            f"  Active time           {format_duration(payload.get('active_seconds'))}",
+            f"  Idle time             {format_duration(payload.get('idle_seconds'))}",
+        ]
+    lines.append(f"  Average activity      {format_activity(payload.get('average_activity'))}")
+    for label, key in (
+        ("Highest activity day", "highest_activity_day"),
+        ("Lowest activity day", "lowest_activity_day"),
+    ):
+        if (name := (payload.get(key) or {}).get("name")):
+            lines.append(f"  {label}{' ' * (22 - len(label))}{name}")
+    lines.append(f"  Projects              {int(payload.get('project_count') or 0)}")
+    lines.append("-" * 48)
+
+    if not has_activity:
+        lines += [
+            "",
+            "Open Monitra and start a timer to begin tracking your work this week.",
+        ]
+
+    if (url := weekly_report_dashboard_url(payload)):
+        lines += ["", f"View your detailed report: {url}"]
+    if (support := (settings.MONITRA_SUPPORT_EMAIL or "").strip()):
+        lines += ["", f"Need a hand? Write to {support}."]
+    lines += [
+        "",
+        "Keep tracking. Keep improving.",
+        "",
+        "Monitra — Staff Management System",
+        "Store Transform",
+    ]
+    return lines
+
+
+def build_weekly_report_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    """One person's week, rendered for delivery.
+
+    Everything shown was aggregated for the `user_id` on this row and frozen
+    into `payload` at queue time. Nothing is looked up here, so this builder
+    cannot reach another employee's data even in principle — there is no
+    database session in scope to reach it with.
+    """
+    subject = weekly_report_subject(payload)
+    period = str(payload.get("period_label") or "")
+    has_activity = bool(payload.get("has_activity"))
+
+    frame = _frame_context(
+        subject=subject,
+        preheader=(
+            f"Your tracked time, activity and projects for {period}." if period
+            else "Your Monitra weekly productivity summary."
+        ),
+        footer_note=(
+            "You are receiving this because you have a Monitra account. It is "
+            "sent once a week and covers only the previous completed week."
+        ),
+    )
+
+    if has_activity:
+        lead = Markup("Here is a quick look at your work activity from the previous week.")
+        closing_note = Markup(
+            "Your complete activity, time and project details are available "
+            "in the Monitra dashboard."
+        )
+    else:
+        # A week with nothing in it is a report, not an error, and it is not
+        # dressed up as one either: the table below still renders, carrying
+        # real zeroes rather than a hidden section or an invented figure.
+        lead = Markup("You had no tracked activity during this period.")
+        closing_note = Markup(
+            "Open Monitra and start a timer to begin tracking your work this week."
+        )
+
+    html = render_page(
+        "weekly_report.html",
+        {
+            **frame,
+            "greeting": _greeting(payload.get("name")),
+            "period_label": period,
+            "lead": lead,
+            "summary_table": _weekly_summary_table(payload),
+            "cta_block": _weekly_cta(payload),
+            "closing_note": closing_note,
+        },
+    )
+
+    return OutgoingEmail(
+        to=recipients,
+        subject=subject,
+        html=html,
+        text="\n".join(_weekly_text_lines(payload, has_activity)),
+        reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
+        inline_images=frame["_inline_images"],
+    )
+
+
+#: Registered after the fact rather than inside the literal above, because the
+#: builder is defined below it. The dict is still the one registry the outbox
+#: dispatches through — `TYPE_WEEKLY_REPORT`'s wire value, matched exactly.
+BUILDERS[TYPE_WEEKLY_REPORT] = build_weekly_report_email

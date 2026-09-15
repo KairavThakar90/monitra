@@ -23,3 +23,27 @@ class DispatchResult(BaseModel):
     reason: Optional[str] = Field(
         None, description="Why the sweep did nothing, when it did nothing."
     )
+
+
+class WeeklyReportRunResult(BaseModel):
+    """What one weekly-report run queued.
+
+    Counts and a period only — never a recipient, a name, or any figure from
+    anybody's report. A scheduler's logs are not a place for staff productivity
+    data, and this body is written straight into them.
+    """
+
+    week_start: str = Field(..., description="First day of the reported week (inclusive).")
+    week_end: str = Field(..., description="Last day of the reported week (inclusive).")
+    timezone: str = Field(..., description="Calendar the period was cut on.")
+    eligible_users: int = Field(0, description="Active accounts with a usable address.")
+    queued: int = Field(0, description="Reports newly queued by this run.")
+    already_queued: int = Field(
+        0, description="Reports this week already had — a retry or a re-run, and not an error.",
+    )
+    skipped: int = Field(0, description="No usable address, or no organization to report on.")
+    failed: int = Field(0, description="Could not be queued. Logged, and retryable by re-running.")
+    dry_run: bool = Field(False, description="Whether the run computed without queueing anything.")
+    disabled: bool = Field(
+        False, description="WEEKLY_REPORT_ENABLED is false, so nothing was queued.",
+    )
