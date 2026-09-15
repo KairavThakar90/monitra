@@ -294,7 +294,7 @@ class SyncService(LoopService):
             self.log.warning("cancelling %s: %s", action_type, exc, extra={"op": action_id})
             self._cache.cancel_action(action_id, str(exc))
         except ApiError as exc:
-            self._handle_api_error(action_id, action_type, exc)
+            self._handle_api_error(action_id, action_type, exc, payload)
         except Exception as exc:  # noqa: BLE001
             error = f"{type(exc).__name__}: {exc}"
             self.log.exception("action %s failed unexpectedly", action_type, extra={"op": action_id})
@@ -306,7 +306,10 @@ class SyncService(LoopService):
             self._mark_synced()
             self.action_completed.emit(action_id, action_type, result)
 
-    def _handle_api_error(self, action_id: str, action_type: str, exc: ApiError) -> None:
+    def _handle_api_error(
+        self, action_id: str, action_type: str, exc: ApiError,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
         message = str(exc)
         status = getattr(exc, "status_code", None)
         lowered = message.lower()
@@ -323,12 +326,27 @@ class SyncService(LoopService):
         if status == 409 or "already has an active timer" in lowered or "already stopped" in lowered:
             # The server's state already reflects our intent. This is the
             # idempotency path: treat it as success, not as a failure to retry.
+            #
+            # For a queued *start*, "already has an active timer" means the
+            # backend is running an entry this session did not create (a
+            # start with our own client_op is answered with our entry, never
+            # with 409). The queued stop waiting on this client_op therefore
+            # has nothing to stop, and the entry the backend *is* running is
+            # handed to the UI so it can adopt it. Before this the action was
+            # simply completed, the entry id (if the backend even knew it)
+            # was lost, and the queued stop was cancelled after its deferral
+            # budget while the entry ran on.
+            result: Dict[str, Any] = {"conflict": True, "status_code": 409}
+            active = getattr(exc, "active_entry", None)
+            if action_type == "start_timer" and isinstance(active, dict):
+                result["active_entry"] = active
+                if self._resolve_conflict_entry(payload or {}, active):
+                    result["entry_id"] = active.get("id")
             self._cache.complete_action(action_id)
             self.log.info("action %s reconciled by conflict (409)", action_type,
                           extra={"op": action_id})
             self._mark_synced()
-            self.action_completed.emit(action_id, action_type,
-                                       {"conflict": True, "status_code": 409})
+            self.action_completed.emit(action_id, action_type, result)
             return
 
         if status == 404 or "not found" in lowered:
@@ -341,20 +359,41 @@ class SyncService(LoopService):
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 
+    def _resolve_conflict_entry(self, payload: Dict[str, Any], active: Dict[str, Any]) -> bool:
+        """A 409'd start whose `active_entry` is actually this session's.
+
+        The backend answers a start carrying its own `client_op` with that
+        entry, so this only arises when the key could not be sent -- yet the
+        running entry carries the same `client_op`. Then it *is* ours, and the
+        queued stop gets its id after all.
+        """
+        client_op = payload.get("client_op")
+        if client_op and active.get("client_op") == client_op and active.get("id"):
+            self._cache.resolve_entry_id_for_client_op(client_op, active["id"])
+            return True
+        return False
+
     def _handle_start_timer(self, payload):
         # `started_at` was captured when the user pressed Start; this action
-        # may be landing minutes later. Sending it is what keeps the entry's
-        # recorded start equal to the one the desktop has been counting from.
-        entry_id = self._time_entry_service.start_time_entry(
+        # may be landing minutes later. Sending it (with the client's clock at
+        # send time) is what keeps the entry's recorded start equal to the one
+        # the desktop has been counting from. `client_op` makes the replay
+        # idempotent: a start the backend already applied -- the timed-out
+        # request whose response never arrived -- is answered with that same
+        # entry rather than refused, so the id reaches the queued stop.
+        entry = self._time_entry_service.start_time_entry(
             payload["project_id"], payload["task_id"],
             started_at=payload.get("started_at"),
+            client_op=payload.get("client_op"),
         )
+        entry_id = entry.get("id") if isinstance(entry, dict) else entry
         # A stop queued for this same session has been waiting for this id.
         client_op = payload.get("client_op")
         if client_op and entry_id:
             self._cache.resolve_entry_id_for_client_op(client_op, entry_id)
         return {
             "entry_id": entry_id,
+            "entry": entry if isinstance(entry, dict) else None,
             "project_id": payload["project_id"],
             "task_id": payload["task_id"],
         }
@@ -411,10 +450,12 @@ class SyncService(LoopService):
                 # record why rather than discarding the detail.
                 self.log.info("switch: old entry %s not stoppable (%s)", old_entry_id, exc)
                 stop_result = {"warning": str(exc)}
-        new_entry_id = self._time_entry_service.start_time_entry(
+        new_entry = self._time_entry_service.start_time_entry(
             payload["new_project_id"], payload["new_task_id"],
             started_at=payload.get("switched_at"),
+            client_op=payload.get("client_op"),
         )
+        new_entry_id = new_entry.get("id") if isinstance(new_entry, dict) else new_entry
         return {
             "stop_result": stop_result,
             "old_task_id": payload.get("old_task_id"),

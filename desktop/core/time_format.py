@@ -76,6 +76,34 @@ def ist_day_bounds_utc(day: date) -> tuple[datetime, datetime]:
     return start, end
 
 
+def parse_utc(value: str | None) -> datetime | None:
+    """
+    Parse an ISO-8601 timestamp into an aware UTC datetime.
+
+    Accepts the trailing-``Z`` form the backend emits, and treats a naive
+    timestamp as UTC rather than local time — reading a naive backend
+    timestamp as local time is how elapsed values end up hours out (or
+    negative). Returns ``None`` for a missing or unreadable value; a
+    timestamp that cannot be parsed must never be replaced by an invented one.
+
+    The one parser for backend instants: the timer service anchors elapsed
+    time with it and the dashboard overlays queued stops with it, so the two
+    cannot read the same string differently.
+    """
+    if not value:
+        return None
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def to_ist(value: datetime | None) -> datetime | None:
     """Convert an aware (or UTC-assumed naive) timestamp to IST for display."""
     if value is None:

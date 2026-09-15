@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 import version
 from app.api.client import ApiClient
+from app.api.exceptions import ApiHttpError
 from app.auth.session import SessionManager
 from app.portal.service import build_web_url
 from app.projects.service import ProjectService
@@ -41,7 +42,7 @@ from background_services.public_api import (
 )
 from core.date_mode import DateMode, as_calendar_day, date_mode, is_live_date
 from core.logging_setup import get_logger
-from core.time_format import ist_clock, ist_day_bounds_utc, ist_today
+from core.time_format import ist_clock, ist_day_bounds_utc, ist_today, parse_utc
 from ui import icons
 from ui.activity_section import ActivitySection
 from ui.feedback_dialog import SUBMIT_KEY, FeedbackDialog
@@ -450,6 +451,11 @@ class DashboardWindow(QWidget):
         timer = self.api.timer
         timer.timer_tick.connect(self._on_timer_tick)
         timer.timer_recovered.connect(self._on_timer_recovered)
+        # Both edges of a stop, and the one case a start is refused. See
+        # _on_timer_state_changed for why the day is re-read on *finalized*
+        # and not on the local stop.
+        timer.timer_finalized.connect(self._on_timer_finalized)
+        timer.timer_conflict.connect(self._on_timer_conflict)
 
         # Unwanted-activity warnings: edge-triggered by the rule engine (one
         # emission per threshold crossing, already cooldown-throttled there);
@@ -1425,9 +1431,45 @@ class DashboardWindow(QWidget):
             on_done=on_done,
         )
 
+    def _overlay_pending_stops(self, entries: list) -> list:
+        """Show the day as the backend *will* record it.
+
+        An entry whose stop is still in the durable queue is `running` on the
+        backend and `stopped` here. Rendering the backend's row as-is would
+        drop the session's seconds from every total (a running row banks 0)
+        until the queue drains; the queued stop carries the instant the user
+        pressed Stop, so the finished entry can be shown now with the very
+        duration the backend will compute from it. One reconciliation path:
+        server rows, plus the local mutations the server has not seen yet.
+        """
+        cache = getattr(self.api, "cache", None)
+        if cache is None:
+            return entries
+        overlaid = []
+        for entry in entries:
+            if entry.get("end_time") is None and entry.get("id"):
+                try:
+                    pending = cache.pending_stop_payload_for_entry(entry.get("id"))
+                except Exception:  # noqa: BLE001
+                    log.exception("could not check for a queued stop of entry %s", entry.get("id"))
+                    pending = None
+                stopped_at = parse_utc((pending or {}).get("stopped_at"))
+                started = parse_utc(entry.get("start_time"))
+                if stopped_at is not None and started is not None:
+                    entry = dict(entry)
+                    entry["end_time"] = stopped_at.isoformat()
+                    entry["status"] = "stopped"
+                    entry["total_seconds"] = max(
+                        0, round((stopped_at - started).total_seconds())
+                    )
+                    entry["pending_stop"] = True
+            overlaid.append(entry)
+        return overlaid
+
     def _apply_time_entries(
         self, entries: list, target: date, update_cache: bool = True
     ) -> None:
+        entries = self._overlay_pending_stops(entries)
         self._today_time_entries = entries
         banked = sum(
             e.get("total_seconds", 0)
@@ -1571,11 +1613,55 @@ class DashboardWindow(QWidget):
             self._sidebar.set_active_timer_project(None)
             self._status_bar.set_timer_info("")
             self._status_bar.set_message("Timer stopped.")
-            # Re-read today's totals now the entry has been banked. The
-            # activity read is forced: stopping flushes the final window, and
-            # the last measured percentage must stay on screen afterwards.
-            self._load_today_time()
+            # The local clock has stopped and the session's seconds are
+            # already folded into the cached day, so the totals on screen are
+            # right now. The day is deliberately *not* re-read from the
+            # backend here: the stop request is still in flight at this
+            # moment, and a read that overtook it came back with the entry
+            # still running and `total_seconds` 0, overwrote the fold, and
+            # dropped the day's total by the whole session until the next
+            # refresh -- "the time is wrong after Stop until I refresh". The
+            # re-read happens on `timer_finalized`, once the backend has the
+            # stop. The activity read is forced: stopping flushes the final
+            # window, and the last measured percentage must stay on screen.
             self._load_today_activity(force=True)
+
+    def _on_timer_finalized(self, payload: dict) -> None:
+        """The backend has committed the stop: re-read the day from it.
+
+        `payload["entry"]` is the finalized record (None when the entry was
+        stopped through another path, such as the idle popup). The list the
+        backend returns now carries the same `total_seconds` the reports show,
+        so the sidebar, the task rows and the summary cards converge on the
+        canonical figure without anyone pressing refresh.
+        """
+        entry = payload.get("entry") or {}
+        if entry:
+            log.info(
+                "stop finalized on backend: entry %s total_seconds=%s",
+                entry.get("id"), entry.get("total_seconds"),
+            )
+        self._load_today_time()
+        if self._current_project:
+            self._load_tasks(self._current_project.get("id"))
+
+    def _on_timer_conflict(self, active_entry) -> None:
+        """The backend refused a start because another entry is running.
+
+        The backend is authoritative: whatever it is tracking is what this
+        client shows. When the refusal named the entry it is adopted directly;
+        otherwise the backend is asked. Either way the user is told, because
+        the row they clicked is not the one now counting.
+        """
+        self._status_bar.set_message("A timer is already running. Syncing state…", SUCCESS)
+        self.api.notify(
+            "A timer was already running for your account. Showing that timer.",
+            NotificationLevel.WARNING, key="timer-conflict",
+        )
+        if isinstance(active_entry, dict) and active_entry.get("id"):
+            self._on_active_timer_checked(active_entry)
+        else:
+            self._check_active_timer()
 
     def _on_timer_tick(self, elapsed: int) -> None:
         """
@@ -1622,6 +1708,22 @@ class DashboardWindow(QWidget):
         user_id = self._user_id
 
         def call():
+            # `/time-entries/active` is scoped to the caller by the backend
+            # and carries `server_time`, which is what lets the timer count a
+            # server-recorded start on this machine's clock. An older
+            # deployment without the route answers 404; fall back to the
+            # filtered list it does have.
+            try:
+                response = api_client.get("/time-entries/active")
+                data = response.json()
+                if isinstance(data, dict) and "entry" in data:
+                    entry = data.get("entry")
+                    if isinstance(entry, dict) and entry.get("server_time") is None:
+                        entry["server_time"] = data.get("server_time")
+                    return entry
+            except ApiHttpError as exc:
+                if exc.status_code != 404:
+                    raise
             params = {"status": "running", "limit": 1}
             if user_id is not None:
                 params["user_id"] = user_id

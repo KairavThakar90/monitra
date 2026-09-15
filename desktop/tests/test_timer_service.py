@@ -29,11 +29,13 @@ class FakeTimeEntryService:
         #: end_time from this rather than from when the request arrives.
         self.stopped_at = []
 
-    def start_time_entry(self, project_id, task_id, started_at=None):
+    def start_time_entry(self, project_id, task_id, started_at=None, client_op=None):
         self.started.append((project_id, task_id, started_at))
         if self.fail:
             raise RuntimeError("backend unavailable")
-        return self.entry_id
+        # The real service returns the backend's entry; `start_time` is the
+        # same instant on the server's clock (here: the same clock).
+        return {"id": self.entry_id, "start_time": started_at, "client_op": client_op}
 
     def stop_time_entry(self, entry_id, timeout=None, stopped_at=None):
         self.stopped.append(entry_id)

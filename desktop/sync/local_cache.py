@@ -676,8 +676,19 @@ class LocalCache:
         original start, so the clock resumes from a total the user never
         tracked.
         """
+        return self.pending_stop_payload_for_entry(entry_id) is not None
+
+    def pending_stop_payload_for_entry(self, entry_id: int) -> Optional[Dict[str, Any]]:
+        """The queued stop for this backend entry, if one is still waiting.
+
+        Carries `stopped_at`, the instant the user actually stopped. A day's
+        entries read from the backend while that stop is queued still show the
+        entry running; overlaying this payload lets the dashboard show the
+        entry as the backend *will* record it, instead of alternating between
+        the banked estimate and a running entry with `total_seconds` 0.
+        """
         if entry_id is None:
-            return False
+            return None
         rows = self._storage.query_all(
             "SELECT payload FROM pending_actions "
             "WHERE action_type = 'stop_timer' "
@@ -685,11 +696,12 @@ class LocalCache:
         )
         for row in rows:
             try:
-                if json.loads(row["payload"]).get("entry_id") == entry_id:
-                    return True
+                payload = json.loads(row["payload"])
             except (json.JSONDecodeError, TypeError):
                 continue
-        return False
+            if payload.get("entry_id") == entry_id:
+                return payload
+        return None
 
     def resolve_entry_id_for_client_op(self, client_op: str, entry_id: int) -> int:
         """
