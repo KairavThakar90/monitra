@@ -222,3 +222,73 @@ class TestAuthService(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestServerErrorIsDiagnosable(unittest.TestCase):
+    """A 5xx at sign-in must leave the reason in the log, not just on screen.
+
+    The backend answers a failed token exchange with
+    `{"detail": "Single sign-on exchange failed: <the exception>"}` -- the only
+    string in the system that says *what* broke. AuthService replaced that whole
+    body with the bare sentence "Server error during authentication (HTTP 500)."
+    and logged nothing, so a 500 reported from a staff machine could not be
+    diagnosed from the logs at all: every candidate cause looked identical.
+
+    The user-facing wording is deliberately unchanged -- a server traceback is
+    not something to print under a password field, and no message may carry a
+    URL (see test_error_message_url_redaction.py). The body goes to the log.
+    """
+
+    def setUp(self) -> None:
+        self.api_client = MagicMock(spec=ApiClient)
+        self.api_client.access_token = None
+        self.api_client.post_external.return_value = provider_ok()
+        self.auth_service = AuthService(self.api_client, SessionManager())
+
+    def test_backend_5xx_body_is_logged_and_kept_out_of_the_message(self) -> None:
+        detail = "Single sign-on exchange failed: no permission map for role leader"
+        self.api_client.post.side_effect = ApiHttpError(500, '{"detail": "%s"}' % detail)
+
+        with patch("app.auth.service.log") as logged:
+            with self.assertRaises(ApiError) as raised:
+                self.auth_service.login("akshar@example.com", "pw")
+
+        # The screen still says only what a user can act on.
+        self.assertEqual(
+            str(raised.exception),
+            "Server error during authentication (HTTP 500).",
+        )
+        self.assertNotIn("permission map", str(raised.exception))
+
+        # ...and the cause is now recoverable from the log.
+        logged.error.assert_called_once()
+        self.assertIn(detail, str(logged.error.call_args))
+
+    def test_portal_5xx_body_is_logged_too(self) -> None:
+        self.api_client.post_external.side_effect = ApiHttpError(500, '{"code":500,"message":"wp database error"}')
+
+        with patch("app.auth.service.log") as logged:
+            with self.assertRaises(ApiError) as raised:
+                self.auth_service.login("akshar@example.com", "pw")
+
+        self.assertEqual(
+            str(raised.exception), "Sign-in service error (HTTP 500)."
+        )
+        logged.error.assert_called_once()
+        self.assertIn("wp database error", str(logged.error.call_args))
+
+    def test_a_refused_password_still_logs_nothing_and_says_so(self) -> None:
+        """A 401 is an answer, not a fault: no error log, wording unchanged."""
+        self.api_client.post_external.side_effect = ApiHttpError(
+            401, '{"message":"The username or password you entered is incorrect."}'
+        )
+
+        with patch("app.auth.service.log") as logged:
+            with self.assertRaises(ApiError) as raised:
+                self.auth_service.login("akshar@example.com", "pw")
+
+        self.assertEqual(
+            str(raised.exception),
+            "The username or password you entered is incorrect.",
+        )
+        logged.error.assert_not_called()
