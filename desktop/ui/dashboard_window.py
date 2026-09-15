@@ -1843,6 +1843,8 @@ class DashboardWindow(QWidget):
         previous = self._sync_revision
         self._sync_revision = revision
         if previous is None:
+            components = payload.get("components")
+            self._sync_components = dict(components) if isinstance(components, dict) else {}
             self._sync_log("probe.baseline", revision=revision)
             return
         if revision == previous:

@@ -276,6 +276,18 @@ def test_a_changed_fingerprint_triggers_a_full_refresh(ready):
     assert dashboard._sync_revision == "r2"
 
 
+def test_the_probe_names_which_component_moved(ready):
+    dashboard, runner = ready
+    dashboard._probe_sync_revision()
+    runner.succeed("sync-probe", _revision("r1", projects="1:a:1", tasks="4:b:4"))
+    dashboard._probe_sync_revision()
+    payload = _revision("r2", projects="1:a:1", tasks="5:c:5")
+    runner.succeed("sync-probe", payload)
+
+    assert dashboard._changed_components(payload) == ""      # already recorded on arrival
+    assert dashboard._sync_components == {"projects": "1:a:1", "tasks": "5:c:5"}
+
+
 def test_a_backend_without_the_endpoint_stops_the_probe_and_keeps_the_short_cadence(ready):
     import ui.dashboard_window as module
 
