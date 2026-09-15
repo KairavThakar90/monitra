@@ -260,7 +260,32 @@ class LocalCache:
             return None
         return [json.loads(row["data"]) for row in rows]
 
+    def projects_cache_age_seconds(self) -> Optional[float]:
+        """How long ago the projects cache was last written, or None if never.
+
+        The dashboard paints from this cache before the network answers and
+        keeps it on screen when a refresh fails; this is what lets it say
+        *how old* what it is showing is, rather than presenting a week-old
+        list as current.
+        """
+        row = self._storage.query_one("SELECT MAX(cached_at) AS written FROM projects")
+        if not row or row["written"] is None:
+            return None
+        return max(0.0, time.time() - float(row["written"]))
+
     # ── Task Cache ────────────────────────────────────────────────────────────
+
+    def forget_project_tasks(self, project_id: int) -> None:
+        """Drop one project's cached tasks and its freshness marker.
+
+        For a project that has disappeared from the user's list -- archived,
+        or their membership removed. Its rows would otherwise be painted
+        again the next time something selected it, and `get_cached_tasks`
+        would report them as a cached answer rather than "never cached".
+        """
+        with self._storage.transaction() as conn:
+            conn.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
+            conn.execute("DELETE FROM task_cache_status WHERE project_id = ?", (project_id,))
 
     def cache_tasks(self, project_id: int, tasks: List[Dict[str, Any]]) -> None:
         """

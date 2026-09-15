@@ -22,6 +22,31 @@ re-grant a permission.
 
 ### Fixed
 
+- **Projects and tasks now stay in step with the server on their own — the
+  Refresh button is no longer part of normal use.** Monitra asks the server
+  every half minute whether anything you can see has changed and re-reads
+  only when it has, so a project or task created on the web, a task
+  reassigned, or a project you were removed from shows up within that time.
+  Waking your machine from sleep re-synchronises immediately instead of
+  waiting out the old timers. If you were viewing a project that is no
+  longer yours, Monitra now moves you to one that is rather than keeping the
+  old task list on screen.
+- **All of your projects are listed.** Anyone with more than twenty projects
+  only ever saw the first twenty, and the project they were last in could
+  appear to vanish.
+- **A task you have just created cannot disappear again.** A background
+  re-read that was already in flight when you pressed Add could overwrite
+  the list and hide the new task until the next refresh.
+- **A refresh that failed part-way no longer silently blocks every later
+  one.** After one such failure the dashboard could stay stale for the rest
+  of the session with nothing to show for it in the log; it now recovers on
+  its own and says so.
+- **Retrying a task creation after a lost reply no longer creates the task
+  twice.**
+- **A brief problem renewing your sign-in no longer signs you out.** Only a
+  definitive refusal from the server ends the session; a server that could
+  not be reached for the renewal is retried.
+
 - **You can no longer open a future date, and a past date is now genuinely
   read-only.** Today is the latest date the header will show: the forward
   chevron stops there and the calendar will not select past it. Choosing an

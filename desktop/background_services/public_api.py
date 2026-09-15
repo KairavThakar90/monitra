@@ -80,6 +80,24 @@ class BackgroundApi:
     def cancel_key(self, key: str) -> None:
         self._runtime.tasks.cancel_key(key)
 
+    def cancel_keys_with_prefix(self, prefix: str) -> int:
+        """Cancel every in-flight task whose key starts with `prefix`."""
+        return self._runtime.tasks.cancel_keys_with_prefix(prefix)
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    @property
+    def lifecycle(self):
+        """The recovery service, for its lifecycle signals.
+
+        `system_resumed(float)` fires once when the machine comes back from
+        sleep or hibernation (the gap it slept for, in seconds). A view that
+        shows server state should re-read it then: the ordinary refresh
+        cadence is measured in wall-clock timers that were paused with the
+        machine, and everything on screen is as old as the sleep.
+        """
+        return self._runtime.recovery
+
     # ── Timer ─────────────────────────────────────────────────────────────────
 
     @property

@@ -465,11 +465,16 @@ class SyncService(LoopService):
         }
 
     def _handle_create_task(self, payload):
+        # The assignee is passed through as queued -- including None, which
+        # creates an unassigned task. This used to default it to `1`, which is
+        # whichever user happens to hold that id: a fabricated assignee, and
+        # a 400 from the backend for every project that user is not on.
         return self._task_service.create_task(
             payload["project_id"],
             payload["task_name"],
-            payload.get("assignee_id") or 1,
+            payload.get("assignee_id"),
             payload.get("status_id") or 1,
+            client_op=payload.get("client_op"),
         )
 
     def _handle_update_task(self, payload):

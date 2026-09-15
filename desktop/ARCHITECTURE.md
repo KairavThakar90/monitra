@@ -552,7 +552,123 @@ create duplicate time entries.
 
 ---
 
-## 14. Extending the application safely
+## 14. Data synchronisation: projects, tasks and the day's entries
+
+The backend is the source of truth for projects, tasks, membership,
+assignment and time entries. The local cache is a performance and offline
+mechanism: it lets the dashboard paint before the network answers and keeps
+the last good data on screen through an outage. It is **never allowed to
+outlive newer server state**, and nothing local is ever invented to fill a
+gap.
+
+```
+server state ──▶ refresh / probe ──▶ reconcile ──▶ local cache ──▶ UI
+desktop action ──▶ API ──▶ canonical response ──▶ local cache + UI ──▶ targeted re-read
+```
+
+### Startup
+
+`DashboardWindow.on_login` renders the cached projects and the selected
+project's cached tasks immediately (`sync event=cache.loaded age_seconds=…`
+in the log), then runs one **refresh round** — projects, task statuses, the
+selected project's tasks and the viewed day's time entries, concurrently on
+the bounded pool — and reconciles what comes back. The status bar says what
+is on screen: "Loaded projects from cache." until the round lands, and on a
+failed round "Showing projects from N minutes ago — retrying." rather than
+presenting an old list as current.
+
+`ProjectService.get_projects` walks **every page** of `/api/v1/projects`
+(`limit=100`). It used to request page 1 of 20 and stop, so anyone with more
+than twenty projects never saw the rest.
+
+### Convergence without Refresh
+
+Two mechanisms, one cheap and one complete:
+
+- **The change probe.** Every `SYNC_PROBE_INTERVAL_MS` (30 s) the dashboard
+  asks `GET /api/v1/sync/revision` for a fingerprint of everything this user
+  can see — projects, tasks, memberships, assignments and their own time
+  entries, as `COUNT / MAX(updated_at) / MAX(id)` aggregates under exactly
+  the scope the list endpoints apply (`backend/app/services/sync_revision.py`).
+  It carries no rows. The first answer is a baseline; a later answer that
+  differs triggers one refresh round (`sync event=probe.changed
+  components=…`). This is how a project created on the web, a task
+  reassigned, or a membership removed reaches an open desktop within half a
+  minute, without the fleet re-downloading lists that have not moved.
+- **The full refresh round** runs on `REFRESH_INTERVAL_WITH_PROBE_MS`
+  (5 min) as a safety net once the probe is known to work, and on
+  `REFRESH_INTERVAL_MS` (2 min) against an older backend that answers the
+  probe with 404 — in which case the probe stops asking for the session.
+
+The round also runs on the network service's recovery edge and on
+`system_resumed` (below). It is skipped while the network state is a
+measured outage, never while it is merely unknown.
+
+### Reconciliation rules
+
+- **The server's project list decides the selection.** If the selected
+  project is not in the list that came back — archived, or this user removed
+  from it — the selection is cleared, its cached tasks are dropped
+  (`LocalCache.forget_project_tasks`) and a valid project is selected, the
+  same way the initial selection is made. If it is still listed, the fresh
+  record replaces the held one without disturbing the selection. A running
+  timer is never touched by any of this.
+- **A stale task list cannot undo a local change.** Every task mutation bumps
+  `_task_list_version`; a task fetch records the version at submission and
+  is discarded on arrival if it has moved since (`sync event=server.discarded`),
+  then re-read. Without this, a refresh's task list that was in flight when
+  the user created a task painted the new task away again.
+- **A response for a project the user has navigated away from is dropped**
+  (identity guard), and any callback from a previous login is dropped by the
+  task runner's session-generation guard.
+- **Mutations show the canonical response.** A created, edited or deleted
+  task is applied to the list on screen from the server's own reply, written
+  to the cache, and followed by one targeted re-read of that project's tasks.
+  Nothing is inferred and nothing waits on the full round.
+
+### Retries and idempotency
+
+Task creation carries a `client_op` key (`TaskSection._client_op_for_create`),
+kept until the create succeeds, so a retry after a lost reply is answered
+with the task the backend already created rather than a second one. Timer
+starts and stops carry theirs through the durable queue (§7). A `401` that
+the silent token refresh could not resolve *right now* (the refresh endpoint
+unreachable or 5xx) is raised as a connection error and retried like one;
+only a definitive refusal, or having no refresh token to present, ends the
+session.
+
+### The round cannot wedge
+
+The refresh round is reference-counted. `_run_load` reports completion in a
+`finally`, so a handler that raises still decrements the count, and a round
+that has not reported back within `REFRESH_STALE_AFTER_S` is abandoned with
+an error naming the runtime health. Before both, a single raised handler
+left the count one too high and every later refresh — periodic, on
+reconnect, and the button — was silently dropped as "already in flight"
+until the user signed out.
+
+### Sleep and wake
+
+Qt timers do not fire while the machine is suspended. `RecoveryService`
+notices its 15-second heartbeat arriving `SUSPEND_GAP_SECONDS` or more late
+and emits `system_resumed(gap)` once. The runtime probes the network and
+wakes the sync consumer; the dashboard runs a refresh round. Nothing waits
+out a cadence that was paused with the machine.
+
+### Background workers cannot die quietly
+
+A `LoopService` tick that raises is logged with its traceback and
+rescheduled at `error_interval_ms` — the loop never exits on an exception.
+A service whose `on_start` raises is retried on a bounded schedule
+(`BaseService.START_RETRY_DELAYS_MS`: 2 s, 5 s, 15 s) and, if it still
+fails, stays `FAILED` with the error in the health report. Every
+synchronisation outcome is one `sync event=…` log line — cache painted,
+round started and completed, what the server sent, what was discarded and
+why, what the probe saw — with no token and no payload in it.
+
+---
+
+## 15. Extending the application safely
 
 **To run something in the background:** `api.run_in_background(...)` with a
 `key`. Do not create a thread.

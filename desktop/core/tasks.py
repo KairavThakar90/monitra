@@ -222,6 +222,25 @@ class TaskRunner(QObject):
         for handle in targets:
             handle.cancel()
 
+    def cancel_keys_with_prefix(self, prefix: str) -> int:
+        """Cancel every in-flight task whose key starts with `prefix`.
+
+        For families of keys parameterised by an id or a date --
+        `load-tasks:{project_id}`, `load-today:{date}` -- where the caller
+        cannot enumerate the members. Cancelling the bare family name matched
+        nothing, so those loads ran to completion after logout.
+
+        :return: how many tasks were cancelled.
+        """
+        with self._lock:
+            targets = [
+                h for h in self._handles.values()
+                if h.key is not None and h.key.startswith(prefix)
+            ]
+        for handle in targets:
+            handle.cancel()
+        return len(targets)
+
     def cancel_all(self) -> None:
         """Request cancellation of every in-flight task."""
         with self._lock:

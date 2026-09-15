@@ -37,17 +37,28 @@ class RecoveryService(LoopService):
     Signals:
         unclean_shutdown_detected(dict) — the previous run's last record
         recovery_completed(dict)        — summary of what was recovered
+        system_resumed(float)           — the machine came back from sleep;
+                                          carries the gap in seconds
     """
 
     name = "recovery"
 
     unclean_shutdown_detected = Signal(dict)
     recovery_completed = Signal(dict)
+    system_resumed = Signal(float)
 
     #: Liveness is written at this cadence, on the service's own thread.
     HEARTBEAT_INTERVAL_MS = 15_000
     #: A heartbeat older than this means the process did not shut down cleanly.
     STALE_AFTER_SECONDS = 120.0
+    #: How far past its interval a heartbeat may land before the gap is read
+    #: as the machine having been asleep rather than merely busy. Timers do
+    #: not fire while the OS is suspended, so a tick that arrives a minute or
+    #: more late is the one reliable, platform-independent sign of a resume
+    #: -- and a resume is when every wall-clock cadence in the application
+    #: (network probe, refresh, sync) was paused with the machine and the
+    #: data on screen is as old as the sleep.
+    SUSPEND_GAP_SECONDS = 60.0
 
     def __init__(self, runtime, cache, parent=None) -> None:
         super().__init__(runtime, parent)
@@ -55,6 +66,10 @@ class RecoveryService(LoopService):
         self.interval_ms = self.HEARTBEAT_INTERVAL_MS
         self._previous: Optional[Dict[str, Any]] = None
         self._was_unclean = False
+        #: `time.monotonic()` at the previous tick, for suspend detection.
+        #: Monotonic rather than wall-clock so a user changing the clock is
+        #: not reported as a sleep.
+        self._last_tick_monotonic: Optional[float] = None
 
     # ── Introspection ─────────────────────────────────────────────────────────
 
@@ -145,10 +160,36 @@ class RecoveryService(LoopService):
         except Exception:  # noqa: BLE001
             self.log.exception("could not write runtime record")
 
+    def suspend_gap(self, now_monotonic: float) -> Optional[float]:
+        """The seconds the machine was asleep before this tick, or None.
+
+        Pure bookkeeping over the monotonic clock, kept separate from
+        `tick()` so it can be tested without a thread. Returns a gap only
+        when a previous tick exists to compare against and the delay since
+        it exceeds the heartbeat interval by `SUSPEND_GAP_SECONDS`.
+        """
+        previous = self._last_tick_monotonic
+        self._last_tick_monotonic = now_monotonic
+        if previous is None:
+            return None
+        expected = self.HEARTBEAT_INTERVAL_MS / 1000.0
+        late_by = (now_monotonic - previous) - expected
+        if late_by < self.SUSPEND_GAP_SECONDS:
+            return None
+        return late_by
+
     def tick(self) -> Optional[int]:
+        gap = self.suspend_gap(time.monotonic())
+        if gap is not None:
+            self.log.info("system resumed: heartbeat was %.0fs late; asking services to re-probe", gap)
+            self.system_resumed.emit(gap)
         self._write_record(clean=False)
         self.heartbeat()
         return self.HEARTBEAT_INTERVAL_MS
+
+    def on_start(self) -> None:
+        self._last_tick_monotonic = None
+        super().on_start()
 
     def mark_clean_shutdown(self) -> None:
         """
