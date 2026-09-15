@@ -21,6 +21,12 @@ export interface ReactDashboardSummary {
   /** Null when nothing in the selected scope was activity-sampled. */
   activity: number | null;
   monthly_activity: number | null;
+  /**
+   * Exact tracked seconds in scope -- render durations from this. `total_hours`
+   * is 2dp, i.e. a 36-second grid: a ten-second session is 0.00h there and
+   * disagrees with the entry it came from.
+   */
+  total_seconds: number;
   total_hours: number;
   active_projects: number;
   team_members: number;

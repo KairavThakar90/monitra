@@ -42,6 +42,43 @@ export function formatHoursAsHMS(hours: number | null | undefined): string {
   return formatHMS(Math.round(hours * 3600));
 }
 
+/**
+ * Exact seconds from an API object that carries them, or the nearest second
+ * from its decimal hours when it does not.
+ *
+ * Every tracked-time response now carries `total_seconds` beside the 2dp
+ * `total_hours`. Reading the seconds is the only way two screens can agree
+ * about one duration: hours rounded to 2dp are a 36-second grid, so a
+ * ten-second session is 0.00h on one screen and 00:00:10 on another.
+ */
+export function secondsOf(
+  value: { total_seconds?: number | null; total_hours?: number | null } | null | undefined,
+): number {
+  if (!value) return 0;
+  if (typeof value.total_seconds === 'number' && !Number.isNaN(value.total_seconds)) {
+    return Math.max(0, Math.trunc(value.total_seconds));
+  }
+  return Math.max(0, Math.round((value.total_hours ?? 0) * 3600));
+}
+
+/**
+ * Today's date in IST as `YYYY-MM-DD` -- the calendar every date filter and
+ * every "cannot be in the future" rule in the system is measured on.
+ *
+ * Neither the browser's local day nor the UTC day is right: the backend
+ * reports against Asia/Kolkata, so both of those disagree with it for part of
+ * every day. Evaluated on each call rather than once at import, so a page
+ * left open across midnight does not keep yesterday's "today".
+ */
+export function istTodayISO(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: IST_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+}
+
 /** Render a UTC timestamp as IST clock time, e.g. "14:35". */
 export function formatISTTime(value: string | null | undefined): string {
   if (!value) return '-';

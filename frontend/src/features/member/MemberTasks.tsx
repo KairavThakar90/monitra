@@ -15,7 +15,7 @@ import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
 import { DateRangeFilter, DEFAULT_RANGE } from "../dashboard/v2/filters";
 import type { DateRange } from "../dashboard/v2/filters";
-import { formatHMS, formatHoursAsHMS } from "../../utils/duration";
+import { formatHMS, secondsOf } from "../../utils/duration";
 import { series } from "../dashboard/v2/theme";
 import { FieldError, SEARCH_MAX_LENGTH, validateSearchTerm } from "../../validation";
 
@@ -211,7 +211,10 @@ export const MemberTasks: React.FC = () => {
   const secondsByTask = useMemo(() => {
     const map = new Map<number, number>();
     (trackedData?.items || []).forEach((item) => {
-      if (item.task_id != null) map.set(item.task_id, Math.round((item.total_hours || 0) * 3600));
+      // Exact seconds, the same figure the reports render. Rebuilding them
+      // from 2dp hours put this screen up to 18 seconds away from the report
+      // for the same task.
+      if (item.task_id != null) map.set(item.task_id, secondsOf(item));
     });
     return map;
   }, [trackedData]);
@@ -279,7 +282,7 @@ export const MemberTasks: React.FC = () => {
 
   const totalSeconds = rows.reduce((sum, row) => sum + row.seconds, 0);
   /** Everything the member tracked in range, whether or not it hit a task. */
-  const trackedSeconds = Math.round((dashboard?.summary.total_hours ?? 0) * 3600);
+  const trackedSeconds = secondsOf(dashboard?.summary);
   /** ...of which this much landed on some task. */
   const onTaskSeconds = [...secondsByTask.values()].reduce((sum, value) => sum + value, 0);
   const unlinkedSeconds = Math.max(0, trackedSeconds - onTaskSeconds);
@@ -437,7 +440,7 @@ export const MemberTasks: React.FC = () => {
             <span>
               You tracked{" "}
               <span className="font-mono font-bold tabular-nums text-[#0F172A]">
-                {formatHoursAsHMS(dashboard?.summary.total_hours ?? 0)}
+                {formatHMS(trackedSeconds)}
               </span>{" "}
               in total
             </span>

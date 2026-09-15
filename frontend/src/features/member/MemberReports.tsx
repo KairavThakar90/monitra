@@ -20,7 +20,7 @@ import {
   useGetReactReportsTrendQuery,
 } from "../../store/api/reportsApi";
 import { useGetAllProjectsQuery } from "../../store/api/projectsApi";
-import { formatHMS, formatHoursAsHMS } from "../../utils/duration";
+import { formatHMS, formatHoursAsHMS, secondsOf } from "../../utils/duration";
 
 /**
  * The member's own reports: the same four dimensions the admin Reports page
@@ -154,7 +154,7 @@ export const MemberReports: React.FC = () => {
     new Date(`${point.date}T00:00:00`).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })
   );
 
-  const totalSeconds = Math.round((summaryData?.total_hours || 0) * 3600);
+  const totalSeconds = secondsOf(summaryData);
   const avgActivity = summaryData?.avg_activity ?? null;
 
   // The population this chart's slices are drawn from is the list response's

@@ -85,15 +85,24 @@ export interface GetManualTimeEntryRequestsResponse {
   };
 }
 
+/**
+ * Everything that reports tracked time -- the day list, the per-employee
+ * detail, the dashboard, every reports query -- provides some `TimeTracking`
+ * tag. Invalidating the bare type reaches all of them; invalidating only
+ * `{ TimeTracking, LIST }` refreshed the day list and left the KPI cards and
+ * report totals beside it showing the old figure until they went stale.
+ */
+const TRACKED_TIME_CHANGED = ['TimeTracking' as const];
+
 export const manualTimeEntryApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
     createManualTimeEntry: builder.mutation<ManualTimeEntryRead, ManualTimeEntryCreate>({
       query: (body) => ({ url: ENDPOINTS.MANUAL_TIME_ENTRIES.BASE, method: 'POST', body }),
-      invalidatesTags: [{ type: 'TimeTracking', id: 'LIST' }],
+      invalidatesTags: TRACKED_TIME_CHANGED,
     }),
     createManualTimeEntryRequest: builder.mutation<ManualTimeEntryRead, ManualTimeEntryRequestCreate>({
       query: (body) => ({ url: ENDPOINTS.MANUAL_TIME_ENTRY_REQUESTS.BASE, method: 'POST', body }),
-      invalidatesTags: [{ type: 'TimeTracking', id: 'LIST' }, { type: 'ManualTimeEntry', id: 'LIST' }],
+      invalidatesTags: [...TRACKED_TIME_CHANGED, { type: 'ManualTimeEntry', id: 'LIST' }],
     }),
     getManualTimeEntryRequests: builder.query<GetManualTimeEntryRequestsResponse, GetManualTimeEntryRequestsArgs>({
       query: (params) => {
@@ -109,7 +118,7 @@ export const manualTimeEntryApi = baseApi.injectEndpoints({
     }),
     approveManualTimeEntryRequest: builder.mutation<void, number>({
       query: (id) => ({ url: ENDPOINTS.MANUAL_TIME_ENTRY_REQUESTS.APPROVE(id), method: 'PATCH' }),
-      invalidatesTags: [{ type: 'TimeTracking', id: 'LIST' }, { type: 'ManualTimeEntry', id: 'LIST' }],
+      invalidatesTags: [...TRACKED_TIME_CHANGED, { type: 'ManualTimeEntry', id: 'LIST' }],
     }),
     rejectManualTimeEntryRequest: builder.mutation<void, number>({
       query: (id) => ({ url: ENDPOINTS.MANUAL_TIME_ENTRY_REQUESTS.REJECT(id), method: 'PATCH' }),

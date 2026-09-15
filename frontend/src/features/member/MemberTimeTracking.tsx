@@ -17,7 +17,7 @@ import { useFeedback } from "../../components/FeedbackProvider";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
 import { DateRangeFilter, DEFAULT_RANGE } from "../dashboard/v2/filters";
 import type { DateRange } from "../dashboard/v2/filters";
-import { formatHMS, formatISTDate, formatISTTime, istWallClockToUtcISO } from "../../utils/duration";
+import { formatHMS, formatISTDate, formatISTTime, istTodayISO, istWallClockToUtcISO } from "../../utils/duration";
 import { series } from "../dashboard/v2/theme";
 
 /**
@@ -34,12 +34,8 @@ import { series } from "../dashboard/v2/theme";
  * exists on this page.
  */
 
-const todayIso = () => {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
-    now.getDate()
-  ).padStart(2, "0")}`;
-};
+/** The IST calendar day -- the one the backend measures "today" on. */
+const todayIso = () => istTodayISO();
 
 /** "Mon, 31 Aug 2026" — the weekday is what makes a day row scannable. */
 const longDayLabel = (iso: string) =>

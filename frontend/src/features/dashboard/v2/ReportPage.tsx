@@ -19,7 +19,7 @@ import {
   useGetReactReportsListQuery,
   useGetReactReportsTrendQuery,
 } from "../../../store/api/reportsApi";
-import { formatHMS, formatHoursAsHMS } from "../../../utils/duration";
+import { formatHMS, formatHoursAsHMS, secondsOf } from "../../../utils/duration";
 import { useGetAllMembersQuery } from "../../../store/api/membersApi";
 import { useGetAllProjectsQuery } from "../../../store/api/projectsApi";
 import { AppIcon } from "../../../components/AppIcon";
@@ -194,7 +194,7 @@ export const ReportPage: React.FC = () => {
   }, [listData, reportId]);
 
   const summary = summaryData;
-  const totalTrackedSeconds = (summary?.total_hours || 0) * 3600;
+  const totalTrackedSeconds = secondsOf(summary);
   // Null means nothing in scope was activity-sampled, which is not the same as
   // 0% activity -- say so rather than printing a number nobody measured.
   const avgActivity = summary?.avg_activity ?? null;

@@ -7,7 +7,7 @@ import { DateRangeFilter, DEFAULT_RANGE } from "./filters";
 import type { DateRange } from "./filters";
 import { brand, series } from "./theme";
 import { useGetReactDashboardQuery } from "../../../store/api/dashboardApi";
-import { formatHoursAsHMS } from "../../../utils/duration";
+import { formatHMS, formatHoursAsHMS, secondsOf } from "../../../utils/duration";
 import { DashboardSkeleton } from "./skeletons";
 
 /** `YYYY-MM-DD` -> local Date, without the UTC shift `new Date(iso)` applies. */
@@ -225,7 +225,7 @@ export const DashboardV2: React.FC = () => {
             )}
             {kpiCard(
               "Total Hours",
-              formatHoursAsHMS(summary?.total_hours ?? 0),
+              formatHMS(secondsOf(summary)),
               deltaOf(summary?.total_hours, previous?.summary.total_hours),
               series[1],
               trackedSeries

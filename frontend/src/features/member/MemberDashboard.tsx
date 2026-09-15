@@ -10,7 +10,7 @@ import { brand, series } from "../dashboard/v2/theme";
 import { DashboardSkeleton } from "../dashboard/v2/skeletons";
 import { useGetReactDashboardQuery } from "../../store/api/dashboardApi";
 import { useGetTimeTrackingQuery } from "../../store/api/timeTrackingApi";
-import { formatHMS, formatHoursAsHMS } from "../../utils/duration";
+import { formatHMS, formatHoursAsHMS, secondsOf } from "../../utils/duration";
 
 /**
  * The member's own dashboard.
@@ -214,7 +214,7 @@ export const MemberDashboard: React.FC = () => {
               )}
               {kpiCard(
                 "Time Worked",
-                formatHoursAsHMS(summary?.total_hours ?? 0),
+                formatHMS(secondsOf(summary)),
                 deltaOf(summary?.total_hours, previous?.summary.total_hours),
                 series[1],
                 trackedSeries

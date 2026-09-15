@@ -68,6 +68,11 @@ export const baseApi = createApi({
   // Data already in cache renders immediately; anything older than 60s is
   // revalidated in the background while the stale rows stay on screen.
   refetchOnMountOrArgChange: 60,
+  // Both need `setupListeners(store.dispatch)` (store/index.ts) to take
+  // effect. Focus is the moment a person comes back from the desktop app to
+  // look at the dashboard: anything older than the staleness window above
+  // is re-read then, so the day's total is current without a page reload.
+  refetchOnFocus: true,
   refetchOnReconnect: true,
   baseQuery: baseQueryWithRefresh,
   extractRehydrationInfo(action, { reducerPath }) {

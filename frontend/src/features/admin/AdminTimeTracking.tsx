@@ -7,13 +7,14 @@ import { useCreateManualTimeEntryRequestMutation, useGetManualTimeEntryRequestsQ
 import { useFeedback } from '../../components/FeedbackProvider';
 import { useAuth } from '../auth/authContext';
 import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
-import { formatHMS, formatISTDate, formatISTTime, istWallClockToUtcISO } from '../../utils/duration';
+import { formatHMS, formatISTDate, formatISTTime, istTodayISO, istWallClockToUtcISO } from '../../utils/duration';
 import { PaginationArrow } from '../../components/PaginationArrow';
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
 
-const TODAY = new Date();
-const formatDateString = (d: Date) => d.toISOString().split('T')[0];
-const todayStr = formatDateString(TODAY);
+// The IST calendar day, read when needed. This used to be the UTC day frozen
+// at module load, which called the wrong day "today" between 00:00 and 05:30
+// IST and never advanced while the tab stayed open.
+const todayStr = () => istTodayISO();
 
 export interface TimeEntry {
   id: string;
@@ -338,7 +339,7 @@ export const AdminTimeTracking: React.FC = () => {
   const [formEmployeeId, setFormEmployeeId] = useState('');
   const [formProjectId, setFormProjectId] = useState('');
   const [formTaskId, setFormTaskId] = useState('');
-  const [formDate, setFormDate] = useState(todayStr);
+  const [formDate, setFormDate] = useState(todayStr());
   const [formClockIn, setFormClockIn] = useState('09:00');
   const [formClockOut, setFormClockOut] = useState('18:00');
   const [formError, setFormError] = useState<string | null>(null);
@@ -517,7 +518,7 @@ export const AdminTimeTracking: React.FC = () => {
       setFormError('Pick an employee, a project and a task before saving.');
       return;
     }
-    if (formDate > todayStr) {
+    if (formDate > todayStr()) {
       setFormError('Work date cannot be in the future.');
       return;
     }
@@ -561,7 +562,7 @@ export const AdminTimeTracking: React.FC = () => {
     setFormEmployeeId(currentUser ? String(currentUser.id) : '');
     setFormProjectId('');
     setFormTaskId('');
-    setFormDate(todayStr);
+    setFormDate(todayStr());
     setFormClockIn('09:00');
     setFormClockOut('18:00');
     setFormError(null);
@@ -1063,7 +1064,7 @@ export const AdminTimeTracking: React.FC = () => {
                     id="mt-date"
                     required
                     type="date"
-                    max={todayStr}
+                    max={todayStr()}
                     value={formDate}
                     onChange={e => { setFormDate(e.target.value); setFormError(null); }}
                     onBlur={() => entryForm.validateField('workDate', formDate)}
