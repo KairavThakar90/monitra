@@ -78,6 +78,20 @@ and derived download URL.
 
 1. **Publish the draft GitHub release.** Until this happens the asset URLs in
    the draft rows are not reachable, so do this first.
+
+   > **The release must live in a public repository.** This source repository
+   > is private, and a private repository's release assets are *never*
+   > publicly downloadable — assets inherit the repository's visibility and
+   > there is no per-asset public switch. Publishing the release does not
+   > change that. The failure is easy to misread as a browser bug: the only
+   > thing that varies is whether that browser carries a GitHub session with
+   > repository access, so the installer downloads fine in the maintainer's
+   > signed-in browser and 404s in every other one.
+   >
+   > The release job therefore publishes to the repository named by the
+   > `RELEASES_REPO` variable — a public, source-free repository holding
+   > installers only — using `RELEASES_REPO_TOKEN`. Set both, or downloads
+   > stay private to collaborators.
 2. **Publish each release row.** For every artifact registered by CI:
 
    ```
