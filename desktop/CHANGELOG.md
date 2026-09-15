@@ -20,7 +20,18 @@ re-grant a permission.
 
 ## [Unreleased]
 
+## [1.1.2]
+
 ### Fixed
+
+- **Downloading Monitra no longer requires a GitHub account.** The download
+  page handed every visitor a link that only worked if their browser happened
+  to be signed in to GitHub with access to a private repository. For everyone
+  else the download failed with a "not found" page, which looked like a problem
+  with their browser — the same link would work in one browser and fail in
+  another on the same machine. The installers are now published somewhere
+  genuinely public, so the download works for anyone with the link, signed in
+  or not.
 
 - **You can no longer open a future date, and a past date is now genuinely
   read-only.** Today is the latest date the header will show: the forward
