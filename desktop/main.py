@@ -30,7 +30,7 @@ import os
 import sys
 from typing import Optional
 
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QByteArray, QRect, QSettings, Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStackedWidget
 
@@ -60,6 +60,53 @@ log = get_logger("main")
 #: forever; this is a backstop, not a substitute for fixing the cause.
 STARTUP_BUDGET_MS = 8000
 
+#: Where the window's own preferences live. One spelling, used by both the
+#: remembered close choice and the remembered geometry -- two different
+#: QSettings scopes would put them in two different places on disk.
+SETTINGS_ORGANISATION = "Monitra"
+SETTINGS_APPLICATION = "SMSDesktop"
+SETTINGS_GEOMETRY_KEY = "window/geometry"
+
+#: The size the window opens at the first time it is ever run, and the size
+#: below which its layouts start to be squeezed. Both are *intentions*: they
+#: are clamped to whatever the screen can actually show, because a window
+#: larger than the desktop cannot be resized back by the user -- its edges are
+#: off-screen. `resize(1280, 800)` did exactly that on a 1366x768 laptop, where
+#: the work area is about 728px tall, so the status bar was never visible.
+DEFAULT_WINDOW_WIDTH = 1280
+DEFAULT_WINDOW_HEIGHT = 800
+MINIMUM_WINDOW_WIDTH = 1024
+MINIMUM_WINDOW_HEIGHT = 680
+
+
+def window_settings() -> QSettings:
+    """The window's persisted preferences."""
+    return QSettings(SETTINGS_ORGANISATION, SETTINGS_APPLICATION)
+
+
+def available_desktop_rect() -> Optional[QRect]:
+    """The work area of the primary screen, excluding the taskbar.
+
+    `None` when Qt reports no screen at all, which happens on a headless host;
+    every caller treats that as "do not clamp" rather than as a size of zero.
+    """
+    screen = QApplication.primaryScreen()
+    return screen.availableGeometry() if screen is not None else None
+
+
+def geometry_is_on_a_screen(rect: QRect) -> bool:
+    """Whether a remembered rectangle still lands on a connected display.
+
+    A window restored onto a monitor that has since been unplugged is a window
+    the user cannot see and cannot drag back. The test is an intersection
+    rather than containment, so a window deliberately left half off the edge
+    is still honoured.
+    """
+    return any(
+        screen.availableGeometry().intersects(rect)
+        for screen in QApplication.screens()
+    )
+
 
 class MainWindow(QMainWindow):
     """
@@ -78,11 +125,75 @@ class MainWindow(QMainWindow):
         self._startup_guard: Optional[QTimer] = None
 
         self.setWindowTitle(f"{APP_DISPLAY_NAME} {VERSION}")
-        self.setMinimumSize(1024, 680)
-        self.resize(1280, 800)
+        self._apply_window_sizing()
 
         self._build_ui()
         self._wire_runtime()
+
+    # ── Geometry ──────────────────────────────────────────────────────────────
+
+    def _apply_window_sizing(self) -> None:
+        """Size the window to fit this machine, and put it back where it was.
+
+        Three things, in order, because each depends on the one before it:
+
+        1. The minimum size is clamped to the work area. A minimum taller than
+           the desktop is a window that can never be made to fit -- on a
+           1366x768 laptop scaled to 125%, the logical work area is about
+           1092x578, which is shorter than the 680px minimum this window
+           declares. Qt honours the minimum, so the bottom of the window sat
+           under the taskbar with no way to recover it.
+        2. A remembered geometry is restored, but only if it still lands on a
+           screen that is currently connected.
+        3. Otherwise the window opens at its default size, clamped to the work
+           area and centred on it.
+        """
+        available = available_desktop_rect()
+
+        minimum_width, minimum_height = MINIMUM_WINDOW_WIDTH, MINIMUM_WINDOW_HEIGHT
+        if available is not None:
+            minimum_width = min(minimum_width, available.width())
+            minimum_height = min(minimum_height, available.height())
+        self.setMinimumSize(minimum_width, minimum_height)
+
+        if self._restore_geometry():
+            return
+
+        width, height = DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT
+        if available is not None:
+            width = min(width, available.width())
+            height = min(height, available.height())
+        self.resize(width, height)
+        if available is not None:
+            self.move(available.center() - self.rect().center())
+
+    def _restore_geometry(self) -> bool:
+        """Reapply the geometry from the last run. False if there is none to
+        reapply, or if it would put the window somewhere unreachable."""
+        stored = window_settings().value(SETTINGS_GEOMETRY_KEY)
+        if not isinstance(stored, QByteArray) or stored.isEmpty():
+            return False
+        if not self.restoreGeometry(stored):
+            log.debug("stored window geometry could not be applied; using the default")
+            return False
+        if not geometry_is_on_a_screen(self.frameGeometry()):
+            log.info("stored window geometry is off every connected screen; recentring")
+            return False
+        return True
+
+    def _remember_geometry(self) -> None:
+        """Persist where and how big the window is.
+
+        Skipped while minimised or hidden to the tray: those states report a
+        geometry that is not what the user arranged, and saving it would mean
+        the window came back somewhere they never put it. `saveGeometry`
+        already records the maximised state and the restored size together, so
+        a maximised window reopens maximised and un-maximises to the right
+        size.
+        """
+        if self.isMinimized() or not self.isVisible():
+            return
+        window_settings().setValue(SETTINGS_GEOMETRY_KEY, self.saveGeometry())
 
     # ── Construction ──────────────────────────────────────────────────────────
 
@@ -340,6 +451,12 @@ class MainWindow(QMainWindow):
         this handler, which is why quitting could appear to hang. Any work still
         outstanding is durable and is completed by the next run.
         """
+        # Recorded before anything hides or closes, while the window still
+        # reports the size and position the user arranged. This is a local
+        # settings write, not work: the rule this handler exists to honour is
+        # that nothing here waits on the network or on a thread.
+        self._remember_geometry()
+
         if not self._force_quit:
             choice = self._ask_close_intent()
             if choice == "cancel":
@@ -366,8 +483,7 @@ class MainWindow(QMainWindow):
 
         from ui.quit_confirm_dialog import QuitConfirmDialog
 
-        settings = QSettings("Monitra", "SMSDesktop")
-        remembered = settings.value("remember_exit_choice", "")
+        remembered = window_settings().value("remember_exit_choice", "")
         if remembered in ("minimize", "quit"):
             return remembered
 

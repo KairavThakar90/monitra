@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from core.logging_setup import get_logger
 from core.time_format import ist_day_bounds_utc
+from tracking.app_identity import canonical_application_name
 
 log = get_logger("activity.app_usage")
 
@@ -96,7 +97,16 @@ def build_app_usage_summary(
         response = api_client.get("/app-usage/summary", params=params)
         if response.status_code == 200:
             for entry in response.json().get("applications", []):
-                name = entry.get("application_name", "Unknown")
+                # Historical rows still carry whatever spelling the desktop
+                # of the day sent, so they are resolved through the same
+                # catalogue before being merged -- otherwise "chrome" from
+                # last week and "Google Chrome" from today would be two rows
+                # for one browser. A name with no catalogue entry is kept
+                # exactly as stored; nothing is dropped and nothing is
+                # renamed into a catch-all.
+                name = canonical_application_name(entry.get("application_name"))
+                if not name:
+                    continue
                 durations[name] = durations.get(name, 0) + entry.get("duration_seconds", 0)
     except Exception as exc:  # noqa: BLE001
         # A backend failure must not hide locally captured usage.
@@ -107,7 +117,9 @@ def build_app_usage_summary(
             for record in cache.get_unsynced_app_usage_between(
                 start.isoformat(), end.isoformat()
             ):
-                name = record.get("application_name", "Unknown")
+                name = canonical_application_name(record.get("application_name"))
+                if not name:
+                    continue
                 durations[name] = durations.get(name, 0) + record.get("duration_seconds", 0)
         except Exception:  # noqa: BLE001
             log.exception("could not merge pending local app usage")
@@ -117,7 +129,12 @@ def build_app_usage_summary(
     ranked = sorted(durations.items(), key=lambda item: item[1], reverse=True)
 
     for index, (name, seconds) in enumerate(ranked):
-        display_name = "Monitra" if name.lower() in ("python", "python.exe", "main.py") else name
+        # The names are already canonical -- `canonical_application_name`
+        # ran on both halves of the merge above. There used to be a rename
+        # here ("python" -> "Monitra") that only this one view applied, so
+        # the desktop's Apps tab and the web reports disagreed about what
+        # the same rows were called. One catalogue, applied once.
+        display_name = name
         rows.append({
             "name": display_name,
             "application_name": display_name,

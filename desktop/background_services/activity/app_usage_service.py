@@ -19,7 +19,8 @@ from typing import Any, Dict, Optional
 
 from background_services.activity.day_split import split_by_ist_day
 from core.service import LoopService
-from tracking.active_window import get_active_window_info
+from tracking.active_window import get_active_window_details
+from tracking.app_identity import ClassificationStatus, resolve_application
 
 
 class AppUsageService(LoopService):
@@ -46,25 +47,51 @@ class AppUsageService(LoopService):
         self.interval_ms = self.IDLE_INTERVAL_MS
 
         self._entry_id: Optional[int] = None
+        self._client_op: Optional[str] = None
         self._tracking = False
         self._current_app: Optional[str] = None
         self._current_title: Optional[str] = None
         self._segment_start: Optional[float] = None
         self._last_observed: Optional[float] = None
         self._segment_recorded_at: Optional[str] = None
+        #: Applications already reported as unclassified, so an executable
+        #: the catalogue does not know costs one log line per session rather
+        #: than one every two seconds for the length of the session.
+        self._unclassified_reported: set = set()
 
     # ── Tracker interface (driven by TimerService) ────────────────────────────
 
     def start_tracker(self, session: Dict[str, Any]) -> None:
         self._entry_id = session.get("entry_id")
+        # The timer session's own stable key. Segments captured before the
+        # backend has issued an entry id are stored against it and adopted
+        # later -- see `_flush_segment` and `bind_entry_id`.
+        self._client_op = session.get("client_op")
         self._tracking = True
         self._reset_segment()
+        self._unclassified_reported.clear()
         self.log.info("application usage tracking started for entry %s", self._entry_id)
         self.wake()
 
     def bind_entry_id(self, entry_id: int) -> None:
         """Attribute the in-progress segment to a late-arriving entry id."""
         self._entry_id = entry_id
+        # Segments already written against this session's client_op belong to
+        # the same entry. Adopting them here is what makes an offline start
+        # keep its first minutes of application usage instead of discarding
+        # them -- the same treatment `bind_screenshots_to_entry` gives a
+        # capture taken before the entry existed.
+        if self._client_op:
+            try:
+                adopted = self._cache.bind_app_usage_to_entry(self._client_op, entry_id)
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not bind buffered application usage to entry %s", entry_id)
+            else:
+                if adopted:
+                    self.log.info(
+                        "bound %d buffered application usage segment(s) to entry %s",
+                        adopted, entry_id,
+                    )
 
     def _observe_now(self) -> None:
         """Count the time up to this instant as observed.
@@ -87,6 +114,7 @@ class AppUsageService(LoopService):
         self._flush_segment()
         self._tracking = False
         self._entry_id = None
+        self._client_op = None
         self._reset_segment()
         self.log.info("application usage tracking stopped")
 
@@ -100,7 +128,16 @@ class AppUsageService(LoopService):
         self._segment_recorded_at = None
 
     def _flush_segment(self) -> None:
-        if self._segment_start is None or self._entry_id is None or not self._current_app:
+        # A segment with no entry id yet is still written, against this
+        # session's `client_op`; `bind_entry_id` adopts it once the backend
+        # issues the id. Dropping it here is what used to lose the whole of
+        # an offline start's application usage -- time that was genuinely
+        # measured, against an application that was genuinely identified.
+        # Without a client_op there is nothing to adopt it later, so a
+        # segment that cannot ever be attributed is still not written.
+        if self._segment_start is None or not self._current_app:
+            return
+        if self._entry_id is None and not self._client_op:
             return
         # Measured from the last sample that actually observed this
         # application, not from "now". Reading the clock at flush time
@@ -123,6 +160,7 @@ class AppUsageService(LoopService):
                     window_title=self._current_title,
                     duration_seconds=chunk_seconds,
                     recorded_at=chunk_start,
+                    client_op=self._client_op,
                 )
         except Exception:  # noqa: BLE001
             self.log.exception("could not persist application usage segment")
@@ -138,6 +176,42 @@ class AppUsageService(LoopService):
 
     # ── Loop ──────────────────────────────────────────────────────────────────
 
+    def _identify(self) -> tuple[Optional[str], Optional[str]]:
+        """The current foreground application's canonical name, and its title.
+
+        The executable path is passed alongside the process name so that
+        `resolve_application` can key on the binary -- the one identifier
+        that is the same on both platforms and does not change when a
+        display name is localized or a window is renamed.
+
+        Returns ``(None, title)`` when nothing identifies the process. That
+        is not an application called "unknown"; it is the absence of an
+        observation, and the caller records nothing for it.
+        """
+        app_name, window_title, exe_path, _pid, _hwnd = get_active_window_details()
+        identity = resolve_application(process_name=app_name, executable_path=exe_path)
+
+        if identity.status == ClassificationStatus.PARTIALLY_CLASSIFIED:
+            # Recorded under its real executable name, so the row is
+            # diagnosable rather than anonymous. One line per session names
+            # the program a maintainer would add to the catalogue.
+            if identity.key not in self._unclassified_reported:
+                self._unclassified_reported.add(identity.key)
+                self.log.info(
+                    "application %r is not in the identity catalogue (%s); "
+                    "recording it under its executable name",
+                    identity.name, identity.reason,
+                )
+        elif identity.status == ClassificationStatus.UNKNOWN:
+            if identity.reason not in self._unclassified_reported:
+                self._unclassified_reported.add(identity.reason)
+                self.log.info(
+                    "no foreground application could be identified (%s); "
+                    "recording nothing for these samples", identity.reason,
+                )
+
+        return identity.name, window_title
+
     def tick(self) -> Optional[int]:
         if not self._tracking:
             return self.IDLE_INTERVAL_MS
@@ -145,9 +219,22 @@ class AppUsageService(LoopService):
         if self._entry_id is None:
             session = self.runtime.timer.active_session() or {}
             self._entry_id = session.get("entry_id")
+            if self._client_op is None:
+                self._client_op = session.get("client_op")
 
-        app_name, window_title = get_active_window_info()
+        app_name, window_title = self._identify()
         now = time.monotonic()
+
+        if app_name is None:
+            # Nothing identifiable is in the foreground. Close what was
+            # measured up to the last real observation and wait: holding the
+            # segment open would credit this stretch to whichever
+            # application happened to be in front before it.
+            if self._segment_start is not None:
+                self._flush_segment()
+                self._reset_segment()
+            self.heartbeat()
+            return self.SAMPLE_INTERVAL_MS
 
         if self._segment_start is None:
             self._begin_segment(app_name, window_title)
@@ -175,13 +262,15 @@ class AppUsageService(LoopService):
         # trip the gap check above on the next tick.
         self._last_observed = now
 
-        if self._entry_id is None:
-            # No backend entry id yet (started offline, or the start is still
-            # in flight). Hold the current segment open rather than closing one
-            # that cannot be persisted: `_flush_segment` would drop it and
-            # `_begin_segment` would reset the clock, losing the elapsed time
-            # entirely. Only a genuine application change forces a boundary,
-            # and even then the unattributable part is knowingly discarded.
+        if self._entry_id is None and not self._client_op:
+            # Neither a backend entry id nor a session key to adopt the
+            # segment later, so it cannot be persisted at all. Hold it open
+            # rather than closing one that would simply be dropped:
+            # `_flush_segment` would discard it and `_begin_segment` would
+            # reset the clock, losing the elapsed time entirely. With a
+            # client_op present -- the normal offline case -- the segment is
+            # written and bound when the start lands, so no hold is needed
+            # and the usual cap still applies.
             if not changed:
                 return self.SAMPLE_INTERVAL_MS
 

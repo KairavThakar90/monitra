@@ -754,34 +754,76 @@ class LocalCache:
 
     def save_app_usage(
         self,
-        time_entry_id: int,
+        time_entry_id: Optional[int],
         application_name: str,
         window_title: Optional[str],
         duration_seconds: int,
         recorded_at: str,
+        client_op: Optional[str] = None,
     ) -> str:
+        """Queue one measured application-usage segment for upload.
+
+        `time_entry_id` may be None for a segment captured before the
+        backend issued one -- an offline start, or the first seconds of a
+        session while the start request is still in flight. Such a row waits
+        in the queue, is never read by the uploader, and is adopted by
+        `bind_app_usage_to_entry` once the id arrives. `client_op` is the
+        timer session's stable key and is what makes that adoption possible,
+        so a row without an id and without a client_op could never be
+        attributed and is not written at all (see `AppUsageService`).
+        """
         record_id = str(uuid.uuid4())
         now = time.time()
         self._storage.execute(
             """INSERT INTO pending_app_usage
-               (id, time_entry_id, application_name, window_title, duration_seconds,
-                recorded_at, status, retry_count, next_retry_at, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
-            (record_id, time_entry_id, application_name, window_title,
+               (id, time_entry_id, client_op, application_name, window_title,
+                duration_seconds, recorded_at, status, retry_count, next_retry_at,
+                created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
+            (record_id, time_entry_id, client_op, application_name, window_title,
              duration_seconds, recorded_at, now, now),
         )
         return record_id
+
+    def bind_app_usage_to_entry(self, client_op: str, time_entry_id: int) -> int:
+        """
+        Attribute segments captured before the backend issued an entry id.
+
+        The same problem, and the same answer, as
+        `bind_screenshots_to_entry`: work measured in the first seconds of a
+        session, or throughout an offline one, has no entry to belong to
+        yet. Matching on the session's own `client_op` keeps the attribution
+        honest -- only that session's segments are adopted -- and the
+        ``time_entry_id IS NULL`` guard makes a repeated bind a no-op rather
+        than a way to re-point rows that are already attributed.
+
+        :return: how many rows were bound.
+        """
+        if not client_op:
+            return 0
+        cursor = self._storage.execute(
+            "UPDATE pending_app_usage SET time_entry_id = ? "
+            "WHERE time_entry_id IS NULL AND client_op = ?",
+            (time_entry_id, client_op),
+        )
+        return cursor.rowcount or 0
 
     def get_pending_app_usage(self, limit: int = TELEMETRY_FETCH_LIMIT) -> List[Dict[str, Any]]:
         """App-usage segments ready to upload, oldest first.
 
         Bounded: see `TELEMETRY_FETCH_LIMIT`.
+
+        Rows still waiting for their entry id are skipped rather than
+        uploaded: the endpoint is per-entry, so there is nowhere to send
+        them yet. They stay 'pending' and are picked up on a later pass,
+        once `bind_app_usage_to_entry` has adopted them.
         """
         rows = self._storage.query_all(
             """SELECT id, time_entry_id, application_name, window_title,
                       duration_seconds, recorded_at, retry_count
                FROM pending_app_usage
                WHERE status = 'pending' AND next_retry_at <= ?
+                 AND time_entry_id IS NOT NULL
                ORDER BY created_at ASC
                LIMIT ?""",
             (time.time(), limit),
@@ -1176,7 +1218,7 @@ class LocalCache:
 
     def save_url_usage(
         self,
-        time_entry_id: int,
+        time_entry_id: Optional[int],
         browser_name: str,
         domain: str,
         url: Optional[str],
@@ -1184,32 +1226,56 @@ class LocalCache:
         duration_seconds: int,
         recorded_at: str,
         client_event_id: Optional[str] = None,
+        client_op: Optional[str] = None,
     ) -> str:
+        """Queue one measured browser session for upload.
+
+        `time_entry_id` may be None, exactly as in `save_app_usage`: the
+        session is held against its timer session's `client_op` and adopted
+        by `bind_url_usage_to_entry` when the backend issues the id.
+        """
         record_id = str(uuid.uuid4())
         event_id = client_event_id or str(uuid.uuid4())
         now = time.time()
         self._storage.execute(
             """INSERT INTO pending_url_usage
-               (id, time_entry_id, browser_name, domain, url, page_title,
+               (id, time_entry_id, client_op, browser_name, domain, url, page_title,
                 duration_seconds, recorded_at, client_event_id, status, retry_count, next_retry_at, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
-            (record_id, time_entry_id, browser_name, domain, url, page_title,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
+            (record_id, time_entry_id, client_op, browser_name, domain, url, page_title,
              duration_seconds, recorded_at, event_id, now, now),
         )
         return record_id
+
+    def bind_url_usage_to_entry(self, client_op: str, time_entry_id: int) -> int:
+        """Attribute browser sessions captured before the entry id existed.
+
+        The URL twin of `bind_app_usage_to_entry`; see that method for why
+        the rows are held rather than dropped.
+        """
+        if not client_op:
+            return 0
+        cursor = self._storage.execute(
+            "UPDATE pending_url_usage SET time_entry_id = ? "
+            "WHERE time_entry_id IS NULL AND client_op = ?",
+            (time_entry_id, client_op),
+        )
+        return cursor.rowcount or 0
 
     def get_pending_url_usage(
         self, limit: int = TELEMETRY_FETCH_LIMIT
     ) -> List[Dict[str, Any]]:
         """URL sessions ready to upload, oldest first.
 
-        Bounded: see `TELEMETRY_FETCH_LIMIT`.
+        Bounded: see `TELEMETRY_FETCH_LIMIT`. Rows still waiting for their
+        entry id are skipped, as in `get_pending_app_usage`.
         """
         rows = self._storage.query_all(
             """SELECT id, time_entry_id, browser_name, domain, url, page_title,
                       duration_seconds, recorded_at, client_event_id, retry_count
                FROM pending_url_usage
                WHERE status = 'pending' AND next_retry_at <= ?
+                 AND time_entry_id IS NOT NULL
                ORDER BY created_at ASC
                LIMIT ?""",
             (time.time(), limit),

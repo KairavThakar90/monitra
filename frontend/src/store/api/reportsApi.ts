@@ -49,6 +49,12 @@ export interface ReactReportsSummaryResponse {
 }
 
 export interface ReactReportsItem {
+  /**
+   * Exact tracked seconds for this row — prefer this over `total_hours`.
+   * A share computed from 2dp hours can exceed the exact scope total it is
+   * divided by; the Projects ring showed a single project at 100.4%.
+   */
+  total_seconds: number;
   total_hours: number;
   avg_activity: number | null;
   total_members: number;
@@ -69,6 +75,19 @@ export interface ReactReportsListResponse {
   limit: number;
   total: number;
   pages: number;
+  /**
+   * Seconds held by every matching row, not just this page — the denominator
+   * for a part-to-whole chart of this tab.
+   *
+   * This is not interchangeable with the /summary endpoint's total. Summary
+   * counts session time; the Apps and URLs tabs count application and browser
+   * time, which the desktop measures separately and which legitimately covers
+   * less of the day. Dividing one by the other drew every second that
+   * application capture had never claimed to measure as one unnamed slice.
+   */
+  total_seconds: number;
+  /** `total_seconds` as hours, 2dp. Prefer the seconds for durations. */
+  total_hours: number;
 }
 
 export interface ReactReportsTrendPoint {

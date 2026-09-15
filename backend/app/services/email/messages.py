@@ -1,4 +1,4 @@
-"""The two emails this system sends, built from a stored payload.
+"""The emails this system sends, built from a stored payload.
 
 Each builder takes the JSON context that was frozen onto the outbox row and
 returns a finished `OutgoingEmail`. Nothing here touches the database, reads a
@@ -490,7 +490,185 @@ def _reply_to(payload: dict[str, Any]) -> Optional[str]:
 
 
 # ----------------------------------------------------------------------
-# Workflow 3 — new desktop version available
+# Workflow 3 — feedback status update, sent to the person who submitted it
+# ----------------------------------------------------------------------
+
+#: How each workflow state is presented to the person who submitted the
+#: feedback. One entry per state the Admin buttons can produce, and the whole
+#: visible difference between the two emails lives here: the headline, the
+#: sentence under it, the accent colour of the status chip and the line the
+#: subject carries.
+#:
+#: `in_progress` is titled "Working on it" because that is the word on the
+#: button the administrator pressed and the word the employee will hear from
+#: them — an email announcing "In Progress" for the same act reads like a
+#: different system talking about a different thing.
+FEEDBACK_STATUS_PRESENTATION: dict[str, dict[str, str]] = {
+    "in_progress": {
+        "label": "Working on it",
+        "subject": "Monitra Feedback Update — We're Working on It",
+        "preheader": "Your feedback has been reviewed and our team is working on it.",
+        "heading": "We're working on your feedback",
+        "lead": (
+            "Thank you for taking the time to share your feedback with us. "
+            "It has been reviewed, and our team is now working on it."
+        ),
+        "body": (
+            "Your feedback is genuinely valuable — it is how we find the things "
+            "worth fixing and the improvements worth making. We appreciate your "
+            "patience while we work on this, and there is nothing further you "
+            "need to do. If we need any more detail, we will get in touch."
+        ),
+        "accent": "#B45309",
+        "chip_bg": "#FFFBEB",
+        "chip_border": "#FDE68A",
+    },
+    "resolved": {
+        "label": "Resolved",
+        "subject": "Monitra Feedback Update — Resolved",
+        "preheader": "The feedback you reported has now been resolved.",
+        "heading": "Your feedback has been resolved",
+        "lead": (
+            "We're pleased to let you know that the feedback you reported has "
+            "now been resolved."
+        ),
+        "body": (
+            "Thank you for reporting it, and for helping us identify where "
+            "Monitra could be better. Contributions like yours are what make "
+            "the product better for everyone on the team. If you notice "
+            "anything else, we would like to hear about it."
+        ),
+        "accent": "#047857",
+        "chip_bg": "#ECFDF5",
+        "chip_border": "#A7F3D0",
+    },
+}
+
+
+def feedback_status_presentation(status: str) -> dict[str, str]:
+    """How one status is worded and coloured.
+
+    An unknown status raises rather than falling back to a neutral wording.
+    This renders from a payload written by `queue_feedback_status_notification`,
+    which can only queue a status the schema already restricted to these two —
+    so an unknown value here means the two have drifted apart, and a
+    reassuring-but-wrong email is a worse outcome than a notification that
+    retries and is logged.
+    """
+    presentation = FEEDBACK_STATUS_PRESENTATION.get(status)
+    if presentation is None:
+        raise KeyError(f"No feedback status email is defined for {status!r}.")
+    return presentation
+
+
+def feedback_status_subject(payload: dict[str, Any]) -> str:
+    """"Monitra Feedback Update — We're Working on It".
+
+    Deliberately carries no name, no category and no fragment of the message.
+    This one goes to a single person, who already knows who they are and what
+    they wrote; a subject line naming their complaint is also the line that
+    shows up on a lock screen in front of whoever is standing there.
+    """
+    return clean_subject(feedback_status_presentation(str(payload.get("status") or ""))["subject"])
+
+
+def _status_chip(presentation: dict[str, str]) -> Markup:
+    """The coloured "Working on it" / "Resolved" marker."""
+    return Markup(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+        'style="margin:0 0 22px 0;"><tr>'
+        '<td style="padding:7px 14px;background-color:{bg};border:1px solid {border};'
+        'border-radius:999px;font-family:Helvetica,Arial,sans-serif;font-size:12px;'
+        'font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:{accent};">'
+        '{label}</td></tr></table>'
+    ).format(
+        bg=presentation["chip_bg"],
+        border=presentation["chip_border"],
+        accent=presentation["accent"],
+        label=presentation["label"],
+    )
+
+
+def build_feedback_status_email(
+    payload: dict[str, Any], recipients: list[str]
+) -> OutgoingEmail:
+    """The Working / Resolved update, addressed to the submitter."""
+    status = str(payload.get("status") or "")
+    presentation = feedback_status_presentation(status)
+    subject = feedback_status_subject(payload)
+    label = category_label(str(payload.get("category") or ""))
+    day, _clock, _submitted = _display_times(payload.get("submitted_at"))
+
+    frame = _frame_context(
+        subject=subject,
+        preheader=presentation["preheader"],
+        footer_note=(
+            "You are receiving this because you submitted feedback from the "
+            "Monitra desktop application. It is sent once per status update."
+        ),
+    )
+
+    # Three fields: what they sent, where it now stands, and when they sent it
+    # — enough for someone with several submissions open to tell which one this
+    # is about. No feedback id, no internal reference, no administrator's name:
+    # an identifier means nothing to the reader, and the other two are ours
+    # rather than theirs.
+    rows = detail_rows([
+        ("Category", label),
+        ("Status", presentation["label"]),
+        ("Submitted", day),
+    ])
+
+    html = render_page(
+        "feedback_status.html",
+        {
+            **frame,
+            "greeting": _greeting(payload.get("name")),
+            "status_chip": _status_chip(presentation),
+            "heading": presentation["heading"],
+            "lead": presentation["lead"],
+            "body": presentation["body"],
+            "detail_rows": rows,
+        },
+    )
+
+    # The same words and the same three fields. A reader on a plain-text client
+    # must not get a different account of what happened.
+    text_lines = [
+        presentation["heading"].upper(),
+        "",
+        _greeting(payload.get("name")),
+        "",
+        presentation["lead"],
+        "",
+        presentation["body"],
+        "",
+        f"  Category   {label}",
+        f"  Status     {presentation['label']}",
+        f"  Submitted  {day}",
+    ]
+    if (support := (settings.MONITRA_SUPPORT_EMAIL or "").strip()):
+        text_lines += ["", f"Need a hand? Write to {support}."]
+    text_lines += [
+        "",
+        "Thank you for helping us improve Monitra.",
+        "",
+        "Monitra — Staff Management System",
+        "Store Transform",
+    ]
+
+    return OutgoingEmail(
+        to=recipients,
+        subject=subject,
+        html=html,
+        text="\n".join(text_lines),
+        reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
+        inline_images=frame["_inline_images"],
+    )
+
+
+# ----------------------------------------------------------------------
+# Workflow 4 — new desktop version available
 # ----------------------------------------------------------------------
 
 def release_subject(payload: dict[str, Any]) -> str:
@@ -664,5 +842,6 @@ def build_release_email(payload: dict[str, Any], recipients: list[str]) -> Outgo
 BUILDERS = {
     "welcome": build_welcome_email,
     "feedback": build_feedback_email,
+    "feedback_status": build_feedback_status_email,
     "release": build_release_email,
 }

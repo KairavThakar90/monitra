@@ -16,12 +16,19 @@ class ProjectService:
     def get_projects(self) -> List[Dict[str, Any]]:
         """
         Fetch all active projects scoped to the current user's organization and membership.
-        
+
+        `include_tasks=false` because this client never reads the embedded
+        array: the sidebar shows project names, and a project's tasks are
+        fetched separately from `/projects/{id}/tasks` when one is selected.
+        Asking for them meant every project's every active task crossed the
+        wire on each of these calls -- and this runs on login and again on
+        every refresh round. `task_count` is unaffected.
+
         :raises ApiError: On session expiry (401), server error, or connection issues.
         :return: List of project dictionaries.
         """
         try:
-            response = self.api_client.get("/api/v1/projects?page=1&limit=20")
+            response = self.api_client.get("/api/v1/projects?page=1&limit=20&include_tasks=false")
             data = response.json()
             if isinstance(data, dict) and "items" in data:
                 return data["items"]

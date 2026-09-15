@@ -265,7 +265,9 @@ export const MemberTimeTracking: React.FC = () => {
     limit: 100,
   });
 
-  const { data: projects = [] } = useGetAllProjectsQuery();
+  // The manual-entry form's task dropdown is filled from `project.tasks`, so
+  // this is the other screen that needs them embedded.
+  const { data: projects = [] } = useGetAllProjectsQuery({ includeTasks: true });
   const [createRequest, { isLoading: isSaving }] = useCreateManualTimeEntryRequestMutation();
   const [withdrawRequest] = useDeleteManualTimeEntryRequestMutation();
 

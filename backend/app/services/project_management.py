@@ -13,12 +13,15 @@ from app.models.project_status import ProjectStatus, TaskStatus
 from app.models.task import Task
 from app.models.task_assignee import TaskAssignee
 from app.models.user import User
+from app.repositories.status_catalog import StatusCatalog
 from app.schemas.project_management import (
     BillingType, ProjectCreate, ProjectUpdate, TaskCreate, TaskUpdate,
 )
 from app.services.member_scope import is_team_scoped
 from app.services.project_scope import may_view_project, visible_project_ids
-from app.services.task_scope import is_task_scoped, may_view_task, scoped_task_query
+from app.services.task_scope import (
+    is_task_scoped, may_view_task, scoped_task_query, visible_task_condition,
+)
 from app.core.permissions import LEADER_ROLE_NAMES
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
@@ -38,6 +41,13 @@ DEFAULT_PROJECT_TASKS = (
     "Internal Discussion"
 )
 
+
+
+def _group_by_project(tasks: list[Task]) -> dict[int, list[Task]]:
+    grouped: dict[int, list[Task]] = {}
+    for task in tasks:
+        grouped.setdefault(task.project_id, []).append(task)
+    return grouped
 
 
 class ProjectManagementService:
@@ -61,7 +71,15 @@ class ProjectManagementService:
 
     @staticmethod
     def _status(db: Session, model, status_id: int, label: str):
-        item = db.get(model, status_id)
+        # Resolved from the cached reference tables rather than with a
+        # primary-key read per call: these eight rows are seeded by migration
+        # and written by nothing, and every project- or task-shaped response
+        # needed one. See repositories/status_catalog.py.
+        rows = (
+            StatusCatalog.project_statuses(db) if model is ProjectStatus
+            else StatusCatalog.task_statuses(db)
+        )
+        item = rows.get(status_id)
         if not item:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid {label} status ID.")
         return item
@@ -140,7 +158,7 @@ class ProjectManagementService:
 
     @staticmethod
     def _detail_payload(db: Session, project: Project, user: User):
-        project_status = db.get(ProjectStatus, project.status_id)
+        project_status = StatusCatalog.project_status(db, project.status_id)
         leader = db.get(User, project.leader_id) if project.leader_id else None
         members = list(db.scalars(select(ProjectMember).where(ProjectMember.project_id == project.id)).all())
         employee_ids = [member.user_id for member in members]
@@ -156,11 +174,35 @@ class ProjectManagementService:
         assignee_ids = [task.assignee_id for task in tasks if task.assignee_id]
         assignees = list(db.scalars(select(User).where(User.id.in_(assignee_ids))).all()) if assignee_ids else []
         assignee_by_id = {item.id: item for item in assignees}
-        task_statuses = {item.id: item for item in db.scalars(select(TaskStatus).where(TaskStatus.id.in_([task.status_id for task in tasks if task.status_id]))).all()} if tasks else {}
+        task_statuses = StatusCatalog.task_statuses(db) if tasks else {}
         return {"id": project.id, "project_name": project.project_name, "description": project.description, "status": project_status, "leader": ProjectManagementService._person(leader), "employees": [ProjectManagementService._person(employee_by_id[item_id]) for item_id in employee_ids if item_id in employee_by_id], "deadline": project.deadline, "billing_type": project.billing_type, "fixed_hours": project.fixed_hours, "organization_id": project.organization_id, "created_at": project.created_at, "updated_at": project.updated_at, "tasks": [ProjectManagementService._task_payload(task, task_statuses.get(task.status_id), assignee_by_id.get(task.assignee_id)) for task in tasks]}
 
     @staticmethod
-    def _detail_payloads(db: Session, projects: list[Project], user: User):
+    def _task_counts(db: Session, project_ids: list[int], user: User) -> dict[int, int]:
+        """How many active tasks each project has, under this caller's scope.
+
+        The counterpart to loading the task rows, for `include_tasks=False`.
+        Counting in SQL rather than in Python is what makes omitting the rows
+        worth anything: the point is not to send a project's tasks over the
+        wire, and fetching them anyway just to call `len` on them would send
+        nothing while still paying for all of it.
+        """
+        query = select(Task.project_id, func.count(Task.id)).where(
+            Task.project_id.in_(project_ids), Task.status != "archived"
+        )
+        condition = visible_task_condition(user)
+        if condition is not None:
+            query = query.where(condition)
+        return {row[0]: row[1] for row in db.execute(query.group_by(Task.project_id)).all()}
+
+    @staticmethod
+    def _detail_payloads(db: Session, projects: list[Project], user: User, include_tasks: bool = True):
+        """The list payload for a page of projects.
+
+        `include_tasks=False` omits each project's embedded task array -- see
+        `list` for who asks for that and why. `task_count` is correct either
+        way; it is the number the list column actually renders.
+        """
         if not projects:
             return []
         project_ids = [project.id for project in projects]
@@ -168,25 +210,37 @@ class ProjectManagementService:
         member_ids = {member.user_id for member in memberships}
         # Same scope as _detail_payload, for the paginated list: the embedded
         # tasks are task rows and must not be a second, wider way to read them.
+        # The count below is taken under the identical condition, so a caller
+        # who omits the rows is told the size of the list they would have got
+        # -- not the project's true total, which is not theirs to know.
         tasks = list(db.scalars(scoped_task_query(
             select(Task).where(Task.project_id.in_(project_ids), Task.status != "archived"), user
-        )).all())
+        )).all()) if include_tasks else []
+        task_counts = (
+            {project_id: len(rows) for project_id, rows in _group_by_project(tasks).items()}
+            if include_tasks
+            else ProjectManagementService._task_counts(db, project_ids, user)
+        )
         user_ids = member_ids | {project.leader_id for project in projects if project.leader_id} | {task.assignee_id for task in tasks if task.assignee_id}
         users = list(db.scalars(select(User).where(User.id.in_(user_ids))).all()) if user_ids else []
         users_by_id = {item.id: item for item in users}
-        project_status_ids = {project.status_id for project in projects if project.status_id}
-        task_status_ids = {task.status_id for task in tasks if task.status_id}
-        project_statuses = {item.id: item for item in db.scalars(select(ProjectStatus).where(ProjectStatus.id.in_(project_status_ids))).all()} if project_status_ids else {}
-        task_statuses = {item.id: item for item in db.scalars(select(TaskStatus).where(TaskStatus.id.in_(task_status_ids))).all()} if task_status_ids else {}
+        project_statuses = StatusCatalog.project_statuses(db)
+        task_statuses = StatusCatalog.task_statuses(db) if tasks else {}
         memberships_by_project = {}
         for member in memberships:
             memberships_by_project.setdefault(member.project_id, []).append(member.user_id)
-        tasks_by_project = {}
-        for task in tasks:
-            tasks_by_project.setdefault(task.project_id, []).append(task)
+        tasks_by_project = _group_by_project(tasks)
         payloads = []
         for project in projects:
-            payloads.append({"id": project.id, "project_name": project.project_name, "description": project.description, "status": project_statuses.get(project.status_id), "leader": ProjectManagementService._person(users_by_id.get(project.leader_id)), "employees": [ProjectManagementService._person(users_by_id[user_id]) for user_id in memberships_by_project.get(project.id, []) if user_id in users_by_id], "deadline": project.deadline, "billing_type": project.billing_type, "fixed_hours": project.fixed_hours, "organization_id": project.organization_id, "created_at": project.created_at, "updated_at": project.updated_at, "tasks": [ProjectManagementService._task_payload(task, task_statuses.get(task.status_id), users_by_id.get(task.assignee_id)) for task in tasks_by_project.get(project.id, [])]})
+            employees = [ProjectManagementService._person(users_by_id[user_id]) for user_id in memberships_by_project.get(project.id, []) if user_id in users_by_id]
+            payloads.append({"id": project.id, "project_name": project.project_name, "description": project.description, "status": project_statuses.get(project.status_id), "leader": ProjectManagementService._person(users_by_id.get(project.leader_id)), "employees": employees, "deadline": project.deadline, "billing_type": project.billing_type, "fixed_hours": project.fixed_hours, "organization_id": project.organization_id, "created_at": project.created_at, "updated_at": project.updated_at,
+                             # `None` rather than `[]` when the caller opted out:
+                             # an empty array is a real answer ("this project has
+                             # no tasks") and must not be how "you did not ask"
+                             # is spelled.
+                             "tasks": [ProjectManagementService._task_payload(task, task_statuses.get(task.status_id), users_by_id.get(task.assignee_id)) for task in tasks_by_project.get(project.id, [])] if include_tasks else None,
+                             "employee_count": len(employees),
+                             "task_count": task_counts.get(project.id, 0)})
         return payloads
 
     @staticmethod
@@ -225,7 +279,7 @@ class ProjectManagementService:
             # a hardcoded id: a deployment seeded with "To Do" or with different
             # ids still finds its own Todo row instead of failing project
             # creation outright.
-            todo_status = next((item for item in db.scalars(select(TaskStatus)).all() if ProjectManagementService._status_key(item.name) == "todo"), None)
+            todo_status = next((item for item in StatusCatalog.task_statuses(db).values() if ProjectManagementService._status_key(item.name) == "todo"), None)
             if not todo_status:
                 raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Todo task status is not configured.")
             todo_legacy = ProjectManagementService._legacy_status(todo_status, TASK_STATUS_NAMES, "task")
@@ -239,7 +293,16 @@ class ProjectManagementService:
             raise
 
     @staticmethod
-    def list(db: Session, user: User, page: int, limit: int, search: Optional[str], status_id: Optional[int], leader_id: Optional[int], billing_type: Optional[BillingType]):
+    def list(db: Session, user: User, page: int, limit: int, search: Optional[str], status_id: Optional[int], leader_id: Optional[int], billing_type: Optional[BillingType], include_tasks: bool = True):
+        """A page of projects.
+
+        `include_tasks=False` is for the callers that only ever render a
+        project's name, leader or members -- the filter pickers and project
+        dropdowns on both clients, and the desktop's sidebar, which never
+        reads the embedded array at all. They were each downloading every
+        active task of every project on the page to display none of them.
+        The default stays `True` so no existing caller changes behaviour.
+        """
         filters = [Project.organization_id == user.organization_id, Project.status != "archived"]
         if user.role_name == "employee":
             filters.append(Project.id.in_(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)))
@@ -261,13 +324,27 @@ class ProjectManagementService:
             filters.append(Project.leader_id == leader_id)
         if billing_type:
             filters.append(Project.billing_type == billing_type.value)
-        total = db.scalar(select(func.count(Project.id)).where(*filters)) or 0
-        projects = list(db.scalars(select(Project).where(*filters).order_by(Project.created_at.desc(), Project.id.desc()).offset((page - 1) * limit).limit(limit)).all())
-        items = []
-        for detail in ProjectManagementService._detail_payloads(db, projects, user):
-            detail["employee_count"] = len(detail["employees"])
-            detail["task_count"] = len(detail["tasks"])
-            items.append(detail)
+        # The page and its total in one statement. Each round trip to a managed
+        # Postgres costs ~85ms whatever it asks for, so a separate COUNT(*) was
+        # a measurable fraction of this endpoint for a number the same WHERE
+        # clause can produce as a window function.
+        rows = db.execute(
+            select(Project, func.count().over().label("total"))
+            .where(*filters)
+            .order_by(Project.created_at.desc(), Project.id.desc())
+            .offset((page - 1) * limit).limit(limit)
+        ).all()
+        projects = [row[0] for row in rows]
+        if rows:
+            total = int(rows[0].total)
+        elif page > 1:
+            # An empty page past the end says nothing about the total, and
+            # reporting 0 would strand a client on page 5 of 3 with no way
+            # back. Only this case pays for the extra statement.
+            total = db.scalar(select(func.count(Project.id)).where(*filters)) or 0
+        else:
+            total = 0
+        items = ProjectManagementService._detail_payloads(db, projects, user, include_tasks)
         return {"items": items, "pagination": {"page": page, "limit": limit, "total": total, "total_pages": ceil(total / limit) if total else 0}}
 
     @staticmethod
@@ -336,7 +413,7 @@ class ProjectManagementService:
         tasks = list(db.scalars(query.order_by(Task.id)).all())
         assignee_ids = [item.assignee_id for item in tasks if item.assignee_id]
         assignees = {item.id: item for item in db.scalars(select(User).where(User.id.in_(assignee_ids))).all()} if assignee_ids else {}
-        statuses = {item.id: item for item in db.scalars(select(TaskStatus).where(TaskStatus.id.in_([item.status_id for item in tasks if item.status_id]))).all()} if tasks else {}
+        statuses = StatusCatalog.task_statuses(db) if tasks else {}
         return [ProjectManagementService._task_payload(item, statuses.get(item.status_id), assignees.get(item.assignee_id)) for item in tasks]
 
     @staticmethod
@@ -400,7 +477,7 @@ class ProjectManagementService:
         task = ProjectManagementService._task(db, user, project_id, task_id)
         values = payload.model_dump(exclude_unset=True)
         assignee = db.get(User, task.assignee_id) if task.assignee_id else None
-        task_status = db.get(TaskStatus, task.status_id)
+        task_status = StatusCatalog.task_status(db, task.status_id)
         if "status_id" in values:
             task_status = ProjectManagementService._status(db, TaskStatus, values["status_id"], "task")
             task.status_id, task.status = task_status.id, ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task")
