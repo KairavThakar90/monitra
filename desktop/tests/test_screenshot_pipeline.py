@@ -162,8 +162,13 @@ class TestFallbackCompression:
         assert processed.size_bytes != processed.primary_size_bytes
 
     def test_the_fallback_never_changes_the_geometry_or_the_format(self, monkeypatch):
-        # The backend rejects anything that is not exactly 1000x1000 WebP, so a
-        # fallback that resized would silently strand every capture it touched.
+        # A single-display capture is stored at exactly 1000x1000, and the
+        # queue row, the upload metadata and the grid all carry that geometry.
+        # A fallback that resized would make every one of them disagree with
+        # the bytes. (The backend no longer demands that exact square -- a
+        # merged multi-display capture is legitimately wider -- but it does
+        # check the image's real dimensions, so a silent resize here would
+        # still contradict what was recorded.)
         from PIL import Image
 
         monkeypatch.setenv("MONITRA_SCREENSHOT_FALLBACK_TRIGGER_BYTES", "1024")
@@ -353,6 +358,64 @@ class TestMultiDisplayImage:
     def test_a_capture_with_no_displays_produces_nothing(self):
         empty = MergedCapture(placements=[], bounds=None, displays=[])
         assert image_processor.process_merged(empty) is None
+
+    def _partial(self, geometries, captured):
+        """A capture where only `captured` display numbers were readable."""
+        displays, placements = [], []
+        for index, (left, top, width, height) in enumerate(geometries, start=1):
+            display = Display(number=index, left=left, top=top, width=width,
+                              height=height, is_primary=(index == 1))
+            displays.append(display)
+            if index in captured:
+                placements.append(Placement(
+                    display=display,
+                    pixels=bytes([40, 80, 120, 255] * (width * height)),
+                    width=width, height=height,
+                ))
+        return MergedCapture(
+            placements=placements,
+            bounds=compositor.canvas_bounds(displays), displays=displays,
+        )
+
+    def test_one_dead_display_does_not_lose_the_whole_screenshot(self):
+        merged = self._partial(
+            [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)], captured={1}
+        )
+        assert merged.complete is False
+        assert (merged.display_count, merged.displays_expected) == (1, 2)
+        processed = image_processor.process_merged(merged)
+        assert processed is not None
+        # The surviving screen at full size, honestly labelled as one display,
+        # rather than half a canvas of grey at half the resolution.
+        assert (processed.width, processed.height) == (1000, 1000)
+        assert processed.display_count == 1
+
+    def test_with_three_displays_a_failed_one_leaves_its_region_blank(self):
+        merged = self._partial(
+            [(0, 0, 1920, 1080), (1920, 0, 1920, 1080), (3840, 0, 1920, 1080)],
+            captured={1, 3},
+        )
+        processed = image_processor.process_merged(merged)
+        # Still the full three-display canvas: the middle screen is missing,
+        # and its area is pad colour rather than anything invented.
+        assert (processed.width, processed.height) == (3000, 562)
+        assert processed.display_count == 2
+
+    def test_a_capture_where_every_display_failed_produces_nothing(self):
+        merged = self._partial([(0, 0, 1920, 1080), (1920, 0, 1920, 1080)], captured=set())
+        assert image_processor.process_merged(merged) is None
+
+    def test_the_legacy_monitor_number_follows_the_primary_display(self):
+        merged = self._partial(
+            [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)], captured={1, 2}
+        )
+        assert merged.monitor_number == 1
+        # If the primary is the one that failed, the column names a display
+        # that is actually in the image rather than one that is not.
+        without_primary = self._partial(
+            [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)], captured={2}
+        )
+        assert without_primary.monitor_number == 2
 
 
 class TestOneEventOneScreenshot:

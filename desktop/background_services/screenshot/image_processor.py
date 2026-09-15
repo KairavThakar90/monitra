@@ -173,6 +173,20 @@ def process_merged(
         return None
 
     if merged.display_count == 1:
+        # One display in the image, so it is rendered as a single-display
+        # capture would be. This is also what happens when a two-display desk
+        # loses one of them: the surviving screen is stored at full size rather
+        # than pasted into half of a canvas whose other half is blank grey.
+        #
+        # That is deliberate, and it is not a misleading image: the picture
+        # shows exactly one screen and `display_count` says one, while
+        # `capture_all_displays` has already logged SCREENSHOT_INCOMPLETE with
+        # the captured/expected pair. Padding the image out to the width of a
+        # desk one of whose monitors could not be read would cost half the
+        # resolution of the screen that *did* work, and tell the viewer
+        # nothing the metadata does not already carry. With three displays and
+        # one failure the merged path still runs, and the missing screen's
+        # region is genuinely left as pad colour.
         only = merged.placements[0]
         return process(
             RawCapture(

@@ -40,12 +40,24 @@ costs nothing worth caching, and a cache here could only ever be wrong.
 DPI
 ---
 The coordinates `mss` reports are *physical* pixels when the process is
-per-monitor DPI aware, and virtualised (pre-scaling) pixels when it is not. Qt
-makes the desktop client per-monitor-v2 aware at startup, so the figures here
-and the pixels `capture.py` reads come from the same coordinate space and a
-mixed-DPI desk composes correctly. `describe_dpi_awareness()` reports which
-space is in force, so a support log says so rather than leaving it to be
-inferred from a misaligned screenshot.
+per-monitor DPI aware, and virtualised (pre-scaling) pixels when it is not.
+Constructing a `QApplication` with the Windows platform plugin makes this
+process per-monitor aware — measured, not assumed: `GetProcessDpiAwareness`
+returns 2 once Qt has started, though the thread context is per-monitor v1
+rather than v2. So the figures here and the pixels `capture.py` reads come from
+the same coordinate space, which is what lets a mixed-DPI desk compose without
+one screen landing at the wrong scale.
+
+It matters that this is checked rather than trusted, because the failure is
+silent: a DPI-unaware process is handed coordinates virtualised against the
+*primary* display's scaling, so on a mixed-DPI desk the secondary screen's
+region is the wrong size and everything after it on the canvas is offset.
+`describe_dpi_awareness()` therefore reports which space is in force into the
+capture log, so a support ticket about a misaligned screenshot can be answered
+by reading it instead of by guessing. Note that a bare Python process — a test,
+a diagnostic script — reports `unaware`, because nothing has set it; that is
+expected outside the application and is exactly why the value is logged rather
+than assumed.
 """
 from __future__ import annotations
 

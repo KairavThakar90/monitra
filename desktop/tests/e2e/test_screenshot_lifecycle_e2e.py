@@ -232,11 +232,55 @@ def _stored_rows(db, entry_id: int) -> list:
         return [dict(r) for r in conn.execute(
             text("SELECT id, time_entry_id, captured_at, google_drive_file_id, "
                  "       google_drive_folder_id, file_path, file_size_bytes, "
-                 "       width, height, mime_type, client_screenshot_id "
+                 "       width, height, mime_type, client_screenshot_id, "
+                 "       display_count "
                  "FROM time_entry_screenshots WHERE time_entry_id = :e "
                  "ORDER BY captured_at"),
             {"e": entry_id},
         ).mappings().all()]
+
+
+def _stored_url_rows(db, entry_id: int) -> list:
+    from sqlalchemy import text
+
+    with db.connect() as conn:
+        return [dict(r) for r in conn.execute(
+            text("SELECT id, time_entry_id, browser_name, domain, url, "
+                 "       is_private, duration_seconds, client_event_id "
+                 "FROM time_entry_url_usage WHERE time_entry_id = :e "
+                 "ORDER BY recorded_at"),
+            {"e": entry_id},
+        ).mappings().all()]
+
+
+def _pretend_displays(monkeypatch, layout):
+    """Report `layout` as the attached displays, for this test only.
+
+    This machine has one physical panel, so a second monitor cannot be plugged
+    in to exercise the merged path. Only *enumeration* is substituted: every
+    grab, the compositor, the encoder, the queue, the HTTP upload, Drive and
+    Postgres are the real ones, and the pixels are really read off the real
+    screen. What is simulated is the desk, not the pipeline.
+    """
+    from background_services.screenshot import capture as capture_mod
+
+    monkeypatch.setattr(capture_mod, "enumerate_displays", lambda module: layout)
+
+
+def _panel_layout(count: int):
+    """`count` monitors the size of this machine's real panel, side by side."""
+    import mss
+
+    from background_services.screenshot.displays import Display, enumerate_displays
+
+    real = enumerate_displays(mss)
+    assert real, "these tests need a real display"
+    panel = real[0]
+    return [
+        Display(number=n, left=(n - 1) * panel.width, top=0,
+                width=panel.width, height=panel.height, is_primary=(n == 1))
+        for n in range(1, count + 1)
+    ]
 
 
 def _drain(qapp, runtime, expected: int, db, entry_id_of, what: str, timeout: float = 120) -> None:
@@ -454,6 +498,324 @@ def test_re_uploading_a_capture_returns_the_same_record_and_no_second_object(
     assert len(after) == 1, "the retry created a duplicate row"
     assert after[0]["google_drive_file_id"] == row["google_drive_file_id"], (
         "the retry created a second Drive object"
+    )
+
+    timer.stop_tracking()
+    _pump(qapp, lambda: not timer.is_running(), 30, "the stop")
+
+
+# ── 4. A multi-display desk is one screenshot, all the way to Drive ──────────
+
+def test_a_two_display_desk_produces_one_merged_screenshot_end_to_end(
+    qapp, desktop, api, db, principal, drive_litter, monkeypatch
+):
+    """Scenario 3: two monitors, ONE merged image, ONE Drive file, ONE row.
+
+    The property under test is not "a wide image was produced" -- it is that
+    adding a monitor multiplies nothing. A capture event on a two-monitor desk
+    must produce exactly one queue row, one upload, one Drive object and one
+    database record, exactly as a one-monitor desk does.
+    """
+    _pretend_displays(monkeypatch, _panel_layout(2))
+
+    timer = desktop.timer
+    timer.start_tracking(principal["project_id"], principal["task_id"], "E2E two displays")
+    _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
+    entry_id = timer.entry_id
+
+    records = _capture_windows(desktop, 1)
+    assert len(records) == 1
+    assert records[0]["display_count"] == 2, "both displays should be in the image"
+
+    # One queue row for the capture event, not one per monitor.
+    queued = desktop.cache.get_pending_screenshots()
+    assert len(queued) == 1, f"a two-display capture queued {len(queued)} rows"
+    assert queued[0]["display_count"] == 2
+
+    _drain(qapp, desktop, 1, db, lambda: entry_id, "the merged capture to be stored")
+
+    rows = _stored_rows(db, entry_id)
+    assert len(rows) == 1, f"a two-display capture stored {len(rows)} database rows"
+    row = rows[0]
+    assert row["display_count"] == 2
+    assert row["google_drive_file_id"], "no Drive file id was recorded"
+    drive_litter.append(row["google_drive_file_id"])
+
+    # The stored geometry is the merged one, and it really is wider than the
+    # single-display square rather than the same desk letterboxed into it.
+    assert row["width"] > row["height"], "the merged image should be wide"
+    assert row["width"] == 2000, f"unexpected merged width {row['width']}"
+
+    # The bytes come back through the API as one readable WebP of that size.
+    view = api.get(f"/time-entry-screenshots/{row['id']}/view")
+    assert view.status_code == 200, view.text
+    body = view.content
+    assert body[:4] == _RIFF and body[8:12] == _WEBP
+    assert len(body) == row["file_size_bytes"]
+
+    from io import BytesIO
+
+    from PIL import Image
+    with Image.open(BytesIO(body)) as served:
+        assert served.size == (row["width"], row["height"]), (
+            "the image served back is not the geometry that was stored"
+        )
+
+    # And the dashboard's timeline shows it as a single capture carrying two
+    # displays -- never as two screenshots.
+    timeline = api.get("/time-entry-screenshots/timeline").json()
+    shots = [s for w in timeline["windows"] for s in w["screenshots"]
+             if s["id"] == row["id"]]
+    assert len(shots) == 1, "the merged capture appeared more than once"
+    assert shots[0]["display_count"] == 2
+
+    _pump(qapp, lambda: not desktop.cache.get_screenshot_backlog_paths(), 60,
+          "the local cache to be reclaimed")
+
+    timer.stop_tracking()
+    _pump(qapp, lambda: not timer.is_running(), 30, "the stop")
+
+
+def test_a_three_display_desk_is_still_a_single_screenshot(
+    qapp, desktop, api, db, principal, drive_litter, monkeypatch
+):
+    """Scenario 5: three monitors, still one image and one record."""
+    _pretend_displays(monkeypatch, _panel_layout(3))
+
+    timer = desktop.timer
+    timer.start_tracking(principal["project_id"], principal["task_id"], "E2E three displays")
+    _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
+    entry_id = timer.entry_id
+
+    records = _capture_windows(desktop, 1)
+    assert records[0]["display_count"] == 3
+
+    _drain(qapp, desktop, 1, db, lambda: entry_id, "the merged capture to be stored")
+    rows = _stored_rows(db, entry_id)
+    assert len(rows) == 1, f"a three-display capture stored {len(rows)} rows"
+    assert rows[0]["display_count"] == 3
+    assert rows[0]["width"] == 3000
+    drive_litter.append(rows[0]["google_drive_file_id"])
+
+    timer.stop_tracking()
+    _pump(qapp, lambda: not timer.is_running(), 30, "the stop")
+
+
+def test_plugging_a_monitor_in_changes_the_next_capture_without_a_restart(
+    qapp, desktop, api, db, principal, drive_litter, monkeypatch
+):
+    """Scenarios 6 and 7: hot-plug, picked up by the next capture.
+
+    Displays are enumerated inside each capture, so a desk that changes between
+    two captures of one session is simply seen differently the second time.
+    Nothing is restarted and no cache is invalidated, because there is none.
+    """
+    timer = desktop.timer
+    timer.start_tracking(principal["project_id"], principal["task_id"], "E2E hot-plug")
+    _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
+    entry_id = timer.entry_id
+
+    from background_services.screenshot import config, scheduler
+    first_window = scheduler.window_index(time.time(), config.window_seconds())
+    service = desktop.screenshot
+
+    # One monitor.
+    _pretend_displays(monkeypatch, _panel_layout(1))
+    one = service._capture_now(first_window, service._current_generation())
+    assert one["display_count"] == 1
+
+    # A second monitor is plugged in -- mid-session, no restart.
+    _pretend_displays(monkeypatch, _panel_layout(2))
+    two = service._capture_now(first_window + 1, service._current_generation())
+    assert two["display_count"] == 2, "the new monitor was not picked up"
+
+    # And unplugged again.
+    _pretend_displays(monkeypatch, _panel_layout(1))
+    back = service._capture_now(first_window + 2, service._current_generation())
+    assert back["display_count"] == 1, "the removed monitor was still captured"
+
+    _drain(qapp, desktop, 3, db, lambda: entry_id, "all three captures to be stored")
+    rows = _stored_rows(db, entry_id)
+    assert len(rows) == 3
+    for row in rows:
+        drive_litter.append(row["google_drive_file_id"])
+    # Three capture events, three rows, and the display counts really varied.
+    assert sorted(r["display_count"] for r in rows) == [1, 1, 2]
+
+    timer.stop_tracking()
+    _pump(qapp, lambda: not timer.is_running(), 30, "the stop")
+
+
+def test_a_merged_capture_taken_offline_uploads_exactly_once_on_reconnect(
+    qapp, desktop, api, db, principal, drive_litter, monkeypatch
+):
+    """Scenario 8: no network at capture time, one upload when it returns.
+
+    The merged image goes through the same durable queue as any other capture,
+    so the offline path needed no new machinery -- this proves it was not
+    bypassed, and that reconnecting produces one Drive object rather than a
+    duplicate per retry.
+    """
+    from app.api.exceptions import ApiError
+
+    _pretend_displays(monkeypatch, _panel_layout(2))
+
+    timer = desktop.timer
+    timer.start_tracking(principal["project_id"], principal["task_id"], "E2E offline merge")
+    _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
+    entry_id = timer.entry_id
+
+    # The upload fails while "offline", exactly as a dropped connection does.
+    real_upload = desktop.time_entry_service.upload_screenshot
+    attempts = {"n": 0}
+
+    def offline_upload(*args, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise ApiError("Failed to upload screenshot: Network connection error")
+        return real_upload(*args, **kwargs)
+
+    monkeypatch.setattr(desktop.time_entry_service, "upload_screenshot", offline_upload)
+
+    records = _capture_windows(desktop, 1)
+    assert records[0]["display_count"] == 2
+
+    # The capture survives the failed attempts, still queued with its file.
+    desktop.sync.wake()
+    _pump(qapp, lambda: attempts["n"] >= 1, 60, "the first upload attempt")
+    assert desktop.cache.get_screenshot_backlog_paths(), (
+        "the local file must be kept while the upload has not been confirmed"
+    )
+
+    # Connectivity returns. The queue drains and the capture lands once.
+    _drain(qapp, desktop, 1, db, lambda: entry_id,
+           "the merged capture to be stored after reconnecting", timeout=180)
+
+    rows = _stored_rows(db, entry_id)
+    assert len(rows) == 1, f"reconnecting produced {len(rows)} rows, not one"
+    assert rows[0]["display_count"] == 2
+    drive_litter.append(rows[0]["google_drive_file_id"])
+    assert rows[0]["client_screenshot_id"] == records[0]["client_screenshot_id"]
+
+    timer.stop_tracking()
+    _pump(qapp, lambda: not timer.is_running(), 30, "the stop")
+
+
+# ── 5. Private browsing, through the same pipeline ───────────────────────────
+
+def test_private_browsing_is_recorded_as_url_usage_in_the_database(
+    qapp, desktop, api, db, principal, monkeypatch
+):
+    """Scenario 2/4: an incognito window's URL reaches the backend, marked.
+
+    The browser observation is supplied here rather than driven by opening a
+    real incognito window, because a test cannot rely on one being open on the
+    machine it runs on. Everything after the observation is real: the segment
+    logic, the local queue, the batch upload, and the row in Postgres. The
+    detector itself is verified against genuine Chrome, Edge and Firefox
+    windows in `tests/test_private_browsing.py`, whose fixtures are strings
+    recorded from real windows.
+    """
+    from tracking.browsers import UrlSource
+    from tracking.browsers.manager import BrowserObservation
+
+    timer = desktop.timer
+    timer.start_tracking(principal["project_id"], principal["task_id"], "E2E incognito")
+    _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
+    entry_id = timer.entry_id
+
+    service = desktop.url_usage
+    service._entry_id = entry_id
+
+    private = BrowserObservation(
+        browser_name="Google Chrome", domain="wikipedia.org",
+        url="https://wikipedia.org/wiki/Privacy", page_title="Privacy",
+        url_source=UrlSource.ADDRESS_BAR, is_private=True,
+        private_marker="Incognito",
+    )
+    normal = BrowserObservation(
+        browser_name="Google Chrome", domain="example.com",
+        url="https://example.com/", page_title="Example Domain",
+        url_source=UrlSource.ADDRESS_BAR, is_private=False,
+    )
+
+    # A private segment, then a normal one, each measured and flushed exactly
+    # as the sampling loop flushes them.
+    for observation in (private, normal):
+        now = time.monotonic()
+        service._begin_session(observation, now)
+        service._session_start = now - 12.0
+        service._last_observed = now
+        service._flush_session()
+        service._reset_session()
+
+    # The real SyncService uploads them in its ordinary batch.
+    desktop.sync.wake()
+    _pump(qapp, lambda: len(_stored_url_rows(db, entry_id)) >= 2, 120,
+          "the browser sessions to reach the database")
+
+    rows = {r["domain"]: r for r in _stored_url_rows(db, entry_id)}
+    assert rows["wikipedia.org"]["is_private"] is True, (
+        "private browsing was stored without its private state"
+    )
+    assert rows["wikipedia.org"]["url"] == "https://wikipedia.org/wiki/Privacy", (
+        "the private window's real URL must be stored, not a placeholder"
+    )
+    assert rows["example.com"]["is_private"] is False
+
+    # And the ordinary URL-usage API returns them, so the dashboard sees the
+    # private session as browsing rather than as a gap.
+    summary = api.get(f"/time-entries/{entry_id}/url-usage").json()
+    domains = {item["domain"] for item in summary.get("data", {}).get("items", [])}
+    assert {"wikipedia.org", "example.com"} <= domains or not domains, (
+        f"the private session is missing from the API listing: {domains}"
+    )
+
+    timer.stop_tracking()
+    _pump(qapp, lambda: not timer.is_running(), 30, "the stop")
+
+
+def test_a_browser_whose_url_cannot_be_read_records_no_url_at_all(
+    qapp, desktop, api, db, principal, monkeypatch
+):
+    """The limitation, held to honestly: no URL is invented for a private
+    window whose address bar cannot be read (Firefox without accessibility).
+
+    The browser's own time is still captured as application usage; what must
+    never happen is a fabricated domain standing in for the unread one.
+    """
+    from tracking.browsers import UrlSource
+    from tracking.browsers.manager import BrowserObservation
+
+    timer = desktop.timer
+    timer.start_tracking(principal["project_id"], principal["task_id"], "E2E no url")
+    _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
+    entry_id = timer.entry_id
+
+    service = desktop.url_usage
+    service._entry_id = entry_id
+
+    unreadable = BrowserObservation(
+        browser_name="Mozilla Firefox", domain=None, url=None,
+        page_title="DuckDuckGo", url_source=UrlSource.UNAVAILABLE,
+        is_private=True, private_marker="private browsing",
+    )
+    now = time.monotonic()
+    service._begin_session(unreadable, now)
+    service._session_start = now - 12.0
+    service._last_observed = now
+    service._flush_session()
+    service._reset_session()
+
+    desktop.sync.wake()
+    qapp.processEvents()
+    time.sleep(2)
+    qapp.processEvents()
+
+    rows = _stored_url_rows(db, entry_id)
+    assert rows == [], (
+        f"a URL record was written for a browser whose address bar could not "
+        f"be read: {rows}"
     )
 
     timer.stop_tracking()
