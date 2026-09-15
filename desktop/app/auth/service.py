@@ -11,6 +11,10 @@ from app.api.exceptions import (
     SESSION_EXPIRED_MESSAGE,
 )
 from app.auth.session import SessionManager
+from core.logging_setup import get_logger
+
+log = get_logger("auth")
+
 
 class AuthService:
     """Service layer that coordinates user authentication and profile synchronization."""
@@ -52,6 +56,14 @@ class AuthService:
             if e.status_code in (400, 401, 403) and isinstance(body, dict) and body.get("message"):
                 message = str(body["message"])
             elif e.status_code not in (400, 401, 403):
+                # The user is shown a clean sentence, but the portal's own body is
+                # the only thing that says *what* broke. Discarding it unlogged is
+                # what made a 500 here undiagnosable from a staff machine.
+                log.error(
+                    "sign-in: provider rejected the credentials with HTTP %s; body=%s",
+                    e.status_code,
+                    (e.response_body or "")[:2000],
+                )
                 message = f"Sign-in service error (HTTP {e.status_code})."
             raise ApiError(message)
         except ApiTimeoutError:
@@ -156,6 +168,16 @@ class AuthService:
                 pass
             if e.status_code in (400, 401, 403):
                 raise ApiError(error_msg)
+            # A 5xx here is our own backend failing to exchange a token the portal
+            # has already accepted, and its `detail` names the exception that
+            # caused it. The user must not be shown a server traceback, but
+            # throwing the body away entirely left nothing anywhere to diagnose
+            # from -- the log is where it belongs.
+            log.error(
+                "sign-in: backend token exchange failed with HTTP %s; body=%s",
+                e.status_code,
+                (e.response_body or "")[:2000],
+            )
             raise ApiError(f"Server error during authentication (HTTP {e.status_code}).")
 
         except ApiTimeoutError:
