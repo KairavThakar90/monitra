@@ -321,6 +321,20 @@ class BackgroundApi:
         """
         return self._runtime.cache.count_screenshots_by_status()
 
+    def unattributed_screenshot_count(self) -> int:
+        """Captures held back because no time entry id ever reached them.
+
+        These are counted as `pending` by `screenshot_queue_depth`, where they
+        read as "about to upload" — but the uploader withholds a row with no
+        entry id, so only an adoption can release one. Surfaced separately so
+        that a count which does not fall is visible as the stall it is rather
+        than hiding inside the pending total.
+
+        Normally zero, and briefly non-zero during an offline start: the
+        session's captures are adopted when the queued start lands.
+        """
+        return self._runtime.cache.count_unattributed_screenshots()
+
     # ── Idle time ─────────────────────────────────────────────────────────────
 
     @property

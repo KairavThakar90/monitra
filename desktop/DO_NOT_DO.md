@@ -666,7 +666,50 @@ was discarded on every application switch, and the missing time then showed up
 as the gap the broken chart drew as "Others".
 
 **Instead:** write the row against the timer session's `client_op` and adopt
-it when the id arrives — the same shape `bind_screenshots_to_entry` already
-used for a capture taken before its entry existed. `get_pending_app_usage`
+it when the id arrives — the same shape `bind_screenshots_to_client_op` uses
+for a capture taken before its entry existed. `get_pending_app_usage`
 withholds an unattributed row from the uploader rather than sending it
 nowhere.
+
+### ❌ Do not assume the in-process success path is the only way an id arrives
+
+A start that fails in-process fails over to the durable action queue, and
+`SyncService` is then the only thing that ever learns the entry id. It wrote
+that id onto the queued *stop* and nowhere else, because
+`_bind_trackers_to_entry` has exactly one caller — on the in-process callback —
+and `TimerService`'s `action_completed` subscription dropped every action type
+but `stop_timer`. So for **every offline or timed-out start**, the sub-trackers
+were never told their id.
+
+The timer itself looked perfect: the session was billed correctly, because the
+stop had the id. What broke was everything behind it. Screenshots were
+captured, compressed and queued correctly with `time_entry_id` NULL;
+`get_pending_screenshots` correctly withholds such a row; and nothing ever
+filled the id in. The images then sat on disk *protected from every cleanup
+path precisely because they were still queued* — `prune_orphans` and
+`prune_empty_day_folders` both rightly refuse to touch a referenced file. No
+exception, no failed upload, no retry, no error state: a whole session's
+screenshots simply never existed as far as Drive and the database were
+concerned, and the local cache grew forever.
+
+It reproduced as "screenshots work for some people and not others", which is
+what made it expensive to find. It is not user-specific at all — it is
+whoever's Start round trip happened to miss: flaky wifi, a VPN, a proxy, or a
+cold serverless backend.
+
+**Instead:** adopt durably, in the handler that resolves the id
+(`SyncService._adopt_session_telemetry`), keyed on `client_op` and applied
+straight to the queues — never through a tracker's in-memory state, which by
+then may belong to a different session or to none. Deliver it to a live
+session as well (`_on_queued_start_completed`), so later captures carry the id
+rather than needing adoption. Both are idempotent; each binds only rows that
+still have no id.
+
+And: **adopt on the session, never on the window.** The original binder matched
+`window_start`, so it could only ever claim the single window tracking began
+in. A queued start that took longer than ten minutes to land stranded every
+capture after the first, by the same silent mechanism.
+
+`count_unattributed_screenshots()` exists so this class of stall is visible:
+these rows count as `pending`, which reads as "about to upload", and only an
+adoption can ever release one.

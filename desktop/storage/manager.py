@@ -247,6 +247,11 @@ CREATE TABLE IF NOT EXISTS pending_screenshots (
     client_screenshot_id TEXT NOT NULL UNIQUE,
     local_file_path TEXT NOT NULL,
     time_entry_id INTEGER,
+    -- The timer session this capture belongs to. A capture taken before the
+    -- backend has issued an entry id is adopted by this key once it arrives,
+    -- exactly as `pending_app_usage` and `pending_url_usage` are. Window-based
+    -- adoption preceded it and could only ever claim a session's first window.
+    client_op TEXT,
     captured_at TEXT NOT NULL,
     window_start TEXT NOT NULL,
     monitor_number INTEGER NOT NULL DEFAULT 1,
@@ -284,12 +289,17 @@ MIGRATIONS = [
     # entry id is adopted by. See the `pending_app_usage` schema comment.
     ("pending_app_usage", "client_op", "TEXT"),
     ("pending_url_usage", "client_op", "TEXT"),
+    # The same key for screenshots. Existing rows keep NULL, which is honest:
+    # a capture queued by an older build genuinely has no session key, and
+    # `adopt_unattributed_screenshots` is what rescues those.
+    ("pending_screenshots", "client_op", "TEXT"),
 ]
 
 #: Indexes over columns `MIGRATIONS` adds, created after it has run.
 POST_MIGRATION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_app_usage_client_op ON pending_app_usage(client_op)",
     "CREATE INDEX IF NOT EXISTS idx_url_usage_client_op ON pending_url_usage(client_op)",
+    "CREATE INDEX IF NOT EXISTS idx_screenshots_client_op ON pending_screenshots(client_op)",
 )
 
 #: Tables whose `time_entry_id` shipped as NOT NULL and must become nullable.

@@ -315,19 +315,55 @@ class TestQueue:
     def test_a_capture_with_no_entry_id_waits_to_be_attributed(self, cache):
         # A capture taken before the backend issued an entry id has nothing to
         # upload against; uploading it against `None` would be rejected.
-        self._queue(cache, time_entry_id=None)
+        self._queue(cache, time_entry_id=None, client_op="op-1")
         assert cache.get_pending_screenshots() == []
 
-        bound = cache.bind_screenshots_to_entry("2026-09-07T10:00:00+00:00", 555)
+        bound = cache.bind_screenshots_to_client_op("op-1", 555)
         assert bound == 1
         assert cache.get_pending_screenshots()[0]["time_entry_id"] == 555
 
-    def test_only_captures_from_the_matching_window_are_adopted(self, cache):
-        self._queue(cache, client_screenshot_id="a", time_entry_id=None,
-                    window_start="2026-09-07T10:00:00+00:00")
-        self._queue(cache, client_screenshot_id="b", time_entry_id=None,
-                    window_start="2026-09-07T09:00:00+00:00")
-        assert cache.bind_screenshots_to_entry("2026-09-07T10:00:00+00:00", 555) == 1
+    def test_only_captures_from_the_same_session_are_adopted(self, cache):
+        self._queue(cache, client_screenshot_id="a", time_entry_id=None, client_op="op-1")
+        self._queue(cache, client_screenshot_id="b", time_entry_id=None, client_op="op-2")
+        assert cache.bind_screenshots_to_client_op("op-1", 555) == 1
+        remaining = {r["client_screenshot_id"] for r in cache.get_pending_screenshots()}
+        assert remaining == {"a"}
+
+    def test_every_window_of_a_long_offline_session_is_adopted(self, cache):
+        # The regression that cost real captures. Adoption used to match on the
+        # window tracking *began* in, so a queued start that took longer than
+        # one window to land stranded every capture after the first: the
+        # uploader withholds a row with no entry id and nothing else ever
+        # filled it in. A session is not one window long.
+        for index, window in enumerate(
+            ("10:00:00", "10:10:00", "10:20:00", "10:30:00")
+        ):
+            self._queue(
+                cache, client_screenshot_id=f"w{index}", time_entry_id=None,
+                client_op="op-long", window_start=f"2026-09-07T{window}+00:00",
+            )
+        assert cache.bind_screenshots_to_client_op("op-long", 777) == 4
+        assert len(cache.get_pending_screenshots()) == 4
+
+    def test_a_capture_that_can_never_upload_is_counted_separately(self, cache):
+        # It shows as `pending`, which reads as "about to upload" -- but the
+        # uploader withholds it, so only an adoption can release it. A count
+        # that does not fall is the visible form of a stalled session.
+        self._queue(cache, time_entry_id=None, client_op="op-1")
+        assert cache.count_screenshots_by_status() == {"pending": 1}
+        assert cache.count_unattributed_screenshots() == 1
+
+        cache.bind_screenshots_to_client_op("op-1", 555)
+        assert cache.count_unattributed_screenshots() == 0
+
+    def test_adoption_is_idempotent_and_never_resteals_a_bound_capture(self, cache):
+        # Both halves of the adoption run: the live session's binder and the
+        # sync service's durable one. Whichever is second must change nothing,
+        # and must never move a capture onto a different entry.
+        self._queue(cache, time_entry_id=None, client_op="op-1")
+        assert cache.bind_screenshots_to_client_op("op-1", 555) == 1
+        assert cache.bind_screenshots_to_client_op("op-1", 999) == 0
+        assert cache.get_pending_screenshots()[0]["time_entry_id"] == 555
 
     def test_completing_a_screenshot_returns_the_file_to_delete(self, cache):
         self._queue(cache)
@@ -660,7 +696,7 @@ class TestTimerIntegration:
     def test_a_capture_taken_before_the_entry_id_arrives_is_attributed_later(self, service, cache):
         svc, _ = service
         svc.runtime.timer.active_session = lambda: {}
-        svc.start_tracker({"entry_id": None})
+        svc.start_tracker({"entry_id": None, "client_op": "op-1"})
         self._fire_now(svc)
 
         # Queued but not yet uploadable.
@@ -668,6 +704,38 @@ class TestTimerIntegration:
         svc.bind_entry_id(777)
         pending = cache.get_pending_screenshots()
         assert len(pending) == 1 and pending[0]["time_entry_id"] == 777
+
+    def test_a_capture_is_stored_against_the_session_not_against_its_window(self, service, cache):
+        # Adoption is keyed on the tracking session, because a session is not
+        # one window long: an offline start that takes half an hour to land
+        # takes captures in several windows and every one of them belongs to
+        # the same entry. Keying on the window tracking began in stranded all
+        # but the first, permanently.
+        svc, _ = service
+        svc.runtime.timer.active_session = lambda: {}
+        svc.start_tracker({"entry_id": None, "client_op": "op-1"})
+        self._fire_now(svc)
+
+        row = cache.storage.query_one(
+            "SELECT client_op, time_entry_id FROM pending_screenshots"
+        )
+        assert row["client_op"] == "op-1"
+        assert row["time_entry_id"] is None
+
+    def test_a_capture_is_not_adopted_by_a_later_session(self, service, cache):
+        # Stop and start the same task again and the entry ids differ. A
+        # capture from the first session must never be uploaded against the
+        # second's entry — that would attribute one task's screen to another.
+        svc, _ = service
+        svc.runtime.timer.active_session = lambda: {}
+        svc.start_tracker({"entry_id": None, "client_op": "op-first"})
+        self._fire_now(svc)
+        svc.stop_tracker()
+
+        svc.start_tracker({"entry_id": None, "client_op": "op-second"})
+        svc.bind_entry_id(999)
+        assert cache.get_pending_screenshots() == []
+        assert cache.count_unattributed_screenshots() == 1
 
     def test_a_machine_that_cannot_capture_queues_nothing_and_says_so(self, service, cache, monkeypatch):
         # No placeholder image, exactly as there is no placeholder domain in
@@ -753,3 +821,111 @@ class TestTimerIntegration:
 
         assert submitted == ["screenshot-capture"]
         assert grabs["count"] == 0, "no capture ran outside the pool submission"
+
+
+class TestQueuedStartAdoption:
+    """The failure that lost every screenshot of an offline tracking session.
+
+    A start request that does not succeed in-process fails over to the durable
+    action queue. `SyncService` is then the only thing that ever learns the
+    entry id — and it used to write that id onto the queued *stop* and nowhere
+    else. `TimerService._bind_trackers_to_entry` has a single caller, on the
+    in-process success path, so the sub-trackers were never told.
+
+    The result was silent and total: the captures were taken, compressed and
+    written to the durable queue correctly, but with `time_entry_id` NULL.
+    `get_pending_screenshots` withholds such a row (uploading against `None`
+    would be refused), nothing ever filled the id in, and the images were
+    protected from every cleanup path precisely because they were still queued.
+    They simply never reached Google Drive or the database, with no error
+    raised anywhere and the timer itself behaving perfectly.
+
+    Which users this hit was not random: it was whoever's Start round trip
+    missed — flaky wifi, a VPN, a proxy, or a cold serverless backend — which
+    is exactly the "works for some people and not others" report.
+    """
+
+    @pytest.fixture
+    def sync(self, cache):
+        from types import SimpleNamespace
+
+        from background_services.sync.sync_service import SyncService
+
+        started = {}
+
+        def start_time_entry(project_id, task_id, started_at=None, client_op=None):
+            started["client_op"] = client_op
+            return {"id": 4242, "start_time": started_at}
+
+        entries = SimpleNamespace(start_time_entry=start_time_entry)
+        runtime = SimpleNamespace(storage=cache.storage, queue_floor_generation=0)
+        service = SyncService(runtime, cache, entries, SimpleNamespace())
+        return service, started
+
+    def _capture(self, cache, client_op, name, window):
+        cache.save_screenshot(
+            client_screenshot_id=name,
+            local_file_path=f"/tmp/{name}.webp",
+            captured_at=f"2026-09-07T{window}+00:00",
+            window_start=f"2026-09-07T{window}+00:00",
+            width=1000, height=1000, file_size_bytes=4096,
+            time_entry_id=None, client_op=client_op,
+        )
+
+    def test_a_queued_start_attributes_every_capture_it_left_behind(self, sync, cache):
+        service, _ = sync
+        # Thirty-one minutes of offline tracking: four windows, four captures,
+        # none of which could know the entry id when it was taken.
+        for index, window in enumerate(("10:00:00", "10:10:00", "10:20:00", "10:30:00")):
+            self._capture(cache, "op-offline", f"shot-{index}", window)
+
+        assert cache.get_pending_screenshots() == [], "unattributed captures must not upload"
+        assert cache.count_unattributed_screenshots() == 4
+
+        service._handle_start_timer({
+            "project_id": 1, "task_id": 2,
+            "started_at": "2026-09-07T10:00:00+00:00",
+            "client_op": "op-offline",
+        })
+
+        pending = cache.get_pending_screenshots()
+        assert len(pending) == 4, "every window's capture must now be uploadable"
+        assert {row["time_entry_id"] for row in pending} == {4242}
+        assert cache.count_unattributed_screenshots() == 0
+
+    def test_the_resolved_entry_id_is_carried_back_for_a_live_session(self, sync, cache):
+        # TimerService needs it to bind a session that is still running, so
+        # captures taken *after* the start lands carry the id from the start.
+        service, _ = sync
+        result = service._handle_start_timer({
+            "project_id": 1, "task_id": 2, "started_at": None, "client_op": "op-live",
+        })
+        assert result["entry_id"] == 4242
+        assert result["client_op"] == "op-live"
+
+    def test_another_session_s_captures_are_never_adopted(self, sync, cache):
+        service, _ = sync
+        self._capture(cache, "op-mine", "mine", "10:00:00")
+        self._capture(cache, "op-theirs", "theirs", "10:00:00")
+
+        service._handle_start_timer({
+            "project_id": 1, "task_id": 2, "started_at": None, "client_op": "op-mine",
+        })
+
+        pending = cache.get_pending_screenshots()
+        assert [row["client_screenshot_id"] for row in pending] == ["mine"]
+        assert cache.count_unattributed_screenshots() == 1
+
+    def test_a_start_still_completes_when_adoption_fails(self, sync, cache, monkeypatch):
+        # The start genuinely succeeded on the backend. Failing the action here
+        # would retry a start that already created an entry; the adoption is
+        # retried at the next launch instead.
+        service, _ = sync
+        monkeypatch.setattr(
+            cache, "bind_screenshots_to_client_op",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("database is locked")),
+        )
+        result = service._handle_start_timer({
+            "project_id": 1, "task_id": 2, "started_at": None, "client_op": "op-x",
+        })
+        assert result["entry_id"] == 4242

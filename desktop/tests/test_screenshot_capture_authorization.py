@@ -62,7 +62,7 @@ class TestNothingButTrackingAuthorizes:
     def test_a_freshly_constructed_service_authorizes_nothing(self, service):
         # Constructing and starting the service is what happens on every
         # launch, for every logged-in user, tracking or not.
-        allowed, _entry, reason = service._check_authorized(service._current_generation())
+        allowed, _entry, _client_op, reason = service._check_authorized(service._current_generation())
         assert allowed is False
         assert reason == "timer_stopped"
 
@@ -85,7 +85,7 @@ class TestNothingButTrackingAuthorizes:
 
     def test_tracking_is_the_only_thing_that_authorizes(self, service):
         service.start_tracker(SESSION)
-        allowed, entry_id, _reason = service._check_authorized(service._current_generation())
+        allowed, entry_id, _client_op, _reason = service._check_authorized(service._current_generation())
         assert allowed is True
         assert entry_id == 4021
 
@@ -129,7 +129,7 @@ class TestStopRevokesImmediately:
         service.start_tracker(SESSION)
         service.stop_tracker()
         service.stop_tracker()
-        allowed, _entry, _reason = service._check_authorized(service._current_generation())
+        allowed, _entry, _client_op, _reason = service._check_authorized(service._current_generation())
         assert allowed is False
 
 
@@ -143,7 +143,7 @@ class TestTaskSwitching:
         service.stop_tracker()
         service.start_tracker({"entry_id": 200, "task_id": 2})
 
-        allowed, _entry, reason = service._check_authorized(generation_a)
+        allowed, _entry, _client_op, reason = service._check_authorized(generation_a)
         assert allowed is False
         assert reason == "stale_scheduler_generation"
         assert service._capture_now(0, generation_a) is None
@@ -154,7 +154,7 @@ class TestTaskSwitching:
         service.stop_tracker()
         service.start_tracker({"entry_id": 200, "task_id": 2})
 
-        allowed, entry_id, _reason = service._check_authorized(service._current_generation())
+        allowed, entry_id, _client_op, _reason = service._check_authorized(service._current_generation())
         assert allowed is True
         assert entry_id == 200
 
@@ -169,7 +169,7 @@ class TestTaskSwitching:
         service.stop_tracker()
         service.start_tracker({"entry_id": 100, "task_id": 1})
 
-        allowed, _entry, reason = service._check_authorized(stale)
+        allowed, _entry, _client_op, reason = service._check_authorized(stale)
         assert allowed is False
         assert reason == "stale_scheduler_generation"
 
@@ -186,7 +186,7 @@ class TestOfflineStartStillWorks:
         service.bind_entry_id(9001)
 
         assert service._current_generation() == generation
-        allowed, entry_id, _reason = service._check_authorized(generation)
+        allowed, entry_id, _client_op, _reason = service._check_authorized(generation)
         assert allowed is True
         # The capture records the id current at capture time, not the stale
         # None it was scheduled with.
@@ -194,7 +194,7 @@ class TestOfflineStartStillWorks:
 
     def test_a_capture_is_authorized_before_any_backend_id_exists(self, service):
         service.start_tracker({"entry_id": None, "task_id": 1})
-        allowed, entry_id, _reason = service._check_authorized(service._current_generation())
+        allowed, entry_id, _client_op, _reason = service._check_authorized(service._current_generation())
         assert allowed is True
         assert entry_id is None
 
@@ -205,7 +205,7 @@ class TestRecoveryOnLaunch:
         # with no running timer must leave the scheduler inactive — a valid
         # login session is not a tracking session.
         service.on_start()
-        allowed, _entry, _reason = service._check_authorized(service._current_generation())
+        allowed, _entry, _client_op, _reason = service._check_authorized(service._current_generation())
         assert allowed is False
         assert screen.reads == 0
 
@@ -214,7 +214,7 @@ class TestRecoveryOnLaunch:
         # so recovery gets no special case and no second entry point.
         service.on_start()
         service.start_tracker(SESSION)
-        allowed, entry_id, _reason = service._check_authorized(service._current_generation())
+        allowed, entry_id, _client_op, _reason = service._check_authorized(service._current_generation())
         assert allowed is True
         assert entry_id == 4021
 
