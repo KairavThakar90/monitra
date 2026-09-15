@@ -42,7 +42,12 @@ const WindowCard: React.FC<{
             <AuthedImage
               url={ENDPOINTS.TIME_ENTRY_SCREENSHOTS.VIEW(cover.id)}
               alt={`Screen of ${subjectName} captured at ${formatISTTime12(cover.captured_at)}`}
-              className="aspect-video w-full bg-[#0F172A] object-cover"
+              className={`aspect-video w-full bg-[#0F172A] ${
+                // A merged multi-display capture is far wider than this 16:9
+                // tile, so cropping it to fill would hide the outer monitors
+                // completely. Single-display captures keep the original fit.
+                cover.display_count > 1 ? 'object-contain' : 'object-cover'
+              }`}
               frameClassName="aspect-video w-full"
             />
           </button>
