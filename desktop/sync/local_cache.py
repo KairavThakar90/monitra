@@ -1266,12 +1266,20 @@ class LocalCache:
         recorded_at: str,
         client_event_id: Optional[str] = None,
         client_op: Optional[str] = None,
+        is_private: Optional[bool] = None,
     ) -> str:
         """Queue one measured browser session for upload.
 
         `time_entry_id` may be None, exactly as in `save_app_usage`: the
         session is held against its timer session's `client_op` and adopted
         by `bind_url_usage_to_entry` when the backend issues the id.
+
+        `is_private` is the browser's private/incognito state and is stored
+        with three values, not two: True, False, and None for "could not be
+        determined on this platform or browser". A private session is an
+        ordinary URL row in every other respect — same queue, same retry, same
+        idempotency key — because it is ordinary browsing that simply happened
+        in a different kind of window.
         """
         record_id = str(uuid.uuid4())
         event_id = client_event_id or str(uuid.uuid4())
@@ -1279,9 +1287,11 @@ class LocalCache:
         self._storage.execute(
             """INSERT INTO pending_url_usage
                (id, time_entry_id, client_op, browser_name, domain, url, page_title,
-                duration_seconds, recorded_at, client_event_id, status, retry_count, next_retry_at, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
+                is_private, duration_seconds, recorded_at, client_event_id, status,
+                retry_count, next_retry_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
             (record_id, time_entry_id, client_op, browser_name, domain, url, page_title,
+             None if is_private is None else int(bool(is_private)),
              duration_seconds, recorded_at, event_id, now, now),
         )
         return record_id
@@ -1311,7 +1321,8 @@ class LocalCache:
         """
         rows = self._storage.query_all(
             """SELECT id, time_entry_id, browser_name, domain, url, page_title,
-                      duration_seconds, recorded_at, client_event_id, retry_count
+                      is_private, duration_seconds, recorded_at, client_event_id,
+                      retry_count
                FROM pending_url_usage
                WHERE status = 'pending' AND next_retry_at <= ?
                  AND time_entry_id IS NOT NULL
@@ -1334,7 +1345,7 @@ class LocalCache:
         """
         rows = self._storage.query_all(
             """SELECT id, time_entry_id, browser_name, domain, url, page_title,
-                      duration_seconds, recorded_at, client_event_id, status
+                      is_private, duration_seconds, recorded_at, client_event_id, status
                FROM pending_url_usage
                WHERE substr(recorded_at, 1, 19) >= ?
                  AND substr(recorded_at, 1, 19) < ?
@@ -1416,9 +1427,18 @@ class LocalCache:
         time_entry_id: Optional[int] = None,
         monitor_number: int = 1,
         client_op: Optional[str] = None,
+        display_count: int = 1,
     ) -> str:
         """
         Register a captured screenshot for upload.
+
+        Exactly one row per capture event, whatever the machine has plugged in.
+        A three-monitor desk produces one merged image, one row here, one
+        upload and one Drive file; `display_count` says how many displays that
+        single image contains. It is metadata *about* the screenshot, and the
+        moment it were allowed to become a row count instead, the queue, the
+        backend's idempotency key and the grid would all start disagreeing
+        about how many screenshots a window produced.
 
         `client_screenshot_id` is the UUID the backend de-duplicates on, and it
         is UNIQUE here too, so a retry that re-registers the same capture
@@ -1433,12 +1453,13 @@ class LocalCache:
         self._storage.execute(
             """INSERT OR IGNORE INTO pending_screenshots
                (id, client_screenshot_id, local_file_path, time_entry_id, client_op,
-                captured_at, window_start, monitor_number, width, height,
+                captured_at, window_start, monitor_number, display_count, width, height,
                 file_size_bytes, status, retry_count, next_retry_at,
                 created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)""",
             (client_screenshot_id, client_screenshot_id, local_file_path, time_entry_id,
-             client_op, captured_at, window_start, monitor_number, width, height,
+             client_op, captured_at, window_start, monitor_number,
+             max(1, int(display_count or 1)), width, height,
              file_size_bytes, now, now, now),
         )
         return client_screenshot_id
@@ -1453,8 +1474,8 @@ class LocalCache:
         """
         rows = self._storage.query_all(
             """SELECT id, client_screenshot_id, local_file_path, time_entry_id,
-                      captured_at, window_start, monitor_number, width, height,
-                      file_size_bytes, retry_count
+                      captured_at, window_start, monitor_number, display_count,
+                      width, height, file_size_bytes, retry_count
                FROM pending_screenshots
                WHERE status = 'pending' AND next_retry_at <= ?
                  AND time_entry_id IS NOT NULL

@@ -603,6 +603,14 @@ class SyncService(LoopService):
                     "domain": r["domain"],
                     "url": r["url"],
                     "page_title": r["page_title"],
+                    # Three-valued on purpose: omitted entirely when the
+                    # client could not determine the browser's private state,
+                    # so the backend stores NULL rather than being told "not
+                    # private" by a client that never looked.
+                    **(
+                        {"is_private": bool(r["is_private"])}
+                        if r.get("is_private") is not None else {}
+                    ),
                     "duration_seconds": r["duration_seconds"],
                     "recorded_at": r["recorded_at"],
                     "client_event_id": r["client_event_id"],
@@ -816,6 +824,7 @@ class SyncService(LoopService):
             "client_screenshot_id": record["client_screenshot_id"],
             "captured_at": record["captured_at"],
             "monitor_number": record["monitor_number"],
+            "display_count": record.get("display_count", 1),
             "width": record["width"],
             "height": record["height"],
             "file_size_bytes": record["file_size_bytes"],

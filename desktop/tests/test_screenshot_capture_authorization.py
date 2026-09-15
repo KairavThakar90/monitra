@@ -9,10 +9,14 @@ The interesting failure is not "does the scheduler start" — that was already
 gated. It is the gap between scheduling and capturing. The schedule is armed
 on the GUI thread; the capture runs on a pool thread some milliseconds or
 minutes later, and a stop can land in between. So these tests assert against
-`capture.capture_primary_monitor` itself: not that the file was deleted, not
+`capture.capture_all_displays` itself: not that the file was deleted, not
 that the queue row was skipped, but that **the screen was never read at all**.
 An image that is never taken cannot leak; one that is taken and deleted was
 still taken.
+
+This is asserted at the whole-capture entry point rather than per display, so
+the guarantee holds however many screens are attached: an unauthorised capture
+reads *no* display, not merely fewer of them.
 """
 from __future__ import annotations
 
@@ -37,7 +41,7 @@ class _Screen:
 @pytest.fixture
 def screen(monkeypatch):
     spy = _Screen()
-    monkeypatch.setattr(capture, "capture_primary_monitor", spy)
+    monkeypatch.setattr(capture, "capture_all_displays", spy)
     return spy
 
 

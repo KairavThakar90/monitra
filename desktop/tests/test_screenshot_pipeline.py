@@ -14,8 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from background_services.screenshot import config, image_processor, store
-from background_services.screenshot.capture import RawCapture
+from background_services.screenshot import compositor, config, image_processor, store
+from background_services.screenshot.capture import MergedCapture, RawCapture
+from background_services.screenshot.compositor import Placement
+from background_services.screenshot.displays import Display
 
 pytest.importorskip("PIL", reason="Pillow is required to process screenshots")
 
@@ -54,6 +56,23 @@ def _noisy(width: int, height: int) -> RawCapture:
         pixels=bytes(rng.randrange(256) for _ in range(width * height * 4)),
         width=width, height=height, monitor_number=1,
     )
+
+
+def _single_display_merge(width: int, height: int) -> MergedCapture:
+    """One display, as `capture_all_displays` reports it.
+
+    The merged path routes a one-display capture straight back to `process`,
+    so this is the shape the ordinary single-monitor machine still takes.
+    """
+    display = Display(number=1, left=0, top=0, width=width, height=height,
+                      is_primary=True)
+    placement = Placement(
+        display=display,
+        pixels=bytes([40, 80, 120, 255] * (width * height)),
+        width=width, height=height,
+    )
+    bounds = compositor.canvas_bounds([display])
+    return MergedCapture(placements=[placement], bounds=bounds, displays=[display])
 
 
 class TestImageProcessing:
@@ -210,6 +229,171 @@ class TestFallbackCompression:
 
 def _close(a, b, tolerance: int = 12) -> bool:
     return all(abs(x - y) <= tolerance for x, y in zip(a, b))
+
+
+class TestMultiDisplayImage:
+    """A merged capture is one image, sized so every display stays readable."""
+
+    def _merge(self, geometries):
+        """`geometries` is a list of (left, top, width, height)."""
+        displays, placements = [], []
+        for index, (left, top, width, height) in enumerate(geometries, start=1):
+            display = Display(number=index, left=left, top=top, width=width,
+                              height=height, is_primary=(index == 1))
+            displays.append(display)
+            placements.append(Placement(
+                display=display,
+                pixels=bytes([40, 80, 120, 255] * (width * height)),
+                width=width, height=height,
+            ))
+        return MergedCapture(
+            placements=placements,
+            bounds=compositor.canvas_bounds(displays),
+            displays=displays,
+        )
+
+    def test_a_single_display_still_produces_the_1000x1000_square(self):
+        # The backward-compatibility guarantee: a one-monitor machine, which
+        # is most of them, gets exactly what it always got.
+        processed = image_processor.process_merged(self._merge([(0, 0, 1920, 1080)]))
+        assert (processed.width, processed.height) == (1000, 1000)
+        assert processed.display_count == 1
+
+    def test_two_displays_produce_one_image_at_the_desks_aspect_ratio(self):
+        processed = image_processor.process_merged(
+            self._merge([(0, 0, 1920, 1080), (1920, 0, 1920, 1080)])
+        )
+        assert processed.display_count == 2
+        assert (processed.width, processed.height) == (2000, 562)
+        with io.BytesIO(processed.data) as buffer:
+            from PIL import Image
+            assert Image.open(buffer).size == (2000, 562)
+
+    def test_three_displays_are_still_exactly_one_image(self):
+        processed = image_processor.process_merged(self._merge([
+            (0, 0, 1920, 1080), (1920, 0, 1920, 1080), (3840, 0, 1920, 1080),
+        ]))
+        assert processed.display_count == 3
+        assert (processed.width, processed.height) == (3000, 562)
+
+    def test_each_display_keeps_the_width_it_would_have_had_on_its_own(self):
+        # The legibility contract, stated as arithmetic: adding a monitor must
+        # not shrink the one that was already there.
+        alone = image_processor.process_merged(self._merge([(0, 0, 1920, 1080)]))
+        paired = image_processor.process_merged(
+            self._merge([(0, 0, 1920, 1080), (1920, 0, 1920, 1080)])
+        )
+        assert paired.width / 2 == pytest.approx(alone.width, abs=1)
+
+    def test_a_display_left_of_primary_is_not_cropped_away(self):
+        processed = image_processor.process_merged(
+            self._merge([(0, 0, 1920, 1080), (-1920, 0, 1920, 1080)])
+        )
+        assert (processed.width, processed.height) == (2000, 562)
+
+    def test_a_portrait_second_monitor_keeps_the_canvas_tall(self):
+        processed = image_processor.process_merged(
+            self._merge([(0, 0, 1920, 1080), (1920, 0, 1080, 1920)])
+        )
+        # 3000x1920 of desk, scaled by 1000/1920.
+        assert (processed.width, processed.height) == (1562, 1000)
+
+    def _deskish(self, width: int, height: int, seed: int) -> bytes:
+        """A frame that encodes like a desktop rather than like static.
+
+        Pure random noise is incompressible and would drive *any* budget to the
+        quality floor, so it cannot distinguish a well-funded merged image from
+        a starved one. Real screens are large flat regions with detailed
+        patches, which is what this approximates: banded blocks with a noisy
+        stripe through them.
+        """
+        rng = random.Random(seed)
+        row_cache = {}
+        out = bytearray()
+        for y in range(height):
+            band = y // 40
+            if band not in row_cache:
+                base = bytes([(band * 17) % 256, (band * 29) % 256, 90, 255])
+                row = bytearray(base * width)
+                # A detailed strip, like a window of text.
+                for x in range(0, width // 4):
+                    offset = x * 4
+                    row[offset:offset + 4] = bytes(
+                        [rng.randrange(256), rng.randrange(256), rng.randrange(256), 255]
+                    )
+                row_cache[band] = bytes(row)
+            out += row_cache[band]
+        return bytes(out)
+
+    def test_a_merged_image_keeps_the_quality_a_single_display_would_have_had(self):
+        # The legibility contract: a second monitor must not cost quality. The
+        # budget is per display, so the encoder has no more reason to step the
+        # quality down for two screens than it had for one.
+        def build(count):
+            displays, placements = [], []
+            for index in range(1, count + 1):
+                display = Display(number=index, left=(index - 1) * 1920, top=0,
+                                  width=1920, height=1080, is_primary=(index == 1))
+                displays.append(display)
+                placements.append(Placement(
+                    display=display,
+                    pixels=self._deskish(1920, 1080, seed=20260915 + index),
+                    width=1920, height=1080,
+                ))
+            return MergedCapture(
+                placements=placements,
+                bounds=compositor.canvas_bounds(displays), displays=displays,
+            )
+
+        alone = image_processor.process_merged(build(1))
+        paired = image_processor.process_merged(build(2))
+        assert paired.quality >= alone.quality
+        assert paired.quality > config.WEBP_QUALITY_MIN
+
+    def test_a_capture_with_no_displays_produces_nothing(self):
+        empty = MergedCapture(placements=[], bounds=None, displays=[])
+        assert image_processor.process_merged(empty) is None
+
+
+class TestOneEventOneScreenshot:
+    """However many displays, a capture event yields exactly one queue row."""
+
+    def test_a_three_display_capture_queues_a_single_row(self, cache, cache_root):
+        path = store.write_screenshot("multi-1", b"webp-bytes")
+        cache.save_screenshot(
+            client_screenshot_id="multi-1", local_file_path=str(path),
+            captured_at="2026-09-15T10:06:24+00:00",
+            window_start="2026-09-15T10:00:00+00:00",
+            width=3000, height=562, file_size_bytes=90_000,
+            time_entry_id=100, monitor_number=1, display_count=3,
+        )
+        pending = cache.get_pending_screenshots()
+        assert len(pending) == 1
+        assert pending[0]["display_count"] == 3
+        assert cache.count_screenshots_by_status() == {"pending": 1}
+
+    def test_the_display_count_reaches_the_upload_metadata(self, cache, cache_root):
+        path = store.write_screenshot("multi-2", b"webp-bytes")
+        cache.save_screenshot(
+            client_screenshot_id="multi-2", local_file_path=str(path),
+            captured_at="2026-09-15T10:06:24+00:00",
+            window_start="2026-09-15T10:00:00+00:00",
+            width=2000, height=562, file_size_bytes=80_000,
+            time_entry_id=100, display_count=2,
+        )
+        assert cache.get_pending_screenshots()[0]["display_count"] == 2
+
+    def test_a_row_written_without_a_display_count_reads_as_one(self, cache, cache_root):
+        # Rows queued by an older build genuinely contain one display.
+        path = store.write_screenshot("legacy-1", b"webp-bytes")
+        cache.save_screenshot(
+            client_screenshot_id="legacy-1", local_file_path=str(path),
+            captured_at="2026-09-15T10:06:24+00:00",
+            window_start="2026-09-15T10:00:00+00:00",
+            width=1000, height=1000, file_size_bytes=50_000,
+            time_entry_id=100,
+        )
+        assert cache.get_pending_screenshots()[0]["display_count"] == 1
 
 
 class TestDailyCache:
@@ -612,10 +796,10 @@ class TestTimerIntegration:
 
         def fake_grab():
             grabs["count"] += 1
-            return _raw(640, 480)
+            return _single_display_merge(640, 480)
 
         monkeypatch.setattr(module.capture, "supported", lambda: True)
-        monkeypatch.setattr(module.capture, "capture_primary_monitor", fake_grab)
+        monkeypatch.setattr(module.capture, "capture_all_displays", fake_grab)
         # Only `time.time()` is used here, so a stub with that one name keeps
         # the freeze local to this module instead of patching the clock
         # process-wide.

@@ -418,11 +418,15 @@ class ScreenshotService(BaseService):
             self.log.info("screenshot capture aborted: reason=%s", reason)
             return None
 
-        raw = capture.capture_primary_monitor()
-        if raw is None:
+        # One capture event reads every attached display and produces exactly
+        # one image. The display count is metadata on that single event — it
+        # never becomes a second capture, a second queue row or a second
+        # upload, whatever the machine has plugged in.
+        merged = capture.capture_all_displays()
+        if merged is None:
             return None  # already logged; the window's budget is deliberately not spent
 
-        processed = image_processor.process(raw)
+        processed = image_processor.process_merged(merged)
         if processed is None or not processed.data:
             return None
 
@@ -444,7 +448,8 @@ class ScreenshotService(BaseService):
                 height=processed.height,
                 file_size_bytes=processed.size_bytes,
                 time_entry_id=entry_id,
-                monitor_number=raw.monitor_number,
+                monitor_number=merged.monitor_number,
+                display_count=processed.display_count,
                 client_op=client_op,
             )
         except Exception:  # noqa: BLE001
@@ -454,9 +459,11 @@ class ScreenshotService(BaseService):
 
         self._record_capture(index)
         self.log.info(
-            "captured screenshot %s for entry %s (%dx%d, %d bytes, quality %d, "
-            "primary_size=%d fallback_triggered=%s target_size=%d attempts=%d)",
-            client_screenshot_id, entry_id, processed.width, processed.height,
+            "SCREENSHOT_QUEUED id=%s entry=%s display_count=%d displays_expected=%d "
+            "size=%dx%d bytes=%d quality=%d primary_size=%d fallback_triggered=%s "
+            "target_size=%d attempts=%d",
+            client_screenshot_id, entry_id, processed.display_count,
+            merged.displays_expected, processed.width, processed.height,
             processed.size_bytes, processed.quality,
             processed.primary_size_bytes, processed.fallback_applied,
             processed.fallback_target_bytes, processed.fallback_attempts,
@@ -467,6 +474,7 @@ class ScreenshotService(BaseService):
             "captured_at": captured_at.isoformat(),
             "window_start": window_start,
             "file_size_bytes": processed.size_bytes,
+            "display_count": processed.display_count,
         }
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────

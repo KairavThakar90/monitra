@@ -13,8 +13,27 @@ class FirefoxAdapter(BaseBrowserAdapter):
 
     browser_name = "Mozilla Firefox"
 
-    SUPPORTED_PROCESSES = frozenset({"firefox", "firefox.exe"})
+    #: Gecko, not Chromium: there is no `BrowserRootView` to read, so private
+    #: state comes from the window title, which Firefox does mark.
+    IS_GECKO = True
 
-    TITLE_SUFFIXES = (" — Mozilla Firefox", " - Mozilla Firefox", " - Firefox")
+    SUPPORTED_PROCESSES = frozenset({
+        "firefox", "firefox.exe",
+        "mozilla firefox",  # macOS: NSWorkspace's localizedName()
+    })
 
-    EMPTY_TITLES = frozenset({"new tab", "mozilla firefox"})
+    # The private-window suffix comes first: a private window's title ends
+    # '… — Mozilla Firefox Private Browsing', so the plain ' — Mozilla Firefox'
+    # suffix does not match it and the marker would survive into the stored
+    # page title. Confirmed against a real private window.
+    TITLE_SUFFIXES = (
+        " — Mozilla Firefox Private Browsing",
+        " - Mozilla Firefox Private Browsing",
+        " — Private Browsing",
+        " - Private Browsing",
+        " — Mozilla Firefox", " - Mozilla Firefox", " - Firefox",
+    )
+
+    EMPTY_TITLES = frozenset({
+        "new tab", "mozilla firefox", "private browsing",
+    })

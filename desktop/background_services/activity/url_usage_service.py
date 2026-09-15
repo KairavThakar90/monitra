@@ -50,6 +50,7 @@ class UrlUsageService(LoopService):
         self._current_url: Optional[str] = None
         self._current_title: Optional[str] = None
         self._current_client_event_id: Optional[str] = None
+        self._current_is_private: Optional[bool] = None
         self._session_start: Optional[float] = None
         self._last_observed: Optional[float] = None
         self._session_recorded_at: Optional[str] = None
@@ -115,6 +116,7 @@ class UrlUsageService(LoopService):
         self._current_url = None
         self._current_title = None
         self._current_client_event_id = None
+        self._current_is_private = None
         self._session_start = None
         self._last_observed = None
         self._session_recorded_at = None
@@ -163,6 +165,7 @@ class UrlUsageService(LoopService):
                         else f"{client_event_id}-d{index}"
                     ),
                     client_op=self._client_op,
+                    is_private=self._current_is_private,
                 )
         except Exception:  # noqa: BLE001
             self.log.exception("could not persist browser URL usage session")
@@ -177,6 +180,7 @@ class UrlUsageService(LoopService):
         self._current_domain = observation.domain
         self._current_url = observation.url
         self._current_title = observation.page_title
+        self._current_is_private = observation.is_private
         self._current_client_event_id = str(uuid.uuid4())
         self._session_start = now
         self._last_observed = now
@@ -216,11 +220,16 @@ class UrlUsageService(LoopService):
             # which the UI then rendered as the link https://unknown-domain.
             # Recording nothing is the honest outcome: the time is still
             # captured as application usage against the browser itself.
-            if observation.browser_name not in self._unavailable_reported:
-                self._unavailable_reported.add(observation.browser_name)
+            key = (observation.browser_name, observation.is_private)
+            if key not in self._unavailable_reported:
+                self._unavailable_reported.add(key)
                 self.log.info(
-                    "no readable URL for %s (%s); recording application usage only",
-                    observation.browser_name, UrlSource.UNAVAILABLE,
+                    "URL_UNAVAILABLE browser=%s private=%s source=%s; recording "
+                    "application usage only, with no URL invented for it",
+                    observation.browser_name,
+                    "unknown" if observation.is_private is None
+                    else str(observation.is_private).lower(),
+                    UrlSource.UNAVAILABLE,
                 )
             self._close_open_session()
             self.heartbeat()
@@ -235,10 +244,17 @@ class UrlUsageService(LoopService):
         # changes on its own (a chat gaining a name, an unread-count prefix)
         # is the same page and must not split the segment, or a busy tab
         # would produce a stream of duplicate two-second records.
+        # The private state is part of what identifies the segment. Opening the
+        # same URL in an incognito window is a different browsing session from
+        # the normal-window one, and merging them would attribute private time
+        # to a normal-window record (and the reverse). A transition either way
+        # therefore closes the open segment and starts a new one, exactly as a
+        # URL change does.
         same_page = (
             observation.browser_name == self._current_browser and
             observation.domain == self._current_domain and
-            observation.url == self._current_url
+            observation.url == self._current_url and
+            observation.is_private == self._current_is_private
         )
 
         gap = now - (self._last_observed or now)
