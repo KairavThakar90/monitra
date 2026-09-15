@@ -54,7 +54,59 @@ _WEBP = b"WEBP"
 
 
 def _expected_dimensions() -> int:
+    """The edge length of a single-display capture's square canvas."""
     return 1000
+
+
+#: Hard ceiling on either edge of an accepted screenshot. A merged
+#: multi-display image is wider than the single-display square by design, and
+#: the desktop caps its own long edge at 4000 (see the client's
+#: `MAX_CANVAS_LONG_EDGE`); this is the server's independent bound, because the
+#: backend validates everything even when the client already did.
+MAX_IMAGE_EDGE = 4000
+
+#: Widest aspect ratio accepted, long edge over short. Eight 16:9 monitors in a
+#: row reach about 14:1; beyond that the image is not a desk, and the rule is
+#: here so a malformed or hostile upload cannot claim to be one.
+MAX_ASPECT_RATIO = 20.0
+
+
+def _validate_geometry(width: int, height: int) -> Optional[str]:
+    """
+    Why this geometry is unacceptable, or None if it is fine.
+
+    The rule used to be "exactly 1000x1000", which was right while every
+    capture was one letterboxed display. A merged multi-display capture keeps
+    the desk's real aspect ratio — two 1080p monitors produce 2000x562 — so an
+    exact-square test would reject every multi-monitor screenshot with a 422,
+    and the desktop would park each one as permanently failed.
+
+    What actually needs enforcing is that the image is a plausible screenshot
+    and is bounded: the client's geometry is not trusted, it is checked. The
+    single-display square stays explicitly valid so nothing about existing
+    clients changes.
+    """
+    edge = _expected_dimensions()
+    if width == edge and height == edge:
+        return None
+    if width <= 0 or height <= 0:
+        return f"Screenshot has a non-positive dimension ({width}x{height})"
+    if width > MAX_IMAGE_EDGE or height > MAX_IMAGE_EDGE:
+        return (
+            f"Screenshot exceeds the {MAX_IMAGE_EDGE}px limit on either edge; "
+            f"received {width}x{height}"
+        )
+    if min(width, height) < edge // 4:
+        return (
+            f"Screenshot is too small to be readable; received {width}x{height}"
+        )
+    longest, shortest = max(width, height), min(width, height)
+    if longest / shortest > MAX_ASPECT_RATIO:
+        return (
+            f"Screenshot aspect ratio {longest / shortest:.1f}:1 exceeds the "
+            f"{MAX_ASPECT_RATIO:.0f}:1 limit; received {width}x{height}"
+        )
+    return None
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -148,6 +200,9 @@ def _build_windows(
                     "id": s.id,
                     "captured_at": s.captured_at,
                     "monitor_number": s.monitor_number,
+                    # Rows predating merged capture have no value; they are
+                    # single-display captures, so 1 is the fact, not a guess.
+                    "display_count": s.display_count or 1,
                     "width": s.width,
                     "height": s.height,
                     "file_size_bytes": s.file_size_bytes,
@@ -248,15 +303,13 @@ class TimeEntryScreenshotService:
             )
 
         width, height = TimeEntryScreenshotService._read_dimensions(content)
-        expected = _expected_dimensions()
-        if width and height and (width != expected or height != expected):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"Screenshot must be {expected}x{expected}; "
-                    f"received {width}x{height}"
-                ),
-            )
+        if width and height:
+            problem = _validate_geometry(width, height)
+            if problem:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=problem,
+                )
         return width, height
 
     @staticmethod
@@ -299,6 +352,7 @@ class TimeEntryScreenshotService:
         current_user: User,
         captured_at: Optional[datetime] = None,
         monitor_number: int = 1,
+        display_count: int = 1,
     ) -> Tuple[TimeEntryScreenshot, bool]:
         """
         Store one screenshot.
@@ -409,6 +463,7 @@ class TimeEntryScreenshotService:
                 width=width or None,
                 height=height or None,
                 monitor_number=monitor_number,
+                display_count=display_count,
                 client_screenshot_id=client_screenshot_id,
             )
         except IntegrityError:
@@ -869,6 +924,7 @@ class TimeEntryScreenshotService:
             time_entry_id=payload.time_entry_id,
             file_path=payload.file_path,
             monitor_number=payload.monitor_number,
+            display_count=payload.display_count,
             captured_at=payload.captured_at
         )
 

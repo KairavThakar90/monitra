@@ -42,7 +42,8 @@ class URLUsageRepository:
         page_title: Optional[str],
         duration_seconds: int,
         recorded_at: Optional[datetime] = None,
-        client_event_id: Optional[str] = None
+        client_event_id: Optional[str] = None,
+        is_private: Optional[bool] = None
     ) -> TimeEntryUrlUsage:
         now_utc = datetime.now(timezone.utc)
         record = TimeEntryUrlUsage(
@@ -52,6 +53,7 @@ class URLUsageRepository:
             domain=domain,
             url=url,
             page_title=page_title,
+            is_private=is_private,
             duration_seconds=duration_seconds,
             recorded_at=recorded_at if recorded_at is not None else now_utc,
             client_event_id=client_event_id

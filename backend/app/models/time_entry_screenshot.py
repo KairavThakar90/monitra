@@ -33,6 +33,18 @@ class TimeEntryScreenshot(Base):
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
     monitor_number: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
 
+    #: How many physical displays are composited into this one image.
+    #:
+    #: A screenshot event produces exactly one row whatever the desk looks
+    #: like: three monitors are one merged image, one Drive object and one
+    #: record. This describes that single screenshot -- it is diagnostic
+    #: metadata and a rendering hint, never a count of screenshots, and
+    #: nothing may derive a row-per-monitor from it. Rows written before
+    #: multi-display capture existed carry 1, which is exactly what they are.
+    display_count: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=1, server_default='1'
+    )
+
     #: Google Drive object identifiers. Null only while a row is in the
     #: transient `pending` state, which the current upload path never persists.
     google_drive_file_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

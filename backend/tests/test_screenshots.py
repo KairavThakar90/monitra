@@ -69,6 +69,34 @@ class ValidationTests(unittest.TestCase):
             finally:
                 self.drive = drive
 
+    def _upload_expecting_success(self, content):
+        """Run an upload all the way through a working Drive.
+
+        `_upload` above only ever needs to reach the validator, so its Drive
+        double is deliberately bare. Geometry that is *accepted* has to get
+        past storage as well, or the test would pass for the wrong reason.
+        """
+        db = MagicMock()
+        with patch(f"{SVC}.TimeEntryRepository.get_by_id", return_value=_entry()), \
+             patch(f"{SVC}.TimeEntryScreenshotRepository.get_by_client_id", return_value=None), \
+             patch(f"{SVC}.TimeEntryScreenshotRepository.create_uploaded") as create, \
+             patch(f"{SVC}.drive_service") as drive:
+            drive.configured = True
+            drive.ensure_screenshot_folder.return_value = ("folder-1", "2026/September/User_1")
+            drive.upload_file.return_value = "drive-file-1"
+            create.side_effect = lambda **kwargs: TimeEntryScreenshot(
+                id=1, organization_id=10, time_entry_id=100,
+                captured_at=T0, file_path="p", monitor_number=1,
+                display_count=kwargs.get("display_count", 1),
+            )
+            TimeEntryScreenshotService.upload_screenshot(
+                db=db, time_entry_id=100, content=content,
+                content_type="image/webp", client_screenshot_id="abc",
+                current_user=_user(),
+            )
+            self.drive = drive
+            self.create = create
+
     def test_a_non_webp_body_is_rejected_before_anything_is_stored(self):
         with self.assertRaises(HTTPException) as raised:
             self._upload(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
@@ -85,13 +113,47 @@ class ValidationTests(unittest.TestCase):
             self._upload(_webp(), content_type="image/png")
         self.assertEqual(raised.exception.status_code, 422)
 
-    def test_an_image_of_the_wrong_geometry_is_rejected(self):
+    def test_an_unreadably_small_image_is_rejected(self):
         # The dimensions are read from the file, not from the form fields, so
-        # a client cannot claim 1000x1000 and store something else.
+        # a client cannot claim a valid size and store something else.
         with self.assertRaises(HTTPException) as raised:
-            self._upload(_webp(800, 600))
+            self._upload(_webp(120, 90))
         self.assertEqual(raised.exception.status_code, 422)
-        self.assertIn("1000x1000", raised.exception.detail)
+        self.assertIn("120x90", raised.exception.detail)
+        self.drive.upload_file.assert_not_called()
+
+    def test_an_image_larger_than_the_edge_limit_is_rejected(self):
+        with self.assertRaises(HTTPException) as raised:
+            self._upload(_webp(4200, 1000))
+        self.assertEqual(raised.exception.status_code, 422)
+        self.drive.upload_file.assert_not_called()
+
+    def test_an_implausible_aspect_ratio_is_rejected(self):
+        # No desk is 40:1. The bound exists so a malformed or hostile upload
+        # cannot claim to be a very wide multi-monitor capture.
+        with self.assertRaises(HTTPException) as raised:
+            self._upload(_webp(4000, 100))
+        self.assertEqual(raised.exception.status_code, 422)
+        self.drive.upload_file.assert_not_called()
+
+    def test_the_single_display_square_is_still_accepted(self):
+        self._upload_expecting_success(_webp(1000, 1000))
+        self.drive.upload_file.assert_called_once()
+
+    def test_a_merged_two_display_capture_is_accepted(self):
+        # The geometry a two-monitor desk actually produces. Under the old
+        # exact-square rule every one of these was refused with a 422 and the
+        # desktop parked it as permanently failed.
+        self._upload_expecting_success(_webp(2000, 562))
+        self.drive.upload_file.assert_called_once()
+
+    def test_a_merged_three_display_capture_is_accepted(self):
+        self._upload_expecting_success(_webp(3000, 562))
+        self.drive.upload_file.assert_called_once()
+
+    def test_a_portrait_secondary_monitors_geometry_is_accepted(self):
+        self._upload_expecting_success(_webp(1562, 1000))
+        self.drive.upload_file.assert_called_once()
 
     def test_an_oversized_body_is_rejected(self):
         with patch(f"{SVC}.settings") as settings:

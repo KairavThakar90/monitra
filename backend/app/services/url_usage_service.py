@@ -129,6 +129,12 @@ class URLUsageService:
             latest.browser_name == payload.browser_name.strip() and
             latest.domain == norm_domain and
             (latest.url or None) == norm_url and
+            # The private state is part of what identifies a run of browsing.
+            # Without it, a page opened in a normal window and then in an
+            # incognito one within the aggregation window would be folded into
+            # a single row, and that row's is_private would describe only the
+            # half that happened to be written first.
+            latest.is_private == payload.is_private and
             abs((recorded_at - latest.recorded_at).total_seconds()) <= AGGREGATION_WINDOW_SECONDS and
             same_ist_day(recorded_at, latest.recorded_at)
         ):
@@ -150,7 +156,8 @@ class URLUsageService:
             page_title=payload.page_title.strip() if payload.page_title else None,
             duration_seconds=payload.duration_seconds,
             recorded_at=recorded_at,
-            client_event_id=payload.client_event_id
+            client_event_id=payload.client_event_id,
+            is_private=payload.is_private
         )
 
     @staticmethod
@@ -196,6 +203,9 @@ class URLUsageService:
                     latest.browser_name == r.browser_name.strip() and
                     latest.domain == norm_domain and
                     (latest.url or None) == norm_url and
+                    # See `record_usage`: private and normal browsing of the
+                    # same page are different runs and must not be merged.
+                    latest.is_private == r.is_private and
                     abs((recorded_at - latest.recorded_at).total_seconds()) <= AGGREGATION_WINDOW_SECONDS and
                     same_ist_day(recorded_at, latest.recorded_at)
                 ):
@@ -216,7 +226,8 @@ class URLUsageService:
                         page_title=r.page_title.strip() if r.page_title else None,
                         duration_seconds=r.duration_seconds,
                         recorded_at=recorded_at,
-                        client_event_id=r.client_event_id
+                        client_event_id=r.client_event_id,
+                        is_private=r.is_private
                     )
                 accepted_count += 1
             except Exception:

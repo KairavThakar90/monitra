@@ -54,10 +54,17 @@ def require_screenshot_delete(current_user: User = Depends(get_current_user)) ->
 )
 async def upload_screenshot(
     time_entry_id: int = Path(..., gt=0),
-    file: UploadFile = File(..., description="The 1000x1000 WebP image"),
+    file: UploadFile = File(
+        ...,
+        description=(
+            "The WebP image. 1000x1000 for a single display; a merged "
+            "multi-display capture keeps the desk's real aspect ratio."
+        ),
+    ),
     client_screenshot_id: str = Form(..., description="Client-generated UUID; the idempotency key"),
     captured_at: Optional[datetime] = Form(None),
     monitor_number: int = Form(1),
+    display_count: int = Form(1, ge=1, le=16),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -82,6 +89,7 @@ async def upload_screenshot(
         current_user=current_user,
         captured_at=captured_at,
         monitor_number=monitor_number,
+        display_count=display_count,
     )
     return {
         "success": True,
