@@ -209,6 +209,12 @@ class ApplicationRuntime(QObject):
         # Cross-service wiring, declared in one place rather than scattered
         # through widget constructors.
         self.network.network_state_changed.connect(self._on_network_state_changed)
+        # Waking from sleep: every timer-driven cadence was paused with the
+        # machine. Probe the network now rather than waiting out the healthy
+        # 30s interval, and let the sync consumer find out from that probe
+        # whether it can drain. (Queued: the emitter is on the recovery
+        # thread, the slots belong here.)
+        self.recovery.system_resumed.connect(self._on_system_resumed)
 
         log.info("runtime constructed in %.0fms", (time.monotonic() - self._started_at) * 1000)
 
@@ -371,6 +377,12 @@ class ApplicationRuntime(QObject):
         """Nudge the sync consumer as soon as the backend becomes usable again."""
         if state in NetworkState.USABLE:
             self.sync.wake()
+
+    def _on_system_resumed(self, gap_seconds: float) -> None:
+        """The machine was asleep for `gap_seconds`; re-establish connectivity."""
+        log.info("resume after %.0fs: probing the backend and waking the sync consumer", gap_seconds)
+        self.network.check_now()
+        self.sync.wake()
 
     # ── Health ────────────────────────────────────────────────────────────────
 

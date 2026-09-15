@@ -177,16 +177,23 @@ class AuthService:
 
         Returns True when a new access token is in place. Returns False without
         touching stored credentials when the session simply could not be renewed
-        right now -- no refresh token held, or the backend unreachable. The
-        caller must not read False as "log the user out": only
-        `SessionExpiredError` means the session is genuinely over.
+        *right now* -- the backend unreachable, or answering 5xx. The caller
+        must not read False as "log the user out": only `SessionExpiredError`
+        means the session is genuinely over, and `ApiClient` turns False into
+        a transient connection error so the request is retried later rather
+        than treated as a sign-out.
 
-        :raises SessionExpiredError: the backend refused the refresh token, so
-            the session is finished and local state must be cleared.
+        :raises SessionExpiredError: the session is finished and local state
+            must be cleared -- the backend refused the refresh token, or there
+            is no refresh token to present. The second case used to return
+            False, which read identically to "the server is down" and left the
+            client unable to tell a dead session from a bad moment.
         """
         refresh_token = self.session_manager.refresh_token
         if not refresh_token:
-            return False
+            # A rejected access token with nothing to renew it from is a
+            # session that is over, not one that can be retried.
+            raise SessionExpiredError(SESSION_EXPIRED_MESSAGE)
 
         try:
             response = self.api_client.post(

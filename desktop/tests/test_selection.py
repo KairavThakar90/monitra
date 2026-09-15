@@ -35,7 +35,7 @@ class TestSelectionServices(unittest.TestCase):
         projects = self.project_service.get_projects()
         
         self.api_client.get.assert_called_once_with(
-            "/api/v1/projects?page=1&limit=20&include_tasks=false"
+            "/api/v1/projects?page=1&limit=100&include_tasks=false"
         )
         self.assertEqual(len(projects), 2)
         self.assertEqual(projects[0]["project_name"], "Project Alpha")

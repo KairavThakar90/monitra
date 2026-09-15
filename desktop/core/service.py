@@ -126,6 +126,17 @@ class BaseService(QObject):
 
     # ── Lifecycle (called only by the ServiceManager) ──────────────────────────
 
+    #: Delays before each retry of a start that raised, in milliseconds. A
+    #: service that fails to start is otherwise dead for the whole session
+    #: with one log line to show for it -- for the sync consumer that means
+    #: nothing queued is ever uploaded and the dashboard's "Last sync" never
+    #: moves, with no error anywhere the user can see. The causes are almost
+    #: always transient (the database busy behind another process's write,
+    #: a file the previous run had not released yet), so a bounded, spaced
+    #: retry recovers them; an exhausted budget stays FAILED and is named in
+    #: the health report.
+    START_RETRY_DELAYS_MS = (2_000, 5_000, 15_000)
+
     def start(self) -> None:
         if self.health.state in (ServiceState.RUNNING, ServiceState.STARTING):
             return
@@ -135,9 +146,40 @@ class BaseService(QObject):
         except Exception as exc:  # noqa: BLE001
             self.log.exception("failed to start")
             self._set_state(ServiceState.FAILED, str(exc))
+            self._schedule_start_retry()
             return
         self._set_state(ServiceState.RUNNING)
         self.heartbeat()
+
+    def _schedule_start_retry(self) -> None:
+        """Try `on_start` again after a delay, a bounded number of times.
+
+        Runs on the GUI thread through a single-shot QTimer, so it needs the
+        event loop that `ServiceManager.start_all` is already guaranteed to
+        have. `restart_count` records the attempts for the health report.
+        """
+        attempt = self.health.restart_count
+        if attempt >= len(self.START_RETRY_DELAYS_MS):
+            self.log.error(
+                "giving up on starting %s after %d retries; last error: %s",
+                self.name, attempt, self.health.last_error,
+            )
+            return
+        delay_ms = self.START_RETRY_DELAYS_MS[attempt]
+        self.health.restart_count = attempt + 1
+        self.log.warning(
+            "retrying start of %s in %dms (attempt %d/%d)",
+            self.name, delay_ms, attempt + 1, len(self.START_RETRY_DELAYS_MS),
+        )
+        QTimer.singleShot(delay_ms, self, self._retry_start)
+
+    @Slot()
+    def _retry_start(self) -> None:
+        # Only a service that is still FAILED is retried: one that was stopped
+        # in the meantime (shutdown during the delay) must stay stopped.
+        if self.health.state != ServiceState.FAILED:
+            return
+        self.start()
 
     def stop(self, timeout_ms: int = 3000) -> bool:
         """
