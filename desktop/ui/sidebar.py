@@ -13,14 +13,14 @@ from PySide6.QtWidgets import (
     QLineEdit, QScrollArea, QFrame, QSizePolicy, QSpacerItem,
     QMenu, QStackedWidget, QToolButton, QProxyStyle, QStyle
 )
-from core.time_format import format_hms
+from core.time_format import format_hms, ist_greeting
 from core.validation import SEARCH_MAX_LENGTH
 from ui import icons
 from core.branding import logo_pixmap
 from ui.styles import (
     SIDEBAR_BG, SIDEBAR_BG_HOVER, SIDEBAR_SELECTED, SIDEBAR_MUTED,
     SIDEBAR_TEXT, SIDEBAR_BORDER, PROJECT_COLORS, SUCCESS, TEXT_MUTED,
-    PRIMARY,
+    PRIMARY, ERROR,
 )
 
 EXPANDED_WIDTH = 300
@@ -36,6 +36,21 @@ HEADER_HEIGHT_COLLAPSED = 96
 # Total Time Today hero text sizing
 TIME_DISPLAY_FONT_SIZE = 36
 STATUS_FONT_SIZE = 12
+
+# Greeting block ("Welcome Sam!" / "Good morning") sizing
+WELCOME_FONT_SIZE = 14
+GREETING_FONT_SIZE = 11
+
+#: How often the sidebar re-checks the IST time-of-day greeting.
+#:
+#: A minute is far finer than the thing it watches for — the greeting changes
+#: four times a day — and the check itself is one `datetime.now` and a string
+#: comparison. It is edge-triggered: nothing is repainted, and no work is
+#: started, unless the greeting has actually changed. A level-triggered
+#: version of this (re-setting the label on every tick) is the shape that
+#: caused the worker storm recorded in DO_NOT_DO.md, so it is deliberately
+#: not written that way even though this particular slot only touches a label.
+GREETING_CHECK_MS = 60_000
 
 # Projects pagination size
 PROJECTS_PER_PAGE = 10
@@ -262,11 +277,22 @@ class ProjectItem(QPushButton):
 
 
 class ElidedLabel(QLabel):
-    """QLabel that elides text with an ellipsis (...) if it exceeds widget width."""
+    """QLabel that elides text with an ellipsis (...) if it exceeds widget width.
 
-    def __init__(self, text: str = "", parent: Optional[QWidget] = None) -> None:
+    `align` is the horizontal alignment of the (possibly elided) text; the
+    text is always vertically centred. It defaults to left, which is what the
+    account card wants, and the greeting block asks for centre.
+    """
+
+    def __init__(
+        self,
+        text: str = "",
+        parent: Optional[QWidget] = None,
+        align: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignLeft,
+    ) -> None:
         super().__init__(text, parent)
         self._full_text = text
+        self._align = align
         if text:
             self.setToolTip(text)
 
@@ -284,7 +310,7 @@ class ElidedLabel(QLabel):
 
         painter.setPen(self.palette().color(self.foregroundRole()))
         painter.setFont(self.font())
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignVCenter | self._align, elided)
         painter.end()
 
 
@@ -349,11 +375,26 @@ class SidebarWidget(QWidget):
         #: checks for updates itself -- UpdateService owns that and pushes the
         #: number here.
         self._pending_updates = 0
+        #: The signed-in user's first name, for the welcome line. Empty until
+        #: `set_user` supplies one, and the greeting block stays hidden until
+        #: then rather than greeting a placeholder "User".
+        self._user_first_name = ""
+        #: The greeting currently on screen. The watchdog below compares
+        #: against it so the label is only touched on a real transition.
+        self._greeting = ist_greeting()
 
         self.setFixedWidth(EXPANDED_WIDTH)
         self.setMinimumHeight(400)
         self._build_ui()
         self._apply_style()
+
+        # Time-of-day rollover, the same shape as the header's midnight
+        # watchdog: a UI-only QTimer that schedules no work and emits nothing.
+        # Without it a machine left signed in overnight would still be saying
+        # "Good evening" the next morning.
+        self._greeting_timer = QTimer(self)
+        self._greeting_timer.timeout.connect(self._check_greeting_rollover)
+        self._greeting_timer.start(GREETING_CHECK_MS)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(f"""
@@ -450,7 +491,50 @@ class SidebarWidget(QWidget):
         self._divider_1 = self._make_divider()
         self._divider_1.hide()
 
+        # ── Greeting ───────────────────────────────────────────────
+        #
+        # Two lines above the day's total: who is signed in, and the IST
+        # time of day. Both are readouts -- the name comes from the session
+        # via `set_user`, and the greeting from `core.time_format`, which is
+        # the one place that decides where the afternoon ends.
+        self._greeting_section = QWidget(self)
+        gr_layout = QVBoxLayout(self._greeting_section)
+        gr_layout.setContentsMargins(18, 14, 18, 0)
+        gr_layout.setSpacing(2)
+
+        self._welcome_label = ElidedLabel(
+            "", self._greeting_section, align=Qt.AlignmentFlag.AlignHCenter
+        )
+        self._welcome_label.setFont(QFont("Segoe UI", WELCOME_FONT_SIZE, QFont.Weight.Bold))
+        self._welcome_label.setStyleSheet(
+            f"color: {SIDEBAR_TEXT}; background: transparent; "
+            f"font-size: {WELCOME_FONT_SIZE}pt; font-weight: 700;"
+        )
+        # Ignored horizontally: the label elides to whatever width the fixed
+        # 300px column gives it, so a long name cannot widen the layout's
+        # minimum and clip the column it sits in.
+        self._welcome_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+        )
+        gr_layout.addWidget(self._welcome_label)
+
+        self._greeting_label = QLabel(self._greeting, self._greeting_section)
+        self._greeting_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._greeting_label.setFont(QFont("Segoe UI", GREETING_FONT_SIZE, QFont.Weight.DemiBold))
+        self._greeting_label.setStyleSheet(
+            f"color: {SIDEBAR_MUTED}; background: transparent; "
+            f"font-size: {GREETING_FONT_SIZE}pt;"
+        )
+        gr_layout.addWidget(self._greeting_label)
+
+        # Hidden until a session supplies a name: "Welcome User!" is a
+        # placeholder wearing a real user's slot.
+        self._greeting_section.hide()
+        layout.addWidget(self._greeting_section)
+
         # ── Total Time Today ───────────────────────────────────────
+        # Centred as a block: the label, the hero duration and the status pill
+        # share one horizontal centre line under the greeting above them.
         self._time_section = QWidget(self)
         ts_layout = QVBoxLayout(self._time_section)
         ts_layout.setContentsMargins(18, 16, 18, 16)
@@ -458,11 +542,13 @@ class SidebarWidget(QWidget):
 
         total_label = QLabel("Total Time Today", self._time_section)
         total_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        total_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         total_label.setStyleSheet(f"color: {SIDEBAR_MUTED}; letter-spacing: 1.2px; text-transform: uppercase;")
         ts_layout.addWidget(total_label)
 
         self._time_display = QLabel("00:00:00", self._time_section)
         self._time_display.setFont(QFont("Segoe UI", TIME_DISPLAY_FONT_SIZE, QFont.Weight.Black))
+        self._time_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._time_display.setStyleSheet(
             f"color: {SIDEBAR_TEXT}; letter-spacing: 0.5px; padding: 4px 0; "
             f"font-size: {TIME_DISPLAY_FONT_SIZE}pt; font-weight: 900;"
@@ -473,18 +559,22 @@ class SidebarWidget(QWidget):
         status_row.setSpacing(6)
         status_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         self._status_dot = QLabel(self._time_section)
-        self._status_dot.setPixmap(icons.pixmap("circle_filled", SIDEBAR_MUTED, 10))
         self._status_dot.setStyleSheet("background: transparent;")
-        self._status_text = QLabel("Idle", self._time_section)
+        self._status_text = QLabel(self._time_section)
         self._status_text.setFont(QFont("Segoe UI", STATUS_FONT_SIZE, QFont.Weight.Bold))
-        self._status_text.setStyleSheet(
-            f"color: {SIDEBAR_MUTED}; font-size: {STATUS_FONT_SIZE}pt; font-weight: 900;"
-        )
 
+        # Stretch on both sides, so the dot and its word centre as one unit
+        # rather than being pinned to the left edge of a centred block.
+        status_row.addStretch()
         status_row.addWidget(self._status_dot)
         status_row.addWidget(self._status_text)
         status_row.addStretch()
         ts_layout.addLayout(status_row)
+
+        # The idle look is defined once, in `set_timer_active`, rather than
+        # written out here and again there -- two spellings of one state is
+        # how they drift apart.
+        self.set_timer_active(False)
 
         layout.addWidget(self._time_section)
 
@@ -736,8 +826,9 @@ class SidebarWidget(QWidget):
         # after the whole column exists, rather than scattered through the
         # builders.
         for fixed in (
-            self._header_widget, self._time_section, self._search_section,
-            self._projects_header_widget, self._user_card, self._sync_row,
+            self._header_widget, self._greeting_section, self._time_section,
+            self._search_section, self._projects_header_widget,
+            self._user_card, self._sync_row,
         ):
             fixed.setSizePolicy(
                 fixed.sizePolicy().horizontalPolicy(), QSizePolicy.Policy.Fixed
@@ -768,6 +859,13 @@ class SidebarWidget(QWidget):
         self._avatar_label.setText(initials)
         self._user_name_label.setText(name)
         self._user_email_label.setText(email)
+
+        # The greeting's first name comes from the same resolved `name` the
+        # avatar and the account card use, so the three cannot disagree about
+        # who is signed in.
+        parts = name.split() if name else []
+        self._user_first_name = parts[0] if parts else ""
+        self._render_greeting()
 
         # Set tooltip showing full name and full email on user card & labels
         full_tooltip = f"{name}\n{email}" if email else name
@@ -817,19 +915,24 @@ class SidebarWidget(QWidget):
         self._last_sync_label.setText(f"Last sync: {local.strftime('%d-%m-%Y %H:%M:%S')}")
 
     def set_timer_active(self, active: bool) -> None:
+        """Render the tracking state under the day's total.
+
+        Idle is drawn in ERROR red rather than the sidebar's muted grey: not
+        tracking is the state the user needs to notice, and a grey dot beside
+        grey label text read as decoration next to the muted "TOTAL TIME
+        TODAY" caption. Active keeps SUCCESS green, so the two states differ
+        in hue and not only in the word.
+
+        A readout only -- the timer state is TimerService's, published here
+        through DashboardWindow. This widget decides nothing about tracking.
+        """
         self._is_active = active
-        if active:
-            self._status_dot.setPixmap(icons.pixmap("circle_filled", SUCCESS, 10))
-            self._status_text.setStyleSheet(
-                f"color: {SUCCESS}; font-size: {STATUS_FONT_SIZE}pt; font-weight: 900;"
-            )
-            self._status_text.setText("Active")
-        else:
-            self._status_dot.setPixmap(icons.pixmap("circle_filled", SIDEBAR_MUTED, 10))
-            self._status_text.setStyleSheet(
-                f"color: {SIDEBAR_MUTED}; font-size: {STATUS_FONT_SIZE}pt; font-weight: 900;"
-            )
-            self._status_text.setText("Idle")
+        color = SUCCESS if active else ERROR
+        self._status_dot.setPixmap(icons.pixmap("circle_filled", color, 10))
+        self._status_text.setStyleSheet(
+            f"color: {color}; font-size: {STATUS_FONT_SIZE}pt; font-weight: 900;"
+        )
+        self._status_text.setText("Active" if active else "Idle")
 
     def select_project(self, project_id: int) -> None:
         self._selected_project_id = project_id
@@ -870,6 +973,38 @@ class SidebarWidget(QWidget):
         self.collapse_toggled.emit(self._collapsed)
 
     # ── Private helpers ────────────────────────────────────────────────────────
+
+    def _render_greeting(self) -> None:
+        """Re-render the whole greeting block from current state.
+
+        Called when the signed-in user changes and when the collapse state
+        does. The block is shown only when a real name is known and the
+        sidebar is expanded -- there is no room for it in the 60px rail, and
+        no honest text for it before a session exists.
+        """
+        self._greeting = ist_greeting()
+        self._welcome_label.setText(
+            f"Welcome {self._user_first_name}!" if self._user_first_name else ""
+        )
+        self._greeting_label.setText(self._greeting)
+        self._greeting_section.setVisible(
+            bool(self._user_first_name) and not self._collapsed
+        )
+
+    def _check_greeting_rollover(self) -> None:
+        """Follow the IST clock across a time-of-day boundary.
+
+        Edge-triggered: it reads the greeting and returns immediately unless
+        it differs from the one on screen, so an unchanged hour costs one
+        comparison and repaints nothing. Only the greeting line moves here --
+        the welcome line and the block's visibility depend on the session, not
+        on the clock.
+        """
+        greeting = ist_greeting()
+        if greeting == self._greeting:
+            return
+        self._greeting = greeting
+        self._greeting_label.setText(greeting)
 
     def _prev_page(self) -> None:
         if self._current_page > 1:
@@ -970,6 +1105,7 @@ class SidebarWidget(QWidget):
             self._header_widget.setFixedHeight(HEADER_HEIGHT_COLLAPSED)
             self._divider_1.hide()
             self._divider_2.hide()
+            self._greeting_section.hide()
             self._time_section.hide()
             self._search_section.hide()
             self._projects_header_widget.hide()
@@ -998,6 +1134,7 @@ class SidebarWidget(QWidget):
             self._header_widget.setFixedHeight(HEADER_HEIGHT_EXPANDED)
             self._divider_1.hide()
             self._divider_2.hide()
+            self._render_greeting()
             self._time_section.show()
             self._search_section.show()
             self._projects_header_widget.show()

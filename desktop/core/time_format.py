@@ -113,6 +113,50 @@ def to_ist(value: datetime | None) -> datetime | None:
     return value.astimezone(IST)
 
 
+def ist_part_of_day(value: datetime | None = None) -> str:
+    """
+    Which part of the IST day an instant falls in.
+
+    Returns exactly one of ``morning``, ``afternoon``, ``evening`` or
+    ``night``. The boundaries are IST wall-clock hours:
+
+    ===============  ==========
+    05:00 – 11:59    morning
+    12:00 – 16:59    afternoon
+    17:00 – 20:59    evening
+    21:00 – 04:59    night
+    ===============  ==========
+
+    IST, not the machine's local zone, for the same reason `ist_today` is:
+    the product reports against the IST day, so a user on a laptop still set
+    to another timezone must not be greeted with "Good evening" over their
+    morning's work.
+
+    ``value`` is converted to IST first (a naive value is read as UTC, as
+    everywhere else in this module); ``None`` means now.
+    """
+    moment = datetime.now(IST) if value is None else to_ist(value)
+    hour = moment.hour
+    if 5 <= hour < 12:
+        return "morning"
+    if 12 <= hour < 17:
+        return "afternoon"
+    if 17 <= hour < 21:
+        return "evening"
+    return "night"
+
+
+def ist_greeting(value: datetime | None = None) -> str:
+    """The time-of-day greeting for an instant, e.g. ``Good morning``.
+
+    Lives beside `ist_part_of_day` so the greeting has one spelling. A widget
+    that built its own string would be free to disagree with this one about
+    where the afternoon ends, which is the same class of defect as a widget
+    keeping its own duration formatter.
+    """
+    return f"Good {ist_part_of_day(value)}"
+
+
 def ist_clock(value: str | datetime | None) -> str:
     """Render a backend timestamp as an IST wall clock, e.g. ``7:34 PM``.
 
