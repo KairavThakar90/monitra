@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import HTTPException, status
 from sqlalchemy import delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.project import Project
@@ -417,8 +418,38 @@ class ProjectManagementService:
         return [ProjectManagementService._task_payload(item, statuses.get(item.status_id), assignees.get(item.assignee_id)) for item in tasks]
 
     @staticmethod
+    def _task_for_client_op(db: Session, user: User, client_op: str) -> Optional[Task]:
+        """The task an earlier submission with this key already created, if any."""
+        return db.scalar(select(Task).where(
+            Task.organization_id == user.organization_id, Task.client_op == client_op,
+        ))
+
+    @staticmethod
+    def _replayed_task(db: Session, user: User, project_id: int, task: Task):
+        """Answer a retried create with the task it already produced.
+
+        The row is returned as it stands now -- renamed, reassigned or even
+        archived since -- because that *is* the outcome of the submission the
+        client is asking about. A key reused for a different project is a
+        client bug rather than a replay, and is refused rather than answered
+        with a task from somewhere else.
+        """
+        if task.project_id != project_id:
+            raise HTTPException(status.HTTP_409_CONFLICT, "client_op was already used for a task in another project.")
+        assignee = db.get(User, task.assignee_id) if task.assignee_id else None
+        return ProjectManagementService._task_payload(task, StatusCatalog.task_status(db, task.status_id), assignee)
+
+    @staticmethod
     def create_task(db: Session, user: User, project_id: int, payload: TaskCreate):
         project = ProjectManagementService._project(db, project_id, user)
+        # Idempotency. A create whose reply was lost is retried with the same
+        # `client_op`; the row already exists, so it is returned rather than
+        # duplicated. Checked after `_project` so the caller still has to be
+        # allowed to see the project before learning anything about its tasks.
+        if payload.client_op:
+            existing = ProjectManagementService._task_for_client_op(db, user, payload.client_op)
+            if existing is not None:
+                return ProjectManagementService._replayed_task(db, user, project.id, existing)
         task_status = ProjectManagementService._status(db, TaskStatus, payload.status_id, "task")
 
         # An assignee is optional. When one is given the same rules apply as
@@ -446,9 +477,20 @@ class ProjectManagementService:
         # legacy route has always done.
         if assignee is None and is_task_scoped(user):
             assignee = user
-        task = Task(organization_id=user.organization_id, project_id=project.id, task_name=payload.name, assignee_id=assignee.id if assignee else None, status_id=task_status.id, status=ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task"), created_by=user.id)
+        task = Task(organization_id=user.organization_id, project_id=project.id, task_name=payload.name, assignee_id=assignee.id if assignee else None, status_id=task_status.id, status=ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task"), created_by=user.id, client_op=payload.client_op)
         db.add(task)
-        db.flush()
+        try:
+            db.flush()
+        except IntegrityError:
+            # Two retries of the same submission raced past the pre-check and
+            # both tried to insert. The unique index let exactly one through;
+            # this one answers with the row the other wrote, which is the same
+            # answer a later retry would get.
+            db.rollback()
+            existing = ProjectManagementService._task_for_client_op(db, user, payload.client_op) if payload.client_op else None
+            if existing is None:
+                raise
+            return ProjectManagementService._replayed_task(db, user, project.id, existing)
         if assignee:
             db.add(TaskAssignee(task_id=task.id, user_id=assignee.id, assigned_by=user.id))
         db.commit()
