@@ -9,14 +9,28 @@ from app.core.security import get_current_user, require_permission
 from app.core.permissions import LEADER_ROLE_NAMES
 from app.models.user import User
 from app.repositories.status_catalog import StatusCatalog
-from app.schemas.project_management import BillingType, ProjectCreate, ProjectListResponse, ProjectManagementMetadata, ProjectMetadataStatusRead, ProjectRead, ProjectUpdate, RoleRead, StatusRead, TaskCreate, TaskMetadataStatusRead, TaskRead, TaskUpdate
+from app.schemas.project_management import BillingType, ProjectCreate, ProjectListResponse, ProjectManagementMetadata, ProjectMetadataStatusRead, ProjectRead, ProjectUpdate, RoleRead, StatusRead, SyncRevisionRead, TaskCreate, TaskMetadataStatusRead, TaskRead, TaskUpdate
 from app.schemas.project_member import ProjectMembersAddRequest, ProjectMembersAddResponse, ProjectMemberRead, ProjectMemberUpdate, ProjectMembersListResponse
 from app.services.member_scope import is_team_scoped
 from app.services.project_member import ProjectMemberService
 from app.services.project_management import ProjectManagementService
+from app.services.sync_revision import scope_revision
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
 router = APIRouter(prefix="/api/v1", tags=["Project Management"])
+
+
+@router.get("/sync/revision", response_model=SyncRevisionRead, summary="Fingerprint of the caller's visible projects, tasks and time entries")
+def sync_revision(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """What a client polls instead of the lists themselves.
+
+    A handful of aggregate queries, no rows. The desktop asks every half
+    minute and re-reads projects and tasks only when the answer changes, so a
+    change made on the web reaches an open desktop within that window without
+    the fleet re-downloading lists that have not moved. See
+    `app/services/sync_revision.py` for what the fingerprint covers.
+    """
+    return scope_revision(db, user)
 
 
 @router.get("/project-management/metadata", response_model=ProjectManagementMetadata, dependencies=[Depends(get_current_user)], summary="Get project management metadata")

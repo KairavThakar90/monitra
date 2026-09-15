@@ -317,6 +317,68 @@ if self._current_project.get("id") != project_id:
 matches, so user A's slow response cannot mutate user B's session after a
 logout/login.
 
+Identity is not enough on its own. A task list fetched by a refresh was in
+flight when the user pressed Add Task; the create's response was applied to
+the screen, then the older list arrived and painted the new task away until
+the next refresh. Every local mutation now bumps `_task_list_version`, a
+fetch records the version at submission, and a list that predates a change
+is discarded and re-read (`sync event=server.discarded`).
+
+### ❌ Do not fetch page one and call it the list
+
+```python
+self.api_client.get("/api/v1/projects?page=1&limit=20&include_tasks=false")
+```
+
+**What it caused:** anyone with more than twenty projects never saw the rest,
+and because the dashboard falls back to the first project in the list, the
+one they were last working in appeared to vanish. `ProjectService.get_projects`
+walks every page at the backend's maximum page size.
+
+### ❌ Do not reference-count a round without a `finally`
+
+```python
+def succeeded(result):
+    on_success(result)          # raised
+    on_done(True)               # never ran
+```
+
+**What it caused:** the refresh round's outstanding count stayed one too
+high for ever, and every later refresh — periodic, on reconnect, and the
+button — was dropped as "already in flight". Silently: the exception was
+logged once, and nothing afterwards said why the dashboard had gone stale.
+`_run_load` reports in a `finally`, and `REFRESH_STALE_AFTER_S` abandons a
+round that never reports back, with the runtime health in the log.
+
+### ❌ Do not cancel a key family by its bare name
+
+```python
+self.api.cancel_key("load-tasks")     # the real keys are load-tasks:{project_id}
+```
+
+It matched nothing, so the loads ran to completion after logout (their
+results were dropped by the session guard, but the requests were still made
+under the next user's session). Use `cancel_keys_with_prefix("load-tasks:")`.
+
+### ❌ Do not leave a lost project selected
+
+The server's project list is what knows a project has gone — archived, or
+this user removed from it. Leaving the selection alone kept the lost
+project's cached tasks on screen while every refresh asked the backend for
+them, got 404, and reported "showing cached tasks — retrying" until the user
+signed out. `_reconcile_selection` clears the selection, drops the cached
+tasks and selects a valid project. It never touches a running timer.
+
+### ❌ Do not default a missing assignee to user 1
+
+```python
+payload.get("assignee_id") or 1
+```
+
+A fabricated owner: whoever holds id 1 is assigned a task in a project they
+may not be on, and the backend refuses it with 400. `None` means unassigned,
+and unassigned is a state the backend models.
+
 ### ❌ Do not decide a three-way rule with a two-way comparison
 
 ```python

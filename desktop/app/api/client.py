@@ -6,7 +6,9 @@ import uuid
 import threading
 from typing import Any, Callable, Dict, Optional
 from app.config import settings
-from app.api.exceptions import ApiConnectionError, ApiError, ApiTimeoutError, ApiHttpError
+from app.api.exceptions import (
+    ApiConnectionError, ApiError, ApiTimeoutError, ApiHttpError, SessionExpiredError,
+)
 from version import user_agent
 
 log = logging.getLogger(__name__)
@@ -40,6 +42,14 @@ UPLOAD_TIMEOUT_MESSAGE = "The upload timed out. Please try again."
 NETWORK_MESSAGE = "Could not reach the server. Please check your connection."
 UNEXPECTED_MESSAGE = "An unexpected connection error occurred. Please try again."
 CLIENT_CLOSED_MESSAGE = "The connection is closing; the request was not sent."
+SESSION_RENEWAL_MESSAGE = "Could not renew the session right now. Please try again."
+
+
+class RefreshOutcome:
+    """What a silent token refresh concluded. See `ApiClient._refresh_once`."""
+    RENEWED = "renewed"
+    EXPIRED = "expired"
+    UNAVAILABLE = "unavailable"
 
 
 class ApiClient:
@@ -193,12 +203,23 @@ class ApiClient:
         except ApiHttpError as e:
             if e.status_code != 401 or skip_auth_refresh or self._refresh_hook is None:
                 raise
-            if not self._refresh_once(token_used):
+            outcome = self._refresh_once(token_used)
+            if outcome == RefreshOutcome.EXPIRED:
                 raise
+            if outcome == RefreshOutcome.UNAVAILABLE:
+                # The session is not over -- it could not be renewed *right
+                # now* (the refresh endpoint answered 5xx, or was unreachable).
+                # Surfacing the 401 here read as "signed out" to every handler
+                # and logged the user out over a transient failure; a
+                # connection error is what it actually is, and every caller
+                # already retries those.
+                raise ApiConnectionError(
+                    SESSION_RENEWAL_MESSAGE, original_exception=e, url=self._build_url(path)
+                )
         # One retry, now carrying the renewed token.
         return self._execute(method, path, json_data, params, headers, timeout)
 
-    def _refresh_once(self, token_used: Optional[str]) -> bool:
+    def _refresh_once(self, token_used: Optional[str]) -> str:
         """Renew the access token, at most one refresh at a time.
 
         Threads that arrive while a refresh is in flight wait for it and then
@@ -208,22 +229,33 @@ class ApiClient:
         refresh per caller would rotate the refresh token out from under the
         others -- each rotation invalidating the token the next one is about to
         present, turning one expiry into a cascade of false sign-outs.
+
+        :return: a `RefreshOutcome`: RENEWED (retry with the new token),
+            EXPIRED (the session is over; surface the 401) or UNAVAILABLE
+            (could not renew right now; treat as a connection failure).
         """
         with self._refresh_lock:
             if self._access_token != token_used:
-                return True  # another thread already renewed it
+                return RefreshOutcome.RENEWED  # another thread already renewed it
             hook = self._refresh_hook
             if hook is None:
-                return False
+                return RefreshOutcome.EXPIRED
             log.info("access token rejected; attempting silent refresh")
             try:
-                return bool(hook())
-            except ApiError as exc:
-                # Includes SessionExpiredError. Reported as "could not refresh"
-                # so the caller re-raises the 401 it already has; the session
-                # itself is torn down by whoever handles that 401.
+                renewed = bool(hook())
+            except SessionExpiredError as exc:
+                # The backend's verdict, or nothing to renew from. Reported as
+                # expired so the caller re-raises the 401 it already has; the
+                # session itself is torn down by whoever handles that 401.
                 log.info("silent refresh did not succeed (%s)", exc)
-                return False
+                return RefreshOutcome.EXPIRED
+            except ApiError as exc:
+                log.warning("silent refresh could not reach the backend (%s)", exc)
+                return RefreshOutcome.UNAVAILABLE
+            if renewed:
+                return RefreshOutcome.RENEWED
+            log.warning("silent refresh unavailable right now; the session is kept")
+            return RefreshOutcome.UNAVAILABLE
 
     def _execute(
         self,
