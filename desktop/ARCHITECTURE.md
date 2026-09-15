@@ -225,6 +225,23 @@ States: `IDLE → STARTING → RUNNING → STOPPING → STOPPED`, plus `RECOVERI
 The one-second `QTimer` emits a display tick only. If it never fired,
 `elapsed_seconds()` would still be correct.
 
+`started_at_utc` is on **this machine's clock**. The backend records the same
+session on its own clock: every start and stop request carries the event
+instant *and* the client's clock at send time, so the server places the event
+by age (`server_now − (client_time − started_at)`) and client clock skew
+cancels. The desktop keeps its local anchor when the backend's entry binds
+(the two differ by a round trip, and swapping clocks is what made the display
+jump), records the difference as `clock_offset_seconds`, and translates
+through the response's `server_time` only when adopting a session it did not
+start. Start is idempotent on the session's `client_op`; stop is idempotent
+on the entry. The full contract is
+[docs/TIMING_MODEL.md](../docs/TIMING_MODEL.md).
+
+Two signals mark a stop. `timer_stopped` fires when the local clock stops;
+`timer_finalized` fires when the backend has committed the stop — directly or
+through the durable queue — and carries the finalized entry. The dashboard
+re-reads the day on the second, never the first (see DO_NOT_DO.md).
+
 ### The timer only ever runs against today
 
 `core/date_mode.py` is the one definition of what a selected date means:

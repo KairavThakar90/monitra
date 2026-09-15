@@ -163,6 +163,51 @@ double-counting in Total Time Today.
 
 **Instead:** read `api.timer_elapsed_seconds()`. There is one number.
 
+### ❌ Do not re-read the day from the backend the instant the local clock stops
+
+```python
+def _on_timer_state_changed(self, active):
+    if not active:
+        self._load_today_time()      # races the stop request still in flight
+```
+
+**What it caused:** the `GET /time-entries` overtook the `POST .../stop`. The
+list came back with the entry still `running` and `total_seconds` 0, replaced
+the session's banked estimate in the cache, and the day's total dropped by the
+whole session until the next refresh — "the time is wrong after Stop until I
+refresh".
+
+**Instead:** re-read on `timer_finalized`, which fires once the backend has
+committed the stop (directly, or through the durable queue) and carries the
+finalized entry. While a stop is still queued, overlay the queued instant on
+the backend's running row (`_overlay_pending_stops`) rather than showing 0.
+
+### ❌ Do not replace the local start anchor with the backend's `start_time`
+
+```python
+def on_success(entry):
+    self._session["started_at_utc"] = entry["start_time"]   # another clock
+```
+
+**What it caused:** the two values describe one instant on two clocks. The
+request carries the event's *age*, so `start_time` is that instant on the
+server's clock and `started_at_utc` is it on ours; substituting one for the
+other moved the displayed elapsed time by the machines' skew the moment the
+reply arrived — "the time jumps when I press Start". Keep the local anchor,
+record the difference as `clock_offset_seconds`, and translate through
+`server_time` only when adopting a session this client did not start. See
+[docs/TIMING_MODEL.md](../docs/TIMING_MODEL.md).
+
+### ❌ Do not send a start without its `client_op`, or treat a 409 on a start as done
+
+A start that timed out had usually succeeded server-side. The queued retry
+was refused with a bare 409, `_handle_api_error` completed the action, the
+entry id never reached the queued stop, the stop was cancelled after its
+deferral budget, and the entry ran on the backend until the next launch
+adopted it — with a start hours in the past. The key is what makes the replay
+return the same entry; a 409 that still arrives names the entry the backend
+*is* running, and the UI adopts that.
+
 ### ❌ Do not derive elapsed time from `time.monotonic()`
 
 ```python

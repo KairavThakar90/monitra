@@ -121,6 +121,23 @@ These are enforced by `tools/check_architecture.py`, which runs in CI. Violation
 
 ---
 
+## 3.3 Tracked time — one clock, one duration
+
+**[docs/TIMING_MODEL.md](docs/TIMING_MODEL.md) is authoritative** for anything
+that starts, stops, stores, sums or displays tracked time, in any layer. The
+rules most likely to be broken by a well-meaning change:
+
+- A duration is `round(end_time − start_time)` from the persisted `timestamptz`
+  columns. Never persist a client counter, and never rebuild seconds from
+  two-decimal hours.
+- The server clock is the reference. Clients send the event instant **and**
+  their own clock (`client_time`); the server places the event by age. Never
+  compare a client instant to a server instant directly.
+- Start is idempotent on `client_op`; stop is idempotent on the entry. Never
+  treat a 409 on a start as "done" — it names the entry that *is* running.
+- The desktop keeps its local anchor for a session it started; the dashboard
+  re-reads the day on `timer_finalized`, not on the local stop.
+
 ## 3.4 Input validation — all three layers
 
 Every user-controlled input goes through the centralised validation framework.
