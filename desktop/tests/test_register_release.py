@@ -23,9 +23,50 @@ import version
 from tools import register_release as reg  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _a_release_build(monkeypatch):
+    """Every test below describes registering a *release*.
+
+    While the working tree carries an internal test build, version.PRERELEASE
+    is set and `main()` refuses before it does anything; the refusal has its
+    own test. The rest of the file must keep proving what a release build does.
+    """
+    monkeypatch.setattr(version, "PRERELEASE", "")
+
+
 # ---------------------------------------------------------------------------
 # Classifying what was built
 # ---------------------------------------------------------------------------
+
+
+def test_an_internal_test_build_is_never_registered(monkeypatch, tmp_path, capsys):
+    # Testers install a pre-release by hand. A row for it -- even a draft, which
+    # is one click from published -- would let it become the build the updater
+    # and the download page offer to everyone. So the script refuses outright,
+    # with credentials present and a tag that matches, before touching the
+    # network.
+    monkeypatch.setattr(version, "PRERELEASE", "beta.1")
+    monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
+    monkeypatch.setenv("MONITRA_RELEASE_TOKEN", "token")
+    monkeypatch.setattr(
+        reg, "post_release",
+        lambda *a: pytest.fail("a pre-release must never reach the backend"),
+    )
+    artifact = tmp_path / f"Monitra-Setup-{version.VERSION}-beta.1.exe"
+    artifact.write_bytes(b"x")
+    monkeypatch.setattr(sys, "argv", [
+        "register_release.py", "--tag", f"v{version.VERSION}",
+        "--repo", "acme/monitra", "--artifacts", str(artifact),
+    ])
+
+    assert reg.main() == 1
+    assert "pre-release" in capsys.readouterr().err
+
+
+def test_a_pre_release_installer_would_still_be_classified_as_windows():
+    # Documents why the refusal above has to exist: nothing about the filename
+    # pattern keeps a beta installer out, so the guard must be the version.
+    assert reg.classify("Monitra-Setup-1.2.0-beta.1.exe") == ("win32", None)
 
 
 @pytest.mark.parametrize("name, expected", [

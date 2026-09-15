@@ -39,6 +39,11 @@ $VenvPython = Join-Path $DesktopRoot '.venv-build\Scripts\python.exe'
 $PythonExe = if (Test-Path $VenvPython) { $VenvPython } else { 'python' }
 $Version = & $PythonExe -c "import version; print(version.VERSION)"
 if ($LASTEXITCODE -ne 0) { throw "could not read the version from version.py" }
+# The artifact name carries the pre-release label of an internal test build
+# (<version>-<prerelease>); the installer's own AppVersion stays numeric.
+# Identical to $Version for a production release.
+$ArtifactVersion = & $PythonExe -c "import version; print(version.artifact_version())"
+if ($LASTEXITCODE -ne 0) { throw "could not read the artifact version from version.py" }
 
 # ── 2. Locate Inno Setup ────────────────────────────────────────────────────
 if (-not $IsccPath) {
@@ -70,14 +75,14 @@ non-standard.
 "@
 }
 
-Write-Host "==> Building Monitra $Version installer" -ForegroundColor Cyan
+Write-Host "==> Building Monitra $ArtifactVersion installer" -ForegroundColor Cyan
 Write-Host "    compiler: $IsccPath"
 
 # ── 3. Compile ──────────────────────────────────────────────────────────────
-& $IsccPath "/DAppVersion=$Version" (Join-Path $DesktopRoot 'packaging\windows\monitra.iss')
+& $IsccPath "/DAppVersion=$Version" "/DArtifactVersion=$ArtifactVersion" (Join-Path $DesktopRoot 'packaging\windows\monitra.iss')
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }
 
-$Setup = Join-Path $DesktopRoot "dist\installer\Monitra-Setup-$Version.exe"
+$Setup = Join-Path $DesktopRoot "dist\installer\Monitra-Setup-$ArtifactVersion.exe"
 if (-not (Test-Path $Setup)) { throw "compilation reported success but $Setup is missing" }
 
 $SizeMb = [math]::Round((Get-Item $Setup).Length / 1MB, 1)

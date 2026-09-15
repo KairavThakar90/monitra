@@ -20,6 +20,36 @@ re-grant a permission.
 
 ## [Unreleased]
 
+## [1.2.0-beta.1]
+
+**An internal test build, for the pilot group only.** It is installed by hand
+from a link you were sent, it is not offered by the in-app update check or the
+download page, and it will not be — a later production release will be. If
+you were not asked to test it, stay on 1.1.1. Everything in it is also what
+the next production release will contain, so please report anything that
+looks wrong, however small.
+
+The installer and the macOS bundles are unsigned, like every Monitra build so
+far: Windows SmartScreen will warn on first run ("More info" → "Run anyway"),
+and macOS will refuse the app until you allow it under System Settings →
+Privacy & Security. Installing over 1.1.1 is an ordinary upgrade; your tracked
+time, sync queue and settings are untouched, and 1.1.1 can be reinstalled over
+this build at any time.
+
+### Added
+
+- **Screenshots capture every display.** A desk with two or three monitors is
+  captured as one merged image at its real layout, instead of only the primary
+  screen. It is still one screenshot every ten minutes, not one per monitor. A
+  single-display machine is unchanged.
+- **Private and incognito browsing is recorded as such.** A page visited in a
+  private window shows up in your browsing time marked private. Where Monitra
+  genuinely cannot tell (an unsupported browser, or macOS), it records that it
+  could not tell rather than guessing.
+- **The sidebar greets you by name**, centres the day's total, and draws the
+  idle state in red so "not tracking" no longer looks like decoration.
+- **The wellbeing reminders are back on the schedule the catalogue documents.**
+
 ### Fixed
 
 - **Quitting Monitra now stops your timer.** Quit from the close dialog,
@@ -42,6 +72,25 @@ re-grant a permission.
   Monitra was away is ended here too, instead of counting on.
 - **Double-clicking Start or Stop counts as one click.** It used to start
   and immediately stop (or stop and restart) the timer.
+- **Working with several browser tabs no longer triggers the unwanted-activity
+  warning — or the ten-minute deduction that came with it.** Holding CTRL, or
+  CTRL+T / CTRL+TAB / CTRL+W / CTRL+click, was being counted as a key mashed
+  fifteen times. A key is now counted once per press, and only a key pressed
+  on its own counts toward that rule.
+- **Today's Activity counts what you actually typed and clicked.** A second,
+  dead measurement path had been reporting scrolling and reading as typing.
+- **A session tracked while offline keeps its whole day of activity**, minute
+  by minute, instead of arriving as one lump — or, past an hour, not arriving
+  at all.
+- **Screenshots taken while Start was still being confirmed are uploaded.** If
+  the network was slow or dropped at the moment you pressed Start, every
+  screenshot of that session used to sit on disk for ever and never reach the
+  server, while the tracked time itself was fine.
+- **Tracked time no longer jumps after a lost reply to Start.** A Start whose
+  answer was lost is retried as the same start, so the server cannot end up
+  with an entry running for hours that the desktop had already stopped.
+- **The day's total on the desktop now matches the reports**: idle deductions
+  and other adjustments are applied to it the same way.
 - **Projects and tasks now stay in step with the server on their own — the
   Refresh button is no longer part of normal use.** Monitra asks the server
   every half minute whether anything you can see has changed and re-reads
@@ -76,6 +125,20 @@ re-grant a permission.
   from a day that had not happened. A timer that is already running is not
   affected by browsing dates: it keeps running, and returning to today brings
   its controls back.
+- **The calendar's month button has a real chevron.**
+- **A sign-in that fails on the server now leaves a diagnosable record in the
+  log**, instead of only "server error".
+
+### For the pilot
+
+Please cover, over at least one full working day: sign in and stay signed in
+across a restart; select a project and a task; start, switch and stop the
+timer; add a manual time entry; work normally in a browser, an editor and one
+other application; let the machine go idle long enough for the idle prompt
+and answer it; check the Activity tab shows your applications, sites and
+screenshots for the day; disconnect the network for a while and reconnect;
+quit from the tray and reopen. Report what you saw against what the web
+dashboard shows for the same day.
 
 ## [1.1.1]
 

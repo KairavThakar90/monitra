@@ -214,6 +214,26 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if version.is_prerelease():
+        # An internal test build is handed to testers by hand, and it must
+        # never become a row the update check or the public download page can
+        # offer -- not even as a draft, because a draft is one click from
+        # published. Checked before the credentials, so the answer is the same
+        # in CI and by hand.
+        print(
+            f"version.py marks this build as a pre-release "
+            f"({version.display_version()}); refusing to register it. Internal "
+            "test builds are distributed manually and are never a release.",
+            file=sys.stderr,
+        )
+        annotate(
+            "error",
+            f"Backend registration REFUSED: {version.display_version()} is an "
+            "internal test build (version.PRERELEASE is set). No release row "
+            "was created; production users are unaffected.",
+        )
+        return 1
+
     base_url = os.environ.get("MONITRA_API_BASE_URL", "").strip()
     # The normal path: the service credential, presented as-is. It does not
     # expire, so there is nothing to mint and no sign-in step to fail.

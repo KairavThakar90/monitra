@@ -51,7 +51,7 @@ from core import single_instance
 from ui.dashboard_window import DashboardWindow
 from ui.login_window import LoginWindow
 from ui.styles import APP_QSS
-from version import APP_DISPLAY_NAME, APP_NAME, ORG_NAME, VERSION
+from version import APP_DISPLAY_NAME, APP_NAME, ORG_NAME, VERSION, display_version
 
 log = get_logger("main")
 
@@ -140,7 +140,9 @@ class MainWindow(QMainWindow):
         self._os_session_ending = False
         self._startup_guard: Optional[QTimer] = None
 
-        self.setWindowTitle(f"{APP_DISPLAY_NAME} {VERSION}")
+        # display_version(), not VERSION: an internal test build says so in
+        # its title, so a support report names the build it actually came from.
+        self.setWindowTitle(f"{APP_DISPLAY_NAME} {display_version()}")
         self._apply_window_sizing()
 
         self._build_ui()
@@ -583,7 +585,7 @@ def main() -> int:
     # them. See core/paths.py.
     log.info(
         "%s %s starting — data=%s logs=%s frozen=%s portable=%s",
-        APP_NAME, VERSION, data_dir(), logs_dir(), is_frozen(), is_portable(),
+        APP_NAME, display_version(), data_dir(), logs_dir(), is_frozen(), is_portable(),
     )
 
     # Explicit Windows taskbar Application User Model ID for Monitra identity

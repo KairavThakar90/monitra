@@ -46,6 +46,30 @@ here:
 6. **A draft release opens automatically** with every artifact and checksum
    attached. Nothing is public yet, and this gate stays — a human publishes.
 
+## 1a. Internal test builds
+
+A build for the pilot group **before** a version is cut sets `PRERELEASE` in
+`desktop/version.py` (`"beta.1"`, `"beta.2"`, …) next to a numeric `VERSION`
+that has never shipped. Mechanics are in `desktop/BUILD.md` §10; the process
+rules are:
+
+1. **It is never registered and never published.** `register_release.py`
+   refuses a pre-release outright, so no `desktop_releases` row exists for it,
+   the update check never offers it, and the download page never shows it.
+   Testers get the installer by hand, with its `.sha256`.
+2. **Do not push a `v*` tag for it.** Build it locally (Windows) or with
+   `workflow_dispatch` on the branch with *Attach the artifacts to a GitHub
+   release* left **off** — that produces workflow artifacts only, no GitHub
+   release and no registration attempt.
+3. **The changelog entry is `## [<version>-<prerelease>]`**, written for the
+   testers; the gate requires it.
+4. **The production release that follows uses a different `VERSION`** with
+   `PRERELEASE = ""`. A version identifies exactly one build, and a tester on
+   `1.2.0-beta.1` is only offered the production build by the updater if that
+   build's number is strictly greater than `1.2.0`.
+5. Everything else in this runbook — the local gate, the pilot checklist, one
+   full working day of use — applies unchanged.
+
 ## 2. The pilot ring — mandatory before publishing
 
 **No release goes to the whole team without a pilot.** This is the cheapest

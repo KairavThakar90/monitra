@@ -145,7 +145,7 @@ class UpdateDialog(QDialog):
         grid = QVBoxLayout(versions)
         grid.setContentsMargins(14, 12, 14, 12)
         grid.setSpacing(6)
-        grid.addWidget(self._version_row("Current version", version.VERSION))
+        grid.addWidget(self._version_row("Current version", version.display_version()))
         grid.addWidget(self._version_row("Latest version", self._release.version))
         if self._release.file_size:
             grid.addWidget(

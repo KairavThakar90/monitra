@@ -253,6 +253,59 @@ def test_version_is_a_plain_three_part_number():
     )
 
 
+def test_a_prerelease_label_is_plain_and_only_decorates_the_display_forms(monkeypatch):
+    """
+    An internal test build is told apart by a label, not by a different
+    number: the .exe resource, the Info.plist and the User-Agent all require
+    or parse the numeric form, so the label may only ever reach the places a
+    person reads -- the window title, the update dialog, the artifact name.
+    """
+    assert re.fullmatch(r"[A-Za-z0-9.]*", version_module.PRERELEASE)
+
+    monkeypatch.setattr(version_module, "PRERELEASE", "beta.1")
+    assert version_module.is_prerelease() is True
+    assert version_module.display_version() == f"{version_module.VERSION}-beta.1"
+    assert version_module.artifact_version() == version_module.display_version()
+    assert version_module.user_agent() == f"Monitra/{version_module.VERSION}"
+    assert version_module.version_tuple()[:3] == tuple(
+        int(part) for part in version_module.VERSION.split(".")
+    )
+
+    monkeypatch.setattr(version_module, "PRERELEASE", "")
+    assert version_module.is_prerelease() is False
+    assert version_module.display_version() == version_module.VERSION
+    assert version_module.artifact_version() == version_module.VERSION
+
+
+def test_the_installer_names_its_output_by_the_artifact_version():
+    """
+    The installer a tester downloads must be unmistakable from the production
+    one, and a production build must be unaffected: the .iss names the file by
+    ArtifactVersion, which falls back to AppVersion when the build script
+    passes nothing.
+    """
+    iss = (DESKTOP_ROOT / "packaging" / "windows" / "monitra.iss").read_text(encoding="utf-8")
+    assert "OutputBaseFilename=Monitra-Setup-{#ArtifactVersion}" in iss
+    assert "#define ArtifactVersion AppVersion" in iss
+    # The numeric fields Windows validates keep the numeric version.
+    assert "VersionInfoVersion={#AppVersion}" in iss
+    assert "AppVersion={#AppVersion}" in iss
+
+    installer = (DESKTOP_ROOT / "scripts" / "build_installer.ps1").read_text(encoding="utf-8")
+    assert "version.artifact_version()" in installer
+    assert "/DArtifactVersion=$ArtifactVersion" in installer
+    for relative in ("scripts/build_portable.ps1", "scripts/build_macos.sh"):
+        assert "version.artifact_version()" in (DESKTOP_ROOT / relative).read_text(
+            encoding="utf-8"
+        ), relative
+
+
+def test_the_window_title_shows_the_display_version():
+    """A support report from a tester must name the build it came from."""
+    source = (DESKTOP_ROOT / "main.py").read_text(encoding="utf-8")
+    assert 'setWindowTitle(f"{APP_DISPLAY_NAME} {display_version()}")' in source
+
+
 @pytest.mark.parametrize("relative", [
     "packaging/monitra.spec",
     "packaging/windows/monitra.iss",
