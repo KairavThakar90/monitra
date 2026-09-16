@@ -83,14 +83,12 @@ WARNING_BG        = "#FFFBEB"
 ERROR            = "#EF4444"
 ERROR_BG          = "#FEF2F2"
 
-# The task row's Start/Stop button. Solid red in both states -- the theme's
-# ERROR red for Start, one shade darker for Stop, each darkening again on
-# hover -- so the control that starts and stops tracked time is the one red
-# button on the screen and never blends into the gradient action buttons.
-TIMER_BUTTON_START       = ERROR
-TIMER_BUTTON_START_HOVER = "#DC2626"
-TIMER_BUTTON_STOP        = "#DC2626"
-TIMER_BUTTON_STOP_HOVER  = "#B91C1C"
+# The active task's Stop button. Solid red -- the theme's ERROR red, one
+# shade darker under the pointer -- so the control that stops tracked time is
+# the one red button on the screen. Idle rows' Start buttons keep the brand
+# gradient like every other action button.
+TIMER_BUTTON_STOP        = ERROR
+TIMER_BUTTON_STOP_HOVER  = "#DC2626"
 
 # Text
 TEXT_PRIMARY      = "#101828"

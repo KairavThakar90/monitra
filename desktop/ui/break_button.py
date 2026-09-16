@@ -16,16 +16,24 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from background_services.public_api import BreakStatus
 from ui.task_table import SingleClickButton
 from ui.styles import (
-    BORDER_LIGHT, BORDER_MID, CARD_BG, CONTENT_BG, PRIMARY, PRIMARY_HOVER,
-    PRIMARY_LIGHT, TEXT_MUTED, TEXT_PRIMARY,
+    BRAND_BLUE, BRAND_VIOLET, CARD_BG, PRIMARY, PRIMARY_HOVER, PRIMARY_LIGHT,
 )
+
+#: The gradient ring around the enabled button: a thin blue -> violet outline
+#: (the brand gradient) with a hair of the card showing between it and the
+#: blue fill, so the one control on the card that asks to be pressed is
+#: highlighted whichever way it is labelled. Painted, not styled: a QSS
+#: border colour cannot be a gradient in this Qt build (see ui/styles.py).
+BREAK_RING_WIDTH = 1.5
+BREAK_RING_GAP = 1.0
+BREAK_RADIUS = 8
 
 BREAK_IN_LABEL = "Break In"
 BREAK_OUT_LABEL = "Break Out"
@@ -62,11 +70,6 @@ class BreakButton(SingleClickButton):
         self.setObjectName("BreakButton")
         self._break_status = BreakStatus.NONE
         self._timer_active = False
-        #: Whether the button currently wears the accent look. The
-        #: stylesheet is rewritten only when this flips: re-setting a
-        #: stylesheet makes Qt drop and rebuild the widget's style object,
-        #: which is not something to do on every state readout.
-        self._accent: Optional[bool] = None
 
         self.setFixedHeight(BREAK_BUTTON_HEIGHT)
         self.setFixedWidth(BREAK_BUTTON_WIDTH)
@@ -79,7 +82,59 @@ class BreakButton(SingleClickButton):
         self._settle.setSingleShot(True)
         self._settle.setInterval(BREAK_BUTTON_SETTLE_MS)
         self._settle.timeout.connect(self._render)
+        self._apply_style()
         self._render()
+
+    def _apply_style(self) -> None:
+        """One look for Break In and Break Out: the brand blue, white text.
+
+        Set once. Re-setting a stylesheet makes Qt drop and rebuild the
+        widget's style object, which is not something to do on every state
+        readout. The outer band (`BREAK_RING_WIDTH + BREAK_RING_GAP`) is a
+        transparent border, and `paintEvent` draws the gradient ring and
+        its hairline gap over it.
+        """
+        band = BREAK_RING_WIDTH + BREAK_RING_GAP
+        self.setStyleSheet(f"""
+            QPushButton#BreakButton {{
+                background: {PRIMARY}; color: #FFFFFF;
+                background-clip: padding;
+                border: {band}px solid transparent; border-radius: {BREAK_RADIUS}px;
+                padding: 0 12px;
+                font-size: {BREAK_BUTTON_FONT_SIZE}pt; font-weight: 700;
+            }}
+            QPushButton#BreakButton:hover {{ background: {PRIMARY_HOVER}; }}
+            QPushButton#BreakButton:disabled {{
+                background: {PRIMARY_LIGHT}; color: {PRIMARY};
+            }}
+        """)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().paintEvent(event)
+        if not self.isEnabled():
+            # A disabled button is not asking to be pressed; no ring.
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        # The hairline of card between the ring and the fill, painted rather
+        # than left by `background-clip: padding` (which this Qt build does
+        # not honour on a QPushButton): it is what makes the ring read as an
+        # outline around a blue button instead of a blue button with a
+        # slightly different edge.
+        gap_inset = BREAK_RING_WIDTH + BREAK_RING_GAP / 2.0
+        gap_rect = QRectF(self.rect()).adjusted(gap_inset, gap_inset, -gap_inset, -gap_inset)
+        painter.setPen(QPen(QColor(CARD_BG), BREAK_RING_GAP))
+        painter.drawRoundedRect(gap_rect, BREAK_RADIUS - BREAK_RING_WIDTH, BREAK_RADIUS - BREAK_RING_WIDTH)
+        # The ring itself: the brand gradient, blue at the left, violet at the right.
+        inset = BREAK_RING_WIDTH / 2.0
+        rect = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
+        gradient = QLinearGradient(rect.topLeft(), rect.topRight())
+        gradient.setColorAt(0.0, QColor(BRAND_BLUE))
+        gradient.setColorAt(1.0, QColor(BRAND_VIOLET))
+        painter.setPen(QPen(QBrush(gradient), BREAK_RING_WIDTH))
+        painter.drawRoundedRect(rect, BREAK_RADIUS, BREAK_RADIUS)
+        painter.end()
 
     # ── Readout ───────────────────────────────────────────────────────────────
 
@@ -109,35 +164,13 @@ class BreakButton(SingleClickButton):
         """
         status = self._break_status
         if status == BreakStatus.ON_BREAK:
-            text, enabled, accent = BREAK_OUT_LABEL, True, True
+            text, enabled = BREAK_OUT_LABEL, True
         elif status == BreakStatus.RESUMING:
-            text, enabled, accent = BREAK_RESUMING_LABEL, False, True
+            text, enabled = BREAK_RESUMING_LABEL, False
         else:
-            text, enabled, accent = BREAK_IN_LABEL, self._timer_active, False
+            text, enabled = BREAK_IN_LABEL, self._timer_active
         self.setText(text)
         self.setEnabled(enabled and not self._settle.isActive())
-        if accent == self._accent:
-            return
-        self._accent = accent
-        # Neutral while working: an outlined button on the white card. The
-        # brand accent while on break, so the way back to the task is the
-        # one thing on the card asking to be pressed.
-        if accent:
-            background, color, border, hover = PRIMARY, "#FFFFFF", PRIMARY, PRIMARY_HOVER
-            disabled = f"background: {PRIMARY_LIGHT}; color: {PRIMARY}; border-color: {PRIMARY_LIGHT};"
-        else:
-            background, color, border, hover = CARD_BG, TEXT_PRIMARY, BORDER_MID, CONTENT_BG
-            disabled = f"background: {CARD_BG}; color: {TEXT_MUTED}; border-color: {BORDER_LIGHT};"
-        self.setStyleSheet(f"""
-            QPushButton#BreakButton {{
-                background: {background}; color: {color};
-                border: 1.5px solid {border}; border-radius: 8px;
-                padding: 0 12px;
-                font-size: {BREAK_BUTTON_FONT_SIZE}pt; font-weight: 700;
-            }}
-            QPushButton#BreakButton:hover {{ background: {hover}; }}
-            QPushButton#BreakButton:disabled {{ {disabled} }}
-        """)
 
     # ── Intent ────────────────────────────────────────────────────────────────
 

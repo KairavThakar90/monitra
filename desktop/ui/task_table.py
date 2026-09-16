@@ -47,7 +47,6 @@ from ui.styles import (
     MONITRA_MARK_SVG, BORDER_MID, BUTTON_GRADIENT, BUTTON_GRADIENT_HOVER,
     BUTTON_GRADIENT_REVERSED, BUTTON_GRADIENT_REVERSED_HOVER,
     ACTIVE_ROW_BORDER,
-    TIMER_BUTTON_START, TIMER_BUTTON_START_HOVER,
     TIMER_BUTTON_STOP, TIMER_BUTTON_STOP_HOVER,
 )
 from core.date_mode import as_calendar_day, is_live_date
@@ -1075,7 +1074,10 @@ class TaskRow(QFrame):
 
     def _build_ui(self) -> None:
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 12, 12, 12)
+        # 10px above and below the tallest control is what sets the row's
+        # height -- see the three column layouts below, which carry no
+        # margins of their own.
+        layout.setContentsMargins(16, 10, 12, 10)
         layout.setSpacing(0)
 
         task_name = self.task.get("name") or self.task.get("task_name") or "Unnamed Task"
@@ -1083,7 +1085,14 @@ class TaskRow(QFrame):
         estimated = self.task.get("estimated_hours")
         tracked_s = self._elapsed_seconds
 
+        # The three column layouts are each installed on a QWidget, and a
+        # layout on a widget gets the style's default 11px margins on every
+        # side. Those margins made every row ~22px taller than its content
+        # (the row's own padding + 11 + the button + 11) and pushed the task
+        # name 11px right of the TASK header above it. Zeroed: the row's
+        # padding is the one thing that pads the row.
         name_col = QVBoxLayout()
+        name_col.setContentsMargins(0, 0, 0, 0)
         name_col.setSpacing(2)
 
         name_row = QHBoxLayout()
@@ -1145,6 +1154,7 @@ class TaskRow(QFrame):
         layout.addWidget(self._make_column_spacer())
 
         tracked_col = QVBoxLayout()
+        tracked_col.setContentsMargins(0, 0, 0, 0)
         tracked_col.setSpacing(3)
         tracked_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -1189,6 +1199,7 @@ class TaskRow(QFrame):
         # header instead of hugging the column's left edge with dead space
         # to the right of them.
         action_col = QHBoxLayout()
+        action_col.setContentsMargins(0, 0, 0, 0)
         # Gap between the Start/Stop button and the kebab menu -- was 6px,
         # which read as the two controls touching.
         action_col.setSpacing(14)
@@ -1332,18 +1343,16 @@ class TaskRow(QFrame):
             }}
         """)
 
-        # The row's timer control is red in both states -- the one solid red
-        # in the theme, so it stands apart from every gradient action button
-        # (Add Task, Save) as the control that starts and stops tracked time.
-        # Stop is a shade darker than Start, and each darkens again under
-        # the pointer, so the two states and the hover stay distinguishable
-        # without a second colour.
+        # Every idle row's Start wears the brand gradient like the other
+        # action buttons. Only the *active* task's control is red: the one
+        # red button on the screen is the one that stops tracked time, so
+        # the running row is unmistakable among any number of idle ones.
         if running:
             self._timer_btn.setText("Stop")
             fill, fill_hover = TIMER_BUTTON_STOP, TIMER_BUTTON_STOP_HOVER
         else:
             self._timer_btn.setText("Start")
-            fill, fill_hover = TIMER_BUTTON_START, TIMER_BUTTON_START_HOVER
+            fill, fill_hover = BUTTON_GRADIENT, BUTTON_GRADIENT_HOVER
         self._timer_btn.setStyleSheet(f"""
             QPushButton {{
                 background: {fill}; color: white;
