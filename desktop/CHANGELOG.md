@@ -22,8 +22,24 @@ re-grant a permission.
 
 ### Added
 
-- **Break In / Break Out.** A button beside the Active/Idle status in the
-  sidebar. **Break In** stops the task you are tracking and remembers it;
+- **A Play / Pause button under the day's total.** The sidebar now has one
+  circular control beneath TOTAL TIME TODAY. Press Play to start the task
+  you have selected in the list (click a task's row to select it, or press
+  its Start), and Pause to stop whatever is running -- the same Start and
+  Stop the task rows have always done, so it is the same timer, the same
+  time entry and the same screenshots and activity, whichever control you
+  press. After a Pause, Play resumes the same task even if you have browsed
+  to another project meanwhile. With nothing selected, Play is disabled and
+  says so; it never picks a task for you. During a break it is disabled as
+  well: Break Out is the way back to your task.
+- **Break In / Break Out moved into the ACTIVE TASK card,** on the right of
+  the task it pauses or resumes. It works exactly as before. While you are
+  on break the card shows the task Break Out will resume, marked "On break"
+  rather than as running, and a short message at the top of the page
+  confirms that the break started, and that your task resumed when it ends.
+- **Active / Idle now sits beside your name** in the account card at the
+  bottom of the sidebar, instead of under the day's total.
+- **Break In / Break Out.** **Break In** stops the task you are tracking and remembers it;
   **Break Out** starts that same task again, so you never have to find it in
   the list after a break. The break itself is not counted as work: it is
   simply the gap between the two time entries, exactly as if you had pressed

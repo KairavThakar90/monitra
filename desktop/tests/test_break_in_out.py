@@ -454,7 +454,7 @@ def test_logout_forgets_the_break(qapp, runtime, monkeypatch):
     assert "reset_break" in order
 
 
-# ── The sidebar control ──────────────────────────────────────────────────────
+# ── The button in the ACTIVE TASK card ──────────────────────────────────────
 
 def _drain(qapp):
     for _ in range(6):
@@ -462,81 +462,91 @@ def _drain(qapp):
 
 
 @pytest.fixture
-def sidebar(qapp):
-    from ui.sidebar import SidebarWidget
+def break_button(qapp):
+    from ui.break_button import BreakButton
 
-    widget = SidebarWidget()
-    widget.resize(300, 800)
+    widget = BreakButton()
     widget.show()
     _drain(qapp)
     yield widget
     widget.deleteLater()
 
 
-def test_the_button_renders_the_timer_and_break_states(sidebar):
-    button = sidebar._break_btn
+def test_the_button_renders_the_timer_and_break_states(break_button):
+    button = break_button
     assert (button.text(), button.isEnabled()) == ("Break In", False), "nothing to break from"
 
-    sidebar.set_timer_active(True)
+    button.set_state(BreakStatus.NONE, True)
     assert (button.text(), button.isEnabled()) == ("Break In", True)
 
-    sidebar.set_timer_active(False)
-    sidebar.set_break_status(BreakStatus.ON_BREAK)
+    button.set_state(BreakStatus.ON_BREAK, False)
     assert (button.text(), button.isEnabled()) == ("Break Out", True)
-    assert sidebar._status_text.text() == "Idle", "the status pill is untouched by the break"
 
-    sidebar.set_break_status(BreakStatus.RESUMING)
+    button.set_state(BreakStatus.RESUMING, False)
     assert (button.text(), button.isEnabled()) == ("Resuming…", False)
 
-    sidebar.set_break_status(BreakStatus.NONE)
-    sidebar.set_timer_active(True)
+    button.set_state(BreakStatus.NONE, True)
     assert (button.text(), button.isEnabled()) == ("Break In", True)
 
 
-def test_the_button_reports_intent_and_counts_a_double_click_once(qapp, sidebar):
+def test_the_button_reports_intent_and_counts_a_double_click_once(qapp, break_button):
     ins, outs = [], []
-    sidebar.break_in_requested.connect(lambda: ins.append(1))
-    sidebar.break_out_requested.connect(lambda: outs.append(1))
+    break_button.break_in_requested.connect(lambda: ins.append(1))
+    break_button.break_out_requested.connect(lambda: outs.append(1))
 
-    sidebar.set_timer_active(True)
-    _double_click(qapp, sidebar._break_btn)
+    break_button.set_state(BreakStatus.NONE, True)
+    _double_click(qapp, break_button)
     assert (len(ins), len(outs)) == (1, 0)
-    assert not sidebar._break_btn.isEnabled(), "held disabled until the state is re-rendered"
+    assert not break_button.isEnabled(), "held disabled until the state is re-rendered"
 
-    sidebar.set_timer_active(False)
-    sidebar.set_break_status(BreakStatus.ON_BREAK)
-    assert _pump(qapp, lambda: sidebar._break_btn.isEnabled()), "re-enabled after the settle window"
-    _double_click(qapp, sidebar._break_btn)
+    break_button.set_state(BreakStatus.ON_BREAK, False)
+    assert _pump(qapp, lambda: break_button.isEnabled()), "re-enabled after the settle window"
+    _double_click(qapp, break_button)
     assert (len(ins), len(outs)) == (1, 1)
 
 
-def test_a_burst_of_clicks_does_one_thing(qapp, sidebar):
+def test_a_burst_of_clicks_does_one_thing(qapp, break_button):
     """Three fast taps on "Break In" must not stop, then resume, the task."""
     ins, outs = [], []
-    sidebar.break_in_requested.connect(lambda: ins.append(1))
-    sidebar.break_out_requested.connect(lambda: outs.append(1))
-    sidebar.set_timer_active(True)
+    break_button.break_in_requested.connect(lambda: ins.append(1))
+    break_button.break_out_requested.connect(lambda: outs.append(1))
+    break_button.set_state(BreakStatus.NONE, True)
 
-    sidebar._break_btn.click()
+    break_button.click()
     # The service has stopped the task and the window re-rendered the state
     # before the second tap lands...
-    sidebar.set_timer_active(False)
-    sidebar.set_break_status(BreakStatus.ON_BREAK)
-    assert sidebar._break_btn.text() == "Break Out"
-    sidebar._break_btn.click()
-    sidebar._break_btn.click()
+    break_button.set_state(BreakStatus.ON_BREAK, False)
+    assert break_button.text() == "Break Out"
+    break_button.click()
+    break_button.click()
 
     assert (len(ins), len(outs)) == (1, 0), "...and those taps must not resume it"
-    assert _pump(qapp, lambda: sidebar._break_btn.isEnabled())
-    sidebar._break_btn.click()
+    assert _pump(qapp, lambda: break_button.isEnabled())
+    break_button.click()
     assert (len(ins), len(outs)) == (1, 1), "a deliberate click after the window works"
 
 
-def test_a_disabled_button_makes_no_request(qapp, sidebar):
+def test_a_disabled_button_makes_no_request(qapp, break_button):
     ins = []
-    sidebar.break_in_requested.connect(lambda: ins.append(1))
-    _double_click(qapp, sidebar._break_btn)  # idle: disabled
+    break_button.break_in_requested.connect(lambda: ins.append(1))
+    _double_click(qapp, break_button)  # idle: disabled
     assert ins == []
+
+
+def test_the_sidebar_no_longer_carries_a_break_button(qapp):
+    """Exactly one Break control exists, and it is the card's."""
+    from ui.sidebar import SidebarWidget
+    from ui.stat_cards import StatCardsRow
+    from ui.break_button import BreakButton
+
+    sidebar = SidebarWidget()
+    assert sidebar.findChildren(BreakButton) == []
+    assert not hasattr(sidebar, "_break_btn")
+    cards = StatCardsRow()
+    assert cards.findChildren(BreakButton) == [cards.break_button]
+    assert cards.break_button.parent() is cards.active_card
+    sidebar.deleteLater()
+    cards.deleteLater()
 
 
 # ── The dashboard: the button drives the service and the selection is ignored ─
@@ -608,14 +618,14 @@ def _row(dashboard, task_id):
 
 
 def _click_break(qapp, dashboard):
-    button = dashboard._sidebar._break_btn
+    button = dashboard._stat_cards.break_button
     assert _pump(qapp, lambda: button.isEnabled()), "the break button never became clickable"
     button.click()
     _drain(qapp)
 
 
-def test_the_sidebar_button_drives_the_service_and_reflects_it(qapp, dashboard, runtime, monkeypatch):
-    button = dashboard._sidebar._break_btn
+def test_the_card_button_drives_the_service_and_reflects_it(qapp, dashboard, runtime, monkeypatch):
+    button = dashboard._stat_cards.break_button
     assert not button.isEnabled()
 
     dashboard._task_section._handle_start_request(_row(dashboard, 10))
@@ -630,7 +640,7 @@ def test_the_sidebar_button_drives_the_service_and_reflects_it(qapp, dashboard, 
         lambda msg, color=None: messages.append(msg),
     )
 
-    dashboard._sidebar._break_btn.click()  # Break In (the button is enabled: asserted above)
+    dashboard._stat_cards.break_button.click()  # Break In (the button is enabled: asserted above)
     assert runtime.timer.is_running(), "the request is handled one event-loop turn later"
     _drain(qapp)
     assert "On break. Break Out resumes 'Task A1'." in messages
@@ -693,14 +703,14 @@ def test_4_browsing_several_projects_during_a_break_resumes_the_held_task(qapp, 
     assert _row(dashboard, 20)._is_running is False
 
 
-def test_5_rapid_clicks_on_the_sidebar_button_do_one_thing_each(qapp, dashboard, runtime):
+def test_5_rapid_clicks_on_the_card_button_do_one_thing_each(qapp, dashboard, runtime):
     stopped, started = [], []
     runtime.timer.timer_stopped.connect(stopped.append)
     runtime.timer.timer_started.connect(started.append)
     dashboard._task_section._handle_start_request(_row(dashboard, 10))
     started.clear()
 
-    button = dashboard._sidebar._break_btn
+    button = dashboard._stat_cards.break_button
     assert _pump(qapp, lambda: button.isEnabled())
     for _ in range(3):
         button.click()
@@ -738,7 +748,7 @@ def test_12_a_task_removed_during_the_break_leaves_the_user_choosing(
 
     assert not runtime.timer.is_running()
     assert runtime.timer.pre_break_task() is None
-    button = dashboard._sidebar._break_btn
+    button = dashboard._stat_cards.break_button
     assert (button.text(), button.isEnabled()) == ("Break In", False)
     # Reported through the task section's existing error path (status bar
     # and notification), naming the task that could not be resumed.
@@ -749,11 +759,11 @@ def test_12_a_task_removed_during_the_break_leaves_the_user_choosing(
 def test_logging_out_during_a_break_resets_the_button(qapp, dashboard, runtime):
     dashboard._task_section._handle_start_request(_row(dashboard, 10))
     _click_break(qapp, dashboard)
-    assert dashboard._sidebar._break_btn.text() == "Break Out"
+    assert dashboard._stat_cards.break_button.text() == "Break Out"
 
     dashboard.reset_state()
     runtime.on_logout()
 
-    button = dashboard._sidebar._break_btn
+    button = dashboard._stat_cards.break_button
     assert (button.text(), button.isEnabled()) == ("Break In", False)
     assert runtime.timer.break_status == BreakStatus.NONE

@@ -10,11 +10,11 @@ Three behaviours are asserted here:
   Idle is `ERROR` and active is `SUCCESS`, and the dot and the word always
   agree, because both come from one branch in `set_timer_active`.
 
-* **The day's total is centred.** The caption and the hero duration share
-  one horizontal centre. The status pill no longer does: since the Break
-  In / Break Out button joined its row, the pill holds the left of that row
-  and the button the right, on one line under the duration -- the layout the
-  feature specification prescribes -- and that is what is asserted instead.
+* **The day's total is centred.** The caption, the hero duration and the
+  circular Play / Pause control under it share one horizontal centre. The
+  status pill is not under the duration at all any more: it sits on the
+  account card's name row, to the right of the signed-in user's name, and
+  that is what is asserted instead.
 
 * **The greeting follows the IST clock, on an edge.** `core.time_format`
   decides where the afternoon ends — the widget never spells the boundaries
@@ -114,25 +114,54 @@ def test_the_hero_duration_sits_on_the_section_centre_line(sidebar, qapp):
     assert abs(label_centre - section_centre) <= 1
 
 
-def test_the_status_pill_holds_the_left_and_the_break_button_the_right(sidebar, qapp):
-    """One row: `● Active` on the left, `[ Break In ]` on the right."""
+def test_the_circular_control_sits_centred_under_the_duration(sidebar, qapp):
+    sidebar.set_total_seconds(3661)
+    _drain(qapp)
+    control = sidebar._timer_control
+    button = control.button
+    section_centre = sidebar._time_section.width() / 2
+    button_centre = control.x() + button.x() + button.width() / 2
+    assert abs(button_centre - section_centre) <= 1
+    assert button.width() == button.height(), "a disc, not a pill"
+    assert control.y() >= sidebar._time_display.y() + sidebar._time_display.height() - 1
+    assert control.isVisible()
+
+
+def test_the_status_pill_sits_on_the_account_name_row(sidebar, qapp):
+    """`Smit Prajapati ............ ● Active` on one line, the email below."""
+    sidebar.set_user({"name": "Smit Prajapati", "email": "smit@example.com"})
     sidebar.set_timer_active(True)
     _drain(qapp)
 
-    section = sidebar._time_section.contentsRect()
-    dot, text, button = sidebar._status_dot, sidebar._status_text, sidebar._break_btn
-    assert dot.x() < text.x() < button.x(), "dot, word, then the button, left to right"
-    assert dot.x() <= section.left() + 24, "the pill is pinned to the row's left edge"
-    assert button.x() + button.width() >= section.right() - 24, (
-        "the button is pinned to the row's right edge"
-    )
-    assert text.x() + text.width() < button.x(), "the word and the button never overlap"
-    # Same row: the three share a vertical centre line under the duration.
-    centres = [w.y() + w.height() / 2 for w in (dot, text, button)]
-    assert max(centres) - min(centres) <= 2
-    assert min(w.y() for w in (dot, text, button)) >= (
-        sidebar._time_display.y() + sidebar._time_display.height() - 1
-    )
+    name, email = sidebar._user_name_label, sidebar._user_email_label
+    dot, text = sidebar._status_dot, sidebar._status_text
+    assert dot.parent() is sidebar._user_info_widget
+    assert text.parent() is sidebar._user_info_widget
+    # Not under the duration any more.
+    assert sidebar._time_section.findChildren(type(text), "UserStatus") == []
+    # Same row as the name: the three share a vertical centre line.
+    centres = [w.y() + w.height() / 2 for w in (name, dot, text)]
+    assert max(centres) - min(centres) <= 3
+    # Name on the left, the pill on the right, never overlapping.
+    assert name.x() + name.width() <= dot.x() < text.x()
+    assert text.x() + text.width() <= sidebar._user_info_widget.width()
+    # The email is on its own line beneath.
+    assert email.y() >= name.y() + name.height() - 1
+    assert text.text() == "Active"
+
+
+def test_a_long_name_elides_before_it_can_push_the_pill_off_the_card(sidebar, qapp):
+    sidebar.set_user({
+        "name": "Bartholomew Featherstonehaugh-Cholmondeley Montgomery",
+        "email": "b@example.com",
+    })
+    sidebar.set_timer_active(False)
+    _drain(qapp)
+    name, dot, text = sidebar._user_name_label, sidebar._status_dot, sidebar._status_text
+    assert name.x() + name.width() <= dot.x()
+    assert text.x() + text.width() <= sidebar._user_info_widget.width()
+    assert text.isVisible() and text.text() == "Idle"
+    assert sidebar._user_card.height() == 60
 
 
 # ── the greeting maps IST hours to the four parts of the day ─────────────────

@@ -1008,10 +1008,14 @@ class TaskRow(QFrame):
     which is how the displayed time could disagree with the tracked time.
 
     Emits: start_requested(row), stop_requested(row), edit_requested(row),
-    duplicate_requested(row), delete_requested(row)
+    duplicate_requested(row), delete_requested(row), selected_requested(row)
     """
     start_requested = Signal(object)
     stop_requested = Signal(object)
+    #: The user clicked the row itself (not one of its buttons). Selecting a
+    #: task starts nothing: it names the task the sidebar's circular Play
+    #: control will start. TaskSection owns which row is selected.
+    selected_requested = Signal(object)
     edit_requested = Signal(object)
     duplicate_requested = Signal(object)
     delete_requested = Signal(object)
@@ -1038,6 +1042,9 @@ class TaskRow(QFrame):
         self.project_name = project_name
         self.project_color = project_color
         self._is_running = is_running
+        #: Whether this is the task the circular Play control would start.
+        #: Rendered only; TaskSection decides it.
+        self._is_selected = False
         self._entry_id: Optional[int] = None
         #: Time already banked against this task today, from the backend/cache.
         self._elapsed_seconds = task.get("time_tracked_seconds", 0)
@@ -1226,6 +1233,26 @@ class TaskRow(QFrame):
         self._tracked_widget.setFixedWidth(widths["tracked"])
         self._action_widget.setFixedWidth(widths["action"])
 
+    def set_selected(self, selected: bool) -> None:
+        """Render whether this row is the selected task. Edge-triggered: an
+        unchanged state rewrites no stylesheet."""
+        selected = bool(selected)
+        if selected == self._is_selected:
+            return
+        self._is_selected = selected
+        self._apply_row_style()
+
+    @property
+    def is_selected(self) -> bool:
+        return self._is_selected
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        # A click on the row's body. The buttons on the row take their own
+        # presses, so this never fires for Start/Stop or the menu.
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.selected_requested.emit(self)
+        super().mousePressEvent(event)
+
     def _apply_row_style(self) -> None:
         # No background tint and no shadow in either state. The actively
         # tracked row is outlined in the brand gradient -- the same blue to
@@ -1251,14 +1278,20 @@ class TaskRow(QFrame):
                 f"border-left: 3px solid {PRIMARY}; "
                 f"border-bottom: 1px solid {BORDER_LIGHT};"
             )
+        # The selected task -- the one the sidebar's Play would start -- is
+        # tinted in the brand's light surface. A running row is not: its
+        # outline already says everything, and tinting it as well would put
+        # two indicators on one state.
+        background = PRIMARY_LIGHT if (self._is_selected and not self._is_running) else CARD_BG
+        hover = PRIMARY_LIGHT if (self._is_selected and not self._is_running) else "#FAFBFF"
         self.setStyleSheet(f"""
             QFrame#TaskRow {{
-                background: {CARD_BG};
+                background: {background};
                 {border}
                 border-radius: 0px;
             }}
             QFrame#TaskRow:hover {{
-                background: #FAFBFF;
+                background: {hover};
             }}
         """)
 
@@ -1474,6 +1507,10 @@ class TaskSection(QWidget):
     #: The Add Task button lives in the top bar; this is how its enabled
     #: state follows the selection without the top bar knowing about tasks.
     add_task_available = Signal(bool)
+    #: The selected task changed: `{"project_id", "task_id", "task_name"}`,
+    #: or None when nothing is selected. This is the task the sidebar's
+    #: circular Play control starts; selecting starts nothing by itself.
+    task_selected = Signal(object)
 
     def __init__(
         self,
@@ -1502,6 +1539,11 @@ class TaskSection(QWidget):
         self._running_task_id: Optional[int] = None
         self._running_entry_id: Optional[int] = None
         self._running_task_name: Optional[str] = None
+        #: The task the user selected by clicking its row (or started from
+        #: it). It is what the sidebar's Play starts. Cleared when another
+        #: project's tasks replace this one's, because a selection the user
+        #: cannot see is not a selection.
+        self._selected_task_id: Optional[int] = None
         self._user_id: Optional[int] = None
         self._search_text = ""
         self.user_role = None
@@ -1728,8 +1770,11 @@ class TaskSection(QWidget):
         color: str,
     ) -> None:
         """Populate rows from real API task data."""
+        previous_project_id = (self._project or {}).get("id")
         self._tasks = tasks or []
         self._project = project
+        if previous_project_id != (project or {}).get("id"):
+            self._set_selected_task(None)
         self._project_color = color
         self._search_text = ""
         self.add_task_available.emit(True)
@@ -1774,6 +1819,75 @@ class TaskSection(QWidget):
         self._tasks = []
         self._project = None
         self._has_loaded_tasks = False
+        self._set_selected_task(None)
+
+    # ── Selection: the task the circular Play control starts ─────────────────
+
+    def selected_task(self) -> Optional[Dict[str, Any]]:
+        """`{"project_id", "task_id", "task_name"}` for the selected task, or
+        None. A task that is no longer listed, or has been completed, is not
+        a task Play may start, so it is not returned as one."""
+        if self._selected_task_id is None or not self._project:
+            return None
+        task = next((t for t in self._tasks if t.get("id") == self._selected_task_id), None)
+        if task is None or is_task_completed(task):
+            return None
+        return {
+            "project_id": self._project.get("id"),
+            "task_id": task.get("id"),
+            "task_name": task.get("name") or task.get("task_name") or "Unnamed Task",
+        }
+
+    def _set_selected_task(self, task_id: Optional[int]) -> None:
+        """Select `task_id` (None clears), re-render the rows and announce it.
+        Announced even when unchanged in id: the task's project or name may
+        have moved under it, and the listener re-derives from `selected_task`."""
+        self._selected_task_id = task_id
+        for row in self._task_rows:
+            row.set_selected(row.task.get("id") == task_id and task_id is not None)
+        self.task_selected.emit(self.selected_task())
+
+    def _handle_select_request(self, row: TaskRow) -> None:
+        self._set_selected_task(row.task.get("id"))
+
+    def start_task(
+        self, project_id: int, task_id: int, task_name: Optional[str] = None
+    ) -> None:
+        """Start `task_id` through the same path its row's Start uses.
+
+        The sidebar's circular Play calls this. When the task's row is on
+        screen it *is* the row's Start -- the row shows "Starting…" and the
+        same date guard and `switch_timer` run. When it is not (the user
+        browsed to another project), the same guard and the same service
+        call run without a row to mark. Either way there is one start path
+        and one timer.
+        """
+        row = next((r for r in self._task_rows if r.task.get("id") == task_id), None)
+        if row is not None:
+            self._handle_start_request(row)
+            return
+        if not is_live_date(self._viewing_date):
+            log.info("refusing to start tracking: %s is not today", self._viewing_date)
+            return
+        self.api.switch_timer(
+            project_id, task_id, task_name or "Unnamed Task", for_date=self._viewing_date
+        )
+
+    def stop_running_task(self) -> None:
+        """Stop the running task through the same path its row's Stop uses.
+
+        The sidebar's circular Pause calls this. With the running row on
+        screen it is that row's Stop; otherwise the same guard and the same
+        `stop_timer` run without a row to mark.
+        """
+        row = next((r for r in self._task_rows if r._is_running), None)
+        if row is not None:
+            self._handle_stop_request(row)
+            return
+        if not is_live_date(self._viewing_date):
+            log.info("refusing to stop tracking: %s is not today", self._viewing_date)
+            return
+        self.api.stop_timer(for_date=self._viewing_date)
 
     def apply_search(self, text: str) -> None:
         """Filter the list by task name.
@@ -1942,6 +2056,8 @@ class TaskSection(QWidget):
                     True, self._running_entry_id, self.api.timer_elapsed_seconds()
                 )
 
+            row.set_selected(task.get("id") == self._selected_task_id)
+            row.selected_requested.connect(self._handle_select_request)
             row.start_requested.connect(self._handle_start_request)
             row.stop_requested.connect(self._handle_stop_request)
             row.edit_requested.connect(self._handle_edit_request)
@@ -2021,6 +2137,9 @@ class TaskSection(QWidget):
         if task_id is None:
             return
         task_name = row.task.get("name") or row.task.get("task_name") or "Unnamed Task"
+        # Starting a task selects it: after a Pause, Play resumes this one.
+        if task_id != self._selected_task_id:
+            self._set_selected_task(task_id)
         row.set_pending("Starting…")
         # switch() handles both "nothing running" and "something else running";
         # the service serialises stop-then-start so the two can never race.
@@ -2051,6 +2170,13 @@ class TaskSection(QWidget):
                 row.mark_running(entry_id)
             elif row._is_running:
                 row.mark_stopped()
+
+        # The running task is the selected one, whichever control started
+        # it -- its row, the circular Play, Break Out, or a recovery. Only
+        # when it is listed here: a task in another project is not selected
+        # in this list, and the window keeps its own record of it.
+        if any(t.get("id") == task_id for t in self._tasks) and task_id != self._selected_task_id:
+            self._set_selected_task(task_id)
 
         self.timer_state_changed.emit(True)
         self._on_timer_tick(self.api.timer_elapsed_seconds())

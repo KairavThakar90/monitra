@@ -17,12 +17,11 @@ from background_services.public_api import BreakStatus
 from core.time_format import format_hms, ist_greeting
 from core.validation import SEARCH_MAX_LENGTH
 from ui import icons
-from ui.task_table import SingleClickButton
+from ui.timer_control import TimerControl
 from core.branding import logo_pixmap
 from ui.styles import (
     SIDEBAR_BG, SIDEBAR_BG_HOVER, SIDEBAR_SELECTED, SIDEBAR_MUTED,
-    SIDEBAR_TEXT, SIDEBAR_BORDER, PROJECT_COLORS, SUCCESS, TEXT_MUTED,
-    PRIMARY, ERROR,
+    SIDEBAR_TEXT, SIDEBAR_BORDER, PROJECT_COLORS, SUCCESS, TEXT_MUTED, ERROR,
 )
 
 EXPANDED_WIDTH = 300
@@ -37,27 +36,12 @@ HEADER_HEIGHT_COLLAPSED = 96
 
 # Total Time Today hero text sizing
 TIME_DISPLAY_FONT_SIZE = 36
-STATUS_FONT_SIZE = 12
 
-#: The Break In / Break Out control, on the right of the Active/Idle row.
-#: Compact on purpose: it shares the row with the status pill inside the
-#: 300px column, so it is sized like the header's collapse button rather
-#: than like a task row's Start button.
-BREAK_BUTTON_HEIGHT = 26
-BREAK_BUTTON_FONT_SIZE = 10
-BREAK_IN_LABEL = "Break In"
-BREAK_OUT_LABEL = "Break Out"
-BREAK_RESUMING_LABEL = "Resuming…"
-
-#: How long the button stays disabled after a click, whatever the state
-#: becomes meanwhile. Break In stops the task synchronously, so the button
-#: reads "Break Out" before the user's finger has lifted; without this a
-#: burst of clicks -- three fast taps on "Break In" -- stopped the task on
-#: the first tap and resumed it on the third. `SingleClickButton` already
-#: folds a double-click into one click; this covers the third and later
-#: ones. A UI-only single-shot: it schedules no work and only re-renders
-#: the button from the state it is then given.
-BREAK_BUTTON_SETTLE_MS = 600
+#: The Active/Idle pill. It sits on the account card's name row, to the
+#: right of the signed-in user's name, so it is sized to that 12pt line
+#: rather than to the hero duration it used to sit under.
+STATUS_FONT_SIZE = 9
+STATUS_DOT_SIZE = 8
 
 # Greeting block ("Welcome Sam!" / "Good morning") sizing
 WELCOME_FONT_SIZE = 14
@@ -366,12 +350,14 @@ class SidebarWidget(QWidget):
     project_selected = Signal(dict)
     logout_requested = Signal()
     collapse_toggled = Signal(bool)
-    #: The Break In / Break Out button. Intent only: the sidebar holds no
-    #: break state of its own and decides nothing about tracking. It renders
-    #: the `BreakStatus` DashboardWindow pushes through `set_break_status`,
-    #: the same way `set_timer_active` renders the timer's state.
-    break_in_requested = Signal()
-    break_out_requested = Signal()
+    #: The circular Play / Pause control under the day's total. Intent only:
+    #: the sidebar holds no timer state of its own and decides nothing about
+    #: tracking. DashboardWindow turns these into the existing task Start and
+    #: Stop flows, and pushes the resulting state back through
+    #: `set_timer_active`, `set_break_status`, `set_play_available` and
+    #: `set_live_date`, from which the control is rendered.
+    start_requested = Signal()
+    stop_requested = Signal()
     #: The footer's Feedback & Help action. The sidebar opens nothing itself;
     #: DashboardWindow owns the dialog's lifetime, exactly as it owns the idle
     #: alert's, so a transient widget never owns a window that outlives it.
@@ -395,12 +381,13 @@ class SidebarWidget(QWidget):
         self._user_info: Dict[str, Any] = {}
         self._total_seconds = 0
         self._is_active = False
+        #: What the circular control is rendered from, besides `_is_active`:
+        #: the break (a `BreakStatus`), whether the window has a task Play
+        #: would start, and whether the day on screen is today. All three
+        #: are readouts pushed by DashboardWindow.
         self._break_status = BreakStatus.NONE
-        #: Whether the break button currently wears the accent look. The
-        #: stylesheet is rewritten only when this flips: re-setting a
-        #: stylesheet makes Qt drop and rebuild the widget's style object,
-        #: which is not something to do on every state readout.
-        self._break_accent: Optional[bool] = None
+        self._can_start = False
+        self._live_date = True
         self._search_text = ""
         self._current_page = 1
         self._selected_project_id: Optional[int] = None
@@ -589,44 +576,17 @@ class SidebarWidget(QWidget):
         )
         ts_layout.addWidget(self._time_display)
 
-        # One row under the hero duration: the Active/Idle pill on the left,
-        # the Break In / Break Out button on the right. The pill keeps its
-        # dot, word, colours and font; only its position changed when the
-        # button joined the row, because a control on the right needs the
-        # status to hold the left rather than float in the middle.
-        status_row = QHBoxLayout()
-        status_row.setSpacing(6)
-        status_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        self._status_dot = QLabel(self._time_section)
-        self._status_dot.setStyleSheet("background: transparent;")
-        self._status_text = QLabel(self._time_section)
-        self._status_text.setFont(QFont("Segoe UI", STATUS_FONT_SIZE, QFont.Weight.Bold))
-
-        # A double-click is one click here, as on the task rows' Start/Stop:
-        # the first click re-labels the button before the second lands, and
-        # a plain button would then fire the opposite action.
-        self._break_btn = SingleClickButton(BREAK_IN_LABEL, self._time_section)
-        self._break_btn.setFixedHeight(BREAK_BUTTON_HEIGHT)
-        self._break_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._break_btn.setFont(QFont("Segoe UI", BREAK_BUTTON_FONT_SIZE, QFont.Weight.Bold))
-        self._break_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._break_btn.clicked.connect(self._on_break_clicked)
-        self._break_settle = QTimer(self)
-        self._break_settle.setSingleShot(True)
-        self._break_settle.setInterval(BREAK_BUTTON_SETTLE_MS)
-        self._break_settle.timeout.connect(self._render_break_control)
-
-        status_row.addWidget(self._status_dot)
-        status_row.addWidget(self._status_text)
-        status_row.addStretch()
-        status_row.addWidget(self._break_btn)
-        ts_layout.addLayout(status_row)
-
-        # The idle look is defined once, in `set_timer_active`, rather than
-        # written out here and again there -- two spellings of one state is
-        # how they drift apart. The button's look is likewise defined once,
-        # in `_render_break_control`, which that call reaches.
-        self.set_timer_active(False)
+        # The circular Play / Pause control, centred under the hero duration
+        # on the same centre line. It is the sidebar's primary control and
+        # the only thing in this section that can be pressed; the Active /
+        # Idle readout moved to the account card's name row, and the Break
+        # In / Break Out button to the ACTIVE TASK card, where the task it
+        # acts on is named.
+        self._timer_control = TimerControl(self._time_section)
+        self._timer_control.start_requested.connect(self.start_requested)
+        self._timer_control.stop_requested.connect(self.stop_requested)
+        ts_layout.addSpacing(2)
+        ts_layout.addWidget(self._timer_control, 0, Qt.AlignmentFlag.AlignHCenter)
 
         layout.addWidget(self._time_section)
 
@@ -797,10 +757,31 @@ class SidebarWidget(QWidget):
         user_text_col.setContentsMargins(0, 0, 0, 0)
         user_text_col.setSpacing(1)
 
+        # The name row: the user's name on the left, the Active / Idle pill
+        # on the right of the same line. The name elides before the pill can
+        # be pushed off the card, so a long name and the status never
+        # overlap and the email below never moves.
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.setSpacing(6)
+
         self._user_name_label = ElidedLabel("User", self._user_info_widget)
         self._user_name_label.setObjectName("UserName")
         self._user_name_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        user_text_col.addWidget(self._user_name_label)
+        self._user_name_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        name_row.addWidget(self._user_name_label, 1)
+
+        self._status_dot = QLabel(self._user_info_widget)
+        self._status_dot.setObjectName("UserStatusDot")
+        self._status_dot.setStyleSheet("background: transparent;")
+        self._status_text = QLabel(self._user_info_widget)
+        self._status_text.setObjectName("UserStatus")
+        self._status_text.setFont(QFont("Segoe UI", STATUS_FONT_SIZE, QFont.Weight.Bold))
+        name_row.addWidget(self._status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        name_row.addWidget(self._status_text, 0, Qt.AlignmentFlag.AlignVCenter)
+        user_text_col.addLayout(name_row)
 
         self._user_email_label = ElidedLabel("", self._user_info_widget)
         self._user_email_label.setObjectName("UserEmail")
@@ -829,7 +810,8 @@ class SidebarWidget(QWidget):
                 background: {SIDEBAR_BG_HOVER};
                 border-top: 1px solid {SIDEBAR_BORDER};
             }}
-            QLabel#UserName, QLabel#UserEmail, QLabel#UserChevron {{
+            QLabel#UserName, QLabel#UserEmail, QLabel#UserChevron,
+            QLabel#UserStatus, QLabel#UserStatusDot {{
                 background: transparent;
                 color: {SIDEBAR_TEXT};
                 border: none;
@@ -843,6 +825,13 @@ class SidebarWidget(QWidget):
         """)
 
         layout.addWidget(self._user_card)
+
+        # The idle look is defined once, in `set_timer_active`, rather than
+        # written out in the builder and again there -- two spellings of one
+        # state is how they drift apart. The circular control's look is
+        # likewise defined once, in `_render_timer_control`, which that call
+        # reaches.
+        self.set_timer_active(False)
 
         # ── Last sync time ─────────────────────────────────────────
         # Purely a readout of SyncService.last_synced_at, published via its
@@ -967,96 +956,69 @@ class SidebarWidget(QWidget):
         self._last_sync_label.setText(f"Last sync: {local.strftime('%d-%m-%Y %H:%M:%S')}")
 
     def set_timer_active(self, active: bool) -> None:
-        """Render the tracking state under the day's total.
+        """Render the tracking state on the account card's name row, and the
+        circular control under the day's total.
 
         Idle is drawn in ERROR red rather than the sidebar's muted grey: not
         tracking is the state the user needs to notice, and a grey dot beside
-        grey label text read as decoration next to the muted "TOTAL TIME
-        TODAY" caption. Active keeps SUCCESS green, so the two states differ
-        in hue and not only in the word.
+        grey label text read as decoration. Active keeps SUCCESS green, so
+        the two states differ in hue and not only in the word.
 
         A readout only -- the timer state is TimerService's, published here
         through DashboardWindow. This widget decides nothing about tracking.
         """
         self._is_active = active
         color = SUCCESS if active else ERROR
-        self._status_dot.setPixmap(icons.pixmap("circle_filled", color, 10))
+        self._status_dot.setPixmap(icons.pixmap("circle_filled", color, STATUS_DOT_SIZE))
         self._status_text.setStyleSheet(
-            f"color: {color}; font-size: {STATUS_FONT_SIZE}pt; font-weight: 900;"
+            f"color: {color}; background: transparent; "
+            f"font-size: {STATUS_FONT_SIZE}pt; font-weight: 900;"
         )
         self._status_text.setText("Active" if active else "Idle")
-        self._render_break_control()
+        self._render_timer_control()
 
     def set_break_status(self, status: str) -> None:
-        """Render the break state (a `BreakStatus` value) on the button.
+        """Render the break state (a `BreakStatus` value) on the circular
+        control: on break it is disabled and says so, because Break Out in
+        the ACTIVE TASK card is the one control that resumes the held task.
 
         A readout, like `set_timer_active`: the state is TimerService's and
         arrives here through DashboardWindow. The sidebar never enters or
         leaves a break by itself.
         """
         self._break_status = status
-        self._render_break_control()
+        self._render_timer_control()
 
-    def break_button_text(self) -> str:
-        return self._break_btn.text()
+    def set_play_available(self, available: bool) -> None:
+        """Whether the window has a task for Play to start -- the task
+        selected in the list, or the one tracked last. With none, Play is
+        disabled and the caption says to select one; it never guesses."""
+        self._can_start = bool(available)
+        self._render_timer_control()
 
-    def _render_break_control(self) -> None:
-        """The button, from the two facts it depends on and nothing else.
+    def set_live_date(self, live: bool) -> None:
+        """Whether the day on screen is today. The timer only ever runs
+        against today, so the control is disabled on any other day, exactly
+        as the task rows hide their Start/Stop."""
+        self._live_date = bool(live)
+        self._render_timer_control()
 
-        * Not on break: "Break In", enabled only while a task is running --
-          with nothing running there is nothing to step away from, and a
-          disabled button makes no request.
-        * On break: "Break Out", enabled; the held task is what it resumes.
-        * Resuming: "Resuming…", disabled, until the start has committed or
-          been refused. That is the in-progress protection: the service
-          refuses a second Break Out anyway, and the button says so.
-        """
-        status = self._break_status
-        if status == BreakStatus.ON_BREAK:
-            text, enabled, accent = BREAK_OUT_LABEL, True, True
-        elif status == BreakStatus.RESUMING:
-            text, enabled, accent = BREAK_RESUMING_LABEL, False, True
-        else:
-            text, enabled, accent = BREAK_IN_LABEL, self._is_active, False
-        self._break_btn.setText(text)
-        self._break_btn.setEnabled(enabled and not self._break_settle.isActive())
-        if accent == self._break_accent:
-            return
-        self._break_accent = accent
-        # Neutral while working (the same translucent surface as the
-        # collapse button); the brand accent while on break, so the way back
-        # to the task is the one thing on the sidebar asking to be pressed.
-        background = PRIMARY if accent else "rgba(255,255,255,0.08)"
-        hover = "#3B57E8" if accent else "rgba(255,255,255,0.14)"
-        border = PRIMARY if accent else "rgba(255,255,255,0.16)"
-        self._break_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {background}; color: {SIDEBAR_TEXT};
-                border: 1px solid {border}; border-radius: 6px;
-                padding: 0 10px;
-                font-size: {BREAK_BUTTON_FONT_SIZE}pt; font-weight: 700;
-            }}
-            QPushButton:hover {{ background: {hover}; }}
-            QPushButton:disabled {{
-                background: rgba(255,255,255,0.04);
-                border-color: rgba(255,255,255,0.08);
-                color: rgba(255,255,255,0.35);
-            }}
-        """)
+    def timer_control_state(self) -> dict:
+        """What the circular control is showing, for tests and the window."""
+        control = self._timer_control
+        return {
+            "running": control.is_running,
+            "enabled": control.button.isEnabled(),
+            "caption": control.caption.text(),
+        }
 
-    def _on_break_clicked(self) -> None:
-        # Disabled at once, and held disabled for the settle window (see
-        # BREAK_BUTTON_SETTLE_MS), so a burst of clicks does one thing. The
-        # next `set_break_status` / `set_timer_active` after the window
-        # re-enables the button from the service's state.
-        self._break_btn.setEnabled(False)
-        self._break_settle.start()
-        if self._break_status == BreakStatus.ON_BREAK:
-            self.break_out_requested.emit()
-        elif self._break_status == BreakStatus.NONE and self._is_active:
-            self.break_in_requested.emit()
-        # Any other state is re-rendered when the settle window ends; nothing
-        # is restyled from inside the button's own click.
+    def _render_timer_control(self) -> None:
+        self._timer_control.set_state(
+            running=self._is_active,
+            can_start=self._can_start,
+            break_status=self._break_status,
+            live_date=self._live_date,
+        )
 
     def select_project(self, project_id: int) -> None:
         self._selected_project_id = project_id
