@@ -49,6 +49,7 @@ from app.idle.service import IdleApiService
 from app.projects.service import ProjectService
 from app.tasks.service import TaskService
 from app.updates.service import UpdateApiService
+from app.maintenance.service import MaintenanceApiService
 from app.feedback.service import FeedbackApiService
 from app.portal.service import PortalService
 from app.time_entries.service import TimeEntryService
@@ -63,6 +64,7 @@ from background_services.screenshot import ScreenshotService
 from background_services.sync import SyncService
 from background_services.timer import TimerService
 from background_services.update import UpdateService
+from background_services.maintenance import MaintenanceService
 from core.logging_setup import (
     bump_session_generation, configure_logging, get_logger,
     install_excepthook, session_generation,
@@ -150,6 +152,7 @@ class ApplicationRuntime(QObject):
         self.time_entry_service = TimeEntryService(self.api_client)
         self.idle_api = IdleApiService(self.api_client)
         self.update_api = UpdateApiService(self.api_client)
+        self.maintenance_api = MaintenanceApiService(self.api_client)
         self.feedback_service = FeedbackApiService(self.api_client)
         self.portal_service = PortalService(self.api_client)
 
@@ -175,6 +178,14 @@ class ApplicationRuntime(QObject):
         # (notifications, network) and therefore stops before them.
         self.updates: UpdateService = self.services.register(
             UpdateService(self, self.update_api, self.cache)
+        )
+        # The maintenance notice. Reads the network service and notifies
+        # through the notification service, and nothing depends on it -- not
+        # the timer, not the trackers, not the sync consumer -- so, like the
+        # update service, it is registered after what it reads and stops
+        # before them. It is deliberately wired to nothing else.
+        self.maintenance: MaintenanceService = self.services.register(
+            MaintenanceService(self, self.maintenance_api)
         )
         # Wellbeing reminders. Like UpdateService it only reads -- the
         # notification service and the session -- and nothing in the runtime
@@ -326,6 +337,7 @@ class ApplicationRuntime(QObject):
         self.sync.resume_after_auth()
         # The check holds while signed out; a login is the moment it can work.
         self.updates.check_now()
+        self.maintenance.check_now()
 
     def on_logout(self) -> None:
         """
@@ -345,6 +357,7 @@ class ApplicationRuntime(QObject):
         # The next user is told about a release in their own session rather
         # than inheriting "already announced" from the previous one.
         self.updates.reset_session()
+        self.maintenance.reset_session()
         if self.timer.is_running():
             self.timer.stop_tracking()
         # A break, and the task it holds, belong to the session that is
@@ -394,9 +407,15 @@ class ApplicationRuntime(QObject):
     # ── Cross-service reactions ───────────────────────────────────────────────
 
     def _on_network_state_changed(self, state: str) -> None:
-        """Nudge the sync consumer as soon as the backend becomes usable again."""
+        """Nudge the sync consumer as soon as the backend becomes usable again.
+
+        The maintenance notice is re-checked on the same edge: a notice that
+        went on or off while this client could not reach the backend is
+        reflected as soon as it can, rather than at the next interval.
+        """
         if state in NetworkState.USABLE:
             self.sync.wake()
+            self.maintenance.check_now()
 
     def _on_system_resumed(self, gap_seconds: float) -> None:
         """The machine was asleep for `gap_seconds`; re-establish connectivity."""

@@ -28,6 +28,9 @@ from background_services.activity.today_summary import (
     ActivityTotals, TodaySnapshot, build_today_snapshot,
 )
 from background_services.activity.url_usage import build_url_usage_summary
+from background_services.maintenance import (
+    MAINTENANCE_BODY, MAINTENANCE_STATUS_LABEL, MAINTENANCE_TITLE,
+)
 from background_services.network import NetworkState
 from background_services.notifications import NotificationLevel, create_app_icon, set_windows_app_identity
 from background_services.timer import BreakStatus, TimerStatus
@@ -35,6 +38,9 @@ from background_services.update import ReleaseInfo, UpdateState
 from core.tasks import TaskHandle
 
 __all__ = [
+    "MAINTENANCE_BODY",
+    "MAINTENANCE_STATUS_LABEL",
+    "MAINTENANCE_TITLE",
     "ACTIVITY_DESKTOP_DAYS", "ActivityTotals", "BackgroundApi", "BreakStatus",
     "DateAvailability", "NetworkState", "NotificationLevel", "ReleaseInfo",
     "SCREENSHOT_DESKTOP_DAYS", "TimerStatus", "TaskHandle", "TodaySnapshot",
@@ -498,6 +504,28 @@ class BackgroundApi:
         repeatedly-clicked menu entry produces one request, not one per click.
         """
         self._runtime.updates.check_now()
+
+    # ── Maintenance notice ────────────────────────────────────────────────────
+
+    @property
+    def maintenance(self):
+        """The maintenance-notice service, for connecting to its one signal.
+
+        `maintenance_changed(bool)` is edge-triggered inside the service: it
+        fires when the administrator's switch goes on and when it goes off,
+        never on a poll that answered the same as the last one. UI code must
+        not poll the backend for this itself -- a second checker would be a
+        second, level-triggered source for the same notice.
+        """
+        return self._runtime.maintenance
+
+    def maintenance_mode(self) -> bool:
+        """Whether the maintenance notice is currently on, as last reported.
+
+        False until the backend has answered. Read this to prime a view; react
+        to changes through `maintenance.maintenance_changed`.
+        """
+        return self._runtime.maintenance.maintenance_mode
 
     # ── Notifications ─────────────────────────────────────────────────────────
 
