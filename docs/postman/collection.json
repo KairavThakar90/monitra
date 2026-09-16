@@ -1,1338 +1,1504 @@
 {
-	"info": {
-		"_postman_id": "8d3e23f0-4a87-43b9-bb82-f58c4ee29d89",
-		"name": "Staff Management System API",
-		"description": "API collection for Staff Management System",
-		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-	},
-	"item": [
-		{
-			"name": "Authentication",
-			"item": [
-				{
-					"name": "Login Exchange",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"user_id\": 12345,\n  \"username\": \"johndoe\",\n  \"email\": \"john.doe@example.com\",\n  \"name\": \"John Doe\",\n  \"hubstaff_user_id\": \"hs_john_123\",\n  \"hubstaff_designation\": \"Software Engineer\",\n  \"idle_enabled\": true,\n  \"idle_minutes\": 5,\n  \"capture_frequency\": 300,\n  \"permission_schema\": {\n    \"name\": \"employee\",\n    \"permissions\": {\n      \"can_track_time\": true,\n      \"can_view_screenshots\": false\n    }\n  }\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/auth/login",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"auth",
-								"login"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Get Current User Profile",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/auth/me",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"auth",
-								"me"
-							]
-						}
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "Projects",
-			"item": [
-				{
-					"name": "Create Project",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"project_name\": \"New Internal Project\",\n  \"description\": \"Internal task tracking project\",\n  \"start_date\": \"2026-08-06\",\n  \"is_billable\": true\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/projects",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "List Projects",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/projects",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Get Project By ID",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/projects/1",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Update Project",
-					"request": {
-						"method": "PUT",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"project_name\": \"Updated Project Name\",\n  \"description\": \"Updated description\",\n  \"status\": \"active\",\n  \"is_billable\": false\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/projects/1",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Archive Project",
-					"request": {
-						"method": "PATCH",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/projects/1/archive",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"archive"
-							]
-						}
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "Tasks",
-			"item": [
-				{
-					"name": "Create Task under Project",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"task_name\": \"Implement API Logging\",\n  \"description\": \"Build centralized middleware logging\",\n  \"start_date\": \"2026-08-07\",\n  \"due_date\": \"2026-08-10\",\n  \"estimated_hours\": 8.5\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/projects/1/tasks",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"tasks"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "List Tasks for Project",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/projects/1/tasks",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"tasks"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Get Task By ID",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/projects/1/tasks/2",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"tasks",
-								"2"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Update Task",
-					"request": {
-						"method": "PUT",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"task_name\": \"Implement API Logging (Updated)\",\n  \"description\": \"Updated description\",\n  \"status\": \"in_progress\",\n  \"estimated_hours\": 12.0\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/projects/1/tasks/2",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"tasks",
-								"2"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Archive Task",
-					"request": {
-						"method": "PATCH",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/projects/1/tasks/2/archive",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"tasks",
-								"2",
-								"archive"
-							]
-						}
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "Project Members & Task Assignees",
-			"item": [
-				{
-					"name": "Add Project Member",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"user_id\": 2\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/projects/1/members",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"members"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "List Project Members",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/projects/1/members",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"members"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Remove Project Member",
-					"request": {
-						"method": "DELETE",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/projects/1/members/2",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"members",
-								"2"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Assign Task User",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"user_id\": 2\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/projects/1/tasks/2/assignees",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"tasks",
-								"2",
-								"assignees"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "List Task Assignees",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/projects/1/tasks/2/assignees",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"tasks",
-								"2",
-								"assignees"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Remove Task Assignee",
-					"request": {
-						"method": "DELETE",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/projects/1/tasks/2/assignees/2",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"tasks",
-								"2",
-								"assignees",
-								"2"
-							]
-						}
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "Time Entries",
-			"item": [
-				{
-					"name": "Start Timer",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"project_id\": 1,\n  \"task_id\": 2,\n  \"description\": \"Developing Phase 3 features\",\n  \"is_billable\": true\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/time-entries/start",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"time-entries",
-								"start"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Stop Active Timer",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"description\": \"Finished developing Phase 3 features\"\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/time-entries/1/stop",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"time-entries",
-								"1",
-								"stop"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "List Time Entries",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/time-entries?project_id=1&status=completed&skip=0&limit=50",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"time-entries"
-							],
-							"query": [
-								{
-									"key": "project_id",
-									"value": "1"
-								},
-								{
-									"key": "status",
-									"value": "completed"
-								},
-								{
-									"key": "skip",
-									"value": "0"
-								},
-								{
-									"key": "limit",
-									"value": "50"
-								}
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Get Time Entry By ID",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/time-entries/1",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"time-entries",
-								"1"
-							]
-						}
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "Manual Time Entries",
-			"item": [
-				{
-					"name": "Create Manual Time Entry",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"project_id\": 1,\n  \"task_id\": 2,\n  \"work_date\": \"2026-08-11\",\n  \"start_time\": \"2026-08-11T10:00:00Z\",\n  \"end_time\": \"2026-08-11T12:00:00Z\",\n  \"total_seconds\": 7200,\n  \"description\": \"Manual log for meeting\",\n  \"is_billable\": true\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/manual-time-entries",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"manual-time-entries"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "List Manual Time Entries",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/manual-time-entries?approval_status=pending&skip=0&limit=50",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"manual-time-entries"
-							],
-							"query": [
-								{
-									"key": "approval_status",
-									"value": "pending"
-								},
-								{
-									"key": "skip",
-									"value": "0"
-								},
-								{
-									"key": "limit",
-									"value": "50"
-								}
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Get Manual Time Entry By ID",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/manual-time-entries/1",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"manual-time-entries",
-								"1"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Approve Manual Time Entry",
-					"request": {
-						"method": "PATCH",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/manual-time-entries/1/approve",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"manual-time-entries",
-								"1",
-								"approve"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Reject Manual Time Entry",
-					"request": {
-						"method": "PATCH",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/manual-time-entries/1/reject",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"manual-time-entries",
-								"1",
-								"reject"
-							]
-						}
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "RBAC Security Tests",
-			"item": [
-				{
-					"name": "Create Project - Manager (Success)",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{manager_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"project_name\": \"Manager Authorized Project\",\n  \"description\": \"Projects creation permitted for managers\"\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/projects",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Create Project - Employee (Forbidden)",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{employee_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"project_name\": \"Employee Project Attempt\",\n  \"description\": \"Employee attempting creation\"\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/projects",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Create Task - Manager (Success)",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{manager_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"task_name\": \"Manager Task Addition\",\n  \"description\": \"Allowed\"\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/projects/1/tasks",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"tasks"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Create Task - Employee (Forbidden)",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{employee_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"task_name\": \"Employee Task Addition\",\n  \"description\": \"Forbidden\"\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/projects/1/tasks",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"tasks"
-							]
-						}
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "Employees",
-			"item": [
-				{
-					"name": "GET /employees as employee role -> 403",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{employee_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/employees",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"employees"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "GET /employees as manager -> 200",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{manager_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/employees",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"employees"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "GET /employees/{id} cross-org -> 404",
-					"request": {
-						"method": "GET",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							}
-						],
-						"url": {
-							"raw": "{{backend_url}}/employees/9999",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"employees",
-								"9999"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "PATCH /employees/{id}/status as manager -> 403",
-					"request": {
-						"method": "PATCH",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{manager_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"is_active\": false\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/employees/1/status",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"employees",
-								"1",
-								"status"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "PATCH /employees/{id}/status as org_admin -> 200",
-					"request": {
-						"method": "PATCH",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"is_active\": false\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/employees/2/status",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"employees",
-								"2",
-								"status"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "PATCH /employees/{id}/status on own user_id -> 409",
-					"request": {
-						"method": "PATCH",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"is_active\": false\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/employees/1/status",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"employees",
-								"1",
-								"status"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "PATCH /employees/{id}/status on nonexistent user_id -> 404",
-					"request": {
-						"method": "PATCH",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"is_active\": false\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/employees/9999/status",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"employees",
-								"9999",
-								"status"
-							]
-						}
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "Employee Task Creation",
-			"item": [
-				{
-					"name": "POST task as employee, project they ARE a member of -> 200",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{employee_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"task_name\": \"Employee Task member\",\n  \"description\": \"Allowed\"\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/projects/1/tasks",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"1",
-								"tasks"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "POST task as employee, project they are NOT a member of -> 403",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{employee_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"task_name\": \"Employee Task non-member\",\n  \"description\": \"Forbidden\"\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/projects/2/tasks",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"2",
-								"tasks"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "POST task as admin, any project in org -> 200",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{auth_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"task_name\": \"Admin Task\",\n  \"description\": \"Allowed\"\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/projects/2/tasks",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"2",
-								"tasks"
-							]
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "POST task as employee in a DIFFERENT organization project -> 404",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Authorization",
-								"value": "Bearer {{employee_token}}",
-								"type": "text"
-							},
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"task_name\": \"Employee Task cross-org\",\n  \"description\": \"Not Found\"\n}"
-						},
-						"url": {
-							"raw": "{{backend_url}}/projects/9999/tasks",
-							"host": [
-								"{{backend_url}}"
-							],
-							"path": [
-								"projects",
-								"9999",
-								"tasks"
-							]
-						}
-					},
-					"response": []
-				}
-			]
-		}
-	],
-	"variable": [
-		{
-			"key": "backend_url",
-			"value": "http://localhost:8000",
-			"type": "string"
-		},
-		{
-			"key": "auth_token",
-			"value": "your_jwt_access_token_here",
-			"type": "string"
-		},
-		{
-			"key": "manager_token",
-			"value": "manager_jwt_token_here",
-			"type": "string"
-		},
-		{
-			"key": "employee_token",
-			"value": "employee_jwt_token_here",
-			"type": "string"
-		}
-	]
+  "info": {
+    "_postman_id": "8d3e23f0-4a87-43b9-bb82-f58c4ee29d89",
+    "name": "Staff Management System API",
+    "description": "API collection for Staff Management System",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Login Exchange",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": 12345,\n  \"username\": \"johndoe\",\n  \"email\": \"john.doe@example.com\",\n  \"name\": \"John Doe\",\n  \"hubstaff_user_id\": \"hs_john_123\",\n  \"hubstaff_designation\": \"Software Engineer\",\n  \"idle_enabled\": true,\n  \"idle_minutes\": 5,\n  \"capture_frequency\": 300,\n  \"permission_schema\": {\n    \"name\": \"employee\",\n    \"permissions\": {\n      \"can_track_time\": true,\n      \"can_view_screenshots\": false\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/auth/login",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Current User Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/auth/me",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Projects",
+      "item": [
+        {
+          "name": "Create Project",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_name\": \"New Internal Project\",\n  \"description\": \"Internal task tracking project\",\n  \"start_date\": \"2026-08-06\",\n  \"is_billable\": true\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/projects",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Projects",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/projects",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Project By ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/projects/1",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Project",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_name\": \"Updated Project Name\",\n  \"description\": \"Updated description\",\n  \"status\": \"active\",\n  \"is_billable\": false\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/projects/1",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Archive Project",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/projects/1/archive",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "archive"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Tasks",
+      "item": [
+        {
+          "name": "Create Task under Project",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"task_name\": \"Implement API Logging\",\n  \"description\": \"Build centralized middleware logging\",\n  \"start_date\": \"2026-08-07\",\n  \"due_date\": \"2026-08-10\",\n  \"estimated_hours\": 8.5\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/projects/1/tasks",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "tasks"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Tasks for Project",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/projects/1/tasks",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "tasks"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Task By ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/projects/1/tasks/2",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "tasks",
+                "2"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Task",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"task_name\": \"Implement API Logging (Updated)\",\n  \"description\": \"Updated description\",\n  \"status\": \"in_progress\",\n  \"estimated_hours\": 12.0\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/projects/1/tasks/2",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "tasks",
+                "2"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Archive Task",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/projects/1/tasks/2/archive",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "tasks",
+                "2",
+                "archive"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Project Members & Task Assignees",
+      "item": [
+        {
+          "name": "Add Project Member",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": 2\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/projects/1/members",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "members"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Project Members",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/projects/1/members",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "members"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Remove Project Member",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/projects/1/members/2",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "members",
+                "2"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Assign Task User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": 2\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/projects/1/tasks/2/assignees",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "tasks",
+                "2",
+                "assignees"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Task Assignees",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/projects/1/tasks/2/assignees",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "tasks",
+                "2",
+                "assignees"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Remove Task Assignee",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/projects/1/tasks/2/assignees/2",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "tasks",
+                "2",
+                "assignees",
+                "2"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Time Entries",
+      "item": [
+        {
+          "name": "Start Timer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_id\": 1,\n  \"task_id\": 2,\n  \"description\": \"Developing Phase 3 features\",\n  \"is_billable\": true\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/time-entries/start",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "time-entries",
+                "start"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Stop Active Timer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"description\": \"Finished developing Phase 3 features\"\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/time-entries/1/stop",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "time-entries",
+                "1",
+                "stop"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Time Entries",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/time-entries?project_id=1&status=completed&skip=0&limit=50",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "time-entries"
+              ],
+              "query": [
+                {
+                  "key": "project_id",
+                  "value": "1"
+                },
+                {
+                  "key": "status",
+                  "value": "completed"
+                },
+                {
+                  "key": "skip",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Time Entry By ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/time-entries/1",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "time-entries",
+                "1"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Manual Time Entries",
+      "item": [
+        {
+          "name": "Create Manual Time Entry",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_id\": 1,\n  \"task_id\": 2,\n  \"work_date\": \"2026-08-11\",\n  \"start_time\": \"2026-08-11T10:00:00Z\",\n  \"end_time\": \"2026-08-11T12:00:00Z\",\n  \"total_seconds\": 7200,\n  \"description\": \"Manual log for meeting\",\n  \"is_billable\": true\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/manual-time-entries",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "manual-time-entries"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Manual Time Entries",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/manual-time-entries?approval_status=pending&skip=0&limit=50",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "manual-time-entries"
+              ],
+              "query": [
+                {
+                  "key": "approval_status",
+                  "value": "pending"
+                },
+                {
+                  "key": "skip",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Manual Time Entry By ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/manual-time-entries/1",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "manual-time-entries",
+                "1"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Approve Manual Time Entry",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/manual-time-entries/1/approve",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "manual-time-entries",
+                "1",
+                "approve"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Reject Manual Time Entry",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/manual-time-entries/1/reject",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "manual-time-entries",
+                "1",
+                "reject"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "RBAC Security Tests",
+      "item": [
+        {
+          "name": "Create Project - Manager (Success)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{manager_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_name\": \"Manager Authorized Project\",\n  \"description\": \"Projects creation permitted for managers\"\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/projects",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Project - Employee (Forbidden)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{employee_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_name\": \"Employee Project Attempt\",\n  \"description\": \"Employee attempting creation\"\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/projects",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Task - Manager (Success)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{manager_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"task_name\": \"Manager Task Addition\",\n  \"description\": \"Allowed\"\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/projects/1/tasks",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "tasks"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Task - Employee (Forbidden)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{employee_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"task_name\": \"Employee Task Addition\",\n  \"description\": \"Forbidden\"\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/projects/1/tasks",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "tasks"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Employees",
+      "item": [
+        {
+          "name": "GET /employees as employee role -> 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{employee_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/employees",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "employees"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /employees as manager -> 200",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{manager_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/employees",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "employees"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /employees/{id} cross-org -> 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/employees/9999",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "employees",
+                "9999"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /employees/{id}/status as manager -> 403",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{manager_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_active\": false\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/employees/1/status",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "employees",
+                "1",
+                "status"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /employees/{id}/status as org_admin -> 200",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_active\": false\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/employees/2/status",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "employees",
+                "2",
+                "status"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /employees/{id}/status on own user_id -> 409",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_active\": false\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/employees/1/status",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "employees",
+                "1",
+                "status"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /employees/{id}/status on nonexistent user_id -> 404",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_active\": false\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/employees/9999/status",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "employees",
+                "9999",
+                "status"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Employee Task Creation",
+      "item": [
+        {
+          "name": "POST task as employee, project they ARE a member of -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{employee_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"task_name\": \"Employee Task member\",\n  \"description\": \"Allowed\"\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/projects/1/tasks",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "1",
+                "tasks"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST task as employee, project they are NOT a member of -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{employee_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"task_name\": \"Employee Task non-member\",\n  \"description\": \"Forbidden\"\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/projects/2/tasks",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "2",
+                "tasks"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST task as admin, any project in org -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"task_name\": \"Admin Task\",\n  \"description\": \"Allowed\"\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/projects/2/tasks",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "2",
+                "tasks"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST task as employee in a DIFFERENT organization project -> 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{employee_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"task_name\": \"Employee Task cross-org\",\n  \"description\": \"Not Found\"\n}"
+            },
+            "url": {
+              "raw": "{{backend_url}}/projects/9999/tasks",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "projects",
+                "9999",
+                "tasks"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "System",
+      "description": "Maintenance mode: an informational notice every client polls. Nothing is blocked while it is on.",
+      "item": [
+        {
+          "name": "Maintenance Status (any signed-in user)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{employee_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/system/maintenance-status",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "system",
+                "maintenance-status"
+              ]
+            },
+            "description": "Polled by the web and desktop clients."
+          },
+          "response": []
+        },
+        {
+          "name": "Maintenance Mode Detail (admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/system/maintenance-mode",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "system",
+                "maintenance-mode"
+              ]
+            },
+            "description": "Current flag plus who last set it. Administrators only."
+          },
+          "response": []
+        },
+        {
+          "name": "Enable Maintenance Mode (admin)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/system/maintenance-mode",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "system",
+                "maintenance-mode"
+              ]
+            },
+            "description": "Administrators only. Idempotent; a real transition is audited to activity_logs.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": true\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Disable Maintenance Mode (admin)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/system/maintenance-mode",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "system",
+                "maintenance-mode"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Maintenance Mode History (admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/system/maintenance-mode/history?limit=20",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "system",
+                "maintenance-mode",
+                "history"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "backend_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "auth_token",
+      "value": "your_jwt_access_token_here",
+      "type": "string"
+    },
+    {
+      "key": "manager_token",
+      "value": "manager_jwt_token_here",
+      "type": "string"
+    },
+    {
+      "key": "employee_token",
+      "value": "employee_jwt_token_here",
+      "type": "string"
+    }
+  ]
 }
