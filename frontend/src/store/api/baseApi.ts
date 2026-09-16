@@ -80,6 +80,6 @@ export const baseApi = createApi({
       return action.payload?.[reducerPath] as any;
     }
   },
-  tagTypes: ['Member', 'Project', 'Task', 'Team', 'TimeTracking', 'ManualTimeEntry', 'Feedback'],
+  tagTypes: ['Member', 'Project', 'Task', 'Team', 'TimeTracking', 'ManualTimeEntry', 'Feedback', 'System'],
   endpoints: () => ({}),
 });

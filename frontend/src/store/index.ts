@@ -9,6 +9,7 @@ import './api/projectsApi';
 import './api/teamsApi';
 import './api/timeTrackingApi';
 import './api/feedbackApi';
+import './api/systemApi';
 
 export const store = configureStore({
   reducer: {
