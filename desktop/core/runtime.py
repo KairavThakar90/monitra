@@ -125,6 +125,7 @@ class ApplicationRuntime(QObject):
         self._exit_done = False
         self._exit_callbacks: List[Callable[[], None]] = []
         self._exit_timer: Optional[QTimer] = None
+        self._exit_connected = False
 
         #: Queued actions older than this generation are refused. Raised on
         #: logout so a previous user's pending work cannot execute as the next.
@@ -476,6 +477,7 @@ class ApplicationRuntime(QObject):
 
         self.sync.action_completed.connect(self._on_exit_sync_progress)
         self.sync.action_failed.connect(self._on_exit_sync_failed)
+        self._exit_connected = True
         self._exit_timer = QTimer(self)
         self._exit_timer.setSingleShot(True)
         self._exit_timer.timeout.connect(
@@ -527,14 +529,16 @@ class ApplicationRuntime(QObject):
         if self._exit_timer is not None:
             self._exit_timer.stop()
             self._exit_timer = None
-        for signal, slot in (
-            (self.sync.action_completed, self._on_exit_sync_progress),
-            (self.sync.action_failed, self._on_exit_sync_failed),
-        ):
-            try:
-                signal.disconnect(slot)
-            except (RuntimeError, TypeError):
-                pass
+        if self._exit_connected:
+            self._exit_connected = False
+            for signal, slot in (
+                (self.sync.action_completed, self._on_exit_sync_progress),
+                (self.sync.action_failed, self._on_exit_sync_failed),
+            ):
+                try:
+                    signal.disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
         log.info("exit preparation complete: %s", reason)
         callbacks, self._exit_callbacks = self._exit_callbacks, []
         for callback in callbacks:

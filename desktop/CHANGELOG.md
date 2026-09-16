@@ -22,6 +22,26 @@ re-grant a permission.
 
 ### Fixed
 
+- **Quitting Monitra now stops your timer.** Quit from the close dialog,
+  from the tray menu, or by closing the window with "Remember my choice"
+  set to Quit, all stop a running timer at that moment and send the stop to
+  the server before Monitra exits (the window stays up for a few seconds
+  with "Stopping your timer…" if the server is slow). Before, quitting left
+  the timer running on the server and the next launch picked it up again
+  with all the time in between counted. "Remember my choice" only decides
+  whether you are asked; it never leaves a timer running. Installing an
+  update, and Windows shutting down or signing you out, are not quits: the
+  session carries on and is recovered when Monitra next starts.
+- **A stop can no longer be lost.** Stops are written to the durable queue
+  before anything else and are never given up on, so a crash or power cut
+  right after you press Stop, or a long server outage, cannot leave a timer
+  running on the server for the next launch to resurrect.
+- **A timer interrupted by a crash or power cut is recovered as one
+  continuous session** and the recovery notice now says how long Monitra
+  was not running. A timer stopped from the web or another machine while
+  Monitra was away is ended here too, instead of counting on.
+- **Double-clicking Start or Stop counts as one click.** It used to start
+  and immediately stop (or stop and restart) the timer.
 - **Projects and tasks now stay in step with the server on their own — the
   Refresh button is no longer part of normal use.** Monitra asks the server
   every half minute whether anything you can see has changed and re-reads

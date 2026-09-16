@@ -285,6 +285,8 @@ class SyncService(LoopService):
                 return
             if action_type == "stop_timer":
                 result = handler(payload, action.get("defer_count", 0)) or {}
+            elif action_type == "start_timer":
+                result = handler(payload, action.get("created_at")) or {}
             else:
                 result = handler(payload) or {}
         except DeferAction as exc:
@@ -381,16 +383,21 @@ class SyncService(LoopService):
             return True
         return False
 
-    def _handle_start_timer(self, payload):
-        # A start never overtakes a stop. The stop of the previous session
-        # runs first by priority, but a stop that is *deferred* -- waiting
-        # for its own start's entry id -- is not ready, and without this the
-        # next session's start ran in that gap, met the previous entry still
-        # running, and was refused with a 409 for the very entry the queued
-        # stop was about to end. Deferring costs no retries; the stop's own
-        # deferral budget bounds how long this can wait.
+    def _handle_start_timer(self, payload, created_at: Optional[float] = None):
+        # A start never overtakes a stop queued before it. The stop of the
+        # previous session runs first by priority, but a stop that is
+        # *deferred* -- waiting for its own start's entry id -- is not ready,
+        # and without this the next session's start ran in that gap, met the
+        # previous entry still running, and was refused with a 409 for the
+        # very entry the queued stop was about to end. Only stops that
+        # *precede* this start count: waiting for later ones deadlocked two
+        # sessions queued offline back to back (see `pending_stop_count`).
+        # Deferring costs no retries; the earliest stop waits only for its
+        # own start, which waits for nothing, so the chain always advances.
         client_op = payload.get("client_op")
-        if self._cache.pending_stop_count(exclude_client_op=client_op) > 0:
+        if self._cache.pending_stop_count(
+            exclude_client_op=client_op, created_before=created_at
+        ) > 0:
             raise DeferAction("a stop for an earlier session has not reached the backend yet")
 
         # `started_at` was captured when the user pressed Start; this action

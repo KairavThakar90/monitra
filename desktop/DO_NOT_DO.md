@@ -140,7 +140,68 @@ The audited handler performed a synchronous batch upload and a
 `stop_time_entry(timeout=3.0)` network call inside `closeEvent`. Quitting
 appeared to hang.
 
-**Instead:** persist durably and let the next run finish the work.
+**Instead:** persist durably and let the next run finish the work. The stop
+an explicit quit issues is queued durably and awaited through the event loop
+(`ApplicationRuntime.prepare_exit`, bounded by `EXIT_STOP_FLUSH_BUDGET_MS`);
+`closeEvent` ignores the close and quits from the callback.
+
+### ❌ Do not treat an explicit quit as an interruption
+
+```python
+def on_stop(self, timeout_ms):          # TimerService, on every shutdown
+    if self._session is not None:
+        self._persist()                 # "state persisted for recovery"
+```
+
+**What it caused:** Quit, X → Quit, a remembered Quit and the tray's Quit all
+exited with the timer running. The session record stayed, the backend entry
+kept running, and the next launch "recovered" a timer the user had ended by
+leaving — with every hour in between counted. Nothing on the quit path ever
+called `stop_tracking`; the service could not tell a quit from a crash, so
+it treated both as a crash.
+
+**Instead:** the quit path stops the timer *before* the runtime shuts down
+(`prepare_exit`), and `on_stop` only ever sees a session that belongs to an
+exit the user did not ask for — an OS shutdown, an update restart — which is
+what it should recover. The remembered close choice decides whether the
+dialog is shown, never whether the timer stops.
+
+### ❌ Do not send a stop in-process and queue it only on failure
+
+```python
+self._session = None
+self._persist()                          # record gone
+self.runtime.tasks.submit(call, on_error=lambda exc: enqueue("stop_timer", ...))
+```
+
+**What it caused:** between the record being cleared and the request
+landing, the stop existed nowhere. A kill in that window — the user pressing
+Stop and then closing the lid, a crash, a power cut — left the backend entry
+running with nothing to end it, and the next launch adopted it as "a timer
+that was still running", resurrecting a session the user had stopped.
+
+**Instead:** queue the stop first, clear the record second, and send it only
+through the durable queue. At every instant the disk holds either the record
+or the queued stop. A stop queued before the backend issued an id also
+queues its start, so it always has one to wait for.
+
+### ❌ Do not let a start overtake a queued stop
+
+A switch is stop-then-start. With the stop in the queue and the start sent
+in-process, the start reached the backend first, met the previous entry
+still running, and was refused with a 409 for the very entry the queued
+stop was about to end — the switch failed and the old entry was adopted
+back. `_handle_start_timer` defers behind any stop still waiting for another
+session, and `start_tracking` routes the start through the queue while one
+is pending.
+
+### ❌ Do not give a timer action a retry budget
+
+`fail_action` parked any action as `failed` after ten failures, and nothing
+reads a failed row again. For a stop, that is an entry left running on the
+backend for ever. Timer actions retry without limit (at the capped, jittered
+backoff, and only while the backend is reachable), and any parked by an
+older build are revived at launch.
 
 ### ❌ Do not use `terminate()` as normal shutdown
 

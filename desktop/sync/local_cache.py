@@ -645,32 +645,44 @@ class LocalCache:
             log.info("revived %d failed timer action(s) for a fresh attempt", revived)
         return revived
 
-    def pending_stop_count(self, exclude_client_op: Optional[str] = None) -> int:
+    def pending_stop_count(
+        self,
+        exclude_client_op: Optional[str] = None,
+        created_before: Optional[float] = None,
+    ) -> int:
         """How many stops are still waiting to reach the backend.
 
         The exit path waits on this number, and a start defers on it: a stop
         that has not landed yet must reach the backend before the start that
         follows it, or the backend answers the start with a 409 for the very
-        entry the stop is about to end. `exclude_client_op` leaves out the
-        stop of one session -- the start's own, which by construction never
-        precedes it.
+        entry the stop is about to end.
+
+        `exclude_client_op` leaves out the stop of one session -- the start's
+        own, which by construction never precedes it. `created_before` counts
+        only stops queued *earlier* than that instant: a start must wait for
+        the stops that precede it and no others. Waiting for every stop in the
+        queue deadlocked two sessions queued offline back to back -- stop(A)
+        waiting for start(A), start(A) waiting for stop(B), stop(B) waiting
+        for start(B), start(B) waiting for stop(A) -- which the soak found as
+        a queue that never drained.
         """
         rows = self._storage.query_all(
-            "SELECT payload FROM pending_actions "
+            "SELECT payload, created_at FROM pending_actions "
             "WHERE action_type = 'stop_timer' "
             "AND status IN ('pending', 'processing', 'retry')",
         )
-        if exclude_client_op is None:
-            return len(rows)
         count = 0
         for row in rows:
-            try:
-                payload = json.loads(row["payload"])
-            except (json.JSONDecodeError, TypeError):
-                count += 1
+            if created_before is not None and row["created_at"] >= created_before:
                 continue
-            if payload.get("client_op") != exclude_client_op:
-                count += 1
+            if exclude_client_op is not None:
+                try:
+                    payload = json.loads(row["payload"])
+                except (json.JSONDecodeError, TypeError):
+                    payload = {}
+                if payload.get("client_op") == exclude_client_op:
+                    continue
+            count += 1
         return count
 
     def has_pending_stop_for_client_op(self, client_op: Optional[str]) -> bool:
