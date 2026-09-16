@@ -173,6 +173,11 @@ def desktop(qapp, tmp_path, backend, principal, monkeypatch):
     runtime = ApplicationRuntime(storage=manager)
     runtime.api_client.base_url = backend
     runtime.api_client.access_token = principal["token"]
+    # The services must run, as in the real application and in the other
+    # E2E fixtures: a stop is only ever delivered through the durable queue,
+    # and `timer_finalized` fires from the sync consumer's completion. Without
+    # the consumer every stop sits queued and the test waits for ever.
+    runtime.start_services()
     yield runtime
     runtime.shutdown(timeout_ms=3000)
 
@@ -456,6 +461,10 @@ def test_a_restart_recovers_the_running_entry_without_duplicating_it(qapp, tmp_p
         assert second.timer.active_session()["started_at_utc"] == anchor
         assert len(_running_rows(db, principal["user_id"])) == 1
 
+        # The stop goes through the durable queue, so the sync consumer has
+        # to be running for `timer_finalized` to fire -- as it is in the
+        # application, where the services are up before anyone can press Stop.
+        second.start_services()
         finalized = []
         second.timer.timer_finalized.connect(finalized.append)
         second.timer.stop_tracking()
