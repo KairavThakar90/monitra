@@ -4,10 +4,10 @@
 ;  Build it with (from desktop/ -- scripts/build_installer.ps1 does this for
 ;  you and passes the version automatically):
 ;
-;      iscc /DAppVersion=<version> packaging\windows\monitra.iss
+;      iscc /DAppVersion=<version> [/DArtifactVersion=<version>[-<prerelease>]] packaging\windows\monitra.iss
 ;
 ;  Input:  dist\Monitra\           (the PyInstaller onedir build)
-;  Output: dist\installer\Monitra-Setup-<version>.exe
+;  Output: dist\installer\Monitra-Setup-<artifact version>.exe
 ;
 ;  Why Inno Setup rather than NSIS or a zip: it produces a single signed-able
 ;  .exe, handles upgrade-in-place and a real Add/Remove Programs entry with no
@@ -18,6 +18,17 @@
 
 #ifndef AppVersion
   #error AppVersion is not defined. Pass /DAppVersion=<version> -- the value must come from desktop/version.py, which is the single source of truth. Use scripts/build_installer.ps1.
+#endif
+
+; ArtifactVersion names the output file and the Add/Remove Programs entry. For
+; a production release it is the same as AppVersion; for an internal test
+; build the build script passes the pre-release form (<version>-<prerelease>,
+; from version.artifact_version()) so the installer a tester downloads can
+; never be mistaken for the production one. AppVersion and VersionInfoVersion
+; stay the numeric form, which is what Windows requires. No example number
+; here on purpose -- see the AppId note below.
+#ifndef ArtifactVersion
+  #define ArtifactVersion AppVersion
 #endif
 
 #define AppName          "Monitra"
@@ -40,7 +51,7 @@
 AppId={{8F3B6A94-2C57-4E1B-9A0D-6B7C4E9A1D22}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppVerName={#AppName} {#AppVersion}
+AppVerName={#AppName} {#ArtifactVersion}
 VersionInfoVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 UninstallDisplayName={#AppName}
@@ -64,7 +75,7 @@ DisableProgramGroupPage=yes
 AllowNoIcons=yes
 
 OutputDir={#OutputDirectory}
-OutputBaseFilename=Monitra-Setup-{#AppVersion}
+OutputBaseFilename=Monitra-Setup-{#ArtifactVersion}
 SetupIconFile=..\..\build\monitra.ico
 WizardStyle=modern
 Compression=lzma2/max

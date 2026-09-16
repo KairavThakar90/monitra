@@ -36,6 +36,8 @@ directories, and must both be able to run it.
 """
 from __future__ import annotations
 
+import hashlib
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -53,6 +55,29 @@ log = get_logger("single-instance")
 WINDOWS_MUTEX_NAME = "MonitraRunning"
 
 _handle = None  # kept alive for the process lifetime; never closed
+
+
+def _lock_scope() -> str:
+    """What one lock guards: one data directory.
+
+    The harm the lock prevents is two runtimes on one database and one
+    durable queue. An instance launched with ``MONITRA_DATA_DIR`` pointing
+    somewhere else -- the soak and launch-cycle harnesses, a developer's
+    scratch copy beside the installed one -- shares nothing with it, and
+    refusing to start it would only mean those checks cannot run while
+    Monitra is in use. The default data directory keeps the bare name the
+    installer checks; an override suffixes it with a digest of the path,
+    so two instances on one directory are still refused.
+    """
+    override = os.getenv("MONITRA_DATA_DIR")
+    if not override:
+        return ""
+    normalised = str(Path(override).expanduser().resolve()).lower()
+    return "-" + hashlib.sha256(normalised.encode("utf-8")).hexdigest()[:12]
+
+
+def _mutex_name() -> str:
+    return WINDOWS_MUTEX_NAME + _lock_scope()
 
 
 def acquire() -> bool:
@@ -88,7 +113,7 @@ def _acquire_windows():
     kernel32.CreateMutexW.argtypes = [wintypes.LPCVOID, wintypes.BOOL, wintypes.LPCWSTR]
     kernel32.CreateMutexW.restype = wintypes.HANDLE
 
-    handle = kernel32.CreateMutexW(None, False, WINDOWS_MUTEX_NAME)
+    handle = kernel32.CreateMutexW(None, False, _mutex_name())
     if not handle:
         raise OSError(ctypes.get_last_error(), "CreateMutexW failed")
     if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:

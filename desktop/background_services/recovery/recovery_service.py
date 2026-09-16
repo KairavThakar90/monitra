@@ -134,11 +134,14 @@ class RecoveryService(LoopService):
 
         timer = getattr(self.runtime, "timer", None)
         if timer is not None:
-            recovered = timer.recover()
+            # The previous run's liveness record bounds when the interruption
+            # happened; the timer reports it with the recovered session.
+            recovered = timer.recover(previous_run=self._previous)
             summary["timer_recovered"] = bool(recovered)
             if recovered:
                 summary["timer_entry_id"] = recovered.get("entry_id")
                 summary["timer_task_id"] = recovered.get("task_id")
+                summary["timer_interrupted_at"] = recovered.get("interrupted_at_utc")
 
         self.log.info("recovery complete: %s", summary)
         self.recovery_completed.emit(summary)

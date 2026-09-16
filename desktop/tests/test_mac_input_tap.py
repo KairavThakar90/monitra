@@ -66,12 +66,15 @@ class _FakeQuartz:
     kCGEventTapDisabledByTimeout = TAP_DISABLED_BY_TIMEOUT
     kCGEventTapDisabledByUserInput = 0xFFFFFFFF
     kCGKeyboardEventKeycode = 9
+    kCGKeyboardEventAutorepeat = 8
 
     def __init__(self):
         self.enable_calls = []
 
     @staticmethod
     def CGEventGetIntegerValueField(event, field):
+        if field == _FakeQuartz.kCGKeyboardEventAutorepeat:
+            return event.get("autorepeat", 0)
         return event["keycode"]
 
     @staticmethod
@@ -93,8 +96,8 @@ def quartz(monkeypatch):
 def tap(quartz):
     events = {"keys": [], "clicks": 0, "moves": 0}
 
-    def on_key(name):
-        events["keys"].append(name)
+    def on_key(name, pressed):
+        events["keys"].append((name, pressed))
 
     def on_click():
         events["clicks"] += 1
@@ -190,18 +193,32 @@ def test_a_denied_permission_is_reported_not_crashed(monkeypatch, quartz):
 def test_key_presses_are_counted(tap):
     tap._count(KEY_DOWN, {"keycode": A_KEYCODE})
     tap._count(KEY_DOWN, {"keycode": A_KEYCODE})
-    assert tap.events["keys"] == [None, None]  # counted, never identified
+    # Counted, never identified; an ordinary key reports only its press.
+    assert tap.events["keys"] == [(None, True), (None, True)]
 
 
-def test_modifier_presses_are_named_but_releases_are_not_counted(tap):
+def test_an_os_autorepeat_is_not_a_second_press(tap):
     """
-    A flagsChanged event fires for both press and release. Counting both
-    would double every modifier keystroke and make a "15 ctrl presses" rule
-    fire at 8.
+    Holding a key makes macOS resend keyDown continuously. That is the OS
+    repeating one press, not the user making several, and counting each of
+    them turns a leaned-on arrow key into a maximally "active" minute.
+    macOS flags them, so they are dropped.
+    """
+    tap._count(KEY_DOWN, {"keycode": A_KEYCODE})
+    for _ in range(30):
+        tap._count(KEY_DOWN, {"keycode": A_KEYCODE, "autorepeat": 1})
+    assert tap.events["keys"] == [(None, True)]
+
+
+def test_modifier_presses_and_releases_are_both_reported(tap):
+    """
+    A flagsChanged event fires for both edges, and both are needed: the
+    release is what tells the counter whether the modifier was held alone or
+    as part of a shortcut. The flag bit distinguishes them.
     """
     tap._count(FLAGS_CHANGED, {"keycode": CTRL_KEYCODE, "flags": CTRL_FLAG})   # press
     tap._count(FLAGS_CHANGED, {"keycode": CTRL_KEYCODE, "flags": 0})           # release
-    assert tap.events["keys"] == ["ctrl"]
+    assert tap.events["keys"] == [("ctrl", True), ("ctrl", False)]
 
 
 def test_left_and_right_modifiers_collapse_to_one_name(tap):
@@ -211,7 +228,7 @@ def test_left_and_right_modifiers_collapse_to_one_name(tap):
     """
     tap._count(FLAGS_CHANGED, {"keycode": 0x3B, "flags": CTRL_FLAG})
     tap._count(FLAGS_CHANGED, {"keycode": 0x3E, "flags": CTRL_FLAG})
-    assert tap.events["keys"] == ["ctrl", "ctrl"]
+    assert tap.events["keys"] == [("ctrl", True), ("ctrl", True)]
 
 
 def test_clicks_and_movements_are_counted_separately(tap):

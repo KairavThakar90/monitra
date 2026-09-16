@@ -24,7 +24,14 @@ CHANGELOG = DESKTOP_ROOT / "CHANGELOG.md"
 
 sys.path.insert(0, str(DESKTOP_ROOT))
 
-from version import VERSION  # noqa: E402
+from version import display_version  # noqa: E402
+
+#: The heading a release note must sit under. For a production release this
+#: is the plain version; for an internal test build it is the pre-release
+#: form (`1.2.0-beta.1`), so the note written for the testers of that build is
+#: the one required -- a production note for the same number does not count,
+#: because it describes a build that does not exist yet.
+VERSION = display_version()
 
 
 def heading_body(text: str, version: str) -> str | None:

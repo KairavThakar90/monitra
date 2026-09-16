@@ -393,6 +393,24 @@ claims another makes every subsequent support report untrustworthy.
 macOS' `CFBundleVersion` both require numeric-only components. Pre-release
 identity belongs in the artifact filename, not the constant.
 
+### Internal test builds
+
+A build for a pilot group sets `PRERELEASE` in `version.py` (for example
+`"beta.1"`) alongside a numeric `VERSION`. The build scripts then name every
+artifact by `version.artifact_version()` — `Monitra-Setup-1.2.0-beta.1.exe`,
+`Monitra-Portable-1.2.0-beta.1.zip`, `Monitra-macOS-<arch>-1.2.0-beta.1.dmg` —
+the window title and the update dialog show `1.2.0-beta.1`, and
+`tools/check_changelog.py` requires a `## [1.2.0-beta.1]` entry. The `.exe`
+resource, the `Info.plist`, the Inno Setup `AppVersion` and the
+`Monitra/<version>` User-Agent all keep the numeric `VERSION`, because each of
+them requires or parses that form.
+
+`tools/register_release.py` refuses to register a pre-release, so it can never
+become a `desktop_releases` row and can never be offered by the update check
+or the download page; testers install it by hand. Set `PRERELEASE = ""` for
+the production release, and do not reuse the `VERSION` an internal build
+carried — a version identifies exactly one build.
+
 ---
 
 ## 11. Signing and notarization

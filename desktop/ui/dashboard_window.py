@@ -18,7 +18,7 @@ and this window schedules bounded, de-duplicated work rather than raw threads.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from time import monotonic
 from typing import Any, Callable, Dict, List, Optional
 
@@ -42,7 +42,7 @@ from background_services.public_api import (
 )
 from core.date_mode import DateMode, as_calendar_day, date_mode, is_live_date
 from core.logging_setup import get_logger
-from core.time_format import ist_clock, ist_day_bounds_utc, ist_today, parse_utc
+from core.time_format import format_hms, ist_clock, ist_day_bounds_utc, ist_today, parse_utc
 from ui import icons
 from ui.activity_section import ActivitySection
 from ui.feedback_dialog import SUBMIT_KEY, FeedbackDialog
@@ -2021,10 +2021,37 @@ class DashboardWindow(QWidget):
         self._sidebar.set_timer_active(True)
         self._sidebar.set_active_timer_project(session.get("project_id"))
         self._status_bar.set_message("Recovered a timer that was still running.", SUCCESS)
-        self.api.notify(
-            "Recovered a timer that was still running from your last session.",
-            NotificationLevel.INFO, key="timer-recovered",
-        )
+        # Say how long Monitra was not running, when that is known: the
+        # session continued through the gap, and the user should be able to
+        # see that the figure on screen includes it.
+        gap = self._interruption_gap_text(session)
+        message = "Recovered a timer that was still running from your last session."
+        if gap:
+            message = (
+                f"Recovered a timer that was still running. Monitra was not "
+                f"running for {gap}; that time is part of the session."
+            )
+        self.api.notify(message, NotificationLevel.INFO, key="timer-recovered")
+
+    @staticmethod
+    def _interruption_gap_text(session: dict) -> Optional[str]:
+        interrupted = parse_utc(session.get("interrupted_at_utc"))
+        recovered = parse_utc(session.get("recovered_at_utc"))
+        if interrupted is None or recovered is None:
+            return None
+        seconds = int((recovered - interrupted).total_seconds())
+        if seconds < 60:
+            return None
+        return format_hms(seconds)
+
+    def note_exit_in_progress(self, message: str) -> None:
+        """The window is closing and the runtime is stopping the timer first.
+
+        Presentation only: the exit itself is owned by the main window and
+        the runtime. The status bar is the one place on screen that can say
+        why the window is still up after Quit was pressed.
+        """
+        self._status_bar.set_message(message, SUCCESS)
 
     def _check_active_timer(self) -> None:
         """Ask the backend whether it believes *this user's* timer is running.
@@ -2036,6 +2063,10 @@ class DashboardWindow(QWidget):
         """
         api_client = self.api_client
         user_id = self._user_id
+        # When this question was asked. A session bound after this instant
+        # is newer than the answer, and an answer of "nothing running" must
+        # not end it.
+        requested_at = datetime.now(timezone.utc)
 
         def call():
             # `/time-entries/active` is scoped to the caller by the backend
@@ -2070,19 +2101,29 @@ class DashboardWindow(QWidget):
 
         self.api.run_in_background(
             call,
-            on_success=self._on_active_timer_checked,
+            on_success=lambda entry: self._on_active_timer_checked(entry, requested_at),
             on_error=lambda exc: log.info("could not check for an active timer: %s", exc),
             key="check-active-timer",
         )
 
-    def _on_active_timer_checked(self, active_entry: Optional[dict]) -> None:
+    def _on_active_timer_checked(
+        self, active_entry: Optional[dict], requested_at: Optional[datetime] = None
+    ) -> None:
         if not active_entry or "id" not in active_entry:
+            # The backend says nothing is running. For a session this client
+            # is counting against an entry the backend has already finalized
+            # -- stopped from the web, on another machine, or by an
+            # administrator -- that is the end of the session here too; the
+            # timer service decides, and keeps any session the backend could
+            # not know about yet (an unsent or queued start).
+            if requested_at is not None:
+                self.api.timer.reconcile_absent_remote(requested_at)
             return
         # The backend calls an entry `running` until our stop reaches it. While
         # that stop is still in the durable queue, adopting the entry would put
         # a timer the user has already stopped back on screen, counting from
         # its original start.
-        if self._has_queued_stop(active_entry.get("id")):
+        if self._has_queued_stop(active_entry.get("id"), active_entry.get("client_op")):
             log.info(
                 "ignoring backend-running entry %s: its stop is still queued here",
                 active_entry.get("id"),
@@ -2091,12 +2132,18 @@ class DashboardWindow(QWidget):
         self._pending_active_timer = active_entry
         self._apply_active_timer_if_ready()
 
-    def _has_queued_stop(self, entry_id) -> bool:
+    def _has_queued_stop(self, entry_id, client_op=None) -> bool:
+        """Whether the user has already stopped this entry and the stop is
+        still on its way. Matched on the entry id, and on the session key the
+        entry carries -- a stop queued before the backend issued the id has
+        only the key."""
         cache = getattr(self.api, "cache", None)
-        if cache is None or entry_id is None:
+        if cache is None:
             return False
         try:
-            return cache.has_pending_stop_for_entry(entry_id)
+            if entry_id is not None and cache.has_pending_stop_for_entry(entry_id):
+                return True
+            return bool(client_op) and cache.has_pending_stop_for_client_op(client_op)
         except Exception:  # noqa: BLE001
             # A cache that cannot answer must not block the reconciliation it
             # is only advising.

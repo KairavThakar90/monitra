@@ -531,13 +531,22 @@ class LocalCache:
             (reason, time.time(), action_id),
         )
 
-    def fail_action(self, action_id: str, error_message: str, max_retries: int = 10) -> bool:
+    def fail_action(
+        self, action_id: str, error_message: str, max_retries: Optional[int] = 10
+    ) -> bool:
         """
         Record a failure and schedule a retry with exponential backoff + jitter.
 
         Jitter matters at fleet scale: without it, every client that lost the
         backend at the same moment retries at exactly the same moment, which
         is a self-inflicted thundering herd on recovery.
+
+        `max_retries=None` means the action is never parked as `failed`: it
+        keeps retrying at the capped backoff for as long as the process runs.
+        That is reserved for the timer's own start/stop actions, where giving
+        up is worse than any amount of waiting -- an abandoned stop leaves the
+        entry running on the backend, and the next launch adopts it as a
+        timer the user never stopped.
 
         :return: True if the action will be retried.
         """
@@ -551,7 +560,7 @@ class LocalCache:
             return False
 
         retry_count = row["retry_count"] + 1
-        if retry_count > max_retries:
+        if max_retries is not None and retry_count > max_retries:
             self._storage.execute(
                 "UPDATE pending_actions SET status = 'failed', error_message = ?, updated_at = ? "
                 "WHERE id = ?",
@@ -570,8 +579,9 @@ class LocalCache:
             (retry_count, now + delay, error_message, now, action_id),
         )
         log.info(
-            "action retry %d/%d in %.1fs: %s",
-            retry_count, max_retries, delay, error_message, extra={"op": action_id},
+            "action retry %d/%s in %.1fs: %s",
+            retry_count, max_retries if max_retries is not None else "unbounded",
+            delay, error_message, extra={"op": action_id},
         )
         return True
 
@@ -601,6 +611,115 @@ class LocalCache:
             "DELETE FROM pending_actions WHERE status IN ('failed', 'cancelled') AND created_at < ?",
             (cutoff,),
         )
+
+    #: The actions that move tracked time. They share one retry contract:
+    #: never abandoned on a transient failure, and revived at every launch.
+    TIMER_ACTION_TYPES = ("start_timer", "stop_timer", "switch_timer")
+
+    def requeue_timer_actions_for_new_run(self) -> int:
+        """Give every timer action a fresh attempt at the next launch.
+
+        A queued stop that exhausted its retries under an older build was
+        parked as `failed`, and nothing reads a failed row again -- so the
+        entry it names ran on the backend until the next launch adopted it
+        as "a timer that was still running". The same reasoning as
+        `requeue_telemetry_for_new_run`, applied to the rows that matter
+        most: a launch is when the cause has plausibly been fixed, and the
+        instant the user pressed Stop travels in the payload, so a late
+        delivery still records the right end time.
+
+        Called before `clear_stale_actions`, which would otherwise delete a
+        failed stop older than a day.
+
+        :return: how many rows were revived.
+        """
+        placeholders = ", ".join("?" for _ in self.TIMER_ACTION_TYPES)
+        cursor = self._storage.execute(
+            f"UPDATE pending_actions SET status = 'pending', retry_count = 0, "
+            f"next_retry_at = ?, updated_at = ? "
+            f"WHERE status = 'failed' AND action_type IN ({placeholders})",
+            (time.time(), time.time(), *self.TIMER_ACTION_TYPES),
+        )
+        revived = cursor.rowcount or 0
+        if revived:
+            log.info("revived %d failed timer action(s) for a fresh attempt", revived)
+        return revived
+
+    def make_timer_actions_ready(self) -> int:
+        """Let every waiting timer action be attempted now.
+
+        A retry backoff is computed against a backend that was erroring; it
+        says nothing once the backend is known to be back. The sync consumer
+        calls this the moment its hold ends, and the exit path calls it
+        before waiting for the stop, so a stop never sits out a backoff of
+        up to a minute while the user waits for Quit or the next launch. The
+        jitter that protects the backend from a fleet retrying in lockstep is
+        kept for the ordinary retry path.
+
+        :return: how many rows were brought forward.
+        """
+        placeholders = ", ".join("?" for _ in self.TIMER_ACTION_TYPES)
+        cursor = self._storage.execute(
+            f"UPDATE pending_actions SET next_retry_at = ? "
+            f"WHERE status IN ('pending', 'retry') AND next_retry_at > ? "
+            f"AND action_type IN ({placeholders})",
+            (time.time(), time.time(), *self.TIMER_ACTION_TYPES),
+        )
+        return cursor.rowcount or 0
+
+    def pending_stop_count(
+        self,
+        exclude_client_op: Optional[str] = None,
+        created_before: Optional[float] = None,
+    ) -> int:
+        """How many stops are still waiting to reach the backend.
+
+        The exit path waits on this number, and a start defers on it: a stop
+        that has not landed yet must reach the backend before the start that
+        follows it, or the backend answers the start with a 409 for the very
+        entry the stop is about to end.
+
+        `exclude_client_op` leaves out the stop of one session -- the start's
+        own, which by construction never precedes it. `created_before` counts
+        only stops queued *earlier* than that instant: a start must wait for
+        the stops that precede it and no others. Waiting for every stop in the
+        queue deadlocked two sessions queued offline back to back -- stop(A)
+        waiting for start(A), start(A) waiting for stop(B), stop(B) waiting
+        for start(B), start(B) waiting for stop(A) -- which the soak found as
+        a queue that never drained.
+        """
+        rows = self._storage.query_all(
+            "SELECT payload, created_at FROM pending_actions "
+            "WHERE action_type = 'stop_timer' "
+            "AND status IN ('pending', 'processing', 'retry')",
+        )
+        count = 0
+        for row in rows:
+            if created_before is not None and row["created_at"] >= created_before:
+                continue
+            if exclude_client_op is not None:
+                try:
+                    payload = json.loads(row["payload"])
+                except (json.JSONDecodeError, TypeError):
+                    payload = {}
+                if payload.get("client_op") == exclude_client_op:
+                    continue
+            count += 1
+        return count
+
+    def has_pending_stop_for_client_op(self, client_op: Optional[str]) -> bool:
+        """Whether a stop for this tracking session is still waiting to be sent.
+
+        The entry-id form (`has_pending_stop_for_entry`) cannot see a stop
+        queued before the backend issued an id -- a session started offline,
+        or stopped a second after Start while the request was in flight. The
+        backend's entry carries the session's `client_op`, so this is how a
+        reconciliation recognises that the running entry it is being shown
+        is one the user has already stopped.
+        """
+        if not client_op:
+            return False
+        return self.has_pending_action_for_client_op(client_op, "stop_timer")
 
     # ── Telemetry queue housekeeping ──────────────────────────────────────────
 
@@ -958,7 +1077,7 @@ class LocalCache:
 
     def save_activity_sample(
         self,
-        time_entry_id: int,
+        time_entry_id: Optional[int],
         window_start: str,
         window_seconds: int,
         active_seconds: int,
@@ -968,6 +1087,7 @@ class LocalCache:
         mouse_clicks: int = 0,
         mouse_movements: int = 0,
         activity_percent: Optional[int] = None,
+        client_op: Optional[str] = None,
     ) -> str:
         """
         Persist one aggregated activity window.
@@ -975,8 +1095,16 @@ class LocalCache:
         `activity_percent` is stored alongside the raw counts so the value the
         user sees is auditable against the inputs it was derived from.
         `keyboard_strokes`/`mouse_clicks`/`mouse_movements` are true event
-        counts from the input hook; `key_events`/`mouse_events` remain the
-        original seconds-with-input counters that drive the percentage.
+        counts from the input counter; `key_events`/`mouse_events` are the
+        seconds-with-input counters kept alongside them.
+
+        `time_entry_id` may be None for a window measured before the backend
+        issued one -- an offline start, or the first minute of a session while
+        the start request is still in flight -- exactly as for
+        `save_app_usage`. Such a row waits in the queue, is withheld from the
+        uploader, and is adopted by `bind_activity_samples_to_entry` once the
+        id arrives. `client_op` is the timer session's stable key and is what
+        makes that adoption possible.
         """
         if activity_percent is not None:
             percent = max(0, min(100, activity_percent))
@@ -989,13 +1117,13 @@ class LocalCache:
         now = time.time()
         self._storage.execute(
             """INSERT INTO activity_samples
-               (id, time_entry_id, window_start, window_seconds, active_seconds,
+               (id, time_entry_id, client_op, window_start, window_seconds, active_seconds,
                 key_events, mouse_events, keyboard_strokes, mouse_clicks, mouse_movements,
                 activity_percent, status, retry_count, next_retry_at, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
-            (record_id, time_entry_id, window_start, window_seconds, active_seconds,
-             key_events, mouse_events, keyboard_strokes, mouse_clicks, mouse_movements,
-             percent, now, now),
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
+            (record_id, time_entry_id, client_op, window_start, window_seconds,
+             active_seconds, key_events, mouse_events, keyboard_strokes,
+             mouse_clicks, mouse_movements, percent, now, now),
         )
         return record_id
 
@@ -1005,6 +1133,12 @@ class LocalCache:
         """Activity windows ready to upload, oldest first.
 
         Bounded: see `TELEMETRY_FETCH_LIMIT`.
+
+        Rows still waiting for their entry id are skipped rather than
+        uploaded: the endpoint is per-entry, so there is nowhere to send them
+        yet. They stay 'pending' and are picked up on a later pass, once
+        `bind_activity_samples_to_entry` has adopted them. Same treatment, and
+        the same reason, as `get_pending_app_usage`.
         """
         rows = self._storage.query_all(
             """SELECT id, time_entry_id, window_start, window_seconds, active_seconds,
@@ -1012,11 +1146,45 @@ class LocalCache:
                       activity_percent, retry_count
                FROM activity_samples
                WHERE status = 'pending' AND next_retry_at <= ?
+                 AND time_entry_id IS NOT NULL
                ORDER BY created_at ASC
                LIMIT ?""",
             (time.time(), limit),
         )
         return [dict(row) for row in rows]
+
+    def bind_activity_samples_to_entry(self, client_op: str, time_entry_id: int) -> int:
+        """
+        Attribute activity windows captured before the backend issued an id.
+
+        The same problem and the same answer as `bind_app_usage_to_entry`.
+        The ``time_entry_id IS NULL`` guard makes a repeated bind a no-op
+        rather than a way to re-point rows that are already attributed, so
+        this is safe to call from both the live session (`bind_entry_id`) and
+        the durable queue (`SyncService._adopt_session_telemetry`) -- and both
+        are needed, because a start that failed over to the queue is confirmed
+        only there, possibly after the session has already stopped.
+
+        :return: how many rows were bound.
+        """
+        if not client_op:
+            return 0
+        cursor = self._storage.execute(
+            "UPDATE activity_samples SET time_entry_id = ? "
+            "WHERE time_entry_id IS NULL AND client_op = ?",
+            (time_entry_id, client_op),
+        )
+        return cursor.rowcount or 0
+
+    def count_unattributed_activity_samples(self) -> int:
+        """Windows queued with no entry id, which only an adoption can
+        release. Exists so this class of stall is visible rather than
+        looking like an upload that is merely slow -- the same role
+        `count_unattributed_screenshots` plays."""
+        row = self._storage.query_one(
+            "SELECT COUNT(*) AS n FROM activity_samples WHERE time_entry_id IS NULL"
+        )
+        return int(row["n"]) if row else 0
 
     def complete_activity_samples(self, ids: List[str]) -> None:
         if not ids:

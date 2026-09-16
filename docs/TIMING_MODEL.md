@@ -129,11 +129,24 @@ asserts against the live database.
 ## 7. Restart, update, crash
 
 The desktop persists its session record (`app_state.timer_state`) once, when
-the timer starts. Elapsed time is derived from `started_at_utc`, so a
-restart -- clean, crashed, or through the updater -- recovers the exact
-value, and recovery adopts the record rather than starting a new entry.
-`GET /time-entries/active` is the reconciliation read: it is scoped to the
-caller by the backend and carries `server_time`.
+the timer starts, and removes it once, when the timer stops -- *after* the
+stop has been written to the durable queue, so at no instant can a kill lose
+a stop or turn an interruption into one. Elapsed time is derived from
+`started_at_utc`, so an interruption -- a crash, a kill, a power cut, an OS
+shutdown, or a restart through the updater -- is recovered as the same
+session with the exact value, the gap included, and recovery adopts the
+record rather than starting a new entry. A record whose stop is already
+queued is not recovered. `GET /time-entries/active` is the reconciliation
+read: it is scoped to the caller by the backend and carries `server_time`;
+when it answers that nothing is running, a local session bound against an
+entry the backend has since finalized elsewhere ends here too.
+
+**An explicit quit is not an interruption.** Quit, X with Quit chosen, a
+remembered Quit and the tray's Quit all stop the timer first, at the instant
+of the quit, and wait a bounded time for the stop to reach the backend before
+the process exits. Offline, the stop stays queued with that instant and is
+placed by age when it is finally delivered. The remembered close choice
+decides only whether the confirmation is shown.
 
 ## 8. Diagnosability
 

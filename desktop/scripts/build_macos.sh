@@ -65,7 +65,11 @@ echo "==> Installing runtime + build dependencies"
 "$PY" -m pip install --quiet -r requirements.txt -r requirements-build.txt
 
 VERSION="$("$PY" -c 'import version; print(version.VERSION)')"
-echo "==> Building Monitra $VERSION for $ARCH"
+# The artifact name carries the pre-release label of an internal test build
+# (<version>-<prerelease>). The bundle's own CFBundleVersion stays numeric, as
+# macOS requires; identical to $VERSION for a production release.
+ARTIFACT_VERSION="$("$PY" -c 'import version; print(version.artifact_version())')"
+echo "==> Building Monitra $ARTIFACT_VERSION for $ARCH"
 
 # ── 2. Clean ─────────────────────────────────────────────────────────────────
 if [[ $CLEAN -eq 1 ]]; then
@@ -105,7 +109,7 @@ fi
 # hdiutil, not a third-party DMG tool: it ships with macOS, needs no
 # dependency, and produces the standard drag-to-Applications layout when given
 # a staging folder containing the app and a symlink.
-DMG="$DESKTOP_ROOT/dist/Monitra-macOS-$ARCH-$VERSION.dmg"
+DMG="$DESKTOP_ROOT/dist/Monitra-macOS-$ARCH-$ARTIFACT_VERSION.dmg"
 STAGING="$DESKTOP_ROOT/build/dmg"
 
 echo "==> Building $(basename "$DMG")"
@@ -114,7 +118,7 @@ mkdir -p "$STAGING"
 cp -R "$APP" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
 
-hdiutil create -volname "Monitra $VERSION" \
+hdiutil create -volname "Monitra $ARTIFACT_VERSION" \
     -srcfolder "$STAGING" -ov -format UDZO "$DMG"
 
 if [[ -n "${MONITRA_CODESIGN_IDENTITY:-}" ]]; then

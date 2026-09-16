@@ -70,10 +70,10 @@ def db_path() -> Path:
     return cache_dir() / "cache.db"
 
 
-#: The two telemetry tables whose `time_entry_id` is nullable, kept out of
+#: The telemetry tables whose `time_entry_id` is nullable, kept out of
 #: `SCHEMA` as named DDL because `_relax_entry_id_constraint` has to recreate
-#: one of them on an existing installation. Interpolated into `SCHEMA` below,
-#: so a fresh database and a rebuilt table are created from the same text and
+#: them on an existing installation. Interpolated into `SCHEMA` below, so a
+#: fresh database and a rebuilt table are created from the same text and
 #: cannot drift apart.
 PENDING_APP_USAGE_DDL = """
 -- `time_entry_id` is nullable: a segment measured before the backend issued
@@ -122,6 +122,42 @@ CREATE TABLE IF NOT EXISTS pending_url_usage (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_url_usage_status ON pending_url_usage(status);
+"""
+
+ACTIVITY_SAMPLES_DDL = """
+-- `time_entry_id` is nullable for the same reason as `pending_app_usage`
+-- above, and it was the last telemetry stream still missing it.
+--
+-- While it was NOT NULL, `ActivityService` could not write a window before
+-- the backend had issued an entry id, so it held the window open instead --
+-- for the whole of an offline session. `_sampled` grew past the 60-second
+-- window and kept growing, and when the id finally arrived the entire
+-- session was written as ONE sample. Measured: two hours offline produced a
+-- single row with `window_seconds = 7200`, which the backend's schema
+-- (`window_seconds` le 3600) refuses with a 422, so it retried until it
+-- exhausted its budget and the whole session's activity was never stored
+-- anywhere. Under an hour it did upload, but as one lump, which flattens the
+-- day's per-minute detail into a single number.
+CREATE TABLE IF NOT EXISTS activity_samples (
+    id TEXT PRIMARY KEY,
+    time_entry_id INTEGER,
+    client_op TEXT,
+    window_start TEXT NOT NULL,
+    window_seconds INTEGER NOT NULL,
+    active_seconds INTEGER NOT NULL,
+    key_events INTEGER NOT NULL DEFAULT 0,
+    mouse_events INTEGER NOT NULL DEFAULT 0,
+    keyboard_strokes INTEGER NOT NULL DEFAULT 0,
+    mouse_clicks INTEGER NOT NULL DEFAULT 0,
+    mouse_movements INTEGER NOT NULL DEFAULT 0,
+    activity_percent INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at REAL NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activity_status ON activity_samples(status);
+CREATE INDEX IF NOT EXISTS idx_activity_entry ON activity_samples(time_entry_id);
 """
 
 SCHEMA = """
@@ -193,25 +229,7 @@ CREATE TABLE IF NOT EXISTS app_state (
 
 %(pending_app_usage)s
 
-CREATE TABLE IF NOT EXISTS activity_samples (
-    id TEXT PRIMARY KEY,
-    time_entry_id INTEGER NOT NULL,
-    window_start TEXT NOT NULL,
-    window_seconds INTEGER NOT NULL,
-    active_seconds INTEGER NOT NULL,
-    key_events INTEGER NOT NULL DEFAULT 0,
-    mouse_events INTEGER NOT NULL DEFAULT 0,
-    keyboard_strokes INTEGER NOT NULL DEFAULT 0,
-    mouse_clicks INTEGER NOT NULL DEFAULT 0,
-    mouse_movements INTEGER NOT NULL DEFAULT 0,
-    activity_percent INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'pending',
-    retry_count INTEGER NOT NULL DEFAULT 0,
-    next_retry_at REAL NOT NULL DEFAULT 0,
-    created_at REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_activity_status ON activity_samples(status);
-CREATE INDEX IF NOT EXISTS idx_activity_entry ON activity_samples(time_entry_id);
+%(activity_samples)s
 
 CREATE TABLE IF NOT EXISTS pending_unwanted_activity (
     id TEXT PRIMARY KEY,
@@ -279,6 +297,7 @@ CREATE INDEX IF NOT EXISTS idx_screenshots_entry ON pending_screenshots(time_ent
 """ % {
     "pending_app_usage": PENDING_APP_USAGE_DDL,
     "pending_url_usage": PENDING_URL_USAGE_DDL,
+    "activity_samples": ACTIVITY_SAMPLES_DDL,
 }
 
 #: Columns added after the original schema shipped. Applied idempotently so an
@@ -310,6 +329,11 @@ MIGRATIONS = [
     # "not observed", which is the truth for anything captured before this
     # could be detected — it must not read as "was not private".
     ("pending_url_usage", "is_private", "INTEGER"),
+    # The same session key for activity windows, which were the last
+    # telemetry stream that could not be written before the entry id
+    # arrived. Existing rows keep NULL, which is correct: they already have
+    # an entry id, so there is nothing for an adoption to do.
+    ("activity_samples", "client_op", "TEXT"),
 ]
 
 #: Indexes over columns `MIGRATIONS` adds, created after it has run.
@@ -317,6 +341,7 @@ POST_MIGRATION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_app_usage_client_op ON pending_app_usage(client_op)",
     "CREATE INDEX IF NOT EXISTS idx_url_usage_client_op ON pending_url_usage(client_op)",
     "CREATE INDEX IF NOT EXISTS idx_screenshots_client_op ON pending_screenshots(client_op)",
+    "CREATE INDEX IF NOT EXISTS idx_activity_client_op ON activity_samples(client_op)",
 )
 
 #: Tables whose `time_entry_id` shipped as NOT NULL and must become nullable.
@@ -343,6 +368,15 @@ NULLABLE_ENTRY_ID_REBUILDS = {
             "page_title", "is_private", "duration_seconds", "recorded_at",
             "client_event_id", "status", "retry_count", "next_retry_at",
             "created_at",
+        ),
+    ),
+    "activity_samples": (
+        ACTIVITY_SAMPLES_DDL,
+        (
+            "id", "time_entry_id", "client_op", "window_start", "window_seconds",
+            "active_seconds", "key_events", "mouse_events", "keyboard_strokes",
+            "mouse_clicks", "mouse_movements", "activity_percent", "status",
+            "retry_count", "next_retry_at", "created_at",
         ),
     ),
 }

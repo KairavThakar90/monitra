@@ -40,12 +40,18 @@ def test_key_normalization_collapses_modifier_variants():
     assert _normalize_key(SimpleNamespace()) is None
 
 
+def _tap(counter, key):
+    """One complete press: down, then up."""
+    counter._on_press(key)
+    counter._on_release(key)
+
+
 def test_counting_and_snapshot_reset():
     counter = InputEventCounter(watch_keys={"ctrl"})
 
     for _ in range(3):
-        counter._on_press(_FakeCharKey("x"))
-    counter._on_press(_FakeSpecialKey("ctrl_l"))
+        _tap(counter, _FakeCharKey("x"))
+    _tap(counter, _FakeSpecialKey("ctrl_l"))
     counter._on_click(0, 0, None, pressed=True)
     counter._on_click(0, 0, None, pressed=False)  # release: not a click
     for _ in range(5):
@@ -59,14 +65,209 @@ def test_counting_and_snapshot_reset():
 
 def test_watched_keys_tally_only_registered_keys_and_drain_resets():
     counter = InputEventCounter(watch_keys={"ctrl"})
-    counter._on_press(_FakeSpecialKey("ctrl_l"))
-    counter._on_press(_FakeSpecialKey("ctrl_r"))
-    counter._on_press(_FakeCharKey("a"))       # not watched
-    counter._on_press(_FakeSpecialKey("shift"))  # not watched
+    _tap(counter, _FakeSpecialKey("ctrl_l"))
+    _tap(counter, _FakeSpecialKey("ctrl_r"))
+    _tap(counter, _FakeCharKey("a"))          # not watched
+    _tap(counter, _FakeSpecialKey("shift"))   # not watched
 
     assert counter.drain_watched_presses() == {"ctrl": 2}
     assert counter.drain_watched_presses() == {}
     # Privacy: unwatched keys leave no trace beyond the aggregate count.
+
+
+# ── A press is a press, not a stream of key-down events ──────────────────────
+
+def test_os_autorepeat_of_a_held_key_is_one_press():
+    """
+    The defect this guards, measured on Windows 11: pynput's on_press fires
+    for every WM_KEYDOWN, and Windows resends those continuously while a key
+    is held. Holding CTRL for about a second produced **30** counted presses
+    from one real press -- twice the unwanted-activity rule's whole 15-press
+    threshold, so leaning on one key alerted the user and put a ten-minute
+    deduction on their time entry.
+    """
+    counter = InputEventCounter(watch_keys={"ctrl"})
+    ctrl = _FakeSpecialKey("ctrl_l")
+
+    counter._on_press(ctrl)
+    for _ in range(29):
+        counter._on_press(ctrl)      # OS auto-repeat: key-down, no key-up
+    counter._on_release(ctrl)
+
+    assert counter.snapshot_and_reset()["keystrokes"] == 1
+    assert counter.drain_watched_presses() == {"ctrl": 1}
+
+
+def test_holding_a_key_does_not_inflate_the_keystroke_total():
+    """The same defect on an ordinary key: leaning on an arrow key or
+    backspace must not read as a minute of maximal typing."""
+    counter = InputEventCounter()
+    down = _FakeSpecialKey("down")
+
+    for _ in range(200):
+        counter._on_press(down)
+    counter._on_release(down)
+
+    assert counter.snapshot_and_reset()["keystrokes"] == 1
+
+
+def test_releasing_and_pressing_again_is_two_presses():
+    """Suppression must not swallow genuine repeated presses -- that would
+    turn a real detection rule off."""
+    counter = InputEventCounter(watch_keys={"ctrl"})
+    ctrl = _FakeSpecialKey("ctrl_l")
+
+    for _ in range(10):
+        _tap(counter, ctrl)
+
+    assert counter.snapshot_and_reset()["keystrokes"] == 10
+    assert counter.drain_watched_presses() == {"ctrl": 10}
+
+
+def test_left_and_right_variants_are_separate_physical_keys():
+    """Holding the left CTRL and tapping the right one is two keys, not an
+    auto-repeat of the first -- even though both normalise to "ctrl"."""
+    counter = InputEventCounter(watch_keys={"ctrl"})
+    left, right = _FakeSpecialKey("ctrl_l"), _FakeSpecialKey("ctrl_r")
+
+    counter._on_press(left)
+    _tap(counter, right)
+    counter._on_release(left)
+
+    assert counter.snapshot_and_reset()["keystrokes"] == 2
+
+
+def test_an_unidentifiable_key_is_still_counted():
+    """Over-counting a key the backend cannot name is a smaller error than
+    dropping every keystroke it produces."""
+    counter = InputEventCounter()
+    for _ in range(3):
+        counter._on_press(SimpleNamespace())
+    assert counter.snapshot_and_reset()["keystrokes"] == 3
+
+
+def test_a_missed_key_up_cannot_wedge_a_key_off_permanently():
+    """
+    Auto-repeat suppression needs the key-up that ends a hold. A global hook
+    sees every key-up, but "in practice" is not a guarantee, and one missed
+    key-up must not silently stop that key being counted for ever.
+    """
+    from background_services.activity import input_counter as module
+
+    counter = InputEventCounter(watch_keys={"ctrl"})
+    ctrl = _FakeSpecialKey("ctrl_l")
+
+    with patch.object(module.time, "monotonic", return_value=1000.0):
+        counter._on_press(ctrl)                       # key-up never arrives
+        counter._on_press(ctrl)
+        assert counter.snapshot_and_reset()["keystrokes"] == 1
+
+    later = 1000.0 + module.HELD_KEY_MAX_SECONDS + 1
+    with patch.object(module.time, "monotonic", return_value=later):
+        counter._on_press(ctrl)
+        assert counter.snapshot_and_reset()["keystrokes"] == 1
+        # ...and the stale hold is gone rather than accumulating.
+        assert len(counter._held) == 1
+
+
+# ── A modifier used in a shortcut is not a bare press ────────────────────────
+
+def test_a_ctrl_chord_is_not_counted_as_a_ctrl_press():
+    """
+    The reported bug: working with several browser tabs raised "repeated
+    unwanted activity" warnings. CTRL+T, CTRL+TAB and CTRL+W are how that
+    work is done, and ten such chords used to tally 50 CTRL presses -- more
+    than three times the rule's threshold, for ordinary work.
+    """
+    counter = InputEventCounter(watch_keys={"ctrl"})
+    ctrl = _FakeSpecialKey("ctrl_l")
+
+    for partner in ["t"] + ["tab"] * 6 + ["w", "c", "v"]:
+        counter._on_press(ctrl)
+        counter._on_press(ctrl)      # auto-repeat while the chord is held
+        key = _FakeSpecialKey(partner) if partner == "tab" else _FakeCharKey(partner)
+        _tap(counter, key)
+        counter._on_release(ctrl)
+
+    assert counter.drain_watched_presses() == {}
+    # The keystrokes themselves are real and still counted: 10 CTRL + 10 partners.
+    assert counter.snapshot_and_reset()["keystrokes"] == 20
+
+
+def test_ctrl_click_is_not_a_ctrl_press():
+    """CTRL+click opens a link in a background tab -- the exact "multiple
+    tabs" gesture that was being reported."""
+    counter = InputEventCounter(watch_keys={"ctrl"})
+    ctrl = _FakeSpecialKey("ctrl_l")
+
+    for _ in range(20):
+        counter._on_press(ctrl)
+        counter._on_click(0, 0, None, pressed=True)
+        counter._on_release(ctrl)
+
+    assert counter.drain_watched_presses() == {}
+    assert counter.snapshot_and_reset()["clicks"] == 20
+
+
+def test_ctrl_scroll_is_not_a_ctrl_press():
+    """CTRL+scroll is zoom. It is noted as a chord partner and deliberately
+    added to no counter -- `mouse_clicks` means clicks."""
+    counter = InputEventCounter(watch_keys={"ctrl"})
+    ctrl = _FakeSpecialKey("ctrl_l")
+
+    for _ in range(20):
+        counter._on_press(ctrl)
+        counter._on_scroll(0, 0, 0, 1)
+        counter._on_release(ctrl)
+
+    assert counter.drain_watched_presses() == {}
+    assert counter.snapshot_and_reset() == {
+        "keystrokes": 20, "clicks": 0, "movements": 0,
+    }
+
+
+def test_a_bare_press_within_a_chord_sequence_still_counts():
+    """The rule must keep working: mashing CTRL between shortcuts is still
+    detected. Only the chorded presses are excused."""
+    counter = InputEventCounter(watch_keys={"ctrl"})
+    ctrl = _FakeSpecialKey("ctrl_l")
+
+    counter._on_press(ctrl)                       # chorded
+    _tap(counter, _FakeCharKey("c"))
+    counter._on_release(ctrl)
+    for _ in range(4):                            # bare
+        _tap(counter, ctrl)
+
+    assert counter.drain_watched_presses() == {"ctrl": 4}
+
+
+def test_moving_the_mouse_does_not_make_a_hold_a_chord():
+    """Movement is continuous and noisy; letting it excuse a hold would turn
+    the rule off for anyone whose hand rests on the mouse."""
+    counter = InputEventCounter(watch_keys={"ctrl"})
+    ctrl = _FakeSpecialKey("ctrl_l")
+
+    counter._on_press(ctrl)
+    for _ in range(50):
+        counter._on_move(1, 1)
+    counter._on_release(ctrl)
+
+    assert counter.drain_watched_presses() == {"ctrl": 1}
+
+
+def test_a_session_starts_with_nothing_held():
+    """A hold left over from the previous session would swallow the first
+    press of that key in this one."""
+    counter = InputEventCounter(watch_keys={"ctrl"})
+    ctrl = _FakeSpecialKey("ctrl_l")
+
+    counter._on_press(ctrl)        # session ends mid-hold
+    counter.stop()
+    assert counter._held == {}
+
+    counter._on_press(ctrl)
+    counter._on_release(ctrl)
+    assert counter.drain_watched_presses() == {"ctrl": 1}
 
 
 @pytest.mark.skipif(

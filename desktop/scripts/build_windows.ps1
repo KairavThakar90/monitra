@@ -61,7 +61,11 @@ if ($LASTEXITCODE -ne 0) { throw "dependency installation failed" }
 # Read from version.py, the single source of truth, rather than repeating it.
 $Version = & $VenvPython -c "import version; print(version.VERSION)"
 if ($LASTEXITCODE -ne 0) { throw "could not read the version from version.py" }
-Write-Host "==> Building Monitra $Version" -ForegroundColor Cyan
+# The pre-release form (<version>-<prerelease>) for an internal test build,
+# used only in artifact names; the same as $Version for a production release.
+$ArtifactVersion = & $VenvPython -c "import version; print(version.artifact_version())"
+if ($LASTEXITCODE -ne 0) { throw "could not read the artifact version from version.py" }
+Write-Host "==> Building Monitra $ArtifactVersion" -ForegroundColor Cyan
 
 # ── 3. Clean ────────────────────────────────────────────────────────────────
 if ($Clean) {
@@ -102,5 +106,5 @@ Write-Host "    version    : $($Info.ProductVersion)"
 Write-Host "    total size : $SizeMb MB"
 Write-Host ""
 Write-Host "    This build is UNSIGNED. See BUILD.md 'Signing' before public distribution."
-Write-Host "    Next: .\scripts\build_installer.ps1   (Monitra-Setup-$Version.exe)"
-Write-Host "          .\scripts\build_portable.ps1    (Monitra-Portable-$Version.zip)"
+Write-Host "    Next: .\scripts\build_installer.ps1   (Monitra-Setup-$ArtifactVersion.exe)"
+Write-Host "          .\scripts\build_portable.ps1    (Monitra-Portable-$ArtifactVersion.zip)"

@@ -226,6 +226,17 @@ class SyncService(LoopService):
 
         if self.state == ServiceState.DEGRADED:
             self._set_state(ServiceState.RUNNING)
+            # The hold is over: the backend is reachable again, or the user
+            # has signed back in. A timer action waiting out a backoff earned
+            # against the outage is attempted now rather than up to a minute
+            # later -- a stop delivered late is an entry running late.
+            try:
+                brought_forward = self._cache.make_timer_actions_ready()
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not bring timer actions forward")
+            else:
+                if brought_forward:
+                    self.log.info("hold ended; %d timer action(s) retried now", brought_forward)
 
         action = self._cache.get_next_pending_action()
         if action is None:
@@ -285,6 +296,8 @@ class SyncService(LoopService):
                 return
             if action_type == "stop_timer":
                 result = handler(payload, action.get("defer_count", 0)) or {}
+            elif action_type == "start_timer":
+                result = handler(payload, action.get("created_at")) or {}
             else:
                 result = handler(payload) or {}
         except DeferAction as exc:
@@ -354,7 +367,15 @@ class SyncService(LoopService):
             self.action_failed.emit(action_id, action_type, message, False)
             return
 
-        will_retry = self._cache.fail_action(action_id, message)
+        # A transient failure. The timer's own actions are never abandoned
+        # over one: a stop parked as `failed` is an entry left running on the
+        # backend, and the next launch adopts that as a timer the user never
+        # stopped. Retries keep the capped, jittered backoff, and the consumer
+        # already holds entirely while the network is a measured outage, so
+        # "unbounded" here costs at most one request a minute against a
+        # backend that is reachable but erroring.
+        max_retries = None if action_type in self._cache.TIMER_ACTION_TYPES else 10
+        will_retry = self._cache.fail_action(action_id, message, max_retries=max_retries)
         self.action_failed.emit(action_id, action_type, message, will_retry)
 
     # ── Handlers ──────────────────────────────────────────────────────────────
@@ -373,7 +394,23 @@ class SyncService(LoopService):
             return True
         return False
 
-    def _handle_start_timer(self, payload):
+    def _handle_start_timer(self, payload, created_at: Optional[float] = None):
+        # A start never overtakes a stop queued before it. The stop of the
+        # previous session runs first by priority, but a stop that is
+        # *deferred* -- waiting for its own start's entry id -- is not ready,
+        # and without this the next session's start ran in that gap, met the
+        # previous entry still running, and was refused with a 409 for the
+        # very entry the queued stop was about to end. Only stops that
+        # *precede* this start count: waiting for later ones deadlocked two
+        # sessions queued offline back to back (see `pending_stop_count`).
+        # Deferring costs no retries; the earliest stop waits only for its
+        # own start, which waits for nothing, so the chain always advances.
+        client_op = payload.get("client_op")
+        if self._cache.pending_stop_count(
+            exclude_client_op=client_op, created_before=created_at
+        ) > 0:
+            raise DeferAction("a stop for an earlier session has not reached the backend yet")
+
         # `started_at` was captured when the user pressed Start; this action
         # may be landing minutes later. Sending it (with the client's clock at
         # send time) is what keeps the entry's recorded start equal to the one
@@ -432,6 +469,7 @@ class SyncService(LoopService):
             ("screenshot", self._cache.bind_screenshots_to_client_op),
             ("application usage", self._cache.bind_app_usage_to_entry),
             ("browser usage", self._cache.bind_url_usage_to_entry),
+            ("activity window", self._cache.bind_activity_samples_to_entry),
         ):
             try:
                 adopted = bind(client_op, entry_id)
@@ -930,6 +968,11 @@ class SyncService(LoopService):
         # silently discarded a stretch of measured application, browser and
         # activity data. A launch is when the cause has plausibly been fixed.
         self._cache.requeue_telemetry_for_new_run()
+        # And for the actions that move tracked time themselves. A stop that
+        # an older build parked as `failed` is an entry still running on the
+        # backend; it gets a fresh attempt, before the stale sweep below
+        # could delete it.
+        self._cache.requeue_timer_actions_for_new_run()
         # ...and the bound that keeps the local database from growing forever:
         # a row that has still not uploaded after weeks of attempts across many
         # launches has no other exit, since every other path out of these

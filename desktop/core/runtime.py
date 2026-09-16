@@ -38,9 +38,9 @@ Guarantees provided here
 from __future__ import annotations
 
 import time
-from typing import List, Optional
+from typing import Callable, List, Optional
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from app.api.client import ApiClient
 from app.auth.service import AuthService
@@ -74,6 +74,16 @@ from storage.manager import StorageManager, get_storage_manager
 from sync.local_cache import LocalCache
 
 log = get_logger("runtime")
+
+#: How long an explicit quit waits for a queued stop to reach the backend
+#: before exiting anyway. One stop is one request, and the API client gives
+#: a Start/Stop request `TIMEOUT_FAST` (5 s) to complete, so this is exactly
+#: one attempt's worth: long enough for a single round trip against a cold
+#: serverless backend, short enough that Quit still behaves like Quit. The
+#: stop is durable before the wait begins, so running out of budget loses
+#: nothing -- the next launch delivers it with the instant the user pressed
+#: Quit, and the backend records that instant as the end time.
+EXIT_STOP_FLUSH_BUDGET_MS = 5_000
 
 
 class RuntimePhase:
@@ -109,6 +119,13 @@ class ApplicationRuntime(QObject):
         self._phase = RuntimePhase.CREATED
         self._shutdown_started = False
         self._started_at = time.monotonic()
+        #: Exit preparation (see `prepare_exit`): started, finished, who to
+        #: call back, and the bounded wait.
+        self._exit_prepared = False
+        self._exit_done = False
+        self._exit_callbacks: List[Callable[[], None]] = []
+        self._exit_timer: Optional[QTimer] = None
+        self._exit_connected = False
 
         #: Queued actions older than this generation are refused. Raised on
         #: logout so a previous user's pending work cannot execute as the next.
@@ -406,6 +423,141 @@ class ApplicationRuntime(QObject):
             return self.cache.get_pending_count()
         except Exception:  # noqa: BLE001
             return -1
+
+    # ── Exit ──────────────────────────────────────────────────────────────────
+
+    def prepare_exit(
+        self,
+        on_ready: Callable[[], None],
+        *,
+        stop_timer: bool = True,
+        budget_ms: int = EXIT_STOP_FLUSH_BUDGET_MS,
+    ) -> None:
+        """Bring the timer down for an explicit quit, then call `on_ready`.
+
+        The rule this enforces: **quitting stops the timer.** Every explicit
+        exit -- the dialog's Quit, a remembered Quit, the tray menu, the X
+        button once "quit" is the remembered choice -- ends the running
+        session before the process goes, so no entry keeps running on the
+        backend after the user chose to leave. A remembered choice decides
+        only whether the dialog is shown; it never decides this.
+
+        Two steps, neither of which blocks the GUI thread:
+
+        1. `stop_tracking()` -- the stop is queued durably and the session
+           record removed, in that order, so a kill at any instant from here
+           on can neither lose the stop nor resurrect the session.
+        2. A bounded wait for the queued stop to reach the backend, driven by
+           the sync consumer's own completion signals and a single-shot
+           timer. When the backend is reachable this is one round trip; when
+           it is not (a measured outage, or the consumer holding for
+           re-authentication) there is nothing to wait for, and when the
+           budget runs out the stop is simply delivered by the next launch.
+
+        `stop_timer=False` is for an exit that is a *restart*, not a quit:
+        installing an update relaunches the application, and the session is
+        recovered by the new process exactly as after any other interruption
+        (see docs/TIMING_MODEL.md §7).
+
+        Idempotent: a second call while the first is waiting joins the wait
+        and is called back with it.
+        """
+        self._exit_callbacks.append(on_ready)
+        if self._exit_prepared:
+            return
+        self._exit_prepared = True
+        log.info("exit requested (stop_timer=%s)", stop_timer)
+
+        # Subscribed *before* the stop is queued: the consumer runs on its own
+        # thread and can complete the stop the instant it is enqueued, and a
+        # completion emitted before this subscription exists is never
+        # delivered to it -- the exit would then wait out its whole budget
+        # for a stop that had already landed.
+        self.sync.action_completed.connect(self._on_exit_sync_progress)
+        self.sync.action_failed.connect(self._on_exit_sync_failed)
+        self._exit_connected = True
+
+        if stop_timer and self.timer.is_running():
+            self.timer.stop_tracking()
+
+        if not self._exit_wait_needed():
+            self._finish_exit_preparation("nothing to wait for")
+            return
+
+        self._exit_timer = QTimer(self)
+        self._exit_timer.setSingleShot(True)
+        self._exit_timer.timeout.connect(
+            lambda: self._finish_exit_preparation("budget exhausted; the stop stays queued")
+        )
+        self._exit_timer.start(budget_ms)
+        log.info("waiting up to %dms for the queued stop to reach the backend", budget_ms)
+        # A stop already waiting out a retry backoff would not be attempted
+        # inside the budget at all; the user is waiting, so it is tried now.
+        try:
+            self.cache.make_timer_actions_ready()
+        except Exception:  # noqa: BLE001
+            log.exception("could not bring the queued stop forward")
+        # The consumer may be idle: make sure it looks now rather than at its
+        # next scheduled poll.
+        self.sync.wake()
+
+    def _exit_wait_needed(self) -> bool:
+        try:
+            pending = self.cache.pending_stop_count()
+        except Exception:  # noqa: BLE001
+            log.exception("could not count queued stops; not waiting")
+            return False
+        if pending == 0:
+            return False
+        if self.network.network_state not in NetworkState.USABLE \
+                and self.network.network_state != NetworkState.UNKNOWN:
+            log.info("network is %s; the stop stays queued for the next launch",
+                     self.network.network_state)
+            return False
+        if self.sync.state == ServiceState.DEGRADED:
+            log.info("sync consumer is holding (%s); the stop stays queued",
+                     self.sync.health.last_error)
+            return False
+        return True
+
+    def _on_exit_sync_progress(self, _action_id: str, action_type: str, _result: dict) -> None:
+        if action_type == "stop_timer" and not self._exit_wait_needed():
+            self._finish_exit_preparation("stop delivered")
+
+    def _on_exit_sync_failed(
+        self, _action_id: str, action_type: str, error: str, will_retry: bool
+    ) -> None:
+        if action_type == "stop_timer":
+            # Retrying now would only make the user wait for a backoff that
+            # is measured in seconds; the stop is durable either way.
+            self._finish_exit_preparation(
+                f"stop could not be delivered now ({error}); retry={will_retry}"
+            )
+
+    def _finish_exit_preparation(self, reason: str) -> None:
+        if self._exit_done:
+            return
+        self._exit_done = True
+        if self._exit_timer is not None:
+            self._exit_timer.stop()
+            self._exit_timer = None
+        if self._exit_connected:
+            self._exit_connected = False
+            for signal, slot in (
+                (self.sync.action_completed, self._on_exit_sync_progress),
+                (self.sync.action_failed, self._on_exit_sync_failed),
+            ):
+                try:
+                    signal.disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+        log.info("exit preparation complete: %s", reason)
+        callbacks, self._exit_callbacks = self._exit_callbacks, []
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001
+                log.exception("exit callback raised")
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
 

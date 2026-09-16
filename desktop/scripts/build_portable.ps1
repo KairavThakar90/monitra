@@ -35,7 +35,10 @@ if (-not (Test-Path (Join-Path $Source 'Monitra.exe'))) {
 
 $VenvPython = Join-Path $DesktopRoot '.venv-build\Scripts\python.exe'
 $PythonExe = if (Test-Path $VenvPython) { $VenvPython } else { 'python' }
-$Version = & $PythonExe -c "import version; print(version.VERSION)"
+# The artifact version carries the pre-release label of an internal test
+# build (<version>-<prerelease>); it is the plain version for a production
+# release.
+$Version = & $PythonExe -c "import version; print(version.artifact_version())"
 if ($LASTEXITCODE -ne 0) { throw "could not read the version from version.py" }
 
 $Staging = Join-Path $DesktopRoot "build\portable\Monitra-Portable-$Version"

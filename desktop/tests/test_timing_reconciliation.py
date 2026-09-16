@@ -305,14 +305,23 @@ def test_the_stop_is_finalized_only_when_the_backend_answers(qapp, cache):
         assert len(stopped) == 1, "the local clock stops immediately"
         assert finalized == [], "nothing is finalized before the backend answers"
 
-        fn, on_success, _, key = runtime.tasks.pending.pop(0)
-        assert key == "timer-stop:42"
-        fn()
-        on_success({"id": 42, "total_seconds": 3, "end_time": "2026-09-15T10:00:03Z"})
+        # The stop travels only through the durable queue (it is written
+        # there before the session record is cleared, so a kill in between
+        # cannot lose it); the consumer's completion is what finalizes it.
+        assert runtime.tasks.pending == [], "a stop must not be sent in-process"
+        queued = [(a, p, k) for a, p, k in runtime.sync.enqueued if a == "stop_timer"]
+        assert len(queued) == 1
+        assert queued[0][1]["entry_id"] == 42
+        assert queued[0][2]["idempotency_key"] == "stop:42"
+        assert backend.stopped == []
+
+        service._on_sync_action_completed(
+            "op-1", "stop_timer",
+            {"id": 42, "total_seconds": 3, "end_time": "2026-09-15T10:00:03Z"},
+        )
         assert len(finalized) == 1
         assert finalized[0]["entry"]["id"] == 42
         assert finalized[0]["entry"]["total_seconds"] == 3
-        assert finalized[0]["session"]["entry_id"] == 42
     finally:
         service.stop(timeout_ms=500)
 

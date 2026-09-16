@@ -43,7 +43,7 @@ class ActivityServiceTestBase(unittest.TestCase):
 
 class TestCountsInWindows(ActivityServiceTestBase):
     def test_counts_accumulate_into_the_flushed_window(self):
-        self.probe.sample.return_value = {"active": True, "keyboard": True, "mouse": False}
+        self.probe.sample.return_value = {"active": True, "mouse": False}
         self.service.start_tracker({"entry_id": 101})
 
         self.counter.snapshot_and_reset.return_value = _counts(keystrokes=7, clicks=2, movements=40)
@@ -84,10 +84,7 @@ class TestCountsInWindows(ActivityServiceTestBase):
         """Presence saturates -- anyone moving a mouse scores 100% -- and it
         can exceed what was actually observed, because the OS sees input the
         client's hooks cannot. The number now cannot exceed the evidence."""
-        self.probe.sample.return_value = {
-            "active": True, "keyboard": False, "mouse": False,
-            "keyboard_strokes": 0, "mouse_clicks": 0, "mouse_movements": 0,
-        }
+        self.probe.sample.return_value = {"active": True, "mouse": False}
         self.service.start_tracker({"entry_id": 101})
 
         self.counter.snapshot_and_reset.return_value = _counts()
@@ -97,6 +94,56 @@ class TestCountsInWindows(ActivityServiceTestBase):
         # Every second counted as "present", and nothing at all was observed.
         self.assertEqual(self.service._active, 5)
         self.assertEqual(self.service.current_percent(), 0)
+
+    def test_the_counter_is_the_only_source_of_counts(self):
+        """
+        The probe must not be able to contribute counts, even if it offers
+        them.
+
+        It used to. `tick()` added the counter's counts *and* the probe's
+        into the same totals, and the probe had its own pair of Win32 hooks
+        keeping its own tallies. Those hooks never installed on 64-bit
+        Windows (SetWindowsHookExW returned NULL, measured), so the sum
+        silently added a permanent zero -- but the shape was a double count
+        waiting for someone to "fix" the hooks. There is one owner of input
+        counting, and this asserts the wiring rather than the intention.
+        """
+        self.probe.sample.return_value = {
+            "active": True, "mouse": True,
+            # A probe that has started counting again: these must be ignored.
+            "keyboard_strokes": 500, "mouse_clicks": 500, "mouse_movements": 500,
+        }
+        self.service.start_tracker({"entry_id": 101})
+
+        self.counter.snapshot_and_reset.return_value = _counts(
+            keystrokes=7, clicks=2, movements=9
+        )
+        self.service.tick()
+        self.service.stop_tracker()
+
+        kwargs = self.cache.save_activity_sample.call_args.kwargs
+        self.assertEqual(kwargs["keyboard_strokes"], 7)
+        self.assertEqual(kwargs["mouse_clicks"], 2)
+        self.assertEqual(kwargs["mouse_movements"], 9)
+
+    def test_a_keyboard_second_requires_an_actual_keystroke(self):
+        """
+        `key_events` counts seconds that contained typing. The probe's old
+        `keyboard` flag was `active and not moved` -- "the user was there and
+        the cursor sat still" -- which measures nothing about the keyboard
+        and reported scrolling, or simply reading, as typing.
+        """
+        self.probe.sample.return_value = {"active": True, "mouse": False}
+        self.service.start_tracker({"entry_id": 101})
+
+        self.counter.snapshot_and_reset.return_value = _counts()
+        for _ in range(3):
+            self.service.tick()          # present, cursor still, nothing typed
+        self.assertEqual(self.service._key_events, 0)
+
+        self.counter.snapshot_and_reset.return_value = _counts(keystrokes=4)
+        self.service.tick()
+        self.assertEqual(self.service._key_events, 1)
 
     def test_no_mechanism_at_all_records_nothing(self):
         """Neither probe nor counter available: unmeasured, not fabricated."""

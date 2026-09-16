@@ -118,6 +118,20 @@ closing the window can hide to tray while tracking continues. `aboutToQuit` is
 the single shutdown path, so the same sequence runs however the exit was
 triggered.
 
+**Quitting stops the timer.** Before any of the above, an explicit quit —
+the dialog's Quit, a remembered Quit, the tray menu — goes through
+`ApplicationRuntime.prepare_exit`, which calls `stop_tracking()` and then
+waits, without blocking and bounded by `EXIT_STOP_FLUSH_BUDGET_MS`, for the
+queued stop to reach the backend. Only then does the window call
+`QApplication.quit()`. The stop is durable the instant it is requested, so
+running out of budget (or being offline) loses nothing: the next launch
+delivers it, with the instant the user pressed Quit as the end time. The
+remembered close choice decides only whether the dialog is shown; it never
+decides whether the timer stops. Two exits are deliberately *not* quits and
+leave the session record for recovery: an update restart
+(`MainWindow.exit_for_restart`) and an OS shutdown or sign-out
+(`commitDataRequest`).
+
 ---
 
 ## 4. Threading model
@@ -238,9 +252,50 @@ on the entry. The full contract is
 [docs/TIMING_MODEL.md](../docs/TIMING_MODEL.md).
 
 Two signals mark a stop. `timer_stopped` fires when the local clock stops;
-`timer_finalized` fires when the backend has committed the stop — directly or
+`timer_finalized` fires when the backend has committed the stop — always
 through the durable queue — and carries the finalized entry. The dashboard
 re-reads the day on the second, never the first (see DO_NOT_DO.md).
+
+### The durable state, and why a stop is queued before the record is cleared
+
+Only two things on disk describe the session, and between them they answer
+every "what happened?" a later process can ask:
+
+| On disk | Meaning |
+|---|---|
+| session record, no queued stop | RUNNING — or, read by a later process, INTERRUPTED: recover it as running |
+| queued `stop_timer` (record present or not) | STOPPING — the user ended it; only the backend has yet to hear |
+| neither | IDLE / STOPPED |
+
+`stop_tracking` therefore **queues the stop first and clears the record
+second**, and a stop is *never* sent in-process: it travels through the
+durable queue whether or not the backend is reachable, and `timer_finalized`
+fires from the queue's completion. A kill at any instant then leaves either
+the record (recovered as running) or the queued stop (delivered with the
+instant the user pressed Stop) — never neither. Sent in-process first and
+queued only on failure, as it used to be, a kill after the record was
+cleared and before the request landed left the stop nowhere, the backend
+kept the entry running, and the next launch adopted it as a timer the user
+had never stopped. A stop queued before the backend has issued an entry id
+also queues its start (idempotent on `client_op`), so it always has a start
+to wait for.
+
+A start defers in the queue behind any stop still waiting for another
+session, and is routed through the queue while one is pending, so a switch
+is always stop-then-start on the backend too; without that the new start
+was refused with a 409 for the very entry the queued stop was about to end.
+Timer actions are never parked as `failed` on a transient error, and any
+parked by an older build are revived at launch.
+
+Recovery (`TimerService.recover`) adopts the record, never starts an entry,
+refuses a record whose stop is already queued, and records how many
+processes have adopted it and when the previous one was last alive. It is
+then validated against the backend: the login-time `GET /time-entries/active`
+adopts the backend's entry when there is one, and when there is none,
+`reconcile_absent_remote` ends a local session bound against an entry the
+backend has since finalized elsewhere — keeping any session the backend
+could not know about yet (an unsent or queued start, or one bound after the
+question was asked).
 
 ### The timer only ever runs against today
 
@@ -370,31 +425,54 @@ subscribe to it. There is no second monitor.
 Pipeline, end to end:
 
 ```
-InputProbe (presence)  +  InputEventCounter (pynput counts)
+InputProbe (presence)  +  InputEventCounter (the counts)
   →  per-second sample  →  60s aggregation window
   →  activity_samples table  →  SyncService batch upload
   →  POST /time-entries/{id}/activity/batch  →  UI / reports
 ```
 
-`activity_percent = active_seconds / window_seconds`, computed from what was
-actually measured. Raw counts are stored alongside it so the displayed number is
-auditable against its inputs.
+`activity_percent` is a weighted score over the keystrokes, clicks and
+movements actually counted in the window, scaled to the window's real length
+(`calculate_activity_percentage`). It is **not** `active_seconds /
+window_seconds`: presence saturates — anyone moving a mouse scores 100% — and
+`GetLastInputInfo` sees input this process cannot, so that formula could report
+100% for a window with no observed events at all. `active_seconds` is still
+recorded alongside, because presence is a real measurement; it is just not this
+number. The raw counts are stored with it so the displayed value is auditable
+against its inputs.
 
-Two capture mechanisms feed the same window, both owned by `ActivityService`:
+The two mechanisms answer **different questions**. They are not two sources for
+one number, and must never be summed:
 
-- **InputProbe** (`input_probe.py`): "did input occur this second" —
-  Windows `GetLastInputInfo`, two cheap syscalls, drives the percentage.
-- **InputEventCounter** (`input_counter.py`): true keystroke/click/movement
-  counts via pynput global listeners, on Windows and macOS, feeding the
-  backend's `keyboard_strokes`/`mouse_clicks`/`mouse_movements` columns and
-  the unwanted-activity rules' watched-key tallies. Listeners run **only
-  between `start_tracker()` and `stop_tracker()`** — no capture outside a
-  session — and only aggregate counts survive the callbacks; what was typed
-  is never stored or transmitted. On macOS the probe is unsupported, so a
-  second with any counted event is treated as active — the percentage works
-  there through the counter. macOS requires the user to grant Input
-  Monitoring permission; when denied, counts read zero and activity falls
-  back to unmeasured (never a crash, never a fabricated number).
+- **InputProbe** (`input_probe.py`): "was the user there this second, and did
+  the pointer move" — `GetLastInputInfo` plus `GetCursorPos`, two cheap
+  syscalls, no hook, no thread. It feeds `active_seconds` and idle detection.
+  It holds **no counters**: it once kept its own keystroke/click/movement
+  tallies behind a second pair of Win32 hooks, which `ActivityService` added
+  to the counter's. See DO_NOT_DO.md — the hooks never installed, so the
+  tallies were a permanent zero and the `keyboard` flag built on them had
+  degenerated into "present and the cursor did not move".
+- **InputEventCounter** (`input_counter.py`): the single source of
+  keystroke/click/movement counts, feeding the backend's
+  `keyboard_strokes`/`mouse_clicks`/`mouse_movements` columns, the activity
+  percentage, and the unwanted-activity rules' watched-key tallies. pynput
+  global listeners on Windows; a listen-only Quartz event tap on macOS
+  (`mac_input_tap.py` — pynput's keyboard listener SIGTRAPs the process
+  there). Listeners run **only between `start_tracker()` and
+  `stop_tracker()`** — no capture outside a session — and only aggregate
+  counts survive the callbacks; what was typed is never stored or
+  transmitted. On macOS the probe is unsupported, so a second with any
+  counted event is treated as active — the percentage works there through the
+  counter. macOS requires the user to grant Input Monitoring permission; when
+  denied, counts read zero and activity falls back to unmeasured (never a
+  crash, never a fabricated number).
+
+**One press is one press.** A held key produces a stream of key-down events
+with no key-up between them — Windows auto-repeat, macOS's repeated
+`kCGEventKeyDown`. The counter counts a key when it goes down and not again
+until it has come back up (Windows), and drops events flagged
+`kCGKeyboardEventAutorepeat` (macOS). Without that, leaning on one key read as
+a minute of maximal typing.
 
 **The percentage is never fabricated.** If neither mechanism works on the
 platform, windows are recorded as unmeasured and the UI says so. If no timer is
@@ -405,8 +483,20 @@ running, nothing is recorded.
 `unwanted_activity.py` holds a declarative rule list (`DetectionRule`: key,
 threshold, rolling window, cooldown, deduct-after, deduction seconds — default:
 CTRL ≥ 15 presses/60s). The monitor is composed into `ActivityService` (no
-thread of its own; fed from the service's tick). One threshold crossing = one
-*occurrence*: an event row is queued for
+thread of its own; fed from the service's tick).
+
+**What the rules count is a *bare* press** — a watched key pressed and released
+with no other key, click or scroll while it was held. That distinction is the
+whole difference between the behaviour these rules exist to notice (a key
+mashed to fake presence) and ordinary work: CTRL+T, CTRL+TAB, CTRL+W and
+CTRL+click are how anyone works with several browser tabs open, and counting
+them tripped the threshold on real work — alerting the user and deducting ten
+minutes from time they had genuinely worked. A chorded press still counts
+toward the keystroke total; it was a real keystroke. It just is not evidence of
+repetition. `InputEventCounter` makes that call (it is the only component that
+sees individual events) and tallies a watched key on its release.
+
+One threshold crossing = one *occurrence*: an event row is queued for
 `POST /time-entries/{id}/unwanted-activity`, the user is warned once
 (cooldown-throttled at the rule, de-duplicated again by NotificationService),
 and every third occurrence queues a 600s deduction for
@@ -524,11 +614,16 @@ tabs now show honest empty states.
 | Close window | Prompt (unless remembered): quit, minimise to tray, or cancel |
 | Minimise to tray | Window hides; **all services keep running** |
 | Restore | From tray icon, tray menu, or taskbar |
-| Explicit quit | Full controlled shutdown via `aboutToQuit` |
+| Explicit quit (dialog, remembered, tray) | **Stops the timer**, waits (bounded, non-blocking) for the stop to land, then a full controlled shutdown via `aboutToQuit` |
+| Update restart | Controlled shutdown; the session record stays and the relaunch recovers it |
+| OS shutdown / sign-out | Interruption: no dialog, no stop; the record stays for recovery |
 
 `closeEvent` does no blocking work. The audited version performed a synchronous
 3-second network call and a batch upload there, which is why quitting appeared
-to hang. Anything outstanding is durable and completes on the next run.
+to hang. The stop an explicit quit issues is queued durably and *awaited*
+through the event loop (`ApplicationRuntime.prepare_exit`), never called
+synchronously; anything still outstanding when the budget runs out is
+durable and completes on the next run.
 
 ---
 
@@ -549,6 +644,18 @@ inspect_previous_run()  →  unclean?  →  release stranded queue claims
 Recovery is **idempotent by construction**: it adopts persisted records rather
 than replaying operations, so running it twice yields the same state and cannot
 create duplicate time entries.
+
+What is recovered is the *session*, not evidence of work. A timer started at
+13:00 on a machine that lost power at 17:00 and came back at 18:00 is
+recovered at 18:00 as one session running since 13:00 — the same entry, the
+same `started_at_utc`, the outage inside it, exactly as if the process had
+survived. The sub-trackers (activity, application and URL usage,
+screenshots) start again at 18:00 and record nothing for the hour the
+machine was off. The recovery notice tells the user how long Monitra was not
+running. The timer record itself is the only thing that distinguishes an
+interruption from a stop: an explicit stop has already queued its stop
+action and removed the record, and a record whose stop is queued is never
+resurrected.
 
 ---
 

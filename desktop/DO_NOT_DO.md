@@ -140,7 +140,89 @@ The audited handler performed a synchronous batch upload and a
 `stop_time_entry(timeout=3.0)` network call inside `closeEvent`. Quitting
 appeared to hang.
 
-**Instead:** persist durably and let the next run finish the work.
+**Instead:** persist durably and let the next run finish the work. The stop
+an explicit quit issues is queued durably and awaited through the event loop
+(`ApplicationRuntime.prepare_exit`, bounded by `EXIT_STOP_FLUSH_BUDGET_MS`);
+`closeEvent` ignores the close and quits from the callback.
+
+### ❌ Do not treat an explicit quit as an interruption
+
+```python
+def on_stop(self, timeout_ms):          # TimerService, on every shutdown
+    if self._session is not None:
+        self._persist()                 # "state persisted for recovery"
+```
+
+**What it caused:** Quit, X → Quit, a remembered Quit and the tray's Quit all
+exited with the timer running. The session record stayed, the backend entry
+kept running, and the next launch "recovered" a timer the user had ended by
+leaving — with every hour in between counted. Nothing on the quit path ever
+called `stop_tracking`; the service could not tell a quit from a crash, so
+it treated both as a crash.
+
+**Instead:** the quit path stops the timer *before* the runtime shuts down
+(`prepare_exit`), and `on_stop` only ever sees a session that belongs to an
+exit the user did not ask for — an OS shutdown, an update restart — which is
+what it should recover. The remembered close choice decides whether the
+dialog is shown, never whether the timer stops.
+
+### ❌ Do not send a stop in-process and queue it only on failure
+
+```python
+self._session = None
+self._persist()                          # record gone
+self.runtime.tasks.submit(call, on_error=lambda exc: enqueue("stop_timer", ...))
+```
+
+**What it caused:** between the record being cleared and the request
+landing, the stop existed nowhere. A kill in that window — the user pressing
+Stop and then closing the lid, a crash, a power cut — left the backend entry
+running with nothing to end it, and the next launch adopted it as "a timer
+that was still running", resurrecting a session the user had stopped.
+
+**Instead:** queue the stop first, clear the record second, and send it only
+through the durable queue. At every instant the disk holds either the record
+or the queued stop. A stop queued before the backend issued an id also
+queues its start, so it always has one to wait for.
+
+### ❌ Do not ignore the close that `QApplication.quit()` delivers
+
+```python
+def closeEvent(self, event):
+    if self._exiting:
+        event.ignore()          # "the exit is already under way"
+        return
+```
+
+**What it caused:** the timer stopped, the stop reached the backend,
+"quitting the application" was logged -- and the process ran on, with its
+window open, until it was killed. Found on the real display, not by any
+test: in Qt 6, `QApplication.quit()` first asks every top-level window to
+close and *abandons the quit* if a window ignores that close. The window was
+ignoring every close once an exit had begun, including the one `quit()`
+itself sent.
+
+**Instead:** hold off closes only while the runtime is still preparing the
+exit, mark the window ready in the exit callback, and accept the close that
+follows (`MainWindow._exit_ready`).
+
+### ❌ Do not let a start overtake a queued stop
+
+A switch is stop-then-start. With the stop in the queue and the start sent
+in-process, the start reached the backend first, met the previous entry
+still running, and was refused with a 409 for the very entry the queued
+stop was about to end — the switch failed and the old entry was adopted
+back. `_handle_start_timer` defers behind any stop still waiting for another
+session, and `start_tracking` routes the start through the queue while one
+is pending.
+
+### ❌ Do not give a timer action a retry budget
+
+`fail_action` parked any action as `failed` after ten failures, and nothing
+reads a failed row again. For a stop, that is an entry left running on the
+backend for ever. Timer actions retry without limit (at the capped, jittered
+backoff, and only while the backend is reachable), and any parked by an
+older build are revived at launch.
 
 ### ❌ Do not use `terminate()` as normal shutdown
 
@@ -439,6 +521,86 @@ data was absent, which made unimplemented features look like working ones.
 
 If activity capture is unsupported on the platform, record the window as
 unmeasured and say so. Never substitute a plausible-looking number.
+
+### ❌ Do not open a second input-capture path beside the counter
+
+```python
+# input_probe.py: its own WH_KEYBOARD_LL / WH_MOUSE_LL hooks and tallies
+self._kbd_hook = _user32.SetWindowsHookExW(
+    WH_KEYBOARD_LL, self._kbd_proc, _kernel32.GetModuleHandleW(None), 0
+)
+
+# activity_service.py tick(): both sources added into one total
+self._keyboard_strokes += counts["keystrokes"]              # InputEventCounter
+self._keyboard_strokes += sample.get("keyboard_strokes", 0)  # InputProbe
+```
+
+**What it caused:** nothing visible, which is why it survived — and it is the
+more instructive half of the story. `SetWindowsHookExW` was called through
+`ctypes` with no `argtypes` or `restype`, so the `HMODULE` from
+`GetModuleHandleW` was truncated to a 32-bit `c_int`. Both hooks returned NULL
+on every 64-bit Windows. Measured on Windows 11: `_kbd_hook = 0`,
+`_mouse_hook = 0`, and zero counted events for injected input that an
+identically shaped hook with correct declarations counted perfectly.
+
+So the probe contributed a permanent `0` to a sum that was written to add two
+capture paths together — a double count waiting for someone to "fix" the
+hooks. Meanwhile the one thing built on those dead tallies,
+
+```python
+"keyboard": k_strokes > 0 or (active and not moved)
+```
+
+had silently degenerated into *"the user was present and the cursor did not
+move"*, reported as though the keyboard had been measured. Reading a page and
+scrolling with the wheel were recorded as typing.
+
+The hook thread could not be stopped either: `stop()` cleared a flag that a
+thread parked in `GetMessageW` never got to read, so it ran for the life of the
+process, servicing hooks that did not exist.
+
+**Instead:** `InputEventCounter` is the only thing in this process that counts
+input. `InputProbe` answers presence — `GetLastInputInfo` and `GetCursorPos`,
+no hook, no thread, no counters — and which *kind* of input a second contained
+comes from the counter, which actually sees the events.
+
+### ❌ Do not count an OS auto-repeat as a press
+
+```python
+def _on_press(self, key):          # fires for every WM_KEYDOWN
+    self._keystrokes += 1
+    if name in self._watch_keys:
+        self._watched[name] += 1
+```
+
+**What it caused:** a held key produces a stream of key-down events with no
+key-up between them. Measured on Windows 11: holding CTRL for about a second
+produced **30** counted presses from one real press — twice the whole 15-press
+threshold of the unwanted-activity rule. Leaning on one key raised a "repeated
+inactive/unwanted activity" warning, stored an event against the time entry,
+and on every third occurrence deducted **ten minutes** of genuinely worked
+time. It also meant holding an arrow key or backspace scored a minute of
+maximal typing in the activity percentage.
+
+**Instead:** count a key when it goes down and not again until it has come back
+up (`on_release` is not optional), and drop macOS events flagged
+`kCGKeyboardEventAutorepeat`. Bound the held state by time, so one missed
+key-up cannot wedge a key off for ever.
+
+### ❌ Do not treat a modifier in a chord as a bare key press
+
+**What it caused:** the reported defect. CTRL+T, CTRL+TAB, CTRL+W and
+CTRL+click are how anybody works with several browser tabs open. Ten such
+chords tallied **50** CTRL presses, so ordinary work crossed a threshold meant
+to catch a key being mashed to fake presence — and the user was warned and had
+time deducted for working.
+
+**Instead:** a watched key is tallied on release, and only if no other key,
+click or scroll occurred while it was held. It still counts toward the
+keystroke total either way — it was a real keystroke — it just is not evidence
+of repetition. Mouse *movement* deliberately does not excuse a hold: it is
+continuous and noisy, and letting it count would turn the rule off for anyone
+resting a hand on the mouse.
 
 ---
 
