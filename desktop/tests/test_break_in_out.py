@@ -13,6 +13,7 @@ rows and the real widgets; only the HTTP boundary is faked.
 """
 from __future__ import annotations
 
+import gc
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -31,6 +32,29 @@ from tests.test_timer_service import (  # noqa: F401  (fixtures and fakes)
 )
 
 UTC = timezone.utc
+
+
+@pytest.fixture(autouse=True)
+def _finalize_dead_qobjects_between_tests(qapp):
+    """Collect each test's dead QObject graphs before the next test pumps.
+
+    The service-level tests here build many short-lived `TimerService`
+    instances -- QObjects owning a QTimer -- inside reference cycles with
+    their fake runtimes, and the widget tests that follow pump the event
+    loop hard. Left to the cyclic garbage collector, those graphs were
+    finalized at whatever moment the collector chose, which in a long run
+    fell inside a later test's `processEvents`, and deleting QObjects from
+    inside Qt's own dispatch faulted (`Windows fatal exception: access
+    violation`, only ever in the full suite, never in this module alone).
+    Measured: with this module's service tests and widget tests in one run
+    the suite crashed in most runs; either half alone, or the two with a
+    collection between tests, ran clean. Finalizing here, between tests and
+    outside any Qt callback, keeps the teardown deterministic.
+    """
+    yield
+    qapp.processEvents()
+    gc.collect()
+    qapp.processEvents()
 
 
 # ── fakes ─────────────────────────────────────────────────────────────────────
@@ -544,6 +568,13 @@ def dashboard(qapp, live_runtime, monkeypatch):
     from ui.dashboard_window import DashboardWindow
 
     runtime = live_runtime
+    # Every HTTP request the signed-in dashboard issues (its refresh rounds,
+    # the active-timer check, the activity and screenshot reads) fails at
+    # once against a closed port. Left on the configured base URL these ran
+    # against whatever happened to be listening on the developer's machine,
+    # and a request still in flight at teardown outlived the runtime it
+    # belonged to.
+    runtime.api_client.base_url = "http://127.0.0.1:1"
     for project_id, tasks in TASKS.items():
         runtime.cache.cache_tasks(project_id, tasks)
     runtime.cache.cache_projects([PROJECT_A, PROJECT_B, PROJECT_C])
@@ -565,7 +596,11 @@ def dashboard(qapp, live_runtime, monkeypatch):
     widget._on_project_selected(PROJECT_A)
     yield widget
     widget.reset_state()
+    # Nothing of this dashboard's may still be running on the pool when the
+    # runtime is torn down beneath it.
+    _pump(qapp, lambda: runtime.health_report().get("tasks_in_flight", 0) == 0, timeout=5.0)
     widget.deleteLater()
+    _drain(qapp)
 
 
 def _row(dashboard, task_id):
@@ -579,7 +614,7 @@ def _click_break(qapp, dashboard):
     _drain(qapp)
 
 
-def test_the_sidebar_button_drives_the_service_and_reflects_it(qapp, dashboard, runtime):
+def test_the_sidebar_button_drives_the_service_and_reflects_it(qapp, dashboard, runtime, monkeypatch):
     button = dashboard._sidebar._break_btn
     assert not button.isEnabled()
 
@@ -589,13 +624,16 @@ def test_the_sidebar_button_drives_the_service_and_reflects_it(qapp, dashboard, 
 
     tracker = runtime.timer._trackers[0]
     assert len(tracker.started) == 1 and not tracker.stopped
+    messages = []
+    monkeypatch.setattr(
+        dashboard._status_bar, "set_message",
+        lambda msg, color=None: messages.append(msg),
+    )
 
     dashboard._sidebar._break_btn.click()  # Break In (the button is enabled: asserted above)
-    # Everything below happens synchronously in the click: the status bar
-    # line is read before the event loop turns, since the refresh round's
-    # own messages may land on it afterwards.
-    assert "Break Out resumes 'Task A1'" in dashboard._status_bar._msg.text()
+    assert runtime.timer.is_running(), "the request is handled one event-loop turn later"
     _drain(qapp)
+    assert "On break. Break Out resumes 'Task A1'." in messages
     assert not runtime.timer.is_running()
     assert len(tracker.stopped) == 1, "activity capture must stop with the task"
     assert _row(dashboard, 10)._is_running is False

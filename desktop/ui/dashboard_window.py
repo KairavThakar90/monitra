@@ -393,8 +393,17 @@ class DashboardWindow(QWidget):
         # Break In / Break Out. The sidebar reports the click; the timer
         # service owns the break, exactly as it owns the timer the task rows'
         # Start/Stop buttons drive.
-        self._sidebar.break_in_requested.connect(self._on_break_in_requested)
-        self._sidebar.break_out_requested.connect(self._on_break_out_requested)
+        # Queued, deliberately: the request is emitted from inside the
+        # button's own `clicked`, and handling it stops or starts the timer,
+        # which re-renders the sidebar -- including that button's text,
+        # enabled state and style -- while the click is still on the stack.
+        # One event-loop turn later the button has finished its click.
+        self._sidebar.break_in_requested.connect(
+            self._on_break_in_requested, Qt.ConnectionType.QueuedConnection
+        )
+        self._sidebar.break_out_requested.connect(
+            self._on_break_out_requested, Qt.ConnectionType.QueuedConnection
+        )
         self._sidebar.feedback_requested.connect(self._open_feedback_dialog)
         self._sidebar.profile_requested.connect(self._open_web_profile)
         self._sidebar.updates_requested.connect(self._open_update_download)

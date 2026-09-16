@@ -396,6 +396,11 @@ class SidebarWidget(QWidget):
         self._total_seconds = 0
         self._is_active = False
         self._break_status = BreakStatus.NONE
+        #: Whether the break button currently wears the accent look. The
+        #: stylesheet is rewritten only when this flips: re-setting a
+        #: stylesheet makes Qt drop and rebuild the widget's style object,
+        #: which is not something to do on every state readout.
+        self._break_accent: Optional[bool] = None
         self._search_text = ""
         self._current_page = 1
         self._selected_project_id: Optional[int] = None
@@ -1015,6 +1020,9 @@ class SidebarWidget(QWidget):
             text, enabled, accent = BREAK_IN_LABEL, self._is_active, False
         self._break_btn.setText(text)
         self._break_btn.setEnabled(enabled and not self._break_settle.isActive())
+        if accent == self._break_accent:
+            return
+        self._break_accent = accent
         # Neutral while working (the same translucent surface as the
         # collapse button); the brand accent while on break, so the way back
         # to the task is the one thing on the sidebar asking to be pressed.
@@ -1047,8 +1055,8 @@ class SidebarWidget(QWidget):
             self.break_out_requested.emit()
         elif self._break_status == BreakStatus.NONE and self._is_active:
             self.break_in_requested.emit()
-        else:
-            self._render_break_control()
+        # Any other state is re-rendered when the settle window ends; nothing
+        # is restyled from inside the button's own click.
 
     def select_project(self, project_id: int) -> None:
         self._selected_project_id = project_id
