@@ -83,6 +83,13 @@ WARNING_BG        = "#FFFBEB"
 ERROR            = "#EF4444"
 ERROR_BG          = "#FEF2F2"
 
+# The active task's Stop button. Solid red -- the theme's ERROR red, one
+# shade darker under the pointer -- so the control that stops tracked time is
+# the one red button on the screen. Idle rows' Start buttons keep the brand
+# gradient like every other action button.
+TIMER_BUTTON_STOP        = ERROR
+TIMER_BUTTON_STOP_HOVER  = "#DC2626"
+
 # Text
 TEXT_PRIMARY      = "#101828"
 TEXT_SECONDARY    = "#667085"

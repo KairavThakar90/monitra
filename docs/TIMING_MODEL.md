@@ -80,6 +80,16 @@ where the anchor is the start instant expressed on that clock:
   smaller difference is the network round trip, not a disagreement.
 * The web client keeps no timer. Every figure it renders is a server
   aggregate whose running entries are measured with the database's `now()`.
+* **The figure shown for a running entry is net of its adjustments**, on
+  both clients. `TimeEntryRead.net_seconds` is `elapsed + adjustment_seconds`
+  floored at zero, the web aggregates net the same rows, and the desktop
+  displays `measured − deductions` where the deduction is the backend's own
+  figure (`time_entry_adjustment_seconds` on an idle-period response,
+  `adjustment_seconds` on the entry). So "No, discard idle time" + Resume
+  drops the running clock by the idle minutes the instant the server has
+  written them, and "Yes, keep idle time" + Resume leaves it unchanged. The
+  desktop stores the deduction beside its anchor -- never inside it -- and
+  never derives it from an idle duration of its own.
 
 ## 4. Tolerance
 
@@ -140,6 +150,40 @@ queued is not recovered. `GET /time-entries/active` is the reconciliation
 read: it is scoped to the caller by the backend and carries `server_time`;
 when it answers that nothing is running, a local session bound against an
 entry the backend has since finalized elsewhere ends here too.
+
+**Sleep and hibernate are inactivity, not interruptions.** The process
+survives a suspend, so the session record is untouched and the timer keeps
+its anchor. The first inactivity reading after the wake spans the whole
+suspend, so the existing idle rule applies: one idle period is reported from
+the last input before the machine went down, and the backend's keep/discard/
+stop rule decides whether it counts. Nothing stops the timer silently and
+nothing counts the sleep silently.
+
+**The gap of an interruption is idle time, and the user decides it.** A
+session recovered after a power cut, a crash, a kill or a hang continues from
+its original start -- the record is adopted, no second entry is created --
+but a powered-off machine is not evidence of work. The gap runs from the
+dead process's last durable heartbeat to the recovery instant. When it
+reaches the user's own `idle_minutes` threshold, `IdleService` reports it
+through the same `POST /idle-periods` an ordinary idle stretch uses, the
+same popup asks, and the same backend rule accounts for it: the gap counts
+only for keep + resume, discard + resume deducts it as a signed adjustment,
+and stop discards it and stops the entry at the answer. Below the threshold
+nothing is reported, exactly as for any shorter pause. No new threshold and
+no maximum session length exist. The report is idempotent three ways: a
+client event id keyed on the session and the interruption instant, the
+backend's one-pending-period-per-entry rule, and the pending lookup every
+entry id gets at recovery. Nothing fabricates activity or screenshots for
+the gap; capture restarts at recovery.
+
+**A forgotten timer while Monitra keeps running is the ordinary idle rule**
+-- the user's threshold, the popup, the same four answers -- and nothing
+more. **Still undefined, deliberately:** what happens to an idle period that
+is never answered. Today the entry keeps running with the period pending
+until the user returns or the timer is stopped (a stop discards it). No
+automatic finalization and no maximum unattended duration are implemented,
+because no business rule names one; that decision is recorded here as
+pending rather than invented.
 
 **An explicit quit is not an interruption.** Quit, X with Quit chosen, a
 remembered Quit and the tray's Quit all stop the timer first, at the instant

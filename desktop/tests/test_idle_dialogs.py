@@ -115,6 +115,76 @@ def test_no_system_close_button_modal_and_on_top(alert):
     assert alert.isModal(), "a non-modal alert can be clicked away from and ignored"
 
 
+def _drag(dialog, start, end):
+    """Press on the card at `start`, move to `end`, release -- the events Qt
+    delivers for a real drag, in the order it delivers them."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    def send(kind, where, button, buttons):
+        local = QPointF(where - dialog.frameGeometry().topLeft())
+        QApplication.sendEvent(dialog, QMouseEvent(
+            kind, local, local, QPointF(where), button, buttons,
+            Qt.KeyboardModifier.NoModifier,
+        ))
+
+    left = Qt.MouseButton.LeftButton
+    send(QEvent.Type.MouseButtonPress, start, left, left)
+    send(QEvent.Type.MouseMove, end, Qt.MouseButton.NoButton, left)
+    send(QEvent.Type.MouseButtonRelease, end, left, Qt.MouseButton.NoButton)
+
+
+def test_the_popup_can_be_dragged_anywhere_on_screen(qapp, alert):
+    """A frameless window has no title bar to grab. The card is the handle:
+    a drag moves the popup by exactly the pointer's travel, and moving it is
+    all a drag does -- it stays open, modal and unresolved."""
+    from PySide6.QtCore import QPoint
+
+    alert.move(200, 150)
+    qapp.processEvents()
+    before = alert.frameGeometry().topLeft()
+    grab = before + QPoint(60, 40)          # on the card's title area, not a button
+
+    _drag(alert, grab, grab + QPoint(300, 220))
+    qapp.processEvents()
+
+    assert alert.frameGeometry().topLeft() == before + QPoint(300, 220)
+    assert alert.isVisible() and not alert._finished
+    assert alert._drag_offset is None, "the release must end the drag"
+
+    # A second drag starts from where the first left it.
+    moved = alert.frameGeometry().topLeft()
+    _drag(alert, moved + QPoint(10, 10), moved + QPoint(-90, -50))
+    qapp.processEvents()
+    assert alert.frameGeometry().topLeft() == moved + QPoint(-100, -60)
+
+
+def test_a_right_button_press_does_not_start_a_drag(qapp, alert):
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    alert.move(200, 150)
+    qapp.processEvents()
+    before = alert.frameGeometry().topLeft()
+    where = QPointF(before + QPoint(60, 40))
+    local = QPointF(60, 40)
+    right = Qt.MouseButton.RightButton
+    QApplication.sendEvent(alert, QMouseEvent(
+        QEvent.Type.MouseButtonPress, local, local, where, right, right,
+        Qt.KeyboardModifier.NoModifier,
+    ))
+    assert alert._drag_offset is None
+    QApplication.sendEvent(alert, QMouseEvent(
+        QEvent.Type.MouseMove, local + QPointF(100, 100), local + QPointF(100, 100),
+        where + QPointF(100, 100), Qt.MouseButton.NoButton, right,
+        Qt.KeyboardModifier.NoModifier,
+    ))
+    qapp.processEvents()
+    assert alert.frameGeometry().topLeft() == before
+
+
 def test_the_default_answer_is_keep_idle_time(alert):
     assert alert.keep_radio.isChecked()
     assert not alert.discard_radio.isChecked()

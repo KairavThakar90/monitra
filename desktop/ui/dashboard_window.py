@@ -37,13 +37,14 @@ from app.projects.service import ProjectService
 from app.tasks.service import TaskService
 from app.time_entries.service import TimeEntryService
 from background_services.public_api import (
-    ActivityTotals, BackgroundApi, NetworkState, NotificationLevel, TodaySnapshot,
-    UpdateState,
+    ActivityTotals, BackgroundApi, BreakStatus, NetworkState, NotificationLevel,
+    TodaySnapshot, UpdateState,
 )
 from core.date_mode import DateMode, as_calendar_day, date_mode, is_live_date
 from core.logging_setup import get_logger
 from core.time_format import format_hms, ist_clock, ist_day_bounds_utc, ist_today, parse_utc
 from ui import icons
+from ui.action_banner import ActionBanner
 from ui.activity_section import ActivitySection
 from ui.feedback_dialog import SUBMIT_KEY, FeedbackDialog
 from ui.idle_alert_dialog import IdleAlertDialog
@@ -89,6 +90,13 @@ SYNC_PROBE_INTERVAL_MS = 30_000
 #: raised before it could report, a task dropped with its callbacks -- used to
 #: block every later refresh silently for the rest of the session.
 REFRESH_STALE_AFTER_S = 90.0
+
+
+#: What the top-of-content banner says when a break begins and ends. Shown
+#: only once the action has actually happened: Break In once the timer
+#: service reports the break, Break Out once the held task is running again.
+BREAK_STARTED_MESSAGE = "Break started — your current task has been paused."
+BREAK_ENDED_MESSAGE = "Break ended — resuming your previous task."
 
 
 def _is_finished(entry: Dict[str, Any]) -> bool:
@@ -274,6 +282,20 @@ class DashboardWindow(QWidget):
         #: is allowed to bleed into the sidebar/task totals: any day but today
         #: must show completed hours only, never a ticking value.
         self._current_date: date = ist_today()
+        #: The last `BreakStatus` the timer service reported. Held only to
+        #: tell a Break Out that just committed (RESUMING -> NONE with a task
+        #: running) from any other way a break ends, because that is the one
+        #: transition after which the resumed task's project is brought on
+        #: screen for the user.
+        self._break_status: str = BreakStatus.NONE
+        #: What the sidebar's circular Play starts. Two candidates, in order:
+        #: the task selected in the list (clicking a row, or its Start), and
+        #: the task tracked last in this session -- so Pause then Play
+        #: resumes the same task even after browsing to another project.
+        #: Both are `{"project_id", "task_id", "task_name"}`. Neither is ever
+        #: guessed: with no candidate Play is disabled and says so.
+        self._selected_task: Optional[Dict[str, Any]] = None
+        self._last_tracked_task: Optional[Dict[str, Any]] = None
         #: Whether the last committed network state was usable. Starts None so
         #: the first observation is not announced as a recovery — telling the
         #: user they are "back online" before they were ever seen offline was
@@ -384,6 +406,21 @@ class DashboardWindow(QWidget):
         self._sidebar = SidebarWidget(self)
         self._sidebar.project_selected.connect(self._on_project_selected)
         self._sidebar.logout_requested.connect(self._handle_logout)
+        # The circular Play / Pause. The sidebar reports the click; the
+        # request becomes the *task section's* existing Start/Stop -- the
+        # same `switch_timer` / `stop_timer` its rows use -- so there is one
+        # start path and one stop path whichever control was pressed.
+        # Queued, deliberately: the request is emitted from inside the
+        # button's own `clicked`, and handling it starts or stops the timer,
+        # which re-renders the sidebar -- including that button's icon,
+        # enabled state and style -- while the click is still on the stack.
+        # One event-loop turn later the button has finished its click.
+        self._sidebar.start_requested.connect(
+            self._on_play_requested, Qt.ConnectionType.QueuedConnection
+        )
+        self._sidebar.stop_requested.connect(
+            self._on_pause_requested, Qt.ConnectionType.QueuedConnection
+        )
         self._sidebar.feedback_requested.connect(self._open_feedback_dialog)
         self._sidebar.profile_requested.connect(self._open_web_profile)
         self._sidebar.updates_requested.connect(self._open_update_download)
@@ -439,7 +476,24 @@ class DashboardWindow(QWidget):
         # entries, the selected project's tasks and TimerService's session.
         # The row fetches nothing and counts nothing itself.
         self._stat_cards = StatCardsRow(content_container)
+        # Break In / Break Out lives in the ACTIVE TASK card, beside the task
+        # it acts on. The card reports the click; the timer service owns the
+        # break, exactly as it owns the timer the task rows' Start/Stop
+        # drive. Queued for the same reason the sidebar's control is: the
+        # handler re-renders the very button whose click is on the stack.
+        self._stat_cards.break_in_requested.connect(
+            self._on_break_in_requested, Qt.ConnectionType.QueuedConnection
+        )
+        self._stat_cards.break_out_requested.connect(
+            self._on_break_out_requested, Qt.ConnectionType.QueuedConnection
+        )
         content_outer_layout.addWidget(self._stat_cards)
+
+        # The transient message at the top of the content area ("Break
+        # started…"). An overlay child of the container, not a row in its
+        # layout: it takes no space while hidden and moves nothing when it
+        # shows. It dismisses itself; see ui/action_banner.py.
+        self._action_banner = ActionBanner(content_container)
 
         self._content_splitter = QSplitter(Qt.Orientation.Vertical, content_container)
         # A section collapsed to 0 height would look like it vanished --
@@ -466,6 +520,9 @@ class DashboardWindow(QWidget):
         self._task_section.active_timer_conflict.connect(self._reconcile_active_timer)
         self._task_section.task_action_succeeded.connect(self._on_task_action_succeeded)
         self._task_section.task_mutated.connect(self._on_task_mutated)
+        # Which task the circular Play starts. The list owns the selection
+        # (a row click, or a row's Start); this window only records it.
+        self._task_section.task_selected.connect(self._on_task_selected)
         # The Request (manual time entry) button lives in the top bar, but
         # the dialog and its submission stay in TaskSection -- this is the
         # only wire between them.
@@ -523,6 +580,8 @@ class DashboardWindow(QWidget):
         # and not on the local stop.
         timer.timer_finalized.connect(self._on_timer_finalized)
         timer.timer_conflict.connect(self._on_timer_conflict)
+        # The break, on its transitions only (never a poll of it).
+        timer.break_state_changed.connect(self._on_break_state_changed)
 
         # Unwanted-activity warnings: edge-triggered by the rule engine (one
         # emission per threshold crossing, already cooldown-throttled there);
@@ -1027,6 +1086,15 @@ class DashboardWindow(QWidget):
         self._sidebar.set_projects([])
         self._sidebar.set_timer_active(False)
         self._sidebar.set_active_timer_project(None)
+        # The runtime forgets the break itself at logout; this is the
+        # window's copy of that fact, and of the task Play would start.
+        self._break_status = BreakStatus.NONE
+        self._selected_task = None
+        self._last_tracked_task = None
+        self._sidebar.set_break_status(BreakStatus.NONE)
+        self._sidebar.set_play_available(False)
+        self._sidebar.set_live_date(True)
+        self._action_banner.dismiss()
         self._sidebar.set_total_seconds(0)
         self._task_section.set_all_projects([])
         self._task_section.clear()
@@ -1450,11 +1518,21 @@ class DashboardWindow(QWidget):
         else:
             self._stat_cards.set_tasks_completed(None, None)
 
-        session = self.api.active_session() or {} if running else {}
-        self._stat_cards.set_active_task(
-            session.get("task_name") if running else None,
-            session.get("project_name") or self._project_name_for(session.get("project_id")),
-        )
+        session = (self.api.active_session() or {}) if running else {}
+        if running:
+            self._stat_cards.set_active_task(
+                session.get("task_name"),
+                session.get("project_name") or self._project_name_for(session.get("project_id")),
+            )
+        elif self.api.break_status() != BreakStatus.NONE:
+            # On break: the held task, shown as paused. The timer is idle and
+            # the card must not read as tracking; see set_active_task_on_break.
+            held = self.api.pre_break_task() or {}
+            self._stat_cards.set_active_task_on_break(
+                held.get("task_name"), self._project_name_for(held.get("project_id"))
+            )
+        else:
+            self._stat_cards.set_active_task(None, None)
 
         self._stat_cards.set_today_activity(
             self._today_activity_percent(), tracking=running
@@ -1676,6 +1754,9 @@ class DashboardWindow(QWidget):
         self, entries: list, target: date, update_cache: bool = True
     ) -> None:
         entries = self._overlay_pending_stops(entries)
+        if update_cache:
+            # Server data, not the cached copy of an older answer.
+            self._reconcile_running_entry_adjustment(entries)
         self._today_time_entries = entries
         banked = self._banked_today()
 
@@ -1691,6 +1772,35 @@ class DashboardWindow(QWidget):
 
         self._task_section.update_tasks_tracked_times(self._banked_seconds_by_task())
         self._update_stat_cards()
+
+    def _reconcile_running_entry_adjustment(self, entries: list) -> None:
+        """Carry the backend's deduction for the running entry into the timer.
+
+        The day's list includes the entry that is running, and its row
+        carries `adjustment_seconds` -- the same figure the resolve response
+        delivers directly. Reading it here as well covers what that path
+        cannot: a restart with the deduction already on the server, an idle
+        answer given from another machine, and an unwanted-activity penalty
+        applied by the sync queue. `allow_increase=False`, because this list
+        is re-read on several triggers and a reply issued before an idle
+        answer was committed can land after it; deductions only accumulate
+        on a running entry, so a stale list may never undo a fresher one.
+        """
+        if not self.api.is_timer_running():
+            return
+        session = self.api.active_session() or {}
+        entry_id = session.get("entry_id")
+        if not entry_id:
+            return
+        for entry in entries:
+            if entry.get("id") != entry_id or entry.get("end_time") is not None:
+                continue
+            if "adjustment_seconds" not in entry:
+                return
+            self.api.timer.apply_entry_adjustment(
+                entry_id, entry.get("adjustment_seconds"), allow_increase=False
+            )
+            return
 
     def _on_date_changed(self, target_date: date) -> None:
         """Point the whole window at the newly selected day.
@@ -1717,6 +1827,9 @@ class DashboardWindow(QWidget):
         self._activity_section.set_selected_date(target_date)
         self._status_bar.set_message(f"Loading data for {target_date}…")
         self._load_today_time(target_date)
+        # The circular control follows the date rule the task rows follow:
+        # live only on today.
+        self._render_timer_controls()
 
     # ── Refresh ───────────────────────────────────────────────────────────────
 
@@ -1941,6 +2054,7 @@ class DashboardWindow(QWidget):
         self._update_stat_cards()
         if active:
             session = self.api.active_session() or {}
+            self._remember_tracked_task(session)
             self._sidebar.set_active_timer_project(session.get("project_id"))
             self._status_bar.set_timer_info(f"{icons.img_tag('circle_filled', SUCCESS, 10)} Timer running")
             self._status_bar.set_message("Tracking time…")
@@ -1960,6 +2074,145 @@ class DashboardWindow(QWidget):
             # stop. The activity read is forced: stopping flushes the final
             # window, and the last measured percentage must stay on screen.
             self._load_today_activity(force=True)
+        self._render_timer_controls()
+
+    # ── The circular Play / Pause ─────────────────────────────────────────────
+
+    def _play_target(self) -> Optional[Dict[str, Any]]:
+        """The task Play would start: the selected one, else the last tracked."""
+        return self._selected_task or self._last_tracked_task
+
+    def _remember_tracked_task(self, session: Dict[str, Any]) -> None:
+        if not session or session.get("task_id") is None:
+            return
+        self._last_tracked_task = {
+            "project_id": session.get("project_id"),
+            "task_id": session.get("task_id"),
+            "task_name": session.get("task_name"),
+        }
+
+    def _on_task_selected(self, task: Optional[Dict[str, Any]]) -> None:
+        self._selected_task = dict(task) if task else None
+        self._render_timer_controls()
+
+    def _render_timer_controls(self) -> None:
+        """Push the timer's state to the two controls that render it.
+
+        The sidebar's circular Play / Pause and the ACTIVE TASK card's Break
+        In / Break Out are readouts of TimerService: running or not, on break
+        or not, and whether the day on screen is today. Both are re-rendered
+        from those facts here, and only here, so they cannot disagree with
+        each other or with the task rows.
+        """
+        running = self.api.is_timer_running()
+        status = self.api.break_status()
+        live = is_live_date(self._current_date)
+        self._sidebar.set_break_status(status)
+        self._sidebar.set_live_date(live)
+        self._sidebar.set_play_available(self._play_target() is not None)
+        self._stat_cards.set_break_control(status, running)
+
+    def _on_play_requested(self) -> None:
+        """Play: start the target task through the task section's own Start.
+
+        Every guard the task rows apply is applied here as well, and then
+        again in the service: only today, never during a break (Break Out is
+        the one control that resumes the held task, and a start here would
+        end the break and lose it), and never a second session when one is
+        running. With no task to start, nothing is invented -- the control
+        is disabled and says so, and a stray click does nothing.
+        """
+        self._render_timer_controls()
+        if not is_live_date(self._current_date):
+            self._status_bar.set_message("Go back to today to start the timer.", WARNING)
+            return
+        if self.api.break_status() != BreakStatus.NONE:
+            self._status_bar.set_message("On break. Use Break Out to resume your task.", WARNING)
+            return
+        if self.api.is_timer_running():
+            return
+        target = self._play_target()
+        if not target:
+            self._status_bar.set_message("Select a task to start tracking.", WARNING)
+            return
+        self._task_section.start_task(
+            target["project_id"], target["task_id"], target.get("task_name")
+        )
+        # The task may be in a project the user browsed away from (Pause,
+        # browse, Play). Bring it on screen, the way Break Out and a timer
+        # found running at login do; selecting a project is a read of its
+        # tasks and touches nothing about the timer.
+        if self.api.is_timer_running():
+            self._show_project_of(target.get("project_id"))
+        self._render_timer_controls()
+
+    def _on_pause_requested(self) -> None:
+        """Pause: stop the running task through the task section's own Stop."""
+        self._render_timer_controls()
+        if not is_live_date(self._current_date):
+            self._status_bar.set_message("Go back to today to stop the timer.", WARNING)
+            return
+        if not self.api.is_timer_running():
+            return
+        self._task_section.stop_running_task()
+        self._render_timer_controls()
+
+    def _show_project_of(self, project_id: Optional[int]) -> None:
+        if project_id is None:
+            return
+        if self._current_project and self._current_project.get("id") == project_id:
+            return
+        for project in self._projects:
+            if project.get("id") == project_id:
+                self._on_project_selected(project)
+                break
+
+    # ── Break In / Break Out ─────────────────────────────────────────────────
+
+    def _on_break_in_requested(self) -> None:
+        """Break In: the ordinary stop, with the running task held for later.
+
+        `for_date` carries the day on screen, as the task rows' Stop does,
+        so a break cannot be taken from a browsed date any more than a stop
+        can. Whatever the service decided, the controls are re-rendered from
+        its state: a refused Break In (nothing running, another day on
+        screen) must not leave the button disabled.
+        """
+        self.api.break_in(for_date=self._current_date)
+        self._render_timer_controls()
+
+    def _on_break_out_requested(self) -> None:
+        """Break Out: resume the held task -- never the selected one."""
+        self.api.break_out(for_date=self._current_date)
+        self._render_timer_controls()
+
+    def _on_break_state_changed(self, status: str) -> None:
+        previous, self._break_status = self._break_status, status
+        self._render_timer_controls()
+        self._update_stat_cards()
+        if status == BreakStatus.ON_BREAK:
+            held = self.api.pre_break_task() or {}
+            name = held.get("task_name") or "your task"
+            self._status_bar.set_message(f"On break. Break Out resumes '{name}'.")
+            # The break has actually begun -- the service reports the state,
+            # it does not predict it -- so the message is honest here.
+            self._action_banner.show_message(BREAK_STARTED_MESSAGE, "warning")
+            return
+        if status != BreakStatus.NONE or previous != BreakStatus.RESUMING:
+            return
+        # Break Out committed. The row now counting may be in a project the
+        # user browsed away from during the break; bring that project on
+        # screen so the resumed task is visible, the way a timer found
+        # running at login is. Selecting a project is a read of its tasks
+        # and touches nothing about the timer.
+        session = self.api.active_session()
+        if not session:
+            # RESUMING -> NONE with nothing running: the held task could not
+            # be resumed. The service has said why on `timer_error`, and the
+            # task section has reported it; there is no "resuming" to announce.
+            return
+        self._action_banner.show_message(BREAK_ENDED_MESSAGE, "success")
+        self._show_project_of(session.get("project_id"))
 
     def _on_timer_finalized(self, payload: dict) -> None:
         """The backend has committed the stop: re-read the day from it.
@@ -2020,16 +2273,19 @@ class DashboardWindow(QWidget):
         log.info("timer recovered in UI: task %s, %ds", session.get("task_id"), elapsed)
         self._sidebar.set_timer_active(True)
         self._sidebar.set_active_timer_project(session.get("project_id"))
+        self._remember_tracked_task(session)
+        self._render_timer_controls()
         self._status_bar.set_message("Recovered a timer that was still running.", SUCCESS)
-        # Say how long Monitra was not running, when that is known: the
-        # session continued through the gap, and the user should be able to
-        # see that the figure on screen includes it.
+        # Say how long Monitra was not running, when that is known. Whether
+        # that gap counts is not decided here: when it reaches the user's
+        # idle threshold the idle service reports it and the ordinary idle
+        # popup asks, exactly as for any other stretch of inactivity.
         gap = self._interruption_gap_text(session)
         message = "Recovered a timer that was still running from your last session."
         if gap:
             message = (
                 f"Recovered a timer that was still running. Monitra was not "
-                f"running for {gap}; that time is part of the session."
+                f"running for {gap}."
             )
         self.api.notify(message, NotificationLevel.INFO, key="timer-recovered")
 
@@ -2168,6 +2424,8 @@ class DashboardWindow(QWidget):
         task_id = entry.get("task_id")
         self._sidebar.set_timer_active(True)
         self._sidebar.set_active_timer_project(project_id)
+        self._remember_tracked_task(self.api.active_session() or {})
+        self._render_timer_controls()
 
         if self._current_project and self._current_project.get("id") == project_id:
             self._task_section.sync_active_timer(

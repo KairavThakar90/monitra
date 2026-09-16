@@ -28,14 +28,20 @@ from background_services.activity.today_summary import (
     ActivityTotals, TodaySnapshot, build_today_snapshot,
 )
 from background_services.activity.url_usage import build_url_usage_summary
+from background_services.maintenance import (
+    MAINTENANCE_BODY, MAINTENANCE_STATUS_LABEL, MAINTENANCE_TITLE,
+)
 from background_services.network import NetworkState
 from background_services.notifications import NotificationLevel, create_app_icon, set_windows_app_identity
-from background_services.timer import TimerStatus
+from background_services.timer import BreakStatus, TimerStatus
 from background_services.update import ReleaseInfo, UpdateState
 from core.tasks import TaskHandle
 
 __all__ = [
-    "ACTIVITY_DESKTOP_DAYS", "ActivityTotals", "BackgroundApi",
+    "MAINTENANCE_BODY",
+    "MAINTENANCE_STATUS_LABEL",
+    "MAINTENANCE_TITLE",
+    "ACTIVITY_DESKTOP_DAYS", "ActivityTotals", "BackgroundApi", "BreakStatus",
     "DateAvailability", "NetworkState", "NotificationLevel", "ReleaseInfo",
     "SCREENSHOT_DESKTOP_DAYS", "TimerStatus", "TaskHandle", "TodaySnapshot",
     "UpdateState", "create_app_icon", "set_windows_app_identity",
@@ -161,6 +167,29 @@ class BackgroundApi:
             project_id, task_id, task_name, for_date=for_date
         )
 
+    def break_in(self, *, for_date: Optional[date] = None) -> bool:
+        """Break In: stop the running task through the ordinary stop flow and
+        hold it for `break_out`. Returns whether a break was entered; with
+        nothing running it does nothing and creates nothing. Same date rule
+        and the same `for_date` meaning as `stop_timer`."""
+        return self._runtime.timer.break_in(for_date=for_date)
+
+    def break_out(self, *, for_date: Optional[date] = None) -> bool:
+        """Break Out: resume exactly the task `break_in` held, through the
+        ordinary start flow, after checking with the backend that it can
+        still be started. Whatever the user has selected meanwhile is not
+        consulted. Returns whether a resume was begun; watch
+        `timer.break_state_changed` for its outcome."""
+        return self._runtime.timer.break_out(for_date=for_date)
+
+    def break_status(self) -> str:
+        """A `BreakStatus` value."""
+        return self._runtime.timer.break_status
+
+    def pre_break_task(self) -> Optional[Dict[str, Any]]:
+        """The task Break Out will resume, or None when not on break."""
+        return self._runtime.timer.pre_break_task()
+
     def request_exit(
         self, on_ready: Callable[[], None], *, stop_timer: bool = True
     ) -> None:
@@ -176,6 +205,13 @@ class BackgroundApi:
         self._runtime.prepare_exit(on_ready, stop_timer=stop_timer)
 
     def timer_elapsed_seconds(self) -> int:
+        """The running session's elapsed seconds *to display*.
+
+        The measured interval net of the backend's deductions for the entry
+        (discarded or reassigned idle time, unwanted-activity penalties) --
+        the same `net_seconds` the reports show for it. Every widget renders
+        this one number; none counts for itself.
+        """
         return self._runtime.timer.elapsed_seconds()
 
     def is_timer_running(self) -> bool:
@@ -468,6 +504,28 @@ class BackgroundApi:
         repeatedly-clicked menu entry produces one request, not one per click.
         """
         self._runtime.updates.check_now()
+
+    # ── Maintenance notice ────────────────────────────────────────────────────
+
+    @property
+    def maintenance(self):
+        """The maintenance-notice service, for connecting to its one signal.
+
+        `maintenance_changed(bool)` is edge-triggered inside the service: it
+        fires when the administrator's switch goes on and when it goes off,
+        never on a poll that answered the same as the last one. UI code must
+        not poll the backend for this itself -- a second checker would be a
+        second, level-triggered source for the same notice.
+        """
+        return self._runtime.maintenance
+
+    def maintenance_mode(self) -> bool:
+        """Whether the maintenance notice is currently on, as last reported.
+
+        False until the backend has answered. Read this to prime a view; react
+        to changes through `maintenance.maintenance_changed`.
+        """
+        return self._runtime.maintenance.maintenance_mode
 
     # ── Notifications ─────────────────────────────────────────────────────────
 

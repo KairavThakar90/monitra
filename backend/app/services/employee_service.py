@@ -80,11 +80,18 @@ class EmployeeService:
         # the column alone under-reports live tracking. The shared duration
         # expression measures a running entry against now(), exactly as the
         # time-tracking and reports endpoints already do.
+        # Net of signed adjustments -- discarded idle time, reassigned idle
+        # time, unwanted-activity deductions -- so this KPI cannot disagree
+        # with the reports and the dashboard about the same entries.
+        from app.repositories.time_entry_adjustment import TimeEntryAdjustmentRepository
         from app.repositories.time_tracking import TimeTrackingRepository
 
+        adjustments = TimeEntryAdjustmentRepository.net_totals_subquery()
         auto_seconds = db.scalar(
-            select(func.sum(TimeTrackingRepository._duration_expression()))
+            select(func.sum(TimeTrackingRepository._net_duration_expression(adjustments)))
+            .select_from(TimeEntry)
             .join(Project, TimeEntry.project_id == Project.id)
+            .outerjoin(adjustments, adjustments.c.time_entry_id == TimeEntry.id)
             .where(Project.organization_id == org_id)
         ) or 0
 

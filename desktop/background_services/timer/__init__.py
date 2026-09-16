@@ -1,3 +1,3 @@
-from background_services.timer.timer_service import TimerService, TimerStatus
+from background_services.timer.timer_service import BreakStatus, TimerService, TimerStatus
 
-__all__ = ["TimerService", "TimerStatus"]
+__all__ = ["BreakStatus", "TimerService", "TimerStatus"]

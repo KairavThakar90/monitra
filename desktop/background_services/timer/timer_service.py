@@ -94,6 +94,43 @@ class TimerStatus:
     RECOVERING = "RECOVERING"
 
 
+class BreakStatus:
+    """The break-resume reference, beside the timer's own states.
+
+    A break is *not* a timer state. Break In is the existing stop flow and
+    Break Out is the existing start flow; what the break adds is one thing
+    the timer does not otherwise keep -- which task was running when the
+    user stepped away -- so Break Out can resume exactly that task without
+    the user finding it again. While on break the timer is IDLE: no session,
+    no trackers, no screenshots, no time.
+
+    * `NONE`      -- not on break. `pre_break_task` is empty.
+    * `ON_BREAK`  -- the running task was stopped by Break In and is held in
+                     `pre_break_task`, independent of whatever the user
+                     browses to meanwhile.
+    * `RESUMING`  -- Break Out was pressed and the held task is being checked
+                     against the backend before the start is issued. A second
+                     press in this state does nothing.
+
+    In memory only. Nothing about a break is persisted: a restart during a
+    break comes up with no timer and no break, and never starts a task by
+    itself (a phantom timer after a restart is the failure this rule
+    prevents). `pre_break_task` cannot outlive the process, which is the
+    honest outcome -- the timer it refers to is already stopped and saved.
+    """
+    NONE = "NONE"
+    ON_BREAK = "ON_BREAK"
+    RESUMING = "RESUMING"
+
+
+#: The backend answers these when the task can no longer be started by this
+#: user: archived or deleted (404 -- the backend's task chokepoint answers
+#: 404 for "not yours to see" as well), access revoked (403), or a project
+#: the user is no longer on (400/404). A definitive answer; the held task is
+#: released rather than retried.
+_TASK_GONE_STATUS_CODES = frozenset({400, 403, 404})
+
+
 class _QueuedConflict(Exception):
     """A 409 delivered by the queue, shaped like `ActiveTimerConflict`."""
 
@@ -135,6 +172,24 @@ def new_client_op(task_id: int, started_at: datetime) -> str:
     return f"timer:{task_id}:{stamp}:{uuid.uuid4().hex[:8]}"
 
 
+def _task_status_name(task: Dict[str, Any]) -> str:
+    """Lowered status name of a task as either task endpoint serialises it:
+    a plain string, or a `{"id", "name", "color"}` object."""
+    status = task.get("status")
+    if isinstance(status, dict):
+        status = status.get("name")
+    return (status or "").strip().lower()
+
+
+def _entry_adjustment(entry: Dict[str, Any]) -> int:
+    """The net signed adjustment a `TimeEntryRead` carries, as an int (0 when
+    absent or unreadable). Never derived from anything else on the entry."""
+    try:
+        return int(entry.get("adjustment_seconds") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def local_anchor_for(
     start_time: Optional[str], server_time: Optional[str], now: Optional[datetime] = None
 ) -> Optional[datetime]:
@@ -171,7 +226,10 @@ class TimerService(BaseService):
         timer_conflict(object)— the backend refused a start because another
                                 entry is running; carries that entry, or None
                                 when it did not say which
-        timer_tick(int)       — elapsed seconds, once per second, display only
+        timer_tick(int)       — elapsed seconds to display, once per second:
+                                the measured interval net of the backend's
+                                deductions for this entry (see
+                                `elapsed_seconds`)
         timer_recovered(dict) — session restored after an unclean shutdown
         timer_error(str)      — user-facing failure
         status_changed(str)   — TimerStatus
@@ -187,6 +245,8 @@ class TimerService(BaseService):
     timer_recovered = Signal(dict)
     timer_error = Signal(str)
     status_changed = Signal(str)
+    #: `BreakStatus`, on every transition and only on a transition.
+    break_state_changed = Signal(str)
 
     # NOTE: the tracking verbs are `start_tracking` / `stop_tracking` /
     # `switch_tracking`, deliberately distinct from `BaseService.start()` and
@@ -203,6 +263,13 @@ class TimerService(BaseService):
         self._status = TimerStatus.IDLE
         self._trackers: list = []
         self._sync_connected = False
+
+        #: The break-resume reference (see `BreakStatus`). Never persisted.
+        self._break_status = BreakStatus.NONE
+        self._pre_break_task: Optional[Dict[str, Any]] = None
+        #: Bumped on every Break Out and on every reset, so the verdict of a
+        #: check that was in flight when the state moved on is dropped.
+        self._break_resume_token = 0
 
         self._tick_timer = QTimer(self)
         self._tick_timer.setInterval(1000)
@@ -231,12 +298,25 @@ class TimerService(BaseService):
     def task_id(self) -> Optional[int]:
         return self._session.get("task_id") if self._session else None
 
-    def elapsed_seconds(self) -> int:
-        """
-        Elapsed seconds, derived from the durable start timestamp.
+    @property
+    def break_status(self) -> str:
+        return self._break_status
 
-        This is the only place elapsed time is computed. Widgets render it;
-        they never maintain their own counter.
+    def is_on_break(self) -> bool:
+        return self._break_status != BreakStatus.NONE
+
+    def pre_break_task(self) -> Optional[Dict[str, Any]]:
+        """A copy of the task Break Out will resume, or None."""
+        return dict(self._pre_break_task) if self._pre_break_task else None
+
+    def measured_seconds(self) -> int:
+        """
+        Seconds the timer has been running, derived from the durable start
+        timestamp and nothing else: `now_utc − started_at_utc`.
+
+        This is the only place the interval is computed. Widgets never keep a
+        counter of their own, and this value is never edited: the backend
+        records the same interval from the same two instants.
         """
         if not self._session:
             return 0
@@ -246,6 +326,83 @@ class TimerService(BaseService):
         elapsed = int((_utc_now() - started).total_seconds())
         # Clock changes can move wall time backwards; never report negative.
         return max(0, elapsed)
+
+    def adjustment_seconds(self) -> int:
+        """
+        The backend's net signed `time_entry_adjustments` total for the
+        running entry -- discarded idle time, idle time reassigned to another
+        task, unwanted-activity deductions. Zero until the backend has said
+        otherwise. It is only ever *received* here (`apply_entry_adjustment`),
+        never computed: whether an idle stretch counts is the server's call.
+        """
+        if not self._session:
+            return 0
+        try:
+            return int(self._session.get("adjustment_seconds") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def elapsed_seconds(self) -> int:
+        """
+        The elapsed figure to display: `measured_seconds() + adjustment_seconds()`,
+        floored at zero.
+
+        This is the running entry's `net_seconds` as the backend defines it,
+        so the number on the task row, in the sidebar total and on the summary
+        card is the number the reports will show for this session. Before the
+        adjustment was applied here the timer kept counting the whole interval
+        after the user chose "No, discard idle time": the backend had deducted
+        the idle minutes, every web surface had dropped by them, and the
+        desktop alone still showed them until the timer stopped.
+        """
+        if not self._session:
+            return 0
+        return max(0, self.measured_seconds() + self.adjustment_seconds())
+
+    def apply_entry_adjustment(
+        self, entry_id: Optional[int], adjustment_seconds: Any, *, allow_increase: bool = True
+    ) -> bool:
+        """
+        Record the backend's net adjustment for the running entry.
+
+        Called with a figure the backend produced -- the idle-period resolve
+        or reassign response, the entry the start or the active read
+        returned, or the running row of the day's entry list. Applies only
+        to the session that is tracking `entry_id`; anything else is ignored,
+        because an adjustment belongs to one entry and a later session for
+        the same task must start clean.
+
+        :param allow_increase: When False, a value that would *raise* the
+            displayed time (a less negative adjustment) is ignored. The day
+            list is re-read on several triggers and a response issued before
+            an idle answer was committed can land after it; deductions only
+            ever accumulate on a running entry, so a stale list must never
+            undo a fresher one. Authoritative sources -- the resolve response
+            and the active-entry read -- leave this True.
+        :return: True when the stored value changed.
+        """
+        if not self._session or entry_id is None:
+            return False
+        try:
+            if int(self._session.get("entry_id") or 0) != int(entry_id):
+                return False
+            value = int(adjustment_seconds or 0)
+        except (TypeError, ValueError):
+            return False
+        current = self.adjustment_seconds()
+        if value == current:
+            return False
+        if not allow_increase and value > current:
+            return False
+        self._session["adjustment_seconds"] = value
+        self._session["updated_at"] = _utc_now().isoformat()
+        self._persist()
+        self._timing(
+            "adjustment.applied", adjustment_seconds=value,
+            measured_seconds=self.measured_seconds(), elapsed_seconds=self.elapsed_seconds(),
+        )
+        self._emit_tick()
+        return True
 
     # ── Sub-trackers ──────────────────────────────────────────────────────────
 
@@ -417,11 +574,17 @@ class TimerService(BaseService):
             "sync_status": "pending",
             "updated_at": started_at,
             "session_generation": session_generation(),
+            # The backend's net deduction for this entry; nothing yet.
+            "adjustment_seconds": 0,
         }
         self._persist()
         self._set_status(TimerStatus.RUNNING)
         self._tick_timer.start()
         self._start_trackers(self._session)
+        # A running task means the user is working, whichever way it began:
+        # Break Out, or a task started by hand during a break. Either way
+        # the break is over before anyone hears the timer started.
+        self._leave_break("a task started")
         self.timer_started.emit(dict(self._session))
         self._emit_tick()
         self._timing("start.local")
@@ -530,6 +693,10 @@ class TimerService(BaseService):
         self._session["entry_id"] = entry.get("id")
         self._session["sync_status"] = "synced"
         self._session["updated_at"] = _utc_now().isoformat()
+        if "adjustment_seconds" in entry:
+            # A replayed start answers with the entry the first attempt
+            # created, which may already carry deductions.
+            self._session["adjustment_seconds"] = _entry_adjustment(entry)
         server_start = parse_utc(entry.get("start_time"))
         local_start = parse_utc(self._session.get("started_at_utc"))
         if server_start is not None:
@@ -668,6 +835,9 @@ class TimerService(BaseService):
             return
 
         session = dict(self._session)
+        # The displayed figure: measured net of the backend's deductions.
+        # It is what the task row and the day total fold in, so a session
+        # whose idle time was discarded banks what the reports will show.
         elapsed = self.elapsed_seconds()
         entry_id = session.get("entry_id")
         task_id = session.get("task_id")
@@ -682,7 +852,11 @@ class TimerService(BaseService):
         self._set_status(TimerStatus.STOPPING)
         self._tick_timer.stop()
         self._stop_trackers()
-        self._timing("stop.local", stopped_at=stopped_at, elapsed_seconds=elapsed)
+        self._timing(
+            "stop.local", stopped_at=stopped_at, elapsed_seconds=elapsed,
+            measured_seconds=self.measured_seconds(),
+            adjustment_seconds=self.adjustment_seconds(),
+        )
 
         if notify_backend:
             # The stop is made durable *before* the session record is
@@ -799,6 +973,185 @@ class TimerService(BaseService):
         if self.is_running():
             self.stop_tracking()
         self.start_tracking(project_id, task_id, task_name)
+
+    # ── Break In / Break Out ─────────────────────────────────────────────────
+    #
+    # Neither of these owns any timer mechanics. Break In *is* `stop_tracking`
+    # and Break Out *is* `start_tracking`; the durable record, the queued
+    # request, the sub-trackers, the cache fold and every signal are the ones
+    # those two already produce. What the pair adds is the held task and the
+    # rule that it is resumed and nothing else. Both run on the GUI thread,
+    # like the verbs they wrap, and both are idempotent under a repeated
+    # click: the first Break In leaves nothing running for a second to stop,
+    # and a Break Out in flight refuses another.
+
+    def break_in(self, *, for_date: Optional[date] = None) -> bool:
+        """Stop the running task and remember it for Break Out.
+
+        The stop is the ordinary one: refused for any day but today (and
+        reported on `timer_error`), queued durably before the record is
+        cleared, finalized by the backend through the queue. The break is
+        entered only once that stop has actually taken the session down; a
+        refused stop leaves no break and no held task. Returns whether the
+        break was entered.
+        """
+        if self._break_status != BreakStatus.NONE:
+            self.log.info("break in ignored: already %s", self._break_status)
+            return False
+        if self._session is None or self._status != TimerStatus.RUNNING:
+            # Nothing to step away from -- or a start/stop is mid-flight,
+            # which a second click during the same instant would be.
+            self.log.info("break in ignored: no running task (status %s)", self._status)
+            return False
+        session = dict(self._session)
+        self.stop_tracking(for_date=for_date)
+        if self.is_running():
+            # `stop_tracking` refused (a browsed date) and has said so.
+            return False
+        self._pre_break_task = {
+            "project_id": session.get("project_id"),
+            "task_id": session.get("task_id"),
+            "task_name": session.get("task_name"),
+            "entry_id": session.get("entry_id"),
+            "client_op": session.get("client_op"),
+            "break_started_at_utc": _utc_now().isoformat(),
+        }
+        self._set_break_status(BreakStatus.ON_BREAK)
+        self._timing(
+            "break.in", task_id=session.get("task_id"),
+            entry_id=session.get("entry_id"), client_op=session.get("client_op"),
+        )
+        return True
+
+    def break_out(self, *, for_date: Optional[date] = None) -> bool:
+        """Resume the task held by Break In, and only that task.
+
+        The held task is first checked against the backend -- the same
+        project task list the dashboard renders, under the same visibility
+        rules -- so a task archived, deleted, completed or taken out of the
+        user's reach during the break is never started, and never replaced
+        by another. Then the ordinary `start_tracking` runs. Until the start
+        has committed the break stands: a refused start, or a check that
+        answered "gone", leaves nothing running. Returns whether a resume
+        was begun.
+        """
+        if self._break_status != BreakStatus.ON_BREAK or self._pre_break_task is None:
+            self.log.info("break out ignored: status %s", self._break_status)
+            return False
+        if self.is_running():
+            # Cannot happen through the UI (a start ends the break), but the
+            # invariant is stated here rather than assumed: a running task
+            # means the break is over.
+            self._leave_break("a task is already running")
+            return False
+        if self._refuse_for_date(for_date, "resume"):
+            return False
+
+        task = dict(self._pre_break_task)
+        self._break_resume_token += 1
+        token = self._break_resume_token
+        self._set_break_status(BreakStatus.RESUMING)
+
+        def call():
+            return self._resume_verdict(task)
+
+        def on_success(verdict) -> None:
+            self._on_resume_verdict(token, task, verdict, for_date)
+
+        def on_error(exc: BaseException) -> None:
+            # `_resume_verdict` classifies API errors itself; anything that
+            # escapes is unexpected, and unexpected is "unknown", never "gone".
+            self.log.exception("could not check the held task before resuming")
+            self._on_resume_verdict(token, task, ("unknown", str(exc)), for_date)
+
+        self.runtime.tasks.submit(
+            call, on_success=on_success, on_error=on_error, key="break-out"
+        )
+        return True
+
+    def _resume_verdict(self, task: Dict[str, Any]) -> tuple:
+        """Ask the backend whether `task` can still be started. Off the GUI thread.
+
+        Returns `("ok", None)`, `("gone", reason)` or `("unknown", reason)`.
+        "Unknown" is the honest answer when the backend cannot be asked
+        (offline, a 5xx, a stale token being refreshed): the resume then
+        goes ahead exactly as a manual Start does offline -- the start is
+        queued durably and the backend validates it when it lands.
+        """
+        task_service = getattr(self.runtime, "task_service", None)
+        if task_service is None:
+            return ("unknown", "no task service")
+        try:
+            tasks = task_service.get_tasks_for_project(task["project_id"])
+        except Exception as exc:  # noqa: BLE001 -- classified, not swallowed
+            status = getattr(exc, "status_code", None)
+            if status in _TASK_GONE_STATUS_CODES:
+                return ("gone", str(exc))
+            self.log.warning("could not verify the held task (%s); resuming anyway", exc)
+            return ("unknown", str(exc))
+        for candidate in tasks or ():
+            if not isinstance(candidate, dict) or candidate.get("id") != task["task_id"]:
+                continue
+            if _task_status_name(candidate) == "completed":
+                # The same rule the task list applies: a completed task has
+                # no Start button. Resuming it by another route would be a
+                # second, looser rule for one thing.
+                return ("gone", "the task has been marked completed")
+            return ("ok", None)
+        return ("gone", "the task is no longer in the project")
+
+    def _on_resume_verdict(
+        self, token: int, task: Dict[str, Any], verdict: tuple,
+        for_date: Optional[date],
+    ) -> None:
+        if token != self._break_resume_token or self._break_status != BreakStatus.RESUMING:
+            self.log.info("dropping a stale break-out verdict")
+            return
+        kind, reason = verdict
+        if kind == "gone":
+            # Definitive. Holding a task that cannot be started would leave
+            # the user pressing Break Out for ever; release it and say why.
+            # Nothing else is started -- the user chooses what comes next.
+            self._timing("break.out.refused", task_id=task.get("task_id"), reason=reason)
+            self._pre_break_task = None
+            self._set_break_status(BreakStatus.NONE)
+            self.timer_error.emit(
+                f"'{task.get('task_name') or 'The previous task'}' can no longer be "
+                f"resumed ({reason}). Choose a task to continue."
+            )
+            return
+        self._timing("break.out", task_id=task.get("task_id"), verified=(kind == "ok"))
+        self.start_tracking(
+            task["project_id"], task["task_id"], task.get("task_name"), for_date=for_date
+        )
+        if self.is_running() and self.task_id == task["task_id"]:
+            # `start_tracking` has already left the break, before it told
+            # anyone the timer started.
+            return
+        # The start was refused (it has said why on `timer_error`). The break
+        # stands, with its task, for the user to try again.
+        self._set_break_status(BreakStatus.ON_BREAK)
+
+    def reset_break(self) -> None:
+        """Forget the break entirely. For logout: the held task belongs to the
+        session that is ending."""
+        self._break_resume_token += 1
+        self._pre_break_task = None
+        self._set_break_status(BreakStatus.NONE)
+
+    def _leave_break(self, reason: str) -> None:
+        if self._break_status == BreakStatus.NONE and self._pre_break_task is None:
+            return
+        self.log.info("break over: %s", reason)
+        self._break_resume_token += 1
+        self._pre_break_task = None
+        self._set_break_status(BreakStatus.NONE)
+
+    def _set_break_status(self, status: str) -> None:
+        if status == self._break_status:
+            return
+        self._break_status = status
+        self.break_state_changed.emit(status)
 
     # ── Queued stops ──────────────────────────────────────────────────────────
 
@@ -985,6 +1338,7 @@ class TimerService(BaseService):
         self._set_status(TimerStatus.RUNNING)
         self._tick_timer.start()
         self._start_trackers(self._session)
+        self._leave_break("a session was recovered")
         self.timer_recovered.emit(dict(self._session))
         self.timer_started.emit(dict(self._session))
         self._emit_tick()
@@ -1136,6 +1490,11 @@ class TimerService(BaseService):
                 self._timing("reconcile.reanchored", drift_seconds=drift)
             self._session["server_start_time"] = entry.get("start_time")
             self._session["clock_offset_seconds"] = offset
+            if "adjustment_seconds" in entry:
+                # The backend's record of what it has deducted from this
+                # entry is authoritative: a restart, or an answer given on
+                # another machine, must not leave the display un-netted.
+                self._session["adjustment_seconds"] = _entry_adjustment(entry)
             self._persist()
             self._emit_tick()
             return
@@ -1154,11 +1513,16 @@ class TimerService(BaseService):
             "sync_status": "synced",
             "updated_at": _utc_now().isoformat(),
             "session_generation": session_generation(),
+            "adjustment_seconds": _entry_adjustment(entry),
         }
         self._persist()
         self._set_status(TimerStatus.RUNNING)
         self._tick_timer.start()
         self._start_trackers(self._session)
+        # The backend is running an entry (started on the web, or found by
+        # reconciliation); the user is not on a break the backend knows
+        # nothing about.
+        self._leave_break("the backend reports a running entry")
         self.timer_started.emit(dict(self._session))
         self._emit_tick()
         self._timing("adopt.remote")

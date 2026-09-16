@@ -432,7 +432,12 @@ class ActivityService(LoopService):
 
         if self._sampled >= self.WINDOW_SECONDS:
             self._flush_window()
-        elif self._sampled % 5 == 0:
+        else:
+            # Every sampled second, so the card follows the user's own hands:
+            # a burst of typing shows within the second it happened, not up
+            # to five seconds later. The slot only re-renders from state
+            # already held -- no request, no query -- so once a second costs
+            # the same as the timer's own display tick.
             self.activity_percent_changed.emit(self.current_percent())
 
         return self.SAMPLE_INTERVAL_MS

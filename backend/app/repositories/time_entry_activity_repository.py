@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, func, extract, cast, Date
+from sqlalchemy import select, and_, func, extract, cast, case, Date, Float
 from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone, date
 import math
@@ -166,9 +166,15 @@ class TimeEntryActivityRepository:
             func.coalesce(func.sum(TimeEntryActivity.keyboard_strokes), 0),
             func.coalesce(func.sum(TimeEntryActivity.mouse_clicks), 0),
             func.coalesce(func.sum(TimeEntryActivity.mouse_movements), 0),
-            func.coalesce(func.avg(TimeEntryActivity.activity_percentage), 0),
+            # Duration-weighted: SUM(percentage x window_seconds) / SUM(window_seconds).
+            func.coalesce(
+                func.sum(cast(TimeEntryActivity.activity_percentage, Float)
+                         * cast(TimeEntryActivity.window_seconds, Float))
+                / func.nullif(cast(func.sum(TimeEntryActivity.window_seconds), Float), 0.0),
+                0,
+            ),
             func.coalesce(func.count(TimeEntryActivity.id), 0),
-            func.coalesce(func.sum(func.case((TimeEntryActivity.activity_percentage > 0, 1), else_=0)), 0)
+            func.coalesce(func.sum(case((TimeEntryActivity.activity_percentage > 0, 1), else_=0)), 0)
         )
 
         if user_id is not None:

@@ -19,6 +19,8 @@ from app.api.time_tracking import router as time_tracking_router
 from app.api.desktop_release import router as desktop_release_router
 from app.api.feedback import router as feedback_router
 from app.api.email_notifications import router as email_notifications_router
+from app.api.system import router as system_router
+from app.api.activity_rollup import router as activity_rollup_router
 from app.react_apis.reports import router as reports_router
 from app.react_apis.manual_time_entry import router as react_manual_time_entry_router
 from app.react_apis.member_usage import router as member_usage_router
@@ -116,6 +118,8 @@ app.include_router(url_usage_router)
 app.include_router(idle_period_router)
 app.include_router(desktop_release_router)
 app.include_router(feedback_router)
+app.include_router(system_router)
+app.include_router(activity_rollup_router)
 # Registered once, without the /api/v1 prefix: its two routes are a scheduler
 # trigger and a public image URL, and both are referenced by absolute path —
 # from a cron configuration and from inside already-delivered email. A second
@@ -136,6 +140,8 @@ app.include_router(url_usage_router, prefix=api_prefix)
 app.include_router(idle_period_router, prefix=api_prefix)
 app.include_router(desktop_release_router, prefix=api_prefix)
 app.include_router(feedback_router, prefix=api_prefix)
+app.include_router(system_router, prefix=api_prefix)
+app.include_router(activity_rollup_router, prefix=api_prefix)
 
 # 3. Registrations for routers that contain their own /api/v1 internal prefix
 # These must only be registered once without prefix parameters to avoid double-prefixing.

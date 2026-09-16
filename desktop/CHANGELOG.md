@@ -20,6 +20,48 @@ re-grant a permission.
 
 ## [Unreleased]
 
+### Added
+
+- **A Play / Pause button under the day's total.** The sidebar now has one
+  circular control beneath TOTAL TIME TODAY. Press Play to start the task
+  you have selected in the list (click a task's row to select it, or press
+  its Start), and Pause to stop whatever is running -- the same Start and
+  Stop the task rows have always done, so it is the same timer, the same
+  time entry and the same screenshots and activity, whichever control you
+  press. After a Pause, Play resumes the same task even if you have browsed
+  to another project meanwhile. With nothing selected, Play is disabled and
+  says so; it never picks a task for you. During a break it is disabled as
+  well: Break Out is the way back to your task.
+- **Break In / Break Out moved into the ACTIVE TASK card,** on the right of
+  the task it pauses or resumes. It works exactly as before. While you are
+  on break the card shows the task Break Out will resume, marked "On break"
+  rather than as running, and a short message at the top of the page
+  confirms that the break started, and that your task resumed when it ends.
+- **Active / Idle now sits beside your name** in the account card at the
+  bottom of the sidebar, instead of under the day's total.
+- **Break In / Break Out.** **Break In** stops the task you are tracking and remembers it;
+  **Break Out** starts that same task again, so you never have to find it in
+  the list after a break. The break itself is not counted as work: it is
+  simply the gap between the two time entries, exactly as if you had pressed
+  Stop and then Start yourself. You can browse other projects while on break
+  without changing what Break Out will resume. If the task was archived,
+  completed or taken away from you meanwhile, Break Out tells you so and
+  starts nothing -- it never picks a different task for you. Closing Monitra
+  during a break just leaves the timer stopped; nothing starts by itself when
+  you open it again.
+
+### Fixed
+
+- **Discarded idle time now leaves the running clock at once.** When you
+  answer the idle alert with "No, discard idle time" and Resume, the timer on
+  the task row, the day total in the sidebar and the summary card drop by the
+  idle minutes straight away -- the same figure the web dashboard and the
+  reports show. Before, only the web side dropped; the desktop kept counting
+  the whole interval until you stopped the timer. Stopping from the alert
+  (with either answer) banks the netted figure, "Yes, keep idle time" and
+  Resume leaves the clock exactly as it was, and a deduction survives a
+  restart of Monitra.
+
 ## [1.2.0-beta.1]
 
 **An internal test build, for the pilot group only.** It is installed by hand
@@ -66,10 +108,13 @@ this build at any time.
   before anything else and are never given up on, so a crash or power cut
   right after you press Stop, or a long server outage, cannot leave a timer
   running on the server for the next launch to resurrect.
-- **A timer interrupted by a crash or power cut is recovered as one
-  continuous session** and the recovery notice now says how long Monitra
-  was not running. A timer stopped from the web or another machine while
-  Monitra was away is ended here too, instead of counting on.
+- **A timer interrupted by a crash or power cut is recovered, and the
+  time Monitra was not running is treated as idle time.** The same entry
+  carries on, and if the gap reaches your idle threshold you get the usual
+  idle prompt to keep it, discard it, or stop — the gap is never counted as
+  work on its own. The recovery notice says how long Monitra was not
+  running. A timer stopped from the web or another machine while Monitra
+  was away is ended here too, instead of counting on.
 - **Double-clicking Start or Stop counts as one click.** It used to start
   and immediately stop (or stop and restart) the timer.
 - **Working with several browser tabs no longer triggers the unwanted-activity

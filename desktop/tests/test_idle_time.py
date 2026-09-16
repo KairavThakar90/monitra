@@ -43,6 +43,10 @@ class FakeIdleApi:
         self.resolve_error = None
         self.reassign_error = None
         self.pending_result = None
+        #: What the backend reports as the entry's net adjustment after the
+        #: operation (`time_entry_adjustment_seconds`). None mimics a backend
+        #: that predates the field.
+        self.entry_adjustment = 0
 
     def get_config(self):
         self.config_calls += 1
@@ -78,17 +82,20 @@ class FakeIdleApi:
         # Mirrors the backend's own rule; the client asserts against it but
         # never computes it.
         counted = bool(keep_idle_time) and action == "resume"
-        return {"id": idle_period_id, "status": "resolved", "counted": counted,
-                "idle_duration_seconds": 600}
+        return {"id": idle_period_id, "time_entry_id": 100, "status": "resolved",
+                "counted": counted, "idle_duration_seconds": 600,
+                "time_entry_adjustment_seconds": self.entry_adjustment}
 
     def reassign_idle_period(self, idle_period_id, project_id, task_id):
         self.reassigns.append((idle_period_id, project_id, task_id))
         if self.reassign_error:
             raise self.reassign_error
         return {
-            "id": idle_period_id, "status": "pending", "reassigned": True,
+            "id": idle_period_id, "time_entry_id": 100, "status": "pending",
+            "reassigned": True,
             "reassigned_project_id": project_id, "reassigned_task_id": task_id,
             "reassigned_seconds": 300,
+            "time_entry_adjustment_seconds": self.entry_adjustment,
             "project": {"id": project_id, "name": "Development"},
             "task": {"id": task_id, "name": "Frontend"},
         }
@@ -120,6 +127,10 @@ class FakeTimer:
         self._entry_id = entry_id
         self._running = running
         self.stop_calls = []
+        #: (entry_id, adjustment_seconds) the idle service handed over.
+        self.adjustments = []
+        #: Order of "adjust" / "stop", to prove the verdict lands first.
+        self.events = []
 
         class _Sig:
             def connect(self, _slot):
@@ -140,7 +151,13 @@ class FakeTimer:
 
     def stop_tracking(self, notify_backend=True):
         self.stop_calls.append(notify_backend)
+        self.events.append("stop")
         self._running = False
+
+    def apply_entry_adjustment(self, entry_id, adjustment_seconds, *, allow_increase=True):
+        self.adjustments.append((entry_id, adjustment_seconds))
+        self.events.append("adjust")
+        return True
 
 
 class FakeActivity:

@@ -1,7 +1,8 @@
 """
-Coverage for the running-task row's visual style: no background tint and no
-shadow. The running row is marked by a brand-violet border plus the small
-dot next to the task name (_active_dot) in the same colour; everything else
+Coverage for the running-task row's visual style: the brand's light tint as
+its fill (the same tint every row shows under the pointer and the selected
+row shows at rest), a brand-violet outline, and the small dot next to the
+task name (_active_dot) in the same colour. No shadow, and everything else
 -- text colors, geometry, the progress bar -- renders identically to the
 idle state.
 
@@ -9,7 +10,7 @@ The outline was SUCCESS green, an accent that appeared nowhere else on the
 row. It is now ACTIVE_ROW_BORDER, the stop the running "Stop" button leads
 with, so the row and the control that put it in that state share a colour.
 """
-from ui.styles import ACTIVE_ROW_BORDER, CARD_BG, SUCCESS
+from ui.styles import ACTIVE_ROW_BORDER, CARD_BG, PRIMARY_LIGHT, SUCCESS
 from ui.task_table import TaskRow
 
 
@@ -62,13 +63,18 @@ def test_idle_row_reserves_the_border_so_running_does_not_shift_geometry(qapp):
     assert "border: 2px solid transparent;" in row.styleSheet()
 
 
-def test_running_row_background_is_unchanged_from_idle(qapp):
-    """No colored/gradient background while running -- the gradient belongs
-    to the border only; the fill stays the plain card background."""
+def test_running_row_is_tinted_like_the_hover_state(qapp):
+    """The running row's fill is the brand's light surface -- the tint every
+    row already shows under the pointer -- so the active task reads as one
+    highlighted row. No gradient fill: the gradient stays on the outline."""
     row = _make_row()
-    row.mark_running(entry_id=5)
     assert f"background: {CARD_BG};" in row.styleSheet()
+    row.mark_running(entry_id=5)
+    assert f"background: {PRIMARY_LIGHT};" in row.styleSheet()
+    assert f"background: {CARD_BG};" not in row.styleSheet()
     assert "background: qlineargradient" not in row.styleSheet()
+    row.mark_stopped(banked_seconds=60)
+    assert f"background: {CARD_BG};" in row.styleSheet()
 
 
 def test_active_dot_is_the_only_visible_running_indicator(qapp):

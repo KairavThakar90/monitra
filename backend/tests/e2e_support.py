@@ -9,6 +9,7 @@ for it, and the database URL to verify rows against -- is printed as one JSON
 document on stdout.
 
     python tests/e2e_support.py provision            -> {"user_id": ..., ...}
+    python tests/e2e_support.py provision administrator
     python tests/e2e_support.py cleanup '<that json>'
 
 Safety
@@ -62,12 +63,31 @@ def _guarded_engine():
     return get_engine(), resolved
 
 
-def provision() -> dict:
+#: The one other role a suite may ask for. An administrator principal exists
+#: so the maintenance-mode E2E can flip the switch through the real endpoint;
+#: it is as disposable as the employee and is cleaned up the same way.
+ADMINISTRATOR_PERMISSIONS = {
+    **EMPLOYEE_PERMISSIONS,
+    "projects:create": True,
+    "time_entries:view_all": True,
+    "view_employees": True,
+    "manage_employees": True,
+}
+
+PROVISIONABLE_ROLES = {
+    "employee": EMPLOYEE_PERMISSIONS,
+    "administrator": ADMINISTRATOR_PERMISSIONS,
+}
+
+
+def provision(role: str = "employee") -> dict:
     from app.core.config import settings
     from app.core.security import create_access_token
 
+    if role not in PROVISIONABLE_ROLES:
+        sys.exit(f"Refusing to provision role {role!r}; one of {sorted(PROVISIONABLE_ROLES)}.")
     engine, database_url = _guarded_engine()
-    stamp = time.strftime("%Y%m%d%H%M%S")
+    stamp = time.strftime("%Y%m%d%H%M%S") + f"{int((time.time() % 1) * 1000):03d}"
     org = settings.DEFAULT_ORGANIZATION_ID
     with engine.begin() as conn:
         user_id = conn.execute(
@@ -75,7 +95,7 @@ def provision() -> dict:
                 """
                 INSERT INTO users (organization_id, username, email, name, role_name,
                                    permissions, is_active, capture_frequency, status)
-                VALUES (:org, :username, :email, :name, 'employee',
+                VALUES (:org, :username, :email, :name, :role,
                         CAST(:permissions AS jsonb), true, 0, 'active')
                 RETURNING id
                 """
@@ -85,7 +105,8 @@ def provision() -> dict:
                 "username": f"e2e_timing_{stamp}",
                 "email": f"e2e_timing_{stamp}@{EMAIL_DOMAIN}",
                 "name": f"E2E Timing {stamp}",
-                "permissions": json.dumps(EMPLOYEE_PERMISSIONS),
+                "role": role,
+                "permissions": json.dumps(PROVISIONABLE_ROLES[role]),
             },
         ).scalar_one()
         project_id = conn.execute(
@@ -132,6 +153,8 @@ def provision() -> dict:
     token = create_access_token({"user_id": user_id}, expires_delta=timedelta(hours=2))
     return {
         "user_id": user_id,
+        "username": f"e2e_timing_{stamp}",
+        "role": role,
         "organization_id": org,
         "project_id": project_id,
         "task_id": task_id,
@@ -159,12 +182,23 @@ def cleanup(fixture: dict) -> None:
         conn.execute(text("DELETE FROM tasks WHERE id = :id"), {"id": int(fixture["task_id"])})
         conn.execute(text("DELETE FROM projects WHERE id = :id"), {"id": int(fixture["project_id"])})
         conn.execute(text("DELETE FROM refresh_tokens WHERE user_id = :id"), {"id": user_id})
+        # An administrator principal may have flipped the maintenance switch:
+        # its audit rows go with it, and the switch is left off.
+        conn.execute(text("DELETE FROM activity_logs WHERE user_id = :id"), {"id": user_id})
+        conn.execute(
+            text(
+                "UPDATE system_settings SET value = '{\"enabled\": false}'::jsonb, "
+                "updated_by_user_id = NULL, updated_by_username = NULL "
+                "WHERE key = 'maintenance_mode' AND updated_by_user_id = :id"
+            ),
+            {"id": user_id},
+        )
         conn.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
 
 
 def main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[1] == "provision":
-        print(json.dumps(provision()))
+        print(json.dumps(provision(argv[2] if len(argv) >= 3 else "employee")))
         return 0
     if len(argv) >= 3 and argv[1] == "cleanup":
         cleanup(json.loads(argv[2]))

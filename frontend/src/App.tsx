@@ -12,8 +12,10 @@ import { AdminMembers } from './features/admin/AdminMembers'
 import { AdminTimeTracking } from './features/admin/AdminTimeTracking'
 import { AdminScreenshots } from './features/admin/AdminScreenshots'
 import { AdminFeedback } from './features/admin/AdminFeedback'
+import { AdminSettings } from './features/admin/AdminSettings'
+import { MaintenanceToast } from './components/MaintenanceToast'
 import { MemberFeedback } from './features/member/MemberFeedback'
-import { canViewAllFeedback } from './features/auth/roles'
+import { canManageSystem, canViewAllFeedback } from './features/auth/roles'
 import { MemberDashboard } from './features/member/MemberDashboard'
 import { MemberReports } from './features/member/MemberReports'
 import { MemberProjects } from './features/member/MemberProjects'
@@ -146,6 +148,22 @@ const FeedbackAdminRoute: React.FC<{ children: React.ReactNode }> = ({ children 
   return canViewAllFeedback(currentUser) ? <>{children}</> : <Navigate to={homeFor(currentUser)} replace />;
 };
 
+/**
+ * Admin Settings → System: the maintenance notice switch.
+ *
+ * Gated on the administrator role, because that is what the backend checks
+ * for `PUT /system/maintenance-mode` (see `features/auth/roles.ts`). Anyone
+ * else is sent home rather than to a page whose only action would be refused.
+ */
+const SystemAdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { isAuthenticated, currentUser, isLoading } = useAuth();
+
+  if (isLoading) return <LoadingScreen label="Loading session..." />;
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+
+  return canManageSystem(currentUser) ? <>{children}</> : <Navigate to={homeFor(currentUser)} replace />;
+};
+
 const AppRoutes: React.FC = () => {
   const { isAuthenticated, currentUser, isLoading } = useAuth();
 
@@ -237,6 +255,14 @@ const AppRoutes: React.FC = () => {
           <FeedbackAdminRoute>
             <AdminFeedback />
           </FeedbackAdminRoute>
+        }
+      />
+      <Route
+        path="/admin/settings"
+        element={
+          <SystemAdminRoute>
+            <AdminSettings />
+          </SystemAdminRoute>
         }
       />
       <Route
@@ -344,6 +370,9 @@ function App() {
     <AuthProvider>
       <BrowserRouter>
         <AppRoutes />
+        {/* The maintenance notice: one card for the signed-in session, over
+            every route, and never in the way of any of them. */}
+        <MaintenanceToast />
       </BrowserRouter>
     </AuthProvider>
   )

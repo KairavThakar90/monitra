@@ -50,6 +50,7 @@ from core.runtime import ApplicationRuntime
 from core import single_instance
 from ui.dashboard_window import DashboardWindow
 from ui.login_window import LoginWindow
+from ui.maintenance_toast import MaintenanceToast
 from ui.styles import APP_QSS
 from version import APP_DISPLAY_NAME, APP_NAME, ORG_NAME, VERSION, display_version
 
@@ -245,11 +246,21 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(self._dashboard)
         self._stack.setCurrentWidget(self._login)
 
+        # The maintenance notice. A child of the window rather than of the
+        # dashboard, drawn over the stacked pages: it is a statement about
+        # Monitra as a whole, it must never block anything underneath it, and
+        # it has no state of its own -- shown on the service's "on" edge,
+        # hidden on its "off" edge, and repositioned when the window resizes.
+        self._maintenance_toast = MaintenanceToast(self)
+
     def _wire_runtime(self) -> None:
         notifications = self.runtime.notifications
         notifications.restore_requested.connect(self.restore_window)
         notifications.quit_requested.connect(self.quit_application)
         self.runtime.sync.auth_required.connect(self._on_session_expired)
+        # Edge-triggered inside the service (on/off only). Hidden on logout
+        # through the same edge: `reset_session()` emits False if it was on.
+        self.api.maintenance.maintenance_changed.connect(self._on_maintenance_changed)
 
     # ── Startup ───────────────────────────────────────────────────────────────
 
@@ -442,6 +453,22 @@ class MainWindow(QMainWindow):
             SESSION_EXPIRED_MESSAGE,
             NotificationLevel.ERROR, key="session-expired",
         )
+
+    # ── Maintenance notice ────────────────────────────────────────────────────
+
+    def _on_maintenance_changed(self, active: bool) -> None:
+        """Show or hide the notice. Nothing else: the timer, the trackers,
+        the screenshots and the sync queue are not consulted and not touched."""
+        if active:
+            self._maintenance_toast.show_notice()
+        else:
+            self._maintenance_toast.hide_notice()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        toast = getattr(self, "_maintenance_toast", None)
+        if toast is not None and toast.isVisible():
+            toast.reposition()
 
     # ── Window lifecycle ──────────────────────────────────────────────────────
 

@@ -8,23 +8,30 @@ no timer and computes no elapsed time of its own.
 
 Where a value is genuinely unknown -- no timer running, no entries for the
 day -- the card says so rather than showing a zero that looks measured.
+
+The ACTIVE TASK card also carries the one Break In / Break Out button
+(`ui/break_button.py`), on its right: the task it pauses or resumes is the
+one the card names. The row only forwards the button's intent and renders
+the state it is given; the timer service owns the break.
 """
 from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QSizePolicy,
     QVBoxLayout, QWidget
 )
 
+from background_services.public_api import BreakStatus
 from core.time_format import format_hms
 from ui import icons
+from ui.break_button import BREAK_BUTTON_WIDTH, BreakButton
 from ui.styles import (
     BORDER_LIGHT, CARD_BG, CARD_RADIUS, STAT_TILE_GRADIENTS, SUCCESS,
-    TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY, WARNING,
 )
 
 #: The one authoritative duration formatter (core.time_format.format_hms).
@@ -42,6 +49,21 @@ _CARD_VALUE_WIDTH = 190
 
 #: Gap between cards, in both directions.
 _CARD_SPACING = 14
+
+#: Gap between a card's text and a trailing action.
+_ACTION_SPACING = 12
+
+#: How much wider the ACTIVE TASK card's floor is than the others', for its
+#: Break In / Break Out button. Deliberately less than the button's own
+#: 108px: the button is paid for partly by the card and partly by the task
+#: name, which elides. A task name shortens gracefully and a clock does not,
+#: and adding the button's whole width to the floor would have moved the
+#: one-row threshold past what a 1600px-wide window has left for content,
+#: wrapping the cards two-by-two on a screen that showed them in one row
+#: before. At the floor the name still has ~120px; above it, the columns
+#: stretch in proportion to their floors (see `_arrange`), so the name
+#: gets more room the moment there is any.
+ACTIVE_CARD_EXTRA_WIDTH = 40
 
 
 class ElidingLabel(QLabel):
@@ -186,6 +208,16 @@ class StatCard(QFrame):
         text_col.addWidget(self._sub)
 
         layout.addLayout(text_col, 1)
+        self._layout = layout
+
+    def add_action(self, widget: QWidget, extra_min_width: int) -> None:
+        """Place a control on the card's right, vertically centred beside
+        the text, and raise the card's floor by `extra_min_width`. The text
+        column, the stretchy one, gives up whatever the control takes beyond
+        that; its labels elide."""
+        self._layout.addSpacing(_ACTION_SPACING - self._layout.spacing())
+        self._layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.setMinimumWidth(self.minimumWidth() + extra_min_width)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(f"""
@@ -237,10 +269,20 @@ class StatCardsRow(QWidget):
 
     #: One card, at its floor.
     CARD_MINIMUM_WIDTH = _CARD_CHROME_WIDTH + _CARD_VALUE_WIDTH
-    #: The width at or above which all four fit on one line.
-    SINGLE_ROW_MINIMUM_WIDTH = CARD_MINIMUM_WIDTH * 4 + _CARD_SPACING * 3
+    #: The width at or above which all four fit on one line. The ACTIVE TASK
+    #: card is wider than the others by its break button.
+    SINGLE_ROW_MINIMUM_WIDTH = (
+        CARD_MINIMUM_WIDTH * 4 + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING * 3
+    )
     #: The width at or above which two fit on a line -- the widget's own floor.
-    TWO_COLUMN_MINIMUM_WIDTH = CARD_MINIMUM_WIDTH * 2 + _CARD_SPACING
+    TWO_COLUMN_MINIMUM_WIDTH = (
+        CARD_MINIMUM_WIDTH * 2 + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING
+    )
+
+    #: The Break In / Break Out button, forwarded. Intent only; the window
+    #: handles both and pushes the outcome back through `set_break_control`.
+    break_in_requested = Signal()
+    break_out_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -263,6 +305,14 @@ class StatCardsRow(QWidget):
         self.activity_card = StatCard("Today's activity", "bolt", "amber", self)
 
         self._cards = (self.total_card, self.tasks_card, self.active_card, self.activity_card)
+
+        # The one Break In / Break Out control, on the right of the task it
+        # acts on. A double-click is one click on it, and a burst of clicks
+        # does one thing (see ui/break_button.py).
+        self.break_button = BreakButton(self.active_card)
+        self.active_card.add_action(self.break_button, ACTIVE_CARD_EXTRA_WIDTH)
+        self.break_button.break_in_requested.connect(self.break_in_requested)
+        self.break_button.break_out_requested.connect(self.break_out_requested)
         #: 0 until the first arrangement is applied, so the first call is
         #: never mistaken for "nothing changed".
         self._columns = 0
@@ -282,8 +332,16 @@ class StatCardsRow(QWidget):
             self._grid.removeWidget(card)
         for index, card in enumerate(self._cards):
             self._grid.addWidget(card, index // columns, index % columns)
+        # Columns share the leftover width in proportion to what they need,
+        # not equally: the ACTIVE TASK card carries a button beside its
+        # text, and an equal share left its task name with less room than
+        # the other cards' values -- the one thing a card may not shorten.
         for column in range(4):
-            self._grid.setColumnStretch(column, 1 if column < columns else 0)
+            widths = [
+                card.minimumWidth() for index, card in enumerate(self._cards)
+                if index % columns == column
+            ]
+            self._grid.setColumnStretch(column, max(widths) if widths else 0)
         self.updateGeometry()
 
     def columns(self) -> int:
@@ -304,6 +362,7 @@ class StatCardsRow(QWidget):
         self.tasks_card.set_sub("No project selected")
         self.active_card.set_value("No active task")
         self.active_card.set_sub("")
+        self.break_button.set_state(BreakStatus.NONE, False)
         self.activity_card.set_value("0%")
         self.activity_card.set_progress(None)
         self.activity_card.set_sub("No activity today")
@@ -340,6 +399,24 @@ class StatCardsRow(QWidget):
         # narrow one.
         self.active_card.set_value(task_name)
         self.active_card.set_sub(project_name or "In progress", SUCCESS)
+
+    def set_active_task_on_break(
+        self, task_name: Optional[str], project_name: Optional[str]
+    ) -> None:
+        """The task Break Out will resume, shown as paused -- never as running.
+
+        The timer is idle during a break, so nothing here may read as
+        tracking: the sub-line says "On break" in the warning colour the
+        break banner uses, not the green a running task gets.
+        """
+        self.active_card.set_value(task_name or "Previous task")
+        detail = f"On break · {project_name}" if project_name else "On break"
+        self.active_card.set_sub(detail, WARNING)
+
+    def set_break_control(self, break_status: str, timer_active: bool) -> None:
+        """Render the break button from the timer service's state, as pushed
+        by the window. Nothing here decides anything about the break."""
+        self.break_button.set_state(break_status, timer_active)
 
     def set_today_activity(
         self, percent: Optional[int], *, tracking: bool = False

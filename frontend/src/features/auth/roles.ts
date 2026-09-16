@@ -71,3 +71,22 @@ export const canViewAllScreenshots = (user: UserRead | null) =>
  */
 export const canDeleteScreenshots = (user: UserRead | null) =>
   Boolean(user?.permissions?.["screenshots:delete"]);
+
+/**
+ * Who may switch the deployment-wide maintenance notice on and off.
+ *
+ * Mirrors `MAINTENANCE_MANAGE_ROLES` in `backend/app/services/maintenance_mode.py`:
+ * the three administrator spellings and nobody else. A role list rather than a
+ * permission for the same reason feedback's is: the backend gates
+ * `PUT /system/maintenance-mode` on the role name itself, so that a new
+ * permission key would not have to wait for every administrator to sign in
+ * again before the button worked. The two lists must stay in step.
+ *
+ * Hiding the page and the sidebar entry is presentation. The endpoint refuses
+ * any other caller with 403 regardless of what this returns.
+ */
+const SYSTEM_MANAGE_ROLES = new Set(["administrator", "org_admin", "super_admin"]);
+
+/** True for administrators — the only role shown the System settings page. */
+export const canManageSystem = (user: UserRead | null) =>
+  SYSTEM_MANAGE_ROLES.has((user?.role_name || "").trim().toLowerCase());

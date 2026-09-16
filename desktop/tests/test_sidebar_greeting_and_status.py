@@ -11,9 +11,10 @@ Three behaviours are asserted here:
   agree, because both come from one branch in `set_timer_active`.
 
 * **The day's total is centred.** The caption, the hero duration and the
-  status pill share one horizontal centre. The pill is the easy one to get
-  wrong: centring a row whose only stretch sits *after* its widgets leaves
-  them pinned to the left of a block that is otherwise centred.
+  circular Play / Pause control under it share one horizontal centre. The
+  status pill is not under the duration at all any more: it sits on the
+  account card's name row, to the right of the signed-in user's name, and
+  that is what is asserted instead.
 
 * **The greeting follows the IST clock, on an edge.** `core.time_format`
   decides where the afternoon ends — the widget never spells the boundaries
@@ -113,19 +114,71 @@ def test_the_hero_duration_sits_on_the_section_centre_line(sidebar, qapp):
     assert abs(label_centre - section_centre) <= 1
 
 
-def test_the_status_pill_is_centred_rather_than_left_pinned(sidebar, qapp):
+def test_the_circular_control_sits_centred_under_the_duration(sidebar, qapp):
+    sidebar.set_total_seconds(3661)
+    _drain(qapp)
+    control = sidebar._timer_control
+    button = control.button
+    section_centre = sidebar._time_section.width() / 2
+    button_centre = control.x() + button.x() + button.width() / 2
+    assert abs(button_centre - section_centre) <= 1
+    assert button.width() == button.height(), "a disc, not a pill"
+    assert control.y() >= sidebar._time_display.y() + sidebar._time_display.height() - 1
+    assert control.isVisible()
+
+
+def test_the_caption_under_the_disc_is_never_clipped(sidebar, qapp):
+    """"Select a task to start" was cut to "ct a task to s" on the real
+    display: the control was centred as a block and shrank to the disc."""
+    control = sidebar._timer_control
+    sidebar.set_play_available(False)
+    _drain(qapp)
+    caption = control.caption
+    needed = caption.fontMetrics().horizontalAdvance(caption.text())
+    assert caption.text(), "the idle caption is the one that says what to do"
+    assert caption.width() >= needed, (caption.width(), needed)
+    assert control.width() >= sidebar._time_display.width() - 2, "spans the column like the hero duration"
+    # And the disc is still on the column's centre line.
+    button = control.button
+    centre = control.x() + button.x() + button.width() / 2
+    assert abs(centre - sidebar._time_section.width() / 2) <= 1
+
+
+def test_the_status_pill_sits_on_the_account_name_row(sidebar, qapp):
+    """`Smit Prajapati ............ ● Active` on one line, the email below."""
+    sidebar.set_user({"name": "Smit Prajapati", "email": "smit@example.com"})
     sidebar.set_timer_active(True)
     _drain(qapp)
 
-    section_centre = sidebar._time_section.width() / 2
-    pill_left = sidebar._status_dot.x()
-    pill_right = sidebar._status_text.x() + sidebar._status_text.width()
-    pill_centre = (pill_left + pill_right) / 2
+    name, email = sidebar._user_name_label, sidebar._user_email_label
+    dot, text = sidebar._status_dot, sidebar._status_text
+    assert dot.parent() is sidebar._user_info_widget
+    assert text.parent() is sidebar._user_info_widget
+    # Not under the duration any more.
+    assert sidebar._time_section.findChildren(type(text), "UserStatus") == []
+    # Same row as the name: the three share a vertical centre line.
+    centres = [w.y() + w.height() / 2 for w in (name, dot, text)]
+    assert max(centres) - min(centres) <= 3
+    # Name on the left, the pill on the right, never overlapping.
+    assert name.x() + name.width() <= dot.x() < text.x()
+    assert text.x() + text.width() <= sidebar._user_info_widget.width()
+    # The email is on its own line beneath.
+    assert email.y() >= name.y() + name.height() - 1
+    assert text.text() == "Active"
 
-    assert abs(pill_centre - section_centre) <= 2, "the dot + word must centre as one unit"
-    assert pill_left > sidebar._time_section.contentsRect().left() + 20, (
-        "a left-pinned pill is the regression this guards"
-    )
+
+def test_a_long_name_elides_before_it_can_push_the_pill_off_the_card(sidebar, qapp):
+    sidebar.set_user({
+        "name": "Bartholomew Featherstonehaugh-Cholmondeley Montgomery",
+        "email": "b@example.com",
+    })
+    sidebar.set_timer_active(False)
+    _drain(qapp)
+    name, dot, text = sidebar._user_name_label, sidebar._status_dot, sidebar._status_text
+    assert name.x() + name.width() <= dot.x()
+    assert text.x() + text.width() <= sidebar._user_info_widget.width()
+    assert text.isVisible() and text.text() == "Idle"
+    assert sidebar._user_card.height() == 60
 
 
 # ── the greeting maps IST hours to the four parts of the day ─────────────────

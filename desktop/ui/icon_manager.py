@@ -19,8 +19,13 @@ from PySide6.QtGui import QPixmap, QImage, QDesktopServices
 from PySide6.QtWidgets import QFileIconProvider
 
 
-def _hicon_to_pixmap(hicon: int) -> Optional[QPixmap]:
-    """Converts a Windows HICON handle to a PySide6 QPixmap via Win32 GDI."""
+def _hicon_to_image(hicon: int) -> Optional[QImage]:
+    """Converts a Windows HICON handle to a QImage via Win32 GDI.
+
+    A QImage, deliberately: this runs on a worker thread, and a QImage is
+    the one image type Qt allows there. The QPixmap is made from it on the
+    GUI thread (`IconManager._on_resolved`).
+    """
     if not hicon or sys.platform != "win32":
         return None
     try:
@@ -67,11 +72,10 @@ def _hicon_to_pixmap(hicon: int) -> Optional[QPixmap]:
         gdi32.DeleteDC(hdc_mem)
         user32.ReleaseDC(0, hdc_screen)
 
-        img = QImage(buf.raw, 32, 32, QImage.Format.Format_ARGB32)
-        if not img.isNull():
-            pixmap = QPixmap.fromImage(img)
-            if not pixmap.isNull() and pixmap.width() > 1:
-                return pixmap
+        # `.copy()`: the QImage above wraps `buf`, which dies with this frame.
+        img = QImage(buf.raw, 32, 32, QImage.Format.Format_ARGB32).copy()
+        if not img.isNull() and img.width() > 1:
+            return img
     except Exception:
         pass
     return None
@@ -279,6 +283,16 @@ class IconManager(QObject):
     favicon_ready = Signal(str, QPixmap)  # domain, pixmap
     app_icon_ready = Signal(str, QPixmap)  # app_name, pixmap
 
+    #: The hand-off from a worker thread to the GUI thread: (kind, key,
+    #: payload). Only thread-safe things cross it -- a QImage, a file path,
+    #: or None. The QPixmap is built, cached and announced in `_on_resolved`,
+    #: on the GUI thread, which is the only thread Qt allows a QPixmap on.
+    #: The workers used to build the QPixmap themselves and emit it across
+    #: threads; that is undefined behaviour in Qt, and it surfaced as
+    #: intermittent access violations on the GUI thread while the pixmaps
+    #: were being painted or freed.
+    _resolved = Signal(str, str, object)
+
     _instance: Optional[IconManager] = None
 
     def __init__(self) -> None:
@@ -287,6 +301,8 @@ class IconManager(QObject):
         self._app_icon_cache: Dict[str, Optional[QPixmap]] = {}
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
         self._file_icon_provider = QFileIconProvider()
+        # Emitted from the pool, so Qt queues it onto this object's thread.
+        self._resolved.connect(self._on_resolved)
 
         # Known application alias map
         self._app_alias_map = {
@@ -416,16 +432,13 @@ class IconManager(QObject):
                 data = resp.read()
                 if data:
                     image = QImage()
-                    if image.loadFromData(data):
-                        pixmap = QPixmap.fromImage(image)
-                        if not pixmap.isNull() and pixmap.width() > 1 and pixmap.height() > 1:
-                            self._favicon_cache[domain] = pixmap
-                            self.favicon_ready.emit(domain, pixmap)
-                            return
+                    if image.loadFromData(data) and not image.isNull():
+                        self._resolved.emit("favicon", domain, image)
+                        return
         except Exception:
             pass
 
-        self._favicon_cache[domain] = None
+        self._resolved.emit("favicon", domain, None)
 
     # ── App Icon Loader ───────────────────────────────────────────────────────
 
@@ -452,26 +465,26 @@ class IconManager(QObject):
         return None
 
     def _extract_app_icon_worker(self, cache_key: str, app_name: str, exe_path: Optional[str], hwnd: Optional[int]) -> None:
+        """Find where an application's icon comes from. Runs on the pool.
+
+        Everything slow lives here -- process, registry and Start Menu
+        lookups, the GDI read of a window's icon -- and everything Qt-visual
+        does not: the result handed to `_on_resolved` is Monitra's own mark
+        (by name), a QImage, or a file path for QFileIconProvider to read on
+        the GUI thread.
+        """
         norm_name = app_name.lower().strip()
         if norm_name in ("monitra", "python", "python.exe", "main.py"):
-            try:
-                from background_services.public_api import create_app_icon
-                pixmap = create_app_icon().pixmap(48, 48)
-                if pixmap and not pixmap.isNull():
-                    self._app_icon_cache[cache_key] = pixmap
-                    self.app_icon_ready.emit(cache_key, pixmap)
-                    return
-            except Exception:
-                pass
+            self._resolved.emit("app_own", cache_key, None)
+            return
 
         # 1. Try Win32 HICON from active window handle (HWND)
         if hwnd:
             hicon = _get_window_hicon(hwnd)
             if hicon:
-                pix = _hicon_to_pixmap(hicon)
-                if pix and not pix.isNull():
-                    self._app_icon_cache[cache_key] = pix
-                    self.app_icon_ready.emit(cache_key, pix)
+                image = _hicon_to_image(hicon)
+                if image is not None and not image.isNull():
+                    self._resolved.emit("app_image", cache_key, image)
                     return
 
         # 2. Try direct exe_path extraction via QFileIconProvider
@@ -505,19 +518,43 @@ class IconManager(QObject):
                     target_path = candidate
                     break
 
-        if target_path:
-            try:
-                icon = self._file_icon_provider.icon(QFileInfo(target_path))
-                if not icon.isNull():
-                    pixmap = icon.pixmap(48, 48)
-                    if not pixmap.isNull() and pixmap.width() > 8:
-                        self._app_icon_cache[cache_key] = pixmap
-                        self.app_icon_ready.emit(cache_key, pixmap)
-                        return
-            except Exception:
-                pass
+        self._resolved.emit("app_path", cache_key, target_path)
 
-        self._app_icon_cache[cache_key] = None
+    def _on_resolved(self, kind: str, key: str, payload: object) -> None:
+        """Build, cache and announce the pixmap. GUI thread only."""
+        pixmap: Optional[QPixmap] = None
+        minimum_width = 1
+        try:
+            if kind == "favicon":
+                if isinstance(payload, QImage) and not payload.isNull():
+                    pixmap = QPixmap.fromImage(payload)
+            elif kind == "app_own":
+                from background_services.public_api import create_app_icon
+                pixmap = create_app_icon().pixmap(48, 48)
+            elif kind == "app_image":
+                if isinstance(payload, QImage) and not payload.isNull():
+                    pixmap = QPixmap.fromImage(payload)
+            elif kind == "app_path":
+                if payload:
+                    icon = self._file_icon_provider.icon(QFileInfo(str(payload)))
+                    if not icon.isNull():
+                        pixmap = icon.pixmap(48, 48)
+                        minimum_width = 8
+        except Exception:
+            pixmap = None
+
+        usable = (
+            pixmap is not None and not pixmap.isNull()
+            and pixmap.width() > minimum_width and pixmap.height() > 1
+        )
+        if kind == "favicon":
+            self._favicon_cache[key] = pixmap if usable else None
+            if usable:
+                self.favicon_ready.emit(key, pixmap)
+            return
+        self._app_icon_cache[key] = pixmap if usable else None
+        if usable:
+            self.app_icon_ready.emit(key, pixmap)
 
 
 def get_icon_manager() -> IconManager:

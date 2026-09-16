@@ -239,6 +239,20 @@ States: `IDLE → STARTING → RUNNING → STOPPING → STOPPED`, plus `RECOVERI
 The one-second `QTimer` emits a display tick only. If it never fired,
 `elapsed_seconds()` would still be correct.
 
+**What is displayed is that interval net of the backend's deductions.**
+`measured_seconds()` is the interval above and is never edited.
+`adjustment_seconds()` is the entry's net signed `time_entry_adjustments`
+total as the backend last reported it -- discarded idle time, idle time
+reassigned to another task, unwanted-activity penalties -- stored on the
+session record and *received*, never computed (`apply_entry_adjustment`,
+fed by the idle resolve/reassign response, the entry a start or the active
+read returns, and the running row of the day's entry list). `elapsed_seconds()`
+is `max(0, measured + adjustment)`: the running entry's `net_seconds` exactly
+as `TimeEntryRead` defines it, so the task row, the sidebar total and the
+summary card show the figure the reports will show. Before this the desktop
+alone kept counting an idle stretch the user had just discarded, while every
+web surface had already dropped by it.
+
 `started_at_utc` is on **this machine's clock**. The backend records the same
 session on its own clock: every start and stop request carries the event
 instant *and* the client's clock at send time, so the server places the event
@@ -296,6 +310,29 @@ adopts the backend's entry when there is one, and when there is none,
 backend has since finalized elsewhere — keeping any session the backend
 could not know about yet (an unsent or queued start, or one bound after the
 question was asked).
+
+### Three controls, one service
+
+Three things on screen start or stop tracking: each task row's Start/Stop,
+the sidebar's circular Play/Pause under the day's total, and Break In /
+Break Out in the ACTIVE TASK card. None of them holds timer state. Every one
+turns a click into a `TimerService` verb -- the rows and the disc through
+`TaskSection.start_task` / `stop_running_task` (the rows' own handlers, so
+the disc *is* the row's button), the break button through `break_in` /
+`break_out` -- and every one is rendered back from the service's signals by
+`DashboardWindow._render_timer_controls`. There is no second path, so they
+cannot disagree, and a burst of clicks on any of them does one thing: a
+double-click is folded into one click (`SingleClickButton`) and the control
+is held disabled for a short settle window after each click, then re-rendered
+from the service's state.
+
+Play needs a task. It starts the task selected in the list (a click on a
+row's body, or a row's Start, selects it; switching projects clears it) or,
+failing that, the task tracked last in the session, so Pause then Play
+resumes the same task after browsing elsewhere. With neither it is disabled
+and its caption says to select a task -- it never guesses one. During a break
+it is disabled: Break Out is the one control that resumes the held task, and
+a start from anywhere else ends the break (`_leave_break`) and loses it.
 
 ### The timer only ever runs against today
 
@@ -526,9 +563,15 @@ Three properties are worth stating explicitly:
 - **The backend decides, always.** Idle time counts only for
   `keep_idle_time AND action == "resume"`, and that rule lives in the API.
   The client sends the user's answer and applies the verdict; it never
-  computes tracked time and never edits it. Resolving with *Stop* calls
-  `stop_tracking(notify_backend=False)`, because the resolve endpoint has
-  already stopped the entry through the backend's own stop path.
+  computes tracked time and never edits it. The verdict arrives as
+  `time_entry_adjustment_seconds` on the resolve and reassign responses --
+  the entry's net deduction after the operation -- and is handed to
+  `TimerService.apply_entry_adjustment` *before* anything local happens, so
+  a discarded stretch leaves the running clock at once (Resume) or is
+  already out of the figure the row banks (Stop). Resolving with *Stop*
+  then calls `stop_tracking(notify_backend=False)`, because the resolve
+  endpoint has already stopped the entry through the backend's own stop
+  path.
 - **The pending period lives on the server.** Local state is never its only
   record, so a crash or a restart recovers it (`GET /idle-periods/active`,
   once per entry id) instead of silently counting or dropping the time.
@@ -581,6 +624,45 @@ Three properties, each of them a rule this project has already paid for:
 The same request carries the client's own version (the `User-Agent` the
 `ApiClient` now sends on every call), which is what the backend records for
 fleet version visibility.
+
+### Maintenance notice
+
+`MaintenanceService`
+([background_services/maintenance/maintenance_service.py](background_services/maintenance/maintenance_service.py))
+asks the backend every ~30 s (jittered) whether an administrator has switched
+the product-wide maintenance *notice* on, and reports each change of that
+answer. `MainWindow` shows a small card in the window's corner on the "on"
+edge and hides it on the "off" edge; the tray says so once per edge.
+
+```
+tick()  ->  hold while signed out / offline / endpoint absent
+        ->  GET /system/maintenance-status
+        ->  answer changed?  ->  maintenance_changed(bool)  ->  card shown / hidden
+```
+
+It is **informational only**, and the design keeps it that way structurally
+rather than by convention:
+
+- **Connected to nothing.** The service reads the network service and
+  notifies through the notification service, and that is all. It does not
+  read or touch the timer, the trackers, the screenshot scheduler or the sync
+  consumer, and none of them read it. A timer running when the notice goes on
+  is the same session, with the same `started_at_utc`, when it goes off.
+  `tests/test_maintenance_toast.py` measures a running timer through both
+  edges against the live runtime, and `tests/test_maintenance_service.py`
+  greps the modules for any such reference.
+- **Edge-triggered.** The backend answers "true" on every poll while the notice
+  is on. The signal fires only when the answer changes, so one maintenance
+  window is one card and one tray message, never one per poll.
+- **The backend decides, and a failed poll changes nothing.** "Under
+  maintenance" is the administrator's switch as reported; it is never inferred
+  from an outage -- the network service owns "offline". A poll that fails
+  leaves the last answer where it was: the card is not cleared because the
+  backend could not be reached, and not raised because it could not be.
+- **The card is a child widget, not a dialog.** No modality, no focus, no
+  close button and no acknowledgement; it covers its own corner and nothing
+  else. Logout hides it through the same edge (`reset_session()` emits
+  "off" if it was on).
 
 **Screenshot capture and URL tracking are likewise not implemented** in the
 client; it only reads screenshots the backend already holds. The mock fallback
@@ -657,15 +739,22 @@ create duplicate time entries.
 
 What is recovered is the *session*, not evidence of work. A timer started at
 13:00 on a machine that lost power at 17:00 and came back at 18:00 is
-recovered at 18:00 as one session running since 13:00 — the same entry, the
-same `started_at_utc`, the outage inside it, exactly as if the process had
-survived. The sub-trackers (activity, application and URL usage,
-screenshots) start again at 18:00 and record nothing for the hour the
-machine was off. The recovery notice tells the user how long Monitra was not
-running. The timer record itself is the only thing that distinguishes an
-interruption from a stop: an explicit stop has already queued its stop
-action and removed the record, and a record whose stop is queued is never
-resurrected.
+recovered at 18:00 as the same entry with the same `started_at_utc` — no
+second entry, ever. The hour the machine was off is **not** taken as work:
+`IdleService._on_tracking_recovered` measures the gap from the previous
+process's last heartbeat to the recovery instant and, when it reaches the
+user's own `idle_minutes`, reports it through the ordinary idle-period
+path (`POST /idle-periods`, the same popup, the same keep/discard/resume/
+stop accounting on the backend). The report waits for the entry id when
+the start was queued, is retried while the network is unusable, is dropped
+on a definitive 4xx, and cannot open a second period: the client event id
+is keyed on the session and the interruption instant, and the backend
+answers a repeat with the period already pending. The sub-trackers
+(activity, application and URL usage, screenshots) start again at 18:00
+and record nothing for the hour the machine was off. The timer record is
+the only thing that distinguishes an interruption from a stop: an explicit
+stop has already queued its stop action and removed the record, and a
+record whose stop is queued is never resurrected.
 
 ---
 

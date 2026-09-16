@@ -122,6 +122,16 @@ export const ENDPOINTS = {
       `${API_BASE_URL}/desktop/releases/download?platform=${encodeURIComponent(platform)}` +
       (arch ? `&arch=${encodeURIComponent(arch)}` : ''),
   },
+  // Deployment-wide state. Maintenance mode is a *notice*, not a lock: the
+  // status is polled by every signed-in session so the toast can be shown and
+  // later removed, and nothing about the flag changes any other request.
+  SYSTEM: {
+    MAINTENANCE_STATUS: `${API_BASE_URL}/system/maintenance-status`,
+    // Administrators only: read who set it, set it, and read the audit trail.
+    MAINTENANCE_MODE: `${API_BASE_URL}/system/maintenance-mode`,
+    MAINTENANCE_HISTORY: (limit: number) =>
+      `${API_BASE_URL}/system/maintenance-mode/history?limit=${encodeURIComponent(String(limit))}`,
+  },
   REACT_DASHBOARD: {
     BASE: `${API_BASE_URL}/react/dashboard`,
     PROJECTS: `${API_BASE_URL}/react/dashboard/projects`,

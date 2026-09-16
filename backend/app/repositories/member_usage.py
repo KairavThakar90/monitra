@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import Float, cast, func, select
 from sqlalchemy.orm import Session
 
 from app.models.time_entry import TimeEntry
@@ -32,7 +32,13 @@ class MemberUsageRepository:
                 func.sum(TimeEntryActivity.keyboard_strokes).label("keyboard_strokes"),
                 func.sum(TimeEntryActivity.mouse_clicks).label("mouse_clicks"),
                 func.sum(TimeEntryActivity.mouse_movements).label("mouse_movements"),
-                func.avg(TimeEntryActivity.activity_percentage).label("activity_percentage"),
+                # Duration-weighted, like every other activity average in the
+                # product: SUM(percentage x window_seconds) / SUM(window_seconds).
+                (
+                    func.sum(cast(TimeEntryActivity.activity_percentage, Float)
+                             * cast(TimeEntryActivity.window_seconds, Float))
+                    / func.nullif(cast(func.sum(TimeEntryActivity.window_seconds), Float), 0.0)
+                ).label("activity_percentage"),
             )
             .join(TimeEntry, TimeEntry.id == TimeEntryActivity.time_entry_id)
             .where(

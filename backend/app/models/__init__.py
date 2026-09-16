@@ -20,6 +20,9 @@ from app.models.desktop_release import DesktopRelease
 from app.models.feedback_request import FeedbackRequest
 from app.models.sso_handoff_token import SsoHandoffToken
 from app.models.service_credential import ServiceCredential
+from app.models.system_setting import SystemSetting
+from app.models.activity_log import ActivityLog
+from app.models.daily_activity_summary import DailyActivitySummary
 
 __all__ = [
     "Base",
@@ -44,4 +47,7 @@ __all__ = [
     "FeedbackRequest",
     "SsoHandoffToken",
     "ServiceCredential",
+    "SystemSetting",
+    "ActivityLog",
+    "DailyActivitySummary",
 ]
