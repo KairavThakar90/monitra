@@ -79,6 +79,7 @@ Exactly one component owns each concern. Route your work through the owner; neve
 | Activity capture | `background_services/activity/` |
 | Tray + notifications | `background_services/notifications/` |
 | "A new version is available" notices | `background_services/update/update_service.py` |
+| "Monitra is under maintenance" notice (informational only) | `background_services/maintenance/maintenance_service.py` |
 | Crash/session recovery | `background_services/recovery/` |
 | The UI's entire view of the above | `background_services/public_api.py` (`BackgroundApi`) |
 

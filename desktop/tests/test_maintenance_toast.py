@@ -104,7 +104,10 @@ def test_the_card_is_not_a_dialog_and_blocks_nothing(host, qapp):
     assert not isinstance(toast, QDialog)
     assert not toast.isWindow(), "a child widget, not a window"
     assert toast.windowModality() == Qt.WindowModality.NonModal
-    assert QApplication.activeModalWidget() is None
+    # Not the active modal widget (another test's dialog may be alive in a
+    # full run; this card can never be one).
+    assert QApplication.activeModalWidget() is not toast
+    assert toast.testAttribute(Qt.WidgetAttribute.WA_ShowModal) is False
     assert QWidget.mouseGrabber() is None
     assert QWidget.keyboardGrabber() is None
     assert toast.focusPolicy() == Qt.FocusPolicy.NoFocus

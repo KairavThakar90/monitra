@@ -602,6 +602,45 @@ The same request carries the client's own version (the `User-Agent` the
 `ApiClient` now sends on every call), which is what the backend records for
 fleet version visibility.
 
+### Maintenance notice
+
+`MaintenanceService`
+([background_services/maintenance/maintenance_service.py](background_services/maintenance/maintenance_service.py))
+asks the backend every ~30 s (jittered) whether an administrator has switched
+the product-wide maintenance *notice* on, and reports each change of that
+answer. `MainWindow` shows a small card in the window's corner on the "on"
+edge and hides it on the "off" edge; the tray says so once per edge.
+
+```
+tick()  ->  hold while signed out / offline / endpoint absent
+        ->  GET /system/maintenance-status
+        ->  answer changed?  ->  maintenance_changed(bool)  ->  card shown / hidden
+```
+
+It is **informational only**, and the design keeps it that way structurally
+rather than by convention:
+
+- **Connected to nothing.** The service reads the network service and
+  notifies through the notification service, and that is all. It does not
+  read or touch the timer, the trackers, the screenshot scheduler or the sync
+  consumer, and none of them read it. A timer running when the notice goes on
+  is the same session, with the same `started_at_utc`, when it goes off.
+  `tests/test_maintenance_toast.py` measures a running timer through both
+  edges against the live runtime, and `tests/test_maintenance_service.py`
+  greps the modules for any such reference.
+- **Edge-triggered.** The backend answers "true" on every poll while the notice
+  is on. The signal fires only when the answer changes, so one maintenance
+  window is one card and one tray message, never one per poll.
+- **The backend decides, and a failed poll changes nothing.** "Under
+  maintenance" is the administrator's switch as reported; it is never inferred
+  from an outage -- the network service owns "offline". A poll that fails
+  leaves the last answer where it was: the card is not cleared because the
+  backend could not be reached, and not raised because it could not be.
+- **The card is a child widget, not a dialog.** No modality, no focus, no
+  close button and no acknowledgement; it covers its own corner and nothing
+  else. Logout hides it through the same edge (`reset_session()` emits
+  "off" if it was on).
+
 **Screenshot capture and URL tracking are likewise not implemented** in the
 client; it only reads screenshots the backend already holds. The mock fallback
 data that previously made these tabs look populated has been removed, so the
