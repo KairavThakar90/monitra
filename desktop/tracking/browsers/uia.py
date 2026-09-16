@@ -73,10 +73,20 @@ _TreeScope_Descendants = 4
 # assumes `int`, which truncates it to 32 bits on x64 and the first use of the
 # resulting "pointer" is an access violation that takes the whole process with
 # it — not an exception this module could catch and report.
-_oleaut32 = ctypes.windll.oleaut32
-_oleaut32.SysAllocString.restype = c_void_p
-_oleaut32.SysAllocString.argtypes = [c_wchar_p]
-_oleaut32.SysFreeString.argtypes = [c_void_p]
+#
+# Resolved only where it exists. `ctypes.windll` is a Windows-only attribute;
+# evaluating it at import time made importing this module -- and therefore
+# `tracking.browsers`, `UrlUsageService` and `core.runtime` above it -- raise
+# AttributeError on macOS and Linux, so the packaged macOS application could
+# not start and the Linux test run could not even collect. Every caller below
+# is already gated on SUPPORTED, so off Windows this handle is simply absent.
+if SUPPORTED:
+    _oleaut32 = ctypes.windll.oleaut32
+    _oleaut32.SysAllocString.restype = c_void_p
+    _oleaut32.SysAllocString.argtypes = [c_wchar_p]
+    _oleaut32.SysFreeString.argtypes = [c_void_p]
+else:  # pragma: no cover - exercised by the import-portability test
+    _oleaut32 = None
 
 # IUnknown occupies vtable slots 0-2; every index below is an offset into the
 # full vtable of the named interface, in declaration order.
