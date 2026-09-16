@@ -1477,6 +1477,85 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "Activity roll-up",
+      "description": "End-of-day duration-weighted activity averages, stored per user per day.",
+      "item": [
+        {
+          "name": "Run daily roll-up (scheduler token)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/internal/activity/daily-rollup?days=2&dry_run=false",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "internal",
+                "activity",
+                "daily-rollup"
+              ],
+              "query": [
+                {
+                  "key": "days",
+                  "value": "2"
+                },
+                {
+                  "key": "dry_run",
+                  "value": "false"
+                }
+              ]
+            },
+            "description": "Authenticate with EMAIL_DISPATCH_TOKEN as a bearer token."
+          },
+          "response": []
+        },
+        {
+          "name": "Daily summaries (self or visible member)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/activity/daily-summaries?start_date=2026-09-01&end_date=2026-09-30",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "activity",
+                "daily-summaries"
+              ],
+              "query": [
+                {
+                  "key": "start_date",
+                  "value": "2026-09-01"
+                },
+                {
+                  "key": "end_date",
+                  "value": "2026-09-30"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
     }
   ],
   "variable": [

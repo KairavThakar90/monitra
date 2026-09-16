@@ -73,12 +73,25 @@ class ReportsPageRepository:
 
     @staticmethod
     def _activity_totals_subquery():
-        """One row per time_entry_id: summed activity percentage and sample count."""
+        """One row per time_entry_id: the entry's activity as a weighted pair.
+
+        ``act_sum`` is ``SUM(activity_percentage x window_seconds)`` and
+        ``act_count`` is ``SUM(window_seconds)``, so every consumer's
+        ``act_sum / act_count`` is the *duration-weighted* average -- the
+        definition the desktop's TODAY'S ACTIVITY card, the ``/today``
+        endpoint and the end-of-day roll-up use. It was a per-window mean
+        (``SUM(percentage) / COUNT(*)``), under which a session's ten-second
+        tail window weighed as much as a full minute and the web dashboard
+        disagreed with the desktop about the same day. The pair is still
+        carried unreduced for the same reason as before: averaging averages
+        would weight a one-sample session like a five-hundred-sample one.
+        """
+        weight = cast(TimeEntryActivity.window_seconds, Float)
         return (
             select(
                 TimeEntryActivity.time_entry_id.label("time_entry_id"),
-                func.sum(TimeEntryActivity.activity_percentage).label("act_sum"),
-                func.count(TimeEntryActivity.id).label("act_count"),
+                func.sum(cast(TimeEntryActivity.activity_percentage, Float) * weight).label("act_sum"),
+                func.sum(TimeEntryActivity.window_seconds).label("act_count"),
             )
             .group_by(TimeEntryActivity.time_entry_id)
             .subquery("activity_totals")
