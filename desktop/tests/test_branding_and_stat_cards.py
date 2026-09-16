@@ -139,7 +139,10 @@ def test_a_name_that_fits_is_not_abbreviated(qapp):
     shown whole and offers no tooltip, because nothing is hidden."""
     row = StatCardsRow()
     row.set_active_task("Write specs", "Project X")
-    _laid_out(row, 1600)
+    # Wide enough for the name beside the card's Break In / Break Out button
+    # under the offscreen platform's fallback font, whose box glyphs are about
+    # twice the width of Segoe UI's (264px for these eleven characters).
+    _laid_out(row, 1900)
 
     value = row.active_card._value
     assert value.text() == "Write specs"
