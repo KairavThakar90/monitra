@@ -595,6 +595,16 @@ tabs now show honest empty states.
 
 - One owned dismissal timer — a dismissal timer can no longer be orphaned by a
   widget being destroyed.
+- **The application draws its own notification**
+  ([toast_popup.py](background_services/notifications/toast_popup.py)), because
+  a platform toast will not stay up for as long as it is asked to: Windows has
+  ignored `Shell_NotifyIcon`'s `uTimeout` since Vista and uses the user's
+  accessibility setting instead (five seconds by default, about twenty-five for
+  a long toast). `DISPLAY_MS` is a minute, and the in-app card is what makes
+  that a real minute. The platform toast is the fallback for a machine the card
+  cannot be placed on — never both at once, or one event notifies twice. The
+  card owns no timer, is reused for every notification so a burst cannot stack
+  windows, and never takes focus (`WA_ShowWithoutActivating`).
 - **De-duplication** by key within a 20-second window, and a ceiling of 6
   notifications per minute, so network flapping produces one message rather than
   a burst.

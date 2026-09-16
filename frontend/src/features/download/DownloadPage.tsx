@@ -2,21 +2,22 @@
  * The Monitra desktop download page.
  *
  * The one thing this page must get right: **it never links to a versioned
- * file.** Every button points at the backend's "latest published release" for
- * a platform, so a release published a year from now is served without this
- * file being edited. That is the entire reason the page fetches instead of
- * hardcoding.
+ * file.** Every button points at its platform's stable distribution link
+ * (`DOWNLOAD_LINKS`), so the build behind it can change without this file being
+ * edited.
  *
  * Public and unauthenticated: a new member installing Monitra for the first
  * time has no account yet, and asking them to sign in before they can download
  * the thing they sign in with is a loop.
  *
- * Honest empty states. When a deployment has published nothing for a platform,
- * the card says so and offers no link. A dead download button is worse than an
- * absent one, and inventing a URL here would be exactly the fabricated-data
- * pattern this project has already removed once. The same applies to a failed
- * request: "we could not reach the release service" and "there is no build" are
- * different facts, and only one of them is worth retrying.
+ * **Downloading does not depend on the release service.** The installers are
+ * hosted separately from the backend, so `GET /desktop/releases/downloads`
+ * supplies the version, size, notes and checksum shown beside a button and
+ * nothing more. When it fails or knows nothing, those rows are omitted — never
+ * guessed — and the download stays exactly as clickable as it was. Hiding a
+ * working download behind a metadata failure would be reporting a fault that
+ * is not there, which is the mirror image of the fabricated-data pattern this
+ * project has already removed once.
  *
  * The palette is the one the rest of the app uses — the #2563EB blue and the
  * slate hexes from LoginScreen — rather than Tailwind's stock indigo, so this
@@ -87,7 +88,13 @@ function DownloadCard({
   release: DesktopRelease | undefined;
   recommended: boolean;
 }) {
-  const available = Boolean(release?.available);
+  /**
+   * Whether the release service told us *about* this build — not whether it
+   * can be downloaded. The installer is served from its own host, so the
+   * button works whatever this call returned; all this decides is which
+   * details are printed beside it.
+   */
+  const described = Boolean(release?.available);
   const size = formatFileSize(release?.file_size ?? null);
 
   return (
@@ -113,7 +120,7 @@ function DownloadCard({
       <dl className="mt-5 space-y-1 text-sm">
         <div className="flex justify-between">
           <dt className="text-[#64748B]">Version</dt>
-          <dd className="font-medium text-[#0F172A]">{available ? release?.version : '—'}</dd>
+          <dd className="font-medium text-[#0F172A]">{described ? release?.version : '—'}</dd>
         </div>
         {size && (
           <div className="flex justify-between">
@@ -125,22 +132,19 @@ function DownloadCard({
 
       {card.note && <p className="mt-3 text-xs text-[#94A3B8]">{card.note}</p>}
 
-      {available ? (
-        <a
-          href={downloadUrlFor(card.key)}
-          className="mt-5 inline-flex items-center justify-center rounded-md bg-[#2563EB] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition duration-150 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-[#2563EB] focus:ring-offset-2"
-        >
-          Download for {card.shortTitle}
-        </a>
-      ) : (
-        /* No published build for this platform. Said plainly, with no link:
-           a button that 404s is worse than no button. */
-        <span className="mt-5 inline-flex cursor-not-allowed items-center justify-center rounded-md bg-[#F1F5F9] px-4 py-2.5 text-sm font-medium text-[#94A3B8]">
-          Not available yet
-        </span>
-      )}
+      {/* Always a real link. The installer is hosted independently of the
+          release service, so a visitor can download Monitra even when that
+          service has published nothing or cannot be reached — the two used to
+          be the same fact and are not any more. */}
+      <a
+        href={downloadUrlFor(card.key)}
+        rel="noreferrer noopener"
+        className="mt-5 inline-flex items-center justify-center rounded-md bg-[#2563EB] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition duration-150 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-[#2563EB] focus:ring-offset-2"
+      >
+        Download for {card.shortTitle}
+      </a>
 
-      {available && (release?.release_notes || release?.release_notes_url) && (
+      {described && (release?.release_notes || release?.release_notes_url) && (
         <details className="mt-4">
           <summary className="cursor-pointer text-xs font-medium text-[#2563EB] hover:text-blue-700">
             What&rsquo;s new in {release.version}
@@ -168,7 +172,7 @@ function DownloadCard({
         </details>
       )}
 
-      {available && release?.sha256 && (
+      {described && release?.sha256 && (
         <details className="mt-3">
           <summary className="cursor-pointer text-xs text-[#94A3B8] hover:text-[#64748B]">
             Verify this download
@@ -197,19 +201,6 @@ export function DownloadPage() {
   const [attempt, setAttempt] = useState(0);
 
   const recommended = useMemo(() => detectDownloadKey(), []);
-
-  /**
-   * The backend is reachable and has published nothing, for any platform.
-   *
-   * Distinct from `error`, which means we never got an answer. Three cards all
-   * saying "Not available yet" is technically honest but reads as a fault; a
-   * visitor deserves to be told plainly that there is nothing to download yet.
-   */
-  const nothingPublished = useMemo(() => {
-    if (!index) return false;
-    const entries = Object.values(index.downloads ?? {});
-    return entries.length > 0 && entries.every((release) => !release?.available);
-  }, [index]);
 
   useEffect(() => {
     let cancelled = false;
@@ -295,20 +286,19 @@ export function DownloadPage() {
           )}
         </header>
 
-        {loading && (
-          <p className="mt-12 text-center text-sm text-[#64748B]">
-            Loading the latest release…
-          </p>
-        )}
-
         {error && !loading && (
-          /* A temporary release-service problem, not an empty catalogue. Say
-             which one it is and offer the action that can actually fix it. */
-          <div className="mx-auto mt-12 max-w-xl rounded-md border border-amber-200 bg-amber-50 p-4 text-center">
+          /* The release service is what supplies version, size and checksum —
+             it is not what serves the file. So this is a note beside working
+             downloads, not a wall in front of them: the buttons below still
+             do exactly what they say. */
+          <div className="mx-auto mt-10 max-w-2xl rounded-md border border-amber-200 bg-amber-50 p-4 text-center">
             <p className="text-sm font-semibold text-amber-900">
-              The download service could not be reached.
+              Version details could not be loaded.
             </p>
-            <p className="mt-1 text-sm text-amber-800">{error}</p>
+            <p className="mt-1 text-sm text-amber-800">
+              {error} The downloads below still work — this only affects the
+              version and size shown on each card.
+            </p>
             <button
               type="button"
               onClick={retry}
@@ -319,60 +309,47 @@ export function DownloadPage() {
           </div>
         )}
 
-        {!loading && !error && nothingPublished && (
-          /* The backend answered perfectly well and has nothing to offer. That
-             is a different fact from "the service is unreachable", and saying
-             the wrong one sends the reader to the wrong place: one is waiting
-             for a release, the other is a broken deployment. No retry button
-             here — retrying will not publish a release. */
-          <div className="mx-auto mt-12 max-w-2xl rounded-md border border-[#E2E8F0] bg-white p-6 text-center">
-            <p className="text-base font-semibold text-[#0F172A]">
-              No release has been published yet.
+        {/* Linux, or anything else we do not build for. Every download stays
+            listed and usable — the message explains the situation rather than
+            hiding the page. */}
+        {recommended === null && (
+          <div className="mx-auto mt-12 max-w-2xl rounded-md border border-[#E2E8F0] bg-white p-4 text-center">
+            <p className="text-sm font-semibold text-[#0F172A]">
+              We could not identify your operating system.
             </p>
-            <p className="mt-2 text-sm text-[#64748B]">
-              Monitra desktop is not yet available to download. The download
-              service is working — there is simply no published build for any
-              platform right now. Please check back shortly.
+            <p className="mt-1 text-sm text-[#64748B]">
+              Monitra desktop is built for Windows and macOS. All available
+              downloads are listed below — choose the one that matches your
+              machine.
             </p>
           </div>
         )}
 
-        {!loading && !error && !nothingPublished && (
-          <>
-            {/* Linux, or anything else we do not build for. Every download
-                stays listed and usable — the message explains the situation
-                rather than hiding the page. */}
-            {recommended === null && (
-              <div className="mx-auto mt-12 max-w-2xl rounded-md border border-[#E2E8F0] bg-white p-4 text-center">
-                <p className="text-sm font-semibold text-[#0F172A]">
-                  We could not identify your operating system.
-                </p>
-                <p className="mt-1 text-sm text-[#64748B]">
-                  Monitra desktop is built for Windows and macOS. All available
-                  downloads are listed below — choose the one that matches your
-                  machine.
-                </p>
-              </div>
-            )}
+        {/* The cards do not wait for the release call. Downloading is the one
+            thing this page exists for, and it does not depend on that call
+            having returned — only the version and size rows do. */}
+        <div className="mt-12 grid gap-6 md:grid-cols-3">
+          {CARDS.map((card) => (
+            <DownloadCard
+              key={card.key}
+              card={card}
+              release={index?.downloads?.[card.key]}
+              recommended={recommended === card.key}
+            />
+          ))}
+        </div>
 
-            <div className="mt-12 grid gap-6 md:grid-cols-3">
-              {CARDS.map((card) => (
-                <DownloadCard
-                  key={card.key}
-                  card={card}
-                  release={index?.downloads?.[card.key]}
-                  recommended={recommended === card.key}
-                />
-              ))}
-            </div>
-
-            <p className="mt-8 text-center text-xs text-[#94A3B8]">
-              macOS ships one build per processor. Apple Silicon and Intel are
-              different downloads — if you are unsure, choose Apple Silicon for
-              any Mac bought in 2020 or later.
-            </p>
-          </>
+        {loading && (
+          <p className="mt-6 text-center text-sm text-[#64748B]">
+            Loading version details…
+          </p>
         )}
+
+        <p className="mt-8 text-center text-xs text-[#94A3B8]">
+          macOS ships one build per processor. Apple Silicon and Intel are
+          different downloads — if you are unsure, choose Apple Silicon for any
+          Mac bought in 2020 or later.
+        </p>
 
         <p className="mt-10 text-center text-sm text-[#64748B]">
           Already installed?{' '}

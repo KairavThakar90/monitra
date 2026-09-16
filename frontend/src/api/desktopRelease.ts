@@ -2,11 +2,13 @@
  * Desktop downloads for the website.
  *
  * The rule this module exists to enforce: **the download link is never a
- * versioned filename baked into the site.** It asks the backend for the latest
- * published release and uses whatever comes back, so a release published six
- * months from now is served without the frontend being touched — which is the
- * whole difference between "Download Monitra" and "Download Monitra 1.0.0
- * forever".
+ * versioned filename baked into the site.** Each platform has one stable link
+ * (`DOWNLOAD_LINKS`) that always serves the current build, so a release
+ * published six months from now is served without the frontend being touched —
+ * which is the whole difference between "Download Monitra" and "Download
+ * Monitra 1.0.0 forever". The release metadata shown beside a button (version,
+ * size, notes, checksum) still comes from the backend, and is omitted rather
+ * than guessed when it is not there.
  *
  * Unauthenticated by design: someone installing Monitra for the first time has
  * no account yet. The backend only ever exposes *published* releases here, so
@@ -49,15 +51,33 @@ export const DOWNLOAD_TARGETS: Record<DownloadKey, { platform: string; arch?: st
 };
 
 /**
- * A direct link to the current artifact for one target.
+ * Where each platform's installer is served from.
  *
- * Safe to put straight in an `href`: the backend answers with a redirect to
- * the artifact, or 404 when nothing is published, so the link is always
- * current without the page having to fetch anything first.
+ * These are distribution links, not artifact filenames: each one names a
+ * platform and nothing else, so the file behind it can be replaced for a new
+ * release without this file being edited. That is the property the download
+ * page has always depended on — it used to come from the backend's
+ * "latest release" redirect, and now it comes from the host these point at.
+ *
+ * Because the file is no longer served by our backend, the page can no longer
+ * learn a download's size or checksum from the link. Version and size are
+ * still shown when `GET /desktop/releases/downloads` knows them, and simply
+ * omitted when it does not — the download itself never depends on that call.
+ */
+export const DOWNLOAD_LINKS: Record<DownloadKey, string> = {
+  windows: 'https://storetransform.com/?window_download_monitra',
+  'macos-arm64': 'https://storetransform.com/?macARM64_download_monitra',
+  'macos-x86_64': 'https://storetransform.com/?macX8664_download_monitra',
+};
+
+/**
+ * The link one platform's download button points at.
+ *
+ * Safe to put straight in an `href`, and it needs no fetch first: a visitor
+ * can download Monitra even when the release service is unreachable.
  */
 export function downloadUrlFor(key: DownloadKey): string {
-  const target = DOWNLOAD_TARGETS[key];
-  return ENDPOINTS.DESKTOP.DOWNLOAD(target.platform, target.arch);
+  return DOWNLOAD_LINKS[key];
 }
 
 /** Every platform's current download, for a page that lists them all. */

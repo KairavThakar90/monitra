@@ -37,9 +37,11 @@ from PySide6.QtGui import (
     QAction, QColor, QDesktopServices, QFont, QIcon, QPainter, QPixmap,
     QRadialGradient,
 )
-from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from core.service import BaseService
+
+from .toast_popup import ToastPopup
 
 #: Stable identity for Windows toast attribution.
 APP_USER_MODEL_ID = "Monitra"
@@ -169,17 +171,17 @@ class NotificationService(BaseService):
     DEDUPE_SECONDS = 2.0
     #: Ceiling on notifications shown per minute, whatever their key.
     MAX_PER_MINUTE = 30
-    #: How long a toast is meant to stay on screen before it is retired.
+    #: How long a notification stays on screen before it is retired.
     #:
-    #: This is a *hint* to the platform, not a guarantee, and on Windows it is
-    #: not honoured at all: `Shell_NotifyIcon`'s `uTimeout` has been ignored
-    #: since Vista, and the real on-screen time comes from the user's
-    #: accessibility setting (Settings -> Accessibility -> Visual effects ->
-    #: "Dismiss notifications after this amount of time"), which defaults to
-    #: five seconds. Raising the value here therefore lengthens the service's
-    #: own lifecycle -- how long a click can still open the notification's
-    #: link, and when `_retire_current` runs -- but a Windows user who wants
-    #: the toast itself held for a minute has to raise that OS setting too.
+    #: Every notification is drawn by `ToastPopup`, a window this application
+    #: owns, precisely so that this number means something. Passed to the
+    #: platform's own toast it does not: `Shell_NotifyIcon`'s `uTimeout` has
+    #: been ignored since Vista, and the real on-screen time comes from the
+    #: user's accessibility setting (Settings -> Accessibility -> Visual
+    #: effects -> "Dismiss notifications after this amount of time"), which is
+    #: five seconds by default and about twenty-five for a long toast. That is
+    #: why the platform toast is now only the fallback for a machine the popup
+    #: cannot be placed on.
     DISPLAY_MS = 60_000
 
     def __init__(self, runtime, parent: Optional[QObject] = None) -> None:
@@ -199,6 +201,15 @@ class NotificationService(BaseService):
         self._dismiss_timer.setSingleShot(True)
         self._dismiss_timer.timeout.connect(self._retire_current)
         self._available = False
+        #: The in-app notification card, created on first use on this (GUI)
+        #: thread. It is the only surface that can honour `DISPLAY_MS`; the
+        #: platform toast is the fallback for a machine it cannot be shown on.
+        #: One card is reused for every notification, and it owns no timer —
+        #: `_dismiss_timer` above is still the single owner of dismissal.
+        self._popup: Optional[ToastPopup] = None
+        #: Cleared for good if the popup cannot be built, so a platform that
+        #: refuses it falls back once rather than on every notification.
+        self._popup_enabled = True
         #: URL the *currently displayed* toast opens when it is clicked, or
         #: None. A platform toast renders plain text, so a URL in the body is
         #: not a link and cannot be clicked; without this a notification that
@@ -252,6 +263,10 @@ class NotificationService(BaseService):
     def on_stop(self, timeout_ms: int) -> bool:
         self._dismiss_timer.stop()
         self._pending_link = None
+        if self._popup is not None:
+            self._popup.hide()
+            self._popup.deleteLater()
+            self._popup = None
         if self._tray is not None:
             self._tray.hide()
             self._tray.setContextMenu(None)
@@ -331,7 +346,53 @@ class NotificationService(BaseService):
         # after this belongs to no notification and must not open a stale
         # address.
         self._pending_link = None
+        if self._popup is not None:
+            self._popup.hide()
         self.log.debug("notification retired")
+
+    def _dismiss_now(self) -> None:
+        """End the current notification ahead of its timer.
+
+        The user closed or clicked the card, so the display window is over:
+        disarm the timer rather than leaving it to fire against a notification
+        that has already gone. The timer is single-shot and owned here, so
+        stopping it can never leave one armed for a card that is not shown.
+        """
+        self._dismiss_timer.stop()
+        self._retire_current()
+
+    def _on_popup_clicked(self) -> None:
+        """A click on the in-app card is a click on the notification."""
+        self._on_message_clicked()
+        self._dismiss_now()
+
+    def _ensure_popup(self) -> Optional["ToastPopup"]:
+        """The in-app card, built on first use. None if it cannot be shown.
+
+        Runs on this service's own thread — the GUI thread — because every
+        caller is `_deliver`, which the queued `toast_requested` connection
+        already placed there.
+        """
+        if not self._popup_enabled:
+            return None
+        if self._popup is not None:
+            return self._popup
+        if QApplication.instance() is None:
+            # Nothing to parent a window to. Not an error: a headless run
+            # still logs, and the tray fallback still applies.
+            return None
+        try:
+            popup = ToastPopup()
+        except Exception:  # noqa: BLE001
+            # A window that cannot be built is not a reason to lose the
+            # notification — fall back to the platform toast from here on.
+            self.log.exception("could not create the notification popup")
+            self._popup_enabled = False
+            return None
+        popup.clicked.connect(self._on_popup_clicked)
+        popup.dismissed.connect(self._dismiss_now)
+        self._popup = popup
+        return popup
 
     def notify(
         self,
@@ -385,17 +446,30 @@ class NotificationService(BaseService):
         # `messageClicked` the instant the toast appears.
         self._pending_link = link or None
 
-        try:
-            # Use Monitra brand QIcon so Windows system toast displays Monitra logo
-            tray_icon = self._icon if self._icon and not self._icon.isNull() else _LEVEL_ICONS.get(level, QSystemTrayIcon.MessageIcon.Information)
-            self._tray.showMessage(
-                title, message, tray_icon,
-                self.DISPLAY_MS,
-            )
-        except Exception:  # noqa: BLE001
-            self.log.exception("failed to display notification")
-            self._pending_link = None
-            return False
+        # The in-app card first, because it is the only surface that stays up
+        # for `DISPLAY_MS`. The platform toast is shown only if the card could
+        # not be — never both, or one event would notify the user twice.
+        popup = self._ensure_popup()
+        shown = False
+        if popup is not None:
+            try:
+                shown = popup.present(title, message, level)
+            except Exception:  # noqa: BLE001
+                self.log.exception("failed to show the notification popup")
+                shown = False
+
+        if not shown:
+            try:
+                # Use Monitra brand QIcon so Windows system toast displays Monitra logo
+                tray_icon = self._icon if self._icon and not self._icon.isNull() else _LEVEL_ICONS.get(level, QSystemTrayIcon.MessageIcon.Information)
+                self._tray.showMessage(
+                    title, message, tray_icon,
+                    self.DISPLAY_MS,
+                )
+            except Exception:  # noqa: BLE001
+                self.log.exception("failed to display notification")
+                self._pending_link = None
+                return False
 
         self._dismiss_timer.start(self.DISPLAY_MS + 500)
         return True
