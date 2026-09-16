@@ -14,6 +14,7 @@ than here: the timer commits locally the instant the user acts and reconciles
 with the backend afterwards, so the UI is immediate without the widget having
 to guess at, or duplicate, the authoritative state.
 """
+import math
 import uuid
 from datetime import date, datetime, timezone
 from typing import Callable, Optional, List, Dict, Any, Tuple
@@ -46,6 +47,8 @@ from ui.styles import (
     MONITRA_MARK_SVG, BORDER_MID, BUTTON_GRADIENT, BUTTON_GRADIENT_HOVER,
     BUTTON_GRADIENT_REVERSED, BUTTON_GRADIENT_REVERSED_HOVER,
     ACTIVE_ROW_BORDER,
+    TIMER_BUTTON_START, TIMER_BUTTON_START_HOVER,
+    TIMER_BUTTON_STOP, TIMER_BUTTON_STOP_HOVER,
 )
 from core.date_mode import as_calendar_day, is_live_date
 from core.logging_setup import get_logger
@@ -53,6 +56,10 @@ from core.time_format import format_hms, ist_today
 
 
 log = get_logger("ui.tasks")
+
+#: Rows per page of the task list. The same size the sidebar's project list
+#: pages by (PROJECTS_PER_PAGE), so the two lists page at one rhythm.
+TASKS_PER_PAGE = 10
 
 #: The one authoritative duration formatter (core.time_format.format_hms).
 #: Widgets must not keep private copies of duration formatting.
@@ -1278,12 +1285,15 @@ class TaskRow(QFrame):
                 f"border-left: 3px solid {PRIMARY}; "
                 f"border-bottom: 1px solid {BORDER_LIGHT};"
             )
-        # The selected task -- the one the sidebar's Play would start -- is
-        # tinted in the brand's light surface. A running row is not: its
-        # outline already says everything, and tinting it as well would put
-        # two indicators on one state.
-        background = PRIMARY_LIGHT if (self._is_selected and not self._is_running) else CARD_BG
-        hover = PRIMARY_LIGHT if (self._is_selected and not self._is_running) else "#FAFBFF"
+        # The selected task -- the one the sidebar's Play would start -- and
+        # the running task are both tinted in the brand's light surface, the
+        # same tint every row shows under the pointer. The running row keeps
+        # its outline as well: the fill says "this is the one", the outline
+        # says "and it is live", and together they read as one highlighted
+        # row rather than a white row with a frame around it.
+        tinted = self._is_selected or self._is_running
+        background = PRIMARY_LIGHT if tinted else CARD_BG
+        hover = PRIMARY_LIGHT if tinted else "#FAFBFF"
         self.setStyleSheet(f"""
             QFrame#TaskRow {{
                 background: {background};
@@ -1322,22 +1332,25 @@ class TaskRow(QFrame):
             }}
         """)
 
-        # Same gradient colors either way; only the direction flips while
-        # running, so "Stop" reads as visually distinct from its own idle
-        # "Start" state without a different color, shadow, or border.
+        # The row's timer control is red in both states -- the one solid red
+        # in the theme, so it stands apart from every gradient action button
+        # (Add Task, Save) as the control that starts and stops tracked time.
+        # Stop is a shade darker than Start, and each darkens again under
+        # the pointer, so the two states and the hover stay distinguishable
+        # without a second colour.
         if running:
             self._timer_btn.setText("Stop")
-            gradient, gradient_hover = BUTTON_GRADIENT_REVERSED, BUTTON_GRADIENT_REVERSED_HOVER
+            fill, fill_hover = TIMER_BUTTON_STOP, TIMER_BUTTON_STOP_HOVER
         else:
             self._timer_btn.setText("Start")
-            gradient, gradient_hover = BUTTON_GRADIENT, BUTTON_GRADIENT_HOVER
+            fill, fill_hover = TIMER_BUTTON_START, TIMER_BUTTON_START_HOVER
         self._timer_btn.setStyleSheet(f"""
             QPushButton {{
-                background: {gradient}; color: white;
+                background: {fill}; color: white;
                 border: none; border-radius: 9px;
                 font-size: 11.5px; font-weight: bold;
             }}
-            QPushButton:hover {{ background: {gradient_hover}; }}
+            QPushButton:hover {{ background: {fill_hover}; }}
             QPushButton:disabled {{ background: #E2E8F0; color: #94A3B8; }}
         """)
 
@@ -1546,6 +1559,11 @@ class TaskSection(QWidget):
         self._selected_task_id: Optional[int] = None
         self._user_id: Optional[int] = None
         self._search_text = ""
+        #: The page of the filtered list on screen, 1-based. Reset to 1 when
+        #: another project's tasks replace this one's and when the search
+        #: text changes; clamped into range on every rebuild, so a refresh
+        #: that shortens the list can never leave an empty page showing.
+        self._current_page = 1
         self.user_role = None
         self._has_loaded_tasks = False
         #: The calendar day the window is showing, and whether that makes this
@@ -1740,6 +1758,67 @@ class TaskSection(QWidget):
         self._scroll.setWidget(self._rows_container)
         card_layout.addWidget(self._scroll)
 
+        # ── Pagination footer ──────────────────────────────────────
+        # The same prev / "n/N" / next control the sidebar's project list
+        # has, on the card's bottom edge. Shown only when the filtered list
+        # runs past one page, hidden otherwise, so a short list keeps the
+        # card exactly as it was.
+        self._pagination_widget = QWidget(card)
+        self._pagination_widget.setObjectName("TaskPagination")
+        self._pagination_widget.setFixedHeight(40)
+        self._pagination_widget.setStyleSheet(
+            f"QWidget#TaskPagination {{ background: #F8FAFC; "
+            f"border-top: 1px solid {BORDER_LIGHT}; }}"
+        )
+        pag_layout = QHBoxLayout(self._pagination_widget)
+        pag_layout.setContentsMargins(16, 0, 12, 0)
+        pag_layout.setSpacing(6)
+
+        self._page_range_label = QLabel("", self._pagination_widget)
+        self._page_range_label.setStyleSheet(
+            f"color: {TEXT_MUTED}; font-size: 12px; background: transparent; border: none;"
+        )
+        pag_layout.addWidget(self._page_range_label)
+        pag_layout.addStretch()
+
+        page_btn_style = f"""
+            QPushButton {{
+                background: {CARD_BG};
+                border: 1px solid {BORDER_LIGHT};
+                border-radius: 6px;
+            }}
+            QPushButton:hover {{ background: {PRIMARY_LIGHT}; }}
+            QPushButton:disabled {{ background: transparent; border-color: transparent; }}
+        """
+        self._prev_page_btn = QPushButton(self._pagination_widget)
+        self._prev_page_btn.setIcon(icons.icon("chevron_left", TEXT_SECONDARY, 16))
+        self._prev_page_btn.setFixedSize(26, 26)
+        self._prev_page_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._prev_page_btn.setToolTip("Previous page")
+        self._prev_page_btn.setStyleSheet(page_btn_style)
+        self._prev_page_btn.clicked.connect(self._prev_page)
+        pag_layout.addWidget(self._prev_page_btn)
+
+        self._page_label = QLabel("1/1", self._pagination_widget)
+        self._page_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        self._page_label.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; background: transparent; border: none;"
+        )
+        self._page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pag_layout.addWidget(self._page_label)
+
+        self._next_page_btn = QPushButton(self._pagination_widget)
+        self._next_page_btn.setIcon(icons.icon("chevron_right", TEXT_SECONDARY, 16))
+        self._next_page_btn.setFixedSize(26, 26)
+        self._next_page_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._next_page_btn.setToolTip("Next page")
+        self._next_page_btn.setStyleSheet(page_btn_style)
+        self._next_page_btn.clicked.connect(self._next_page)
+        pag_layout.addWidget(self._next_page_btn)
+
+        self._pagination_widget.hide()
+        card_layout.addWidget(self._pagination_widget)
+
         # Status / empty / loading label
         self._status_label = QLabel("Select a project to see tasks.", self)
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1775,6 +1854,10 @@ class TaskSection(QWidget):
         self._project = project
         if previous_project_id != (project or {}).get("id"):
             self._set_selected_task(None)
+            # Another project's list: start at its first page. A refresh of
+            # the same project keeps the page the user is reading (clamped
+            # in _rebuild_rows if the list got shorter).
+            self._current_page = 1
         self._project_color = color
         self._search_text = ""
         self.add_task_available.emit(True)
@@ -1819,6 +1902,7 @@ class TaskSection(QWidget):
         self._tasks = []
         self._project = None
         self._has_loaded_tasks = False
+        self._current_page = 1
         self._set_selected_task(None)
 
     # ── Selection: the task the circular Play control starts ─────────────────
@@ -1900,6 +1984,9 @@ class TaskSection(QWidget):
         if text == self._search_text:
             return
         self._search_text = text
+        # A new filter is a new list; page 1 is the only page it is known
+        # to have.
+        self._current_page = 1
         self._rebuild_rows()
 
     def set_viewing_date(self, target_date) -> None:
@@ -2017,13 +2104,9 @@ class TaskSection(QWidget):
     def _rebuild_rows(self) -> None:
         self._clear_rows()
 
-        filtered = [
-            t for t in self._visible_tasks()
-            if self._search_text.lower() in (t.get("name") or t.get("task_name") or "").lower()
-        ]
         # Newest tasks first. The tracked task is not special-cased: it keeps
         # whatever position it already has.
-        filtered.sort(key=self._task_order_key)
+        filtered = self._filtered_tasks()
 
         project_name = (
             self._project.get("project_name", "Project") if self._project else "Project"
@@ -2033,11 +2116,22 @@ class TaskSection(QWidget):
             msg = "No tasks match your search." if self._search_text else "No tasks found for this project."
             self._status_label.setText(msg)
             self._status_label.show()
+            self._pagination_widget.hide()
             return
 
         self._status_label.hide()
 
-        for i, task in enumerate(filtered):
+        # One page of the filtered, ordered list. The page is clamped here
+        # rather than where it is set, so a list that shrank underneath the
+        # user -- a delete, a task completed elsewhere, a refresh -- falls
+        # back onto its last page instead of showing an empty one.
+        total_pages = max(1, math.ceil(len(filtered) / TASKS_PER_PAGE))
+        self._current_page = max(1, min(self._current_page, total_pages))
+        start_idx = (self._current_page - 1) * TASKS_PER_PAGE
+        page_tasks = filtered[start_idx : start_idx + TASKS_PER_PAGE]
+        self._render_pagination(start_idx, len(page_tasks), len(filtered), total_pages)
+
+        for task in page_tasks:
             color = self._project_color
             row = TaskRow(
                 task=task,
@@ -2068,11 +2162,55 @@ class TaskSection(QWidget):
             self._rows_layout.insertWidget(self._rows_layout.count() - 1, row)
             self._task_rows.append(row)
 
+    # ── Pagination ────────────────────────────────────────────────────────────
+
+    def _filtered_tasks(self) -> List[Dict[str, Any]]:
+        """The visible tasks that match the search, in display order --
+        the list the pages are cut from."""
+        filtered = [
+            t for t in self._visible_tasks()
+            if self._search_text.lower() in (t.get("name") or t.get("task_name") or "").lower()
+        ]
+        filtered.sort(key=self._task_order_key)
+        return filtered
+
+    def _page_count(self) -> int:
+        return max(1, math.ceil(len(self._filtered_tasks()) / TASKS_PER_PAGE))
+
+    def _prev_page(self) -> None:
+        if self._current_page > 1:
+            self._current_page -= 1
+            self._rebuild_rows()
+
+    def _next_page(self) -> None:
+        if self._current_page < self._page_count():
+            self._current_page += 1
+            self._rebuild_rows()
+
+    def _render_pagination(
+        self, start_idx: int, shown: int, total: int, total_pages: int
+    ) -> None:
+        """Show the footer when the list runs past one page; hide it otherwise."""
+        if total_pages <= 1:
+            self._pagination_widget.hide()
+            return
+        self._page_range_label.setText(
+            f"Showing {start_idx + 1}\u2013{start_idx + shown} of {total}"
+        )
+        self._page_label.setText(f"{self._current_page}/{total_pages}")
+        self._prev_page_btn.setEnabled(self._current_page > 1)
+        self._next_page_btn.setEnabled(self._current_page < total_pages)
+        self._pagination_widget.show()
+
     def _clear_rows(self) -> None:
         for row in self._task_rows:
             self._rows_layout.removeWidget(row)
             row.deleteLater()
         self._task_rows.clear()
+        # No rows, no pager. _rebuild_rows shows it again once it knows how
+        # many pages the new list has; the loading, error and cleared states
+        # never do, so an empty card cannot carry a footer for rows it lost.
+        self._pagination_widget.hide()
 
     def _resize_columns(self, left_key: str, right_key: str, delta: int) -> None:
         """

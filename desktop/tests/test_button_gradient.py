@@ -7,7 +7,9 @@ see test_topbar.py).
 """
 from unittest.mock import MagicMock
 
-from ui.styles import BUTTON_GRADIENT, BUTTON_GRADIENT_REVERSED
+from ui.styles import (
+    BUTTON_GRADIENT, BUTTON_GRADIENT_REVERSED, TIMER_BUTTON_START, TIMER_BUTTON_STOP,
+)
 from ui.task_table import (
     AddTaskDialog,
     EditTaskDialog,
@@ -39,20 +41,29 @@ def test_add_task_button_uses_the_shared_gradient(qapp):
     assert not bar._add_task_btn.icon().isNull()
 
 
-def test_start_button_uses_the_normal_gradient_direction(qapp):
+def test_start_button_is_solid_red_not_the_gradient(qapp):
+    """The row's timer control is the one red button in the theme: it starts
+    and stops tracked time, and must never blend into the gradient action
+    buttons (Add Task, Save) around it."""
     row = TaskRow({"id": 1, "name": "Task A"}, project_id=1, project_name="P", project_color="#000")
-    assert BUTTON_GRADIENT in row._timer_btn.styleSheet()
-    assert BUTTON_GRADIENT_REVERSED not in row._timer_btn.styleSheet()
+    style = row._timer_btn.styleSheet()
+    assert f"background: {TIMER_BUTTON_START};" in style
+    assert BUTTON_GRADIENT not in style
+    assert BUTTON_GRADIENT_REVERSED not in style
+    assert "qlineargradient" not in style
 
 
-def test_stop_button_uses_the_reversed_gradient_direction(qapp):
-    """Same two colors as Start, mirrored direction -- the only visual cue
-    (besides the button's own text/label) that the timer is running."""
+def test_stop_button_is_a_darker_red_and_start_returns_after_stopping(qapp):
+    """Stop is one shade darker than Start -- the two states stay
+    distinguishable without a second colour -- and stopping restores Start."""
     row = TaskRow({"id": 1, "name": "Task A"}, project_id=1, project_name="P", project_color="#000")
     row.mark_running(entry_id=5)
-    assert BUTTON_GRADIENT_REVERSED in row._timer_btn.styleSheet()
-    assert BUTTON_GRADIENT not in row._timer_btn.styleSheet()
+    style = row._timer_btn.styleSheet()
+    assert f"background: {TIMER_BUTTON_STOP};" in style
+    assert TIMER_BUTTON_STOP != TIMER_BUTTON_START
+    assert "qlineargradient" not in style
+    assert row._timer_btn.text() == "Stop"
 
     row.mark_stopped(banked_seconds=60)
-    assert BUTTON_GRADIENT in row._timer_btn.styleSheet()
-    assert BUTTON_GRADIENT_REVERSED not in row._timer_btn.styleSheet()
+    assert f"background: {TIMER_BUTTON_START};" in row._timer_btn.styleSheet()
+    assert row._timer_btn.text() == "Start"
