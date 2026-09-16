@@ -979,6 +979,24 @@ class ManualTimeEntryDialog(QDialog):
 
 # ─── Task Row ─────────────────────────────────────────────────────────────────
 
+class SingleClickButton(QPushButton):
+    """A push button on which a double-click is one click.
+
+    Qt delivers a double-click as press, release, *double-click*, release,
+    and a plain QPushButton treats the double-click event as a second press
+    -- so it emits `clicked` twice. On the Start/Stop button the first click
+    starts the timer and re-labels the button "Stop" before the second one
+    lands, which then stops it: a double-click on Start produced a
+    zero-second session, and on Stop it started the task again. Ignoring the
+    double-click event (rather than pressing again) leaves exactly one
+    `clicked` per double-click, on whatever the button said when it was
+    pressed.
+    """
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        event.accept()
+
+
 class TaskRow(QFrame):
     """
     A single task row widget.
@@ -1162,7 +1180,7 @@ class TaskRow(QFrame):
         action_col.setSpacing(14)
         action_col.addStretch()
 
-        self._timer_btn = QPushButton(self)
+        self._timer_btn = SingleClickButton(self)
         self._timer_btn.setFixedHeight(32)
         self._timer_btn.setFixedWidth(96)
         self._timer_btn.setCursor(Qt.CursorShape.PointingHandCursor)

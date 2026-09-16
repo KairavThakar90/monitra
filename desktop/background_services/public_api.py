@@ -161,6 +161,20 @@ class BackgroundApi:
             project_id, task_id, task_name, for_date=for_date
         )
 
+    def request_exit(
+        self, on_ready: Callable[[], None], *, stop_timer: bool = True
+    ) -> None:
+        """Prepare the runtime for the process to exit, then call `on_ready`.
+
+        An explicit quit always stops the running timer first; `on_ready` is
+        called once the stop has reached the backend, or once it is clear it
+        cannot right now (it stays durably queued either way). Never blocks:
+        the window ignores the close, waits for the callback, and only then
+        quits the application. `stop_timer=False` is reserved for a restart
+        (installing an update), where the session is meant to survive.
+        """
+        self._runtime.prepare_exit(on_ready, stop_timer=stop_timer)
+
     def timer_elapsed_seconds(self) -> int:
         return self._runtime.timer.elapsed_seconds()
 

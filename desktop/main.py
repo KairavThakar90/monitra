@@ -122,6 +122,16 @@ class MainWindow(QMainWindow):
         self.runtime = runtime
         self.api = BackgroundApi(runtime)
         self._force_quit = False
+        #: Set once an exit is under way, whichever path started it. From
+        #: then on a close is neither questioned nor repeated.
+        self._exiting = False
+        #: The exit is a restart (an update being installed), not a quit: the
+        #: running session is meant to survive it, as after any interruption.
+        self._exit_is_restart = False
+        #: The OS is ending the session (shutdown, restart, sign-out). Not a
+        #: quit either: no dialog, no stop -- the session record stays for
+        #: the next launch to recover.
+        self._os_session_ending = False
         self._startup_guard: Optional[QTimer] = None
 
         self.setWindowTitle(f"{APP_DISPLAY_NAME} {VERSION}")
@@ -216,12 +226,12 @@ class MainWindow(QMainWindow):
         self._dashboard.logout_requested.connect(self._on_logout)
         self._dashboard.unauthorized_error.connect(self._on_session_expired)
         # An update installer is running and is waiting for this process to
-        # exit. It takes the ordinary explicit-quit path deliberately: the
-        # installer needs a *clean* shutdown, which is exactly what that path
-        # already guarantees — services stopped in reverse order, the cache
-        # flushed and the database closed — so tracked time and the sync queue
-        # are as safe as on any other quit.
-        self._dashboard.quit_requested.connect(self.quit_application)
+        # exit. It takes the controlled shutdown path -- services stopped in
+        # reverse order, the cache flushed and the database closed -- but as
+        # a *restart*, not a quit: the running session is left in its durable
+        # record for the relaunched process to recover, exactly as after any
+        # other interruption (docs/TIMING_MODEL.md §7).
+        self._dashboard.quit_requested.connect(self.exit_for_restart)
 
         self._stack.addWidget(self._login)
         self._stack.addWidget(self._dashboard)
@@ -438,9 +448,38 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def quit_application(self) -> None:
-        """Explicit quit: full controlled shutdown."""
+        """Explicit quit: stop the timer, then a full controlled shutdown."""
         self._force_quit = True
         self.close()
+
+    def exit_for_restart(self) -> None:
+        """Exit so an update can be installed; the session survives it."""
+        self._exit_is_restart = True
+        self._force_quit = True
+        self.close()
+
+    def on_os_session_ending(self, manager) -> None:
+        """The OS is shutting down, restarting, or signing the user out.
+
+        Connected to `QGuiApplication.commitDataRequest`, which Qt emits when
+        the OS asks the application to save its work. This is an interruption
+        in the timing model's sense, not a quit: the timer is not stopped, no
+        dialog can be shown, and the session record stays exactly as it is
+        for the next launch to recover -- the same outcome as a power cut,
+        by design (see TimerService.recover). Nothing needs to be written
+        here, because the record was written when the timer started and the
+        liveness heartbeat is already on disk; this only makes sure that if
+        Qt goes on to close the window, the close is not taken for a Quit.
+
+        Not verifiable headless: Windows delivers WM_QUERYENDSESSION only to
+        a real session, so this path is covered by the manual matrix.
+        """
+        log.info("OS session is ending; leaving the session record for recovery")
+        self._os_session_ending = True
+        try:
+            manager.release()
+        except Exception:  # noqa: BLE001
+            pass
 
     def closeEvent(self, event) -> None:
         """
@@ -450,12 +489,32 @@ class MainWindow(QMainWindow):
         synchronous 3-second network call and a synchronous batch upload inside
         this handler, which is why quitting could appear to hang. Any work still
         outstanding is durable and is completed by the next run.
+
+        An explicit quit -- the dialog's Quit, a remembered Quit, the tray
+        menu -- **always stops a running timer** before the process exits.
+        The remembered choice decides only whether the dialog is shown; it
+        has no say over the timer. The stop is durable the instant it is
+        requested, and the window then waits (without blocking) for it to
+        reach the backend, bounded by `EXIT_STOP_FLUSH_BUDGET_MS`, before the
+        application quits.
         """
+        if self._exiting:
+            # The close is already being carried out; a second X or tray
+            # Quit joins it. Ignored rather than accepted so the window stays
+            # up until the exit preparation calls back and quits.
+            event.ignore()
+            return
+
         # Recorded before anything hides or closes, while the window still
         # reports the size and position the user arranged. This is a local
         # settings write, not work: the rule this handler exists to honour is
         # that nothing here waits on the network or on a thread.
         self._remember_geometry()
+
+        if self._os_session_ending:
+            log.info("window closed by the OS session ending; not treated as a quit")
+            event.accept()
+            return
 
         if not self._force_quit:
             choice = self._ask_close_intent()
@@ -472,10 +531,21 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
-        log.info("explicit quit requested")
-        event.accept()
-        # Let the close finish, then tear the runtime down from aboutToQuit so
-        # there is exactly one shutdown path.
+        stop_timer = not self._exit_is_restart
+        log.info("explicit %s requested", "restart" if self._exit_is_restart else "quit")
+        self._exiting = True
+        # The window stays on screen, with the status bar saying why, until
+        # the stop is delivered or cannot be; then the application quits and
+        # the runtime is torn down from aboutToQuit -- exactly one shutdown
+        # path, whatever triggered the exit.
+        event.ignore()
+        if stop_timer and self.api.is_timer_running():
+            self._dashboard.note_exit_in_progress("Stopping your timer before Monitra exits…")
+        self.api.request_exit(self._on_exit_ready, stop_timer=stop_timer)
+
+    def _on_exit_ready(self) -> None:
+        """The runtime has done what it can for the exit; leave now."""
+        log.info("exit preparation complete; quitting the application")
         QApplication.instance().quit()
 
     def _ask_close_intent(self) -> str:
@@ -558,6 +628,12 @@ def main() -> int:
 
     # Exactly one shutdown path, whatever triggers the exit.
     app.aboutToQuit.connect(lambda: runtime.shutdown())
+    # An OS shutdown or sign-out is an interruption, not a quit: the running
+    # session is left for the next launch to recover. Direct, as Qt requires
+    # for this signal -- the session manager is waiting on the answer.
+    app.commitDataRequest.connect(
+        window.on_os_session_ending, Qt.ConnectionType.DirectConnection
+    )
 
     window.show()
     runtime.mark_ui_ready()

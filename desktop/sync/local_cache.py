@@ -531,13 +531,22 @@ class LocalCache:
             (reason, time.time(), action_id),
         )
 
-    def fail_action(self, action_id: str, error_message: str, max_retries: int = 10) -> bool:
+    def fail_action(
+        self, action_id: str, error_message: str, max_retries: Optional[int] = 10
+    ) -> bool:
         """
         Record a failure and schedule a retry with exponential backoff + jitter.
 
         Jitter matters at fleet scale: without it, every client that lost the
         backend at the same moment retries at exactly the same moment, which
         is a self-inflicted thundering herd on recovery.
+
+        `max_retries=None` means the action is never parked as `failed`: it
+        keeps retrying at the capped backoff for as long as the process runs.
+        That is reserved for the timer's own start/stop actions, where giving
+        up is worse than any amount of waiting -- an abandoned stop leaves the
+        entry running on the backend, and the next launch adopts it as a
+        timer the user never stopped.
 
         :return: True if the action will be retried.
         """
@@ -551,7 +560,7 @@ class LocalCache:
             return False
 
         retry_count = row["retry_count"] + 1
-        if retry_count > max_retries:
+        if max_retries is not None and retry_count > max_retries:
             self._storage.execute(
                 "UPDATE pending_actions SET status = 'failed', error_message = ?, updated_at = ? "
                 "WHERE id = ?",
@@ -570,8 +579,9 @@ class LocalCache:
             (retry_count, now + delay, error_message, now, action_id),
         )
         log.info(
-            "action retry %d/%d in %.1fs: %s",
-            retry_count, max_retries, delay, error_message, extra={"op": action_id},
+            "action retry %d/%s in %.1fs: %s",
+            retry_count, max_retries if max_retries is not None else "unbounded",
+            delay, error_message, extra={"op": action_id},
         )
         return True
 
@@ -601,6 +611,81 @@ class LocalCache:
             "DELETE FROM pending_actions WHERE status IN ('failed', 'cancelled') AND created_at < ?",
             (cutoff,),
         )
+
+    #: The actions that move tracked time. They share one retry contract:
+    #: never abandoned on a transient failure, and revived at every launch.
+    TIMER_ACTION_TYPES = ("start_timer", "stop_timer", "switch_timer")
+
+    def requeue_timer_actions_for_new_run(self) -> int:
+        """Give every timer action a fresh attempt at the next launch.
+
+        A queued stop that exhausted its retries under an older build was
+        parked as `failed`, and nothing reads a failed row again -- so the
+        entry it names ran on the backend until the next launch adopted it
+        as "a timer that was still running". The same reasoning as
+        `requeue_telemetry_for_new_run`, applied to the rows that matter
+        most: a launch is when the cause has plausibly been fixed, and the
+        instant the user pressed Stop travels in the payload, so a late
+        delivery still records the right end time.
+
+        Called before `clear_stale_actions`, which would otherwise delete a
+        failed stop older than a day.
+
+        :return: how many rows were revived.
+        """
+        placeholders = ", ".join("?" for _ in self.TIMER_ACTION_TYPES)
+        cursor = self._storage.execute(
+            f"UPDATE pending_actions SET status = 'pending', retry_count = 0, "
+            f"next_retry_at = ?, updated_at = ? "
+            f"WHERE status = 'failed' AND action_type IN ({placeholders})",
+            (time.time(), time.time(), *self.TIMER_ACTION_TYPES),
+        )
+        revived = cursor.rowcount or 0
+        if revived:
+            log.info("revived %d failed timer action(s) for a fresh attempt", revived)
+        return revived
+
+    def pending_stop_count(self, exclude_client_op: Optional[str] = None) -> int:
+        """How many stops are still waiting to reach the backend.
+
+        The exit path waits on this number, and a start defers on it: a stop
+        that has not landed yet must reach the backend before the start that
+        follows it, or the backend answers the start with a 409 for the very
+        entry the stop is about to end. `exclude_client_op` leaves out the
+        stop of one session -- the start's own, which by construction never
+        precedes it.
+        """
+        rows = self._storage.query_all(
+            "SELECT payload FROM pending_actions "
+            "WHERE action_type = 'stop_timer' "
+            "AND status IN ('pending', 'processing', 'retry')",
+        )
+        if exclude_client_op is None:
+            return len(rows)
+        count = 0
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                count += 1
+                continue
+            if payload.get("client_op") != exclude_client_op:
+                count += 1
+        return count
+
+    def has_pending_stop_for_client_op(self, client_op: Optional[str]) -> bool:
+        """Whether a stop for this tracking session is still waiting to be sent.
+
+        The entry-id form (`has_pending_stop_for_entry`) cannot see a stop
+        queued before the backend issued an id -- a session started offline,
+        or stopped a second after Start while the request was in flight. The
+        backend's entry carries the session's `client_op`, so this is how a
+        reconciliation recognises that the running entry it is being shown
+        is one the user has already stopped.
+        """
+        if not client_op:
+            return False
+        return self.has_pending_action_for_client_op(client_op, "stop_timer")
 
     # ── Telemetry queue housekeeping ──────────────────────────────────────────
 

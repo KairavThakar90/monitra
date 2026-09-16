@@ -69,13 +69,39 @@ REANCHOR_TOLERANCE_SECONDS = 5
 
 
 class TimerStatus:
-    """Timer lifecycle states (STEP 9 of the stability spec)."""
+    """Timer lifecycle states (STEP 9 of the stability spec).
+
+    In-memory states of the service. The *durable* state is simpler and is
+    what survives a crash, a kill or a power cut:
+
+    * a session record in `app_state.timer_state` and no queued stop for it
+      means the timer is RUNNING -- or, read by a later process, that it was
+      INTERRUPTED and must be recovered as running;
+    * a queued `stop_timer` action means the session is STOPPING: the user
+      ended it, and only the backend has yet to hear;
+    * neither means IDLE / STOPPED.
+
+    The record is written once, at start, and removed once, at stop, after
+    the stop has been queued. Because the stop is durable before the record
+    goes, no instant exists at which an intentional stop can be lost, and no
+    instant at which an interruption looks like a stop.
+    """
     IDLE = "IDLE"
     STARTING = "STARTING"
     RUNNING = "RUNNING"
     STOPPING = "STOPPING"
     STOPPED = "STOPPED"
     RECOVERING = "RECOVERING"
+
+
+class _QueuedConflict(Exception):
+    """A 409 delivered by the queue, shaped like `ActiveTimerConflict`."""
+
+    status_code = 409
+
+    def __init__(self, active_entry: Optional[Dict[str, Any]]) -> None:
+        super().__init__("User already has an active timer.")
+        self.active_entry = active_entry
 
 
 def _utc_now() -> datetime:
@@ -400,6 +426,22 @@ class TimerService(BaseService):
         self._emit_tick()
         self._timing("start.local")
 
+        if self._stop_is_pending_for_another_session(client_op):
+            # A stop is still on its way to the backend -- the switch this
+            # start is half of, or a stop the network is holding. Sent
+            # in-process now, this start would overtake it: the backend
+            # still has that entry running and answers 409 for the very
+            # entry the queued stop is about to end. The durable queue is
+            # ordered (stops first, and a start defers behind any stop
+            # it did not follow), so the start goes through it instead.
+            # `_on_queued_start_completed` binds the entry id when it lands.
+            self.log.info(
+                "a stop is still queued; sending the start for %s through the queue "
+                "so it cannot overtake it", client_op,
+            )
+            self._enqueue_start(project_id, task_id, started_at, client_op)
+            return
+
         def call():
             # `started_at` is the same absolute instant the local clock is
             # anchored to, so the entry the backend writes and the elapsed
@@ -432,23 +474,44 @@ class TimerService(BaseService):
                 self._start_refused(exc)
                 return
             self.log.warning("start_time_entry failed (%s); queueing durably", exc)
-            self._session["sync_status"] = "queued"
-            self._persist()
-            self.runtime.sync.enqueue(
-                "start_timer",
-                {
-                    "project_id": project_id,
-                    "task_id": task_id,
-                    "started_at": started_at,
-                    "client_op": client_op,
-                },
-                idempotency_key=f"start:{client_op}",
-                entity_type="time_entry",
-            )
+            self._enqueue_start(project_id, task_id, started_at, client_op)
 
         self.runtime.tasks.submit(
             call, on_success=on_success, on_error=on_error, key=f"timer-start:{task_id}"
         )
+
+    def _enqueue_start(
+        self, project_id: int, task_id: int, started_at: str, client_op: str
+    ) -> None:
+        """Put this session's start into the durable queue.
+
+        Idempotent on `start:{client_op}`: queued twice -- once as a fallback
+        for an in-flight request and once because the request failed -- it is
+        one row, and the backend answers a replay with the same entry.
+        """
+        if self._session is not None and self._session.get("client_op") == client_op:
+            self._session["sync_status"] = "queued"
+            self._persist()
+        self.runtime.sync.enqueue(
+            "start_timer",
+            {
+                "project_id": project_id,
+                "task_id": task_id,
+                "started_at": started_at,
+                "client_op": client_op,
+            },
+            idempotency_key=f"start:{client_op}",
+            entity_type="time_entry",
+        )
+
+    def _stop_is_pending_for_another_session(self, client_op: Optional[str]) -> bool:
+        if not self._cache:
+            return False
+        try:
+            return self._cache.pending_stop_count(exclude_client_op=client_op) > 0
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not check for queued stops")
+            return False
 
     def _bind_canonical_entry(self, entry: Dict[str, Any]) -> None:
         """Adopt the backend's record of the session this client started.
@@ -621,6 +684,20 @@ class TimerService(BaseService):
         self._stop_trackers()
         self._timing("stop.local", stopped_at=stopped_at, elapsed_seconds=elapsed)
 
+        if notify_backend:
+            # The stop is made durable *before* the session record is
+            # cleared, and it is only ever sent through the durable queue.
+            # It used to be sent in-process first and queued only if that
+            # failed, which left a window -- the process killed after the
+            # record was cleared and before the request landed -- in which
+            # the stop existed nowhere. The backend then kept the entry
+            # running, and the next launch adopted it as a timer the user
+            # had never stopped. Ordered this way, a crash at any instant
+            # leaves either the running record (recovered as a running
+            # timer) or the queued stop (delivered with the instant the user
+            # pressed Stop), never neither.
+            self._enqueue_stop(session, stopped_at, elapsed)
+
         # Clear local state now: the user asked to stop, so the clock stops,
         # regardless of whether the backend is reachable.
         self._session = None
@@ -640,8 +717,6 @@ class TimerService(BaseService):
 
         self.timer_stopped.emit({"session": session, "elapsed_seconds": elapsed, "result": {}})
 
-        client_op = session.get("client_op")
-
         if not notify_backend:
             # The entry is already stopped server-side. Everything local has
             # happened above; issuing a stop request now would conflict with
@@ -650,13 +725,33 @@ class TimerService(BaseService):
                 "entry %s stopped locally; the backend already stopped it", entry_id
             )
             self.timer_finalized.emit({"session": session, "entry": None})
-            return
 
+    def _enqueue_stop(self, session: Dict[str, Any], stopped_at: str, elapsed: int) -> None:
+        """Queue the stop for `session` durably, with the instant it happened.
+
+        The sync consumer is the only thing that talks to the backend about
+        it, and `timer_finalized` fires from its completion -- directly after
+        a click when the backend is reachable, or minutes later from a retry
+        when it is not. Either way the entry ends at `stopped_at`, because
+        the request carries the event's age rather than its arrival time.
+        """
+        entry_id = session.get("entry_id")
+        client_op = session.get("client_op")
+        task_id = session.get("task_id")
         if not entry_id or entry_id <= 0:
-            # The start never reached the backend, so there is no entry id to
-            # stop yet. The queued stop carries the same client_op as the
-            # queued start; the sync consumer fills in the real entry id once
-            # the start succeeds, and defers this action until it can.
+            # The start has not reached the backend yet -- it is in flight,
+            # or queued. Queue it too (idempotent on the session key: a
+            # start that also lands in-process is answered with the same
+            # entry), so that the stop below always has a start to wait
+            # for. Before this, a process that died while the start was in
+            # flight left a stop with nothing to resolve its id: it waited
+            # out its deferral budget and was cancelled, while the entry the
+            # start had created ran on the backend until the next launch
+            # adopted it.
+            self._enqueue_start(
+                session.get("project_id"), task_id,
+                session.get("started_at_utc"), client_op,
+            )
             self.runtime.sync.enqueue(
                 "stop_timer",
                 {
@@ -670,36 +765,18 @@ class TimerService(BaseService):
                 entity_type="time_entry",
             )
             return
-
-        def call():
-            return self._time_entry_service.stop_time_entry(entry_id, stopped_at=stopped_at)
-
-        def on_success(result) -> None:
-            entry = result if isinstance(result, dict) else {}
-            self.log.info(
-                "timing event=stop.finalized client_op=%s entry=%s total_seconds=%s "
-                "local_elapsed=%s start_time=%s end_time=%s",
-                client_op, entry_id, entry.get("total_seconds"), elapsed,
-                entry.get("start_time"), entry.get("end_time"),
-            )
-            self.timer_finalized.emit({"session": session, "entry": entry or None})
-
-        def on_error(exc: BaseException) -> None:
-            self.log.warning("stop_time_entry failed (%s); queueing durably", exc)
-            self.runtime.sync.enqueue(
-                "stop_timer",
-                {"entry_id": entry_id, "task_id": task_id,
-                 "stopped_at": stopped_at, "client_op": client_op},
-                idempotency_key=f"stop:{entry_id}",
-                entity_type="time_entry",
-                entity_id=str(entry_id),
-            )
-
-        self.runtime.tasks.submit(
-            call,
-            on_success=on_success,
-            on_error=on_error,
-            key=f"timer-stop:{entry_id}",
+        self.runtime.sync.enqueue(
+            "stop_timer",
+            {
+                "entry_id": entry_id,
+                "task_id": task_id,
+                "elapsed_seconds": elapsed,
+                "stopped_at": stopped_at,
+                "client_op": client_op,
+            },
+            idempotency_key=f"stop:{entry_id}",
+            entity_type="time_entry",
+            entity_id=str(entry_id),
         )
 
     def switch_tracking(
@@ -802,6 +879,22 @@ class TimerService(BaseService):
         entry = result.get("entry") if isinstance(result, dict) else None
         entry_id = (result or {}).get("entry_id")
         client_op = (result or {}).get("client_op")
+        if (result or {}).get("conflict") and not entry_id:
+            # The backend refused the queued start because another entry is
+            # running -- the same answer the in-process path handles in
+            # `_start_refused`. A queued start used to swallow it here, so
+            # the local clock kept counting a session the backend would
+            # never record.
+            active = (result or {}).get("active_entry")
+            live = (
+                self._session is not None and client_op
+                and self._session.get("client_op") == client_op
+            )
+            if live:
+                self._start_refused(
+                    _QueuedConflict(active if isinstance(active, dict) else None)
+                )
+            return
         if not entry_id or not client_op:
             return
         if not self._session or self._session.get("client_op") != client_op:
@@ -822,13 +915,35 @@ class TimerService(BaseService):
 
     # ── Recovery ──────────────────────────────────────────────────────────────
 
-    def recover(self) -> Optional[Dict[str, Any]]:
+    def recover(
+        self, previous_run: Optional[Dict[str, Any]] = None
+    ) -> Optional[Dict[str, Any]]:
         """
         Restore a timer left running by a previous process.
 
+        The persisted record is the whole of the evidence, and it is only
+        ever present for a session that was *not* stopped: an explicit stop
+        queues its stop action and removes the record before this process
+        could have read it. So a record here means the previous process was
+        interrupted -- a crash, a kill, a power cut, an OS shutdown -- while
+        the timer ran, and the session continues from the same
+        `started_at_utc`. The time the machine was off is part of the
+        session, exactly as it would have been had the process survived;
+        what does not continue is any evidence of activity for that gap,
+        because the sub-trackers only start again now.
+
+        A record whose stop is already queued is the one exception: the user
+        stopped, the stop is on its way, and the process died before the
+        record was removed. That session is not resurrected.
+
         Idempotent: recovering twice yields the same session and never creates
         a duplicate entry, because recovery adopts the persisted record rather
-        than starting a new one.
+        than starting a new one. `recovery_count` on the record says how many
+        processes have adopted it.
+
+        :param previous_run: The previous process's liveness record, when the
+            recovery service has one. Its last heartbeat bounds when the
+            interruption happened, for the log and the user-facing notice.
         """
         if not self._cache or self.is_running():
             return None
@@ -839,13 +954,33 @@ class TimerService(BaseService):
             self.log.warning("discarding unusable persisted timer record: %r", record)
             self._cache.clear_app_state(TIMER_STATE_KEY)
             return None
+        if self._stop_already_queued_for(record):
+            self._timing_for(record, "recover.discarded", reason="stop_queued")
+            self.log.info(
+                "not recovering the timer for task %s: the user stopped it and its "
+                "stop is queued", record.get("task_id"),
+            )
+            self._cache.clear_app_state(TIMER_STATE_KEY)
+            return None
 
         self._set_status(TimerStatus.RECOVERING)
+        now = _utc_now()
+        interrupted_at = self._interruption_instant(record, previous_run, now)
         self._session = dict(record)
+        self._session["recovery_count"] = int(record.get("recovery_count") or 0) + 1
+        self._session["recovered_at_utc"] = now.isoformat()
+        self._session["interrupted_at_utc"] = (
+            interrupted_at.isoformat() if interrupted_at else None
+        )
+        self._session["updated_at"] = now.isoformat()
+        self._persist()
         elapsed = self.elapsed_seconds()
+        gap = int((now - interrupted_at).total_seconds()) if interrupted_at else None
         self.log.info(
-            "recovered timer for task %s, entry %s, elapsed %ds",
+            "recovered timer for task %s, entry %s, elapsed %ds (interrupted %ss ago, "
+            "recovery %d)",
             record.get("task_id"), record.get("entry_id"), elapsed,
+            gap if gap is not None else "?", self._session["recovery_count"],
         )
         self._set_status(TimerStatus.RUNNING)
         self._tick_timer.start()
@@ -853,8 +988,117 @@ class TimerService(BaseService):
         self.timer_recovered.emit(dict(self._session))
         self.timer_started.emit(dict(self._session))
         self._emit_tick()
-        self._timing("recover", elapsed_seconds=elapsed)
+        self._timing(
+            "recover", elapsed_seconds=elapsed, interrupted_for_seconds=gap,
+            recovery_count=self._session["recovery_count"],
+        )
         return dict(self._session)
+
+    def _stop_already_queued_for(self, record: Dict[str, Any]) -> bool:
+        try:
+            return bool(
+                self._cache.has_pending_stop_for_client_op(record.get("client_op"))
+                or (record.get("entry_id")
+                    and self._cache.has_pending_stop_for_entry(record.get("entry_id")))
+            )
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not check for a queued stop; recovering the timer")
+            return False
+
+    @staticmethod
+    def _interruption_instant(
+        record: Dict[str, Any], previous_run: Optional[Dict[str, Any]], now: datetime
+    ) -> Optional[datetime]:
+        """When the previous process was last known to be alive.
+
+        The liveness heartbeat is written every 15 seconds, so it bounds the
+        interruption to within that; the session's own `updated_at` is the
+        fallback for a record written by a build without one. Never later
+        than now, and never earlier than the session's start.
+        """
+        candidates = []
+        beat = (previous_run or {}).get("last_heartbeat")
+        if isinstance(beat, (int, float)) and beat > 0:
+            candidates.append(datetime.fromtimestamp(beat, tz=timezone.utc))
+        updated = parse_utc(record.get("updated_at"))
+        if updated is not None:
+            candidates.append(updated)
+        if not candidates:
+            return None
+        instant = max(candidates)
+        started = parse_utc(record.get("started_at_utc"))
+        if started is not None and instant < started:
+            instant = started
+        return min(instant, now)
+
+    def _timing_for(self, record: Dict[str, Any], event: str, **fields: Any) -> None:
+        """`_timing` for a record that is not (or not yet) the live session."""
+        held, self._session = self._session, record
+        try:
+            self._timing(event, **fields)
+        finally:
+            self._session = held
+
+    def reconcile_absent_remote(self, requested_at: datetime) -> bool:
+        """The backend says nothing is running; decide what that means here.
+
+        Called by the reconciliation read (`GET /time-entries/active`) when
+        it answers `entry: null`. The backend is the source of truth for
+        tracked time, so a session this client is counting against an entry
+        the backend has already finalized -- stopped from the web, from
+        another machine, or by an administrator -- must end here too, or the
+        local clock keeps running for hours against nothing.
+
+        Three sessions are *not* ended by this answer, because for them the
+        backend's silence is expected:
+
+        * a session with no entry id yet: its start is in flight or queued,
+          so the backend has not heard of it;
+        * a session bound *after* the request was sent: the answer predates
+          the start it would otherwise end;
+        * a session whose start is queued for replay.
+
+        Nothing is folded into the day's cached total and no stop is sent:
+        the backend already holds the finalized entry, and the day is
+        re-read from it on `timer_finalized`.
+
+        :return: True if the local session was ended.
+        """
+        if not self.is_running() or self._session is None:
+            return False
+        session = dict(self._session)
+        entry_id = session.get("entry_id")
+        if not entry_id:
+            return False
+        bound_at = parse_utc(session.get("updated_at"))
+        if bound_at is not None and bound_at >= requested_at:
+            return False
+        if self._cache:
+            try:
+                if self._cache.has_pending_action_for_client_op(
+                    session.get("client_op"), "start_timer"
+                ):
+                    return False
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not check the queue; keeping the local session")
+                return False
+
+        self._timing("reconcile.stopped_elsewhere", elapsed_seconds=self.elapsed_seconds())
+        self.log.warning(
+            "the backend reports entry %s is no longer running; ending the local session",
+            entry_id,
+        )
+        self._tick_timer.stop()
+        self._stop_trackers()
+        self._session = None
+        self._persist()
+        self._set_status(TimerStatus.IDLE)
+        self.timer_stopped.emit({
+            "session": session, "elapsed_seconds": 0,
+            "result": {"stopped_elsewhere": True},
+        })
+        self.timer_finalized.emit({"session": session, "entry": None})
+        return True
 
     def adopt_remote_session(
         self, entry: Dict[str, Any], server_time: Optional[str] = None
@@ -925,10 +1169,16 @@ class TimerService(BaseService):
         """
         Shutdown must not lose tracked time.
 
-        The durable record is left in place if a timer is still running: the
+        This is the *service* lifecycle, not the user's Quit. An explicit
+        quit stops the timer before the runtime gets here
+        (`ApplicationRuntime.prepare_exit`), so a session still running at
+        this point belongs to an exit the user did not ask for -- an OS
+        shutdown, an update restart, a `quit()` from a path that bypassed
+        the window. For those the durable record is left in place: the
         elapsed value is anchored to `started_at_utc`, so the next launch
-        recovers it exactly. Nothing is computed or flushed synchronously here
-        — blocking shutdown on a network call was one of the audited defects.
+        recovers it exactly. Nothing is computed or flushed synchronously
+        here — blocking shutdown on a network call was one of the audited
+        defects.
         """
         self._tick_timer.stop()
         self._stop_trackers()
