@@ -239,6 +239,20 @@ States: `IDLE → STARTING → RUNNING → STOPPING → STOPPED`, plus `RECOVERI
 The one-second `QTimer` emits a display tick only. If it never fired,
 `elapsed_seconds()` would still be correct.
 
+**What is displayed is that interval net of the backend's deductions.**
+`measured_seconds()` is the interval above and is never edited.
+`adjustment_seconds()` is the entry's net signed `time_entry_adjustments`
+total as the backend last reported it -- discarded idle time, idle time
+reassigned to another task, unwanted-activity penalties -- stored on the
+session record and *received*, never computed (`apply_entry_adjustment`,
+fed by the idle resolve/reassign response, the entry a start or the active
+read returns, and the running row of the day's entry list). `elapsed_seconds()`
+is `max(0, measured + adjustment)`: the running entry's `net_seconds` exactly
+as `TimeEntryRead` defines it, so the task row, the sidebar total and the
+summary card show the figure the reports will show. Before this the desktop
+alone kept counting an idle stretch the user had just discarded, while every
+web surface had already dropped by it.
+
 `started_at_utc` is on **this machine's clock**. The backend records the same
 session on its own clock: every start and stop request carries the event
 instant *and* the client's clock at send time, so the server places the event
@@ -526,9 +540,15 @@ Three properties are worth stating explicitly:
 - **The backend decides, always.** Idle time counts only for
   `keep_idle_time AND action == "resume"`, and that rule lives in the API.
   The client sends the user's answer and applies the verdict; it never
-  computes tracked time and never edits it. Resolving with *Stop* calls
-  `stop_tracking(notify_backend=False)`, because the resolve endpoint has
-  already stopped the entry through the backend's own stop path.
+  computes tracked time and never edits it. The verdict arrives as
+  `time_entry_adjustment_seconds` on the resolve and reassign responses --
+  the entry's net deduction after the operation -- and is handed to
+  `TimerService.apply_entry_adjustment` *before* anything local happens, so
+  a discarded stretch leaves the running clock at once (Resume) or is
+  already out of the figure the row banks (Stop). Resolving with *Stop*
+  then calls `stop_tracking(notify_backend=False)`, because the resolve
+  endpoint has already stopped the entry through the backend's own stop
+  path.
 - **The pending period lives on the server.** Local state is never its only
   record, so a crash or a restart recovers it (`GET /idle-periods/active`,
   once per entry id) instead of silently counting or dropping the time.

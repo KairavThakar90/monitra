@@ -20,6 +20,18 @@ re-grant a permission.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Discarded idle time now leaves the running clock at once.** When you
+  answer the idle alert with "No, discard idle time" and Resume, the timer on
+  the task row, the day total in the sidebar and the summary card drop by the
+  idle minutes straight away -- the same figure the web dashboard and the
+  reports show. Before, only the web side dropped; the desktop kept counting
+  the whole interval until you stopped the timer. Stopping from the alert
+  (with either answer) banks the netted figure, "Yes, keep idle time" and
+  Resume leaves the clock exactly as it was, and a deduction survives a
+  restart of Monitra.
+
 ## [1.2.0-beta.1]
 
 **An internal test build, for the pilot group only.** It is installed by hand

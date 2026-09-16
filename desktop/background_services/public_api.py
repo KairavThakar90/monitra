@@ -176,6 +176,13 @@ class BackgroundApi:
         self._runtime.prepare_exit(on_ready, stop_timer=stop_timer)
 
     def timer_elapsed_seconds(self) -> int:
+        """The running session's elapsed seconds *to display*.
+
+        The measured interval net of the backend's deductions for the entry
+        (discarded or reassigned idle time, unwanted-activity penalties) --
+        the same `net_seconds` the reports show for it. Every widget renders
+        this one number; none counts for itself.
+        """
         return self._runtime.timer.elapsed_seconds()
 
     def is_timer_running(self) -> bool:

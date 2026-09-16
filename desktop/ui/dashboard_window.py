@@ -1676,6 +1676,9 @@ class DashboardWindow(QWidget):
         self, entries: list, target: date, update_cache: bool = True
     ) -> None:
         entries = self._overlay_pending_stops(entries)
+        if update_cache:
+            # Server data, not the cached copy of an older answer.
+            self._reconcile_running_entry_adjustment(entries)
         self._today_time_entries = entries
         banked = self._banked_today()
 
@@ -1691,6 +1694,35 @@ class DashboardWindow(QWidget):
 
         self._task_section.update_tasks_tracked_times(self._banked_seconds_by_task())
         self._update_stat_cards()
+
+    def _reconcile_running_entry_adjustment(self, entries: list) -> None:
+        """Carry the backend's deduction for the running entry into the timer.
+
+        The day's list includes the entry that is running, and its row
+        carries `adjustment_seconds` -- the same figure the resolve response
+        delivers directly. Reading it here as well covers what that path
+        cannot: a restart with the deduction already on the server, an idle
+        answer given from another machine, and an unwanted-activity penalty
+        applied by the sync queue. `allow_increase=False`, because this list
+        is re-read on several triggers and a reply issued before an idle
+        answer was committed can land after it; deductions only accumulate
+        on a running entry, so a stale list may never undo a fresher one.
+        """
+        if not self.api.is_timer_running():
+            return
+        session = self.api.active_session() or {}
+        entry_id = session.get("entry_id")
+        if not entry_id:
+            return
+        for entry in entries:
+            if entry.get("id") != entry_id or entry.get("end_time") is not None:
+                continue
+            if "adjustment_seconds" not in entry:
+                return
+            self.api.timer.apply_entry_adjustment(
+                entry_id, entry.get("adjustment_seconds"), allow_increase=False
+            )
+            return
 
     def _on_date_changed(self, target_date: date) -> None:
         """Point the whole window at the newly selected day.

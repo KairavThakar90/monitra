@@ -290,6 +290,31 @@ adopted it — with a start hours in the past. The key is what makes the replay
 return the same entry; a 409 that still arrives names the entry the backend
 *is* running, and the UI adopts that.
 
+### ❌ Do not show the measured interval when the backend has deducted from it
+
+```python
+def elapsed_seconds(self):
+    return int((now_utc() - started_at_utc).total_seconds())   # the whole interval
+```
+
+**What it caused:** the user chose "No, discard idle time" and pressed Resume.
+The backend wrote the negative adjustment, the reports, the web dashboard and
+the day list all dropped by the idle minutes -- and the running clock on the
+desktop did not move, because the only number it knew was `now − start`. It
+stayed wrong until the timer stopped and the day was re-read, and after a
+restart the recovered session showed the whole interval again. The same
+figure fed the banked estimate on Stop, so the task row and the sidebar
+briefly showed the undeducted total there too.
+
+**Instead:** keep `measured_seconds()` as the interval (it is what the backend
+records) and display `elapsed_seconds() = max(0, measured + adjustment)`,
+where the adjustment is the backend's own `time_entry_adjustment_seconds` /
+`adjustment_seconds`, stored with the session and applied through
+`apply_entry_adjustment`. Never compute the deduction on the client: the
+resolve response says what the entry's net adjustment *is*, and a client that
+subtracted `idle_duration_seconds` itself would double-deduct a reassigned
+period and disagree with the server on any rounding.
+
 ### ❌ Do not derive elapsed time from `time.monotonic()`
 
 ```python

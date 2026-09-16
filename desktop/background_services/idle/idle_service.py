@@ -494,12 +494,65 @@ class IdleService(LoopService):
     def _on_resolved(self, result: Dict[str, Any], action: str) -> None:
         counted = bool(result.get("counted")) if isinstance(result, dict) else False
         self.log.info(
-            "idle period %s resolved: action=%s counted=%s duration=%ss",
+            "idle period %s resolved: action=%s counted=%s duration=%ss "
+            "entry_adjustment=%ss",
             (result or {}).get("id"), action, counted,
             (result or {}).get("idle_duration_seconds"),
+            (result or {}).get("time_entry_adjustment_seconds"),
         )
+        # The verdict first, then the local consequences: for "stop" the
+        # timer folds its final figure into the day the moment it stops, and
+        # that figure has to be the netted one.
+        self._apply_entry_adjustment(result, action)
         self._finish_resolution(action)
         self.resolve_succeeded.emit(result if isinstance(result, dict) else {})
+
+    def _apply_entry_adjustment(self, result: Any, action: str) -> None:
+        """Carry the backend's deduction for the entry into the live timer.
+
+        The resolve and reassign responses carry `time_entry_adjustment_seconds`,
+        the entry's net signed adjustment after the operation. The timer
+        stores it beside its start anchor and shows `measured + adjustment`,
+        so "No, discard idle time" is visible on the running clock at once,
+        and "Yes, keep idle time" + Resume leaves it exactly as it was. The
+        client applies the number; it never works out what it should be.
+
+        A backend that predates the field answers without it. The entry's
+        own record (`GET /time-entries/active`, which carries
+        `adjustment_seconds`) is then read instead -- still the server's
+        figure, one round trip later.
+        """
+        if not isinstance(result, dict):
+            return
+        entry_id = result.get("time_entry_id") or self._pending_entry_id
+        if not entry_id:
+            return
+        value = result.get("time_entry_adjustment_seconds")
+        if value is not None:
+            self.runtime.timer.apply_entry_adjustment(int(entry_id), value)
+            return
+        if action == "stop":
+            return  # the session ends now; the finalized entry is re-read anyway
+        service = getattr(self.runtime, "time_entry_service", None)
+        if service is None or not hasattr(service, "get_active_time_entry"):
+            self.log.info("no active-entry read available to refresh the adjustment")
+            return
+
+        def on_success(data: Any) -> None:
+            entry = data.get("entry") if isinstance(data, dict) else None
+            if isinstance(entry, dict) and "adjustment_seconds" in entry:
+                self.runtime.timer.apply_entry_adjustment(
+                    entry.get("id"), entry.get("adjustment_seconds")
+                )
+
+        self.runtime.tasks.submit(
+            service.get_active_time_entry,
+            on_success=on_success,
+            on_error=lambda exc: self.log.info(
+                "could not refresh the entry's adjustment after the idle answer: %s", exc
+            ),
+            key=f"idle-adjustment:{entry_id}",
+        )
 
     def _on_resolve_error(self, exc: BaseException, action: str) -> None:
         status = getattr(exc, "status_code", None)
@@ -571,6 +624,9 @@ class IdleService(LoopService):
         if isinstance(result, dict) and result.get("id"):
             self._pending = result
         self._state = IdleState.PENDING
+        # The reassigned seconds have already been deducted from the
+        # original entry, so the running clock drops by them now.
+        self._apply_entry_adjustment(result, "resume")
         self.log.info(
             "idle period %s reassigned: %ss to project %s / task %s",
             (result or {}).get("id"), (result or {}).get("reassigned_seconds"),

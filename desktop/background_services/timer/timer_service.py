@@ -135,6 +135,15 @@ def new_client_op(task_id: int, started_at: datetime) -> str:
     return f"timer:{task_id}:{stamp}:{uuid.uuid4().hex[:8]}"
 
 
+def _entry_adjustment(entry: Dict[str, Any]) -> int:
+    """The net signed adjustment a `TimeEntryRead` carries, as an int (0 when
+    absent or unreadable). Never derived from anything else on the entry."""
+    try:
+        return int(entry.get("adjustment_seconds") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def local_anchor_for(
     start_time: Optional[str], server_time: Optional[str], now: Optional[datetime] = None
 ) -> Optional[datetime]:
@@ -171,7 +180,10 @@ class TimerService(BaseService):
         timer_conflict(object)— the backend refused a start because another
                                 entry is running; carries that entry, or None
                                 when it did not say which
-        timer_tick(int)       — elapsed seconds, once per second, display only
+        timer_tick(int)       — elapsed seconds to display, once per second:
+                                the measured interval net of the backend's
+                                deductions for this entry (see
+                                `elapsed_seconds`)
         timer_recovered(dict) — session restored after an unclean shutdown
         timer_error(str)      — user-facing failure
         status_changed(str)   — TimerStatus
@@ -231,12 +243,14 @@ class TimerService(BaseService):
     def task_id(self) -> Optional[int]:
         return self._session.get("task_id") if self._session else None
 
-    def elapsed_seconds(self) -> int:
+    def measured_seconds(self) -> int:
         """
-        Elapsed seconds, derived from the durable start timestamp.
+        Seconds the timer has been running, derived from the durable start
+        timestamp and nothing else: `now_utc − started_at_utc`.
 
-        This is the only place elapsed time is computed. Widgets render it;
-        they never maintain their own counter.
+        This is the only place the interval is computed. Widgets never keep a
+        counter of their own, and this value is never edited: the backend
+        records the same interval from the same two instants.
         """
         if not self._session:
             return 0
@@ -246,6 +260,83 @@ class TimerService(BaseService):
         elapsed = int((_utc_now() - started).total_seconds())
         # Clock changes can move wall time backwards; never report negative.
         return max(0, elapsed)
+
+    def adjustment_seconds(self) -> int:
+        """
+        The backend's net signed `time_entry_adjustments` total for the
+        running entry -- discarded idle time, idle time reassigned to another
+        task, unwanted-activity deductions. Zero until the backend has said
+        otherwise. It is only ever *received* here (`apply_entry_adjustment`),
+        never computed: whether an idle stretch counts is the server's call.
+        """
+        if not self._session:
+            return 0
+        try:
+            return int(self._session.get("adjustment_seconds") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def elapsed_seconds(self) -> int:
+        """
+        The elapsed figure to display: `measured_seconds() + adjustment_seconds()`,
+        floored at zero.
+
+        This is the running entry's `net_seconds` as the backend defines it,
+        so the number on the task row, in the sidebar total and on the summary
+        card is the number the reports will show for this session. Before the
+        adjustment was applied here the timer kept counting the whole interval
+        after the user chose "No, discard idle time": the backend had deducted
+        the idle minutes, every web surface had dropped by them, and the
+        desktop alone still showed them until the timer stopped.
+        """
+        if not self._session:
+            return 0
+        return max(0, self.measured_seconds() + self.adjustment_seconds())
+
+    def apply_entry_adjustment(
+        self, entry_id: Optional[int], adjustment_seconds: Any, *, allow_increase: bool = True
+    ) -> bool:
+        """
+        Record the backend's net adjustment for the running entry.
+
+        Called with a figure the backend produced -- the idle-period resolve
+        or reassign response, the entry the start or the active read
+        returned, or the running row of the day's entry list. Applies only
+        to the session that is tracking `entry_id`; anything else is ignored,
+        because an adjustment belongs to one entry and a later session for
+        the same task must start clean.
+
+        :param allow_increase: When False, a value that would *raise* the
+            displayed time (a less negative adjustment) is ignored. The day
+            list is re-read on several triggers and a response issued before
+            an idle answer was committed can land after it; deductions only
+            ever accumulate on a running entry, so a stale list must never
+            undo a fresher one. Authoritative sources -- the resolve response
+            and the active-entry read -- leave this True.
+        :return: True when the stored value changed.
+        """
+        if not self._session or entry_id is None:
+            return False
+        try:
+            if int(self._session.get("entry_id") or 0) != int(entry_id):
+                return False
+            value = int(adjustment_seconds or 0)
+        except (TypeError, ValueError):
+            return False
+        current = self.adjustment_seconds()
+        if value == current:
+            return False
+        if not allow_increase and value > current:
+            return False
+        self._session["adjustment_seconds"] = value
+        self._session["updated_at"] = _utc_now().isoformat()
+        self._persist()
+        self._timing(
+            "adjustment.applied", adjustment_seconds=value,
+            measured_seconds=self.measured_seconds(), elapsed_seconds=self.elapsed_seconds(),
+        )
+        self._emit_tick()
+        return True
 
     # ── Sub-trackers ──────────────────────────────────────────────────────────
 
@@ -417,6 +508,8 @@ class TimerService(BaseService):
             "sync_status": "pending",
             "updated_at": started_at,
             "session_generation": session_generation(),
+            # The backend's net deduction for this entry; nothing yet.
+            "adjustment_seconds": 0,
         }
         self._persist()
         self._set_status(TimerStatus.RUNNING)
@@ -530,6 +623,10 @@ class TimerService(BaseService):
         self._session["entry_id"] = entry.get("id")
         self._session["sync_status"] = "synced"
         self._session["updated_at"] = _utc_now().isoformat()
+        if "adjustment_seconds" in entry:
+            # A replayed start answers with the entry the first attempt
+            # created, which may already carry deductions.
+            self._session["adjustment_seconds"] = _entry_adjustment(entry)
         server_start = parse_utc(entry.get("start_time"))
         local_start = parse_utc(self._session.get("started_at_utc"))
         if server_start is not None:
@@ -668,6 +765,9 @@ class TimerService(BaseService):
             return
 
         session = dict(self._session)
+        # The displayed figure: measured net of the backend's deductions.
+        # It is what the task row and the day total fold in, so a session
+        # whose idle time was discarded banks what the reports will show.
         elapsed = self.elapsed_seconds()
         entry_id = session.get("entry_id")
         task_id = session.get("task_id")
@@ -682,7 +782,11 @@ class TimerService(BaseService):
         self._set_status(TimerStatus.STOPPING)
         self._tick_timer.stop()
         self._stop_trackers()
-        self._timing("stop.local", stopped_at=stopped_at, elapsed_seconds=elapsed)
+        self._timing(
+            "stop.local", stopped_at=stopped_at, elapsed_seconds=elapsed,
+            measured_seconds=self.measured_seconds(),
+            adjustment_seconds=self.adjustment_seconds(),
+        )
 
         if notify_backend:
             # The stop is made durable *before* the session record is
@@ -1136,6 +1240,11 @@ class TimerService(BaseService):
                 self._timing("reconcile.reanchored", drift_seconds=drift)
             self._session["server_start_time"] = entry.get("start_time")
             self._session["clock_offset_seconds"] = offset
+            if "adjustment_seconds" in entry:
+                # The backend's record of what it has deducted from this
+                # entry is authoritative: a restart, or an answer given on
+                # another machine, must not leave the display un-netted.
+                self._session["adjustment_seconds"] = _entry_adjustment(entry)
             self._persist()
             self._emit_tick()
             return
@@ -1154,6 +1263,7 @@ class TimerService(BaseService):
             "sync_status": "synced",
             "updated_at": _utc_now().isoformat(),
             "session_generation": session_generation(),
+            "adjustment_seconds": _entry_adjustment(entry),
         }
         self._persist()
         self._set_status(TimerStatus.RUNNING)

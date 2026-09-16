@@ -80,6 +80,16 @@ where the anchor is the start instant expressed on that clock:
   smaller difference is the network round trip, not a disagreement.
 * The web client keeps no timer. Every figure it renders is a server
   aggregate whose running entries are measured with the database's `now()`.
+* **The figure shown for a running entry is net of its adjustments**, on
+  both clients. `TimeEntryRead.net_seconds` is `elapsed + adjustment_seconds`
+  floored at zero, the web aggregates net the same rows, and the desktop
+  displays `measured − deductions` where the deduction is the backend's own
+  figure (`time_entry_adjustment_seconds` on an idle-period response,
+  `adjustment_seconds` on the entry). So "No, discard idle time" + Resume
+  drops the running clock by the idle minutes the instant the server has
+  written them, and "Yes, keep idle time" + Resume leaves it unchanged. The
+  desktop stores the deduction beside its anchor -- never inside it -- and
+  never derives it from an idle duration of its own.
 
 ## 4. Tolerance
 
