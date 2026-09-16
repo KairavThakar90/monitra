@@ -20,6 +20,20 @@ re-grant a permission.
 
 ## [Unreleased]
 
+## [1.2.1]
+
+The production release of everything the pilot group tested as 1.2.0-beta.1,
+plus what was finished after the beta. If you are on 1.1.1, Monitra offers
+this version through its own update check; installing it over 1.1.1 or over
+1.2.0-beta.1 is an ordinary upgrade, and your tracked time, sync queue and
+settings are untouched. (1.2.0 was the number of the internal test build; the
+production release is 1.2.1 so that testers are offered it too.)
+
+The installer and the macOS bundles are unsigned, like every Monitra build so
+far: Windows SmartScreen will warn on first run ("More info" → "Run anyway"),
+and macOS will refuse the app until you allow it under System Settings →
+Privacy & Security.
+
 ### Added
 
 - **A Play / Pause button under the day's total.** The sidebar now has one
@@ -49,6 +63,17 @@ re-grant a permission.
   starts nothing -- it never picks a different task for you. Closing Monitra
   during a break just leaves the timer stopped; nothing starts by itself when
   you open it again.
+- **Screenshots capture every display.** A desk with two or three monitors is
+  captured as one merged image at its real layout, instead of only the primary
+  screen. It is still one screenshot every ten minutes, not one per monitor. A
+  single-display machine is unchanged.
+- **Private and incognito browsing is recorded as such.** A page visited in a
+  private window shows up in your browsing time marked private. Where Monitra
+  genuinely cannot tell (an unsupported browser, or macOS), it records that it
+  could not tell rather than guessing.
+- **The sidebar greets you by name**, centres the day's total, and draws the
+  idle state in red so "not tracking" no longer looks like decoration.
+- **The wellbeing reminders are back on the schedule the catalogue documents.**
 
 ### Fixed
 
@@ -61,6 +86,91 @@ re-grant a permission.
   (with either answer) banks the netted figure, "Yes, keep idle time" and
   Resume leaves the clock exactly as it was, and a deduction survives a
   restart of Monitra.
+- **Queued work can no longer stall for the rest of the session.** After a
+  stretch offline with several task switches, every queued Stop was waiting
+  for its own Start to reach the server, and the Starts never got a turn --
+  so nothing else queued behind them (task edits, later stops) was sent
+  until Monitra was restarted. The queue now works through such a backlog in
+  order and the rest of the day's changes follow it as they should.
+- **Quitting Monitra now stops your timer.** Quit from the close dialog,
+  from the tray menu, or by closing the window with "Remember my choice"
+  set to Quit, all stop a running timer at that moment and send the stop to
+  the server before Monitra exits (the window stays up for a few seconds
+  with "Stopping your timer…" if the server is slow). Before, quitting left
+  the timer running on the server and the next launch picked it up again
+  with all the time in between counted. "Remember my choice" only decides
+  whether you are asked; it never leaves a timer running. Installing an
+  update, and Windows shutting down or signing you out, are not quits: the
+  session carries on and is recovered when Monitra next starts.
+- **A stop can no longer be lost.** Stops are written to the durable queue
+  before anything else and are never given up on, so a crash or power cut
+  right after you press Stop, or a long server outage, cannot leave a timer
+  running on the server for the next launch to resurrect.
+- **A timer interrupted by a crash or power cut is recovered, and the
+  time Monitra was not running is treated as idle time.** The same entry
+  carries on, and if the gap reaches your idle threshold you get the usual
+  idle prompt to keep it, discard it, or stop — the gap is never counted as
+  work on its own. The recovery notice says how long Monitra was not
+  running. A timer stopped from the web or another machine while Monitra
+  was away is ended here too, instead of counting on.
+- **Double-clicking Start or Stop counts as one click.** It used to start
+  and immediately stop (or stop and restart) the timer.
+- **Working with several browser tabs no longer triggers the unwanted-activity
+  warning — or the ten-minute deduction that came with it.** Holding CTRL, or
+  CTRL+T / CTRL+TAB / CTRL+W / CTRL+click, was being counted as a key mashed
+  fifteen times. A key is now counted once per press, and only a key pressed
+  on its own counts toward that rule.
+- **Today's Activity counts what you actually typed and clicked.** A second,
+  dead measurement path had been reporting scrolling and reading as typing.
+- **A session tracked while offline keeps its whole day of activity**, minute
+  by minute, instead of arriving as one lump — or, past an hour, not arriving
+  at all.
+- **Screenshots taken while Start was still being confirmed are uploaded.** If
+  the network was slow or dropped at the moment you pressed Start, every
+  screenshot of that session used to sit on disk for ever and never reach the
+  server, while the tracked time itself was fine.
+- **Tracked time no longer jumps after a lost reply to Start.** A Start whose
+  answer was lost is retried as the same start, so the server cannot end up
+  with an entry running for hours that the desktop had already stopped.
+- **The day's total on the desktop now matches the reports**: idle deductions
+  and other adjustments are applied to it the same way.
+- **Projects and tasks now stay in step with the server on their own — the
+  Refresh button is no longer part of normal use.** Monitra asks the server
+  every half minute whether anything you can see has changed and re-reads
+  only when it has, so a project or task created on the web, a task
+  reassigned, or a project you were removed from shows up within that time.
+  Waking your machine from sleep re-synchronises immediately instead of
+  waiting out the old timers. If you were viewing a project that is no
+  longer yours, Monitra now moves you to one that is rather than keeping the
+  old task list on screen.
+- **All of your projects are listed.** Anyone with more than twenty projects
+  only ever saw the first twenty, and the project they were last in could
+  appear to vanish.
+- **A task you have just created cannot disappear again.** A background
+  re-read that was already in flight when you pressed Add could overwrite
+  the list and hide the new task until the next refresh.
+- **A refresh that failed part-way no longer silently blocks every later
+  one.** After one such failure the dashboard could stay stale for the rest
+  of the session with nothing to show for it in the log; it now recovers on
+  its own and says so.
+- **Retrying a task creation after a lost reply no longer creates the task
+  twice.**
+- **A brief problem renewing your sign-in no longer signs you out.** Only a
+  definitive refusal from the server ends the session; a server that could
+  not be reached for the renewal is retried.
+
+- **You can no longer open a future date, and a past date is now genuinely
+  read-only.** Today is the latest date the header will show: the forward
+  chevron stops there and the calendar will not select past it. Choosing an
+  earlier day shows that day's tracked time, applications and websites exactly
+  as before, but Start and Stop are hidden while you are looking at it —
+  previously a future date kept the live controls, so a timer could be started
+  from a day that had not happened. A timer that is already running is not
+  affected by browsing dates: it keeps running, and returning to today brings
+  its controls back.
+- **The calendar's month button has a real chevron.**
+- **A sign-in that fails on the server now leaves a diagnosable record in the
+  log**, instead of only "server error".
 
 ## [1.2.0-beta.1]
 
