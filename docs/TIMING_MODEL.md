@@ -151,6 +151,21 @@ read: it is scoped to the caller by the backend and carries `server_time`;
 when it answers that nothing is running, a local session bound against an
 entry the backend has since finalized elsewhere ends here too.
 
+**Sleep and hibernate are inactivity, not interruptions.** The process
+survives a suspend, so the session record is untouched and the timer keeps
+its anchor. The first inactivity reading after the wake spans the whole
+suspend, so the existing idle rule applies: one idle period is reported from
+the last input before the machine went down, and the backend's keep/discard/
+stop rule decides whether it counts. Nothing stops the timer silently and
+nothing counts the sleep silently.
+
+**The gap of an interruption is counted, pending a business rule.** A
+session recovered after a power cut or crash continues from its original
+start with the outage inside it, and the recovery notice states how long
+Monitra was not running. No rule yet says whether that gap should instead be
+offered to the user as idle time; see the reliability report. Nothing
+fabricates activity or screenshots for it.
+
 **An explicit quit is not an interruption.** Quit, X with Quit chosen, a
 remembered Quit and the tray's Quit all stop the timer first, at the instant
 of the quit, and wait a bounded time for the stop to reach the backend before
