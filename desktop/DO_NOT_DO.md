@@ -744,6 +744,30 @@ Waiting on an ordering dependency is not a failure. `defer_count` is tracked
 separately from `retry_count`, so an action that waits legitimately does not
 exhaust the retries reserved for genuine errors.
 
+### ❌ Do not let a deferral cost the consumer a whole tick
+
+```python
+action = self._cache.get_next_pending_action()     # one row per tick
+self._process_action(action)                        # ... which only deferred
+return self.BUSY_INTERVAL_MS                        # 100 ms spent on nothing
+```
+
+**What it caused:** a queue that never drained for the life of the process.
+A `stop_timer` queued before its session's start landed can only *defer*
+("waiting for the queued start", two seconds), and it outranks `start_timer`
+by priority. Twenty such stops took 20 × 100 ms — the entire deferral window —
+so by the time the last was pushed back the first was eligible again, and the
+consumer never reached the starts that would have resolved every one of them,
+nor any task edit behind them. The soak measured 14 starts reaching the backend
+in six minutes with 2,138 rows left; a user who switched tasks twenty times on
+a bad connection would have stopped syncing until the next launch.
+
+**Instead:** a deferral is two cheap SQL statements, not a request. The tick
+walks past deferred rows (bounded by `MAX_DEFERRALS_PER_TICK`) to the first
+row it can actually attempt, and still attempts at most one per tick.
+`tests/test_sync_deferral_livelock.py` reproduces the backlog against the real
+`tick()`.
+
 ### ❌ Do not treat a `409` as a failure to retry
 
 The server's state already reflects the intent. Treat it as success and
