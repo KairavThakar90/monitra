@@ -90,6 +90,22 @@ def _as_utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
+def _with_entry_adjustment(db: Session, idle_period: TimeEntryIdlePeriod) -> TimeEntryIdlePeriod:
+    """Attach the entry's net adjustment to the row being returned.
+
+    `IdlePeriodResponse.time_entry_adjustment_seconds` is read from this
+    attribute. It is the one number the desktop needs after an answer: the
+    running timer keeps counting from its own start anchor, and this tells it
+    how many seconds the backend has deducted from that entry so far, so the
+    figure on screen drops by exactly what the reports will show -- without
+    the client ever deciding whether idle time counts.
+    """
+    idle_period.time_entry_adjustment_seconds = int(
+        TimeEntryAdjustmentRepository.sum_for_entry(db, idle_period.time_entry_id) or 0
+    )
+    return idle_period
+
+
 class TimeEntryIdlePeriodService:
     # ------------------------------------------------------------------
     # Configuration
@@ -184,7 +200,7 @@ class TimeEntryIdlePeriodService:
             if existing:
                 if existing.user_id != current_user.id:
                     raise HTTPException(status.HTTP_409_CONFLICT, "Duplicate idle report")
-                return existing
+                return _with_entry_adjustment(db, existing)
 
         entry = TimeEntryIdlePeriodService._owned_entry(
             db, payload.time_entry_id, current_user
@@ -231,7 +247,7 @@ class TimeEntryIdlePeriodService:
         # thing for genuinely concurrent requests.
         pending = TimeEntryIdlePeriodRepository.get_pending_for_entry(db, entry.id)
         if pending:
-            return pending
+            return _with_entry_adjustment(db, pending)
 
         record = TimeEntryIdlePeriodRepository.create(
             db=db,
@@ -251,7 +267,7 @@ class TimeEntryIdlePeriodService:
             record.id, entry.id, current_user.id,
             idle_started_at.isoformat(), idle_detected_at.isoformat(),
         )
-        return record
+        return _with_entry_adjustment(db, record)
 
     # ------------------------------------------------------------------
     # Resolution
@@ -370,7 +386,7 @@ class TimeEntryIdlePeriodService:
                 bool(idle_period.keep_idle_time) == bool(payload.keep_idle_time)
                 and idle_period.action == payload.action
             ):
-                return idle_period  # idempotent retry
+                return _with_entry_adjustment(db, idle_period)  # idempotent retry
             raise HTTPException(
                 status.HTTP_409_CONFLICT, "Idle period has already been resolved."
             )
@@ -412,7 +428,7 @@ class TimeEntryIdlePeriodService:
             db.commit()
 
         db.refresh(idle_period)
-        return idle_period
+        return _with_entry_adjustment(db, idle_period)
 
     @staticmethod
     def resolve_pending_for_stop(
@@ -573,7 +589,7 @@ class TimeEntryIdlePeriodService:
             idle_period.id, idle_period.time_entry_id, project.id, task.id,
             idle_period.reassigned_seconds, idle_period.reassigned_time_entry_id,
         )
-        return idle_period, project, task
+        return _with_entry_adjustment(db, idle_period), project, task
 
     @staticmethod
     def _refresh_task_rollup(db: Session, task_id: int) -> None:
@@ -591,8 +607,11 @@ class TimeEntryIdlePeriodService:
 
     @staticmethod
     def get(db: Session, idle_period_id: int, current_user: User) -> TimeEntryIdlePeriod:
-        return TimeEntryIdlePeriodService._owned_idle_period(
-            db, idle_period_id, current_user, lock=False
+        return _with_entry_adjustment(
+            db,
+            TimeEntryIdlePeriodService._owned_idle_period(
+                db, idle_period_id, current_user, lock=False
+            ),
         )
 
     @staticmethod
@@ -605,4 +624,5 @@ class TimeEntryIdlePeriodService:
         crash and be presented again rather than silently disappearing.
         """
         TimeEntryIdlePeriodService._owned_entry(db, time_entry_id, current_user)
-        return TimeEntryIdlePeriodRepository.get_pending_for_entry(db, time_entry_id)
+        pending = TimeEntryIdlePeriodRepository.get_pending_for_entry(db, time_entry_id)
+        return _with_entry_adjustment(db, pending) if pending else None

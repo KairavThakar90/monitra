@@ -15,6 +15,7 @@ from app.models.time_entry_app_usage import TimeEntryAppUsage
 from app.models.time_entry_url_usage import TimeEntryUrlUsage
 from app.models.user import User
 from app.repositories.status_catalog import StatusCatalog, StatusRow
+from app.repositories.time_entry_adjustment import TimeEntryAdjustmentRepository
 from app.repositories.time_tracking import TimeTrackingRepository
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
@@ -385,7 +386,13 @@ class ReportsRepository:
             return [], 0
 
         activity_avg = ReportsRepository._activity_avg_subquery()
-        duration = TimeTrackingRepository._duration_expression()
+        # Net of the entry's signed adjustments (discarded idle time,
+        # reassigned idle time, unwanted-activity deductions), exactly as the
+        # grouped totals above and every other surface report it. Summing the
+        # raw duration here made the detail table show an idle stretch the
+        # user had just discarded, under a total that had already dropped.
+        adjustments = TimeEntryAdjustmentRepository.net_totals_subquery()
+        duration = TimeTrackingRepository._net_duration_expression(adjustments)
         auto_filters = [
             TimeEntry.organization_id == organization_id,
             TimeEntry.project_id.in_(project_ids),
@@ -412,6 +419,7 @@ class ReportsRepository:
             .join(Project, Project.id == TimeEntry.project_id)
             .join(Task, Task.id == TimeEntry.task_id)
             .outerjoin(activity_avg, activity_avg.c.time_entry_id == TimeEntry.id)
+            .outerjoin(adjustments, adjustments.c.time_entry_id == TimeEntry.id)
             .where(*auto_filters)
         )
 

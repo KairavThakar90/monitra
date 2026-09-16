@@ -226,6 +226,50 @@ def _task(**overrides) -> Task:
     return Task(**defaults)
 
 
+class TestEntryAdjustmentOnTheResponse(unittest.TestCase):
+    """Every idle-period response names the entry's net adjustment, so the
+    desktop can drop its running clock by exactly what the server deducted
+    -- without computing idle time itself."""
+
+    def _resolve(self, keep, action, net):
+        with patch(f"{SVC}.TimeEntryIdlePeriodService._owned_idle_period", return_value=_idle()), \
+             patch(f"{SVC}.TimeEntryIdlePeriodService._owned_entry", return_value=_entry()), \
+             patch(f"{SVC}.TimeEntryAdjustmentRepository.create_pending"), \
+             patch(f"{SVC}.TimeEntryAdjustmentRepository.sum_for_entry", return_value=net) as summed, \
+             patch("app.services.time_entry.TimeEntryService.stop_timer"):
+            result = TimeEntryIdlePeriodService.resolve(
+                MagicMock(), 456,
+                IdlePeriodResolve(keep_idle_time=keep, action=action, resolved_at=RESOLVED),
+                _user(),
+            )
+        return result, summed
+
+    def test_a_discarded_period_reports_the_entrys_deduction(self):
+        result, summed = self._resolve(False, "resume", net=-FULL_IDLE_SECONDS)
+        self.assertEqual(result.time_entry_adjustment_seconds, -FULL_IDLE_SECONDS)
+        # Summed for the period's own entry, after the resolution was written.
+        self.assertEqual(summed.call_args[0][1], 100)
+
+    def test_a_kept_period_reports_an_unchanged_entry(self):
+        result, _ = self._resolve(True, "resume", net=0)
+        self.assertEqual(result.time_entry_adjustment_seconds, 0)
+
+    def test_the_figure_is_part_of_the_response_schema(self):
+        from app.schemas.time_entry_idle_period import IdlePeriodResponse
+
+        result, _ = self._resolve(False, "stop", net=-FULL_IDLE_SECONDS)
+        result.created_at = result.updated_at = RESOLVED
+        read = IdlePeriodResponse.model_validate(result)
+        self.assertEqual(read.time_entry_adjustment_seconds, -FULL_IDLE_SECONDS)
+
+    def test_a_pending_lookup_carries_it_too(self):
+        with patch(f"{SVC}.TimeEntryIdlePeriodService._owned_entry", return_value=_entry()), \
+             patch(f"{SVC}.TimeEntryIdlePeriodRepository.get_pending_for_entry", return_value=_idle()), \
+             patch(f"{SVC}.TimeEntryAdjustmentRepository.sum_for_entry", return_value=-300):
+            pending = TimeEntryIdlePeriodService.get_pending_for_entry(MagicMock(), 100, _user())
+        self.assertEqual(pending.time_entry_adjustment_seconds, -300)
+
+
 class TestReassignment(unittest.TestCase):
     def setUp(self):
         self.db = MagicMock()

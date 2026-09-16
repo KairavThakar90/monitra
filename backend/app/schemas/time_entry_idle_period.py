@@ -88,6 +88,13 @@ class IdlePeriodResponse(BaseModel):
     reassigned_seconds: Optional[int] = None
     created_at: datetime
     updated_at: datetime
+    #: The net signed `time_entry_adjustments` total for the period's time
+    #: entry *after* this operation -- the same figure `TimeEntryRead.
+    #: adjustment_seconds` carries. It is the server's verdict on how many
+    #: seconds the running timer has to show less (or, after a "keep" answer,
+    #: that nothing changed), so the desktop applies it to its live display
+    #: instead of computing idle time itself.
+    time_entry_adjustment_seconds: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 
