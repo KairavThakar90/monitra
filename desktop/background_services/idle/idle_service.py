@@ -159,6 +159,15 @@ class IdleService(LoopService):
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def on_start(self) -> None:
+        # The user's threshold is known locally before any request answers:
+        # the restored session holds the last `/auth/me` profile. Seeding
+        # from it here is what lets a recovered session's interruption gap
+        # be judged against the user's own threshold rather than the
+        # default -- recovery runs before session verification has answered.
+        session_manager = getattr(self.runtime, "session_manager", None)
+        profile = getattr(session_manager, "user_info", None)
+        if isinstance(profile, dict):
+            self.apply_user_profile(profile)
         timer = self.runtime.timer
         timer.timer_started.connect(self._on_tracking_started)
         timer.timer_recovered.connect(self._on_tracking_started)
@@ -457,22 +466,20 @@ class IdleService(LoopService):
             self._interruption = None
             return
         gap = (recovered_at - interrupted_at).total_seconds()
-        if gap + DETECTION_MARGIN_SECONDS < self._idle_minutes * 60:
-            self.log.info(
-                "recovered session was interrupted for %.0fs, under the %dm idle "
-                "threshold; nothing to reconcile", gap, self._idle_minutes,
-            )
-            self._interruption = None
-            return
+        # The threshold is applied when the report is about to be sent, not
+        # here: the user's configuration may not have been read yet at the
+        # instant of recovery, and judging the gap against the default was
+        # measured to drop a real 85-second outage for a one-minute user.
         self._interruption = {
             "client_op": client_op,
+            "gap_seconds": gap,
             "idle_started_at": interrupted_at.isoformat(),
             "idle_detected_at": recovered_at.isoformat(),
             "client_event_id": f"interruption:{client_op}:{interrupted_at.isoformat()}",
         }
         self.log.info(
-            "recovered session was interrupted for %.0fs (>= %dm); reporting the gap "
-            "as an idle period for the user to decide", gap, self._idle_minutes,
+            "recovered session was interrupted for %.0fs; it will be reported as an "
+            "idle period if it reaches the user's idle threshold", gap,
         )
 
     def _network_usable(self) -> bool:
@@ -498,13 +505,24 @@ class IdleService(LoopService):
             # The session the gap belonged to is gone; nothing to reconcile.
             self._interruption = None
             return
+        if not self._config_loaded:
+            return  # the user's threshold is not known yet; judged next tick
+        if interruption["gap_seconds"] + DETECTION_MARGIN_SECONDS < self._idle_minutes * 60:
+            self.log.info(
+                "recovered session was interrupted for %.0fs, under the user's %dm idle "
+                "threshold; nothing to reconcile",
+                interruption["gap_seconds"], self._idle_minutes,
+            )
+            self._interruption = None
+            return
         if not self._network_usable():
             return  # kept; the next tick tries again once the network is back
 
         self._state = IdleState.REPORTING
         self.log.info(
-            "reporting interruption %s -> %s on entry %s",
-            interruption["idle_started_at"], interruption["idle_detected_at"], entry_id,
+            "reporting interruption %s -> %s (%.0fs, threshold %dm) on entry %s",
+            interruption["idle_started_at"], interruption["idle_detected_at"],
+            interruption["gap_seconds"], self._idle_minutes, entry_id,
         )
 
         def call():

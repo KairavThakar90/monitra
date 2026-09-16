@@ -77,7 +77,7 @@ def _process(cache, backend, network=None, idle_minutes=5):
 
     api.resolve_idle_period = resolve_for_reported_entry
     idle = IdleService(runtime, api)
-    idle._idle_minutes = idle_minutes
+    idle.apply_user_profile({"idle_enabled": True, "idle_minutes": idle_minutes})
     # The subscriptions `on_start` makes, without its loop thread: the tests
     # drive `tick()` themselves, on this thread, deterministically.
     runtime.timer.timer_started.connect(idle._on_tracking_started)
@@ -175,6 +175,51 @@ def test_the_gap_uses_the_users_own_threshold_not_a_fixed_one(qapp, cache, clock
         _finish(second)
 
 
+def test_the_gap_is_judged_against_the_users_threshold_once_it_is_known(qapp, cache, clock):
+    """Recovery runs before session verification answers. An 85-second gap
+    for a one-minute user was dropped when judged against the default five
+    at the instant of recovery; the decision now waits for the profile."""
+    backend = FakeTimeEntryService(entry_id=42)
+    first = _process(cache, backend, idle_minutes=1)
+    first.timer.start_tracking(1, 7, "Task")
+    last_beat = clock.advance(minutes=30)
+    _die(first)
+    clock.advance(seconds=85)
+
+    runtime = Runtime(cache, backend)
+    api = FakeIdleApi()
+    idle = IdleService(runtime, api)                    # profile not applied yet
+    runtime.timer.timer_started.connect(idle._on_tracking_started)
+    runtime.timer.timer_recovered.connect(idle._on_tracking_started)
+    runtime.timer.timer_recovered.connect(idle._on_tracking_recovered)
+    try:
+        assert runtime.timer.recover(previous_run={"last_heartbeat": last_beat.timestamp()}) is not None
+        idle.tick()
+        assert api.reports == [] and idle._interruption is not None, "undecided until the profile arrives"
+        idle.apply_user_profile({"idle_enabled": True, "idle_minutes": 1})
+        idle.tick()
+        assert len(api.reports) == 1
+    finally:
+        idle.stop(timeout_ms=500)
+        runtime.timer.stop(timeout_ms=500)
+
+
+def test_the_threshold_is_seeded_from_the_restored_session_at_start(qapp, cache, clock):
+    class SessionManager:
+        user_info = {"id": 9, "idle_enabled": True, "idle_minutes": 1}
+
+    backend = FakeTimeEntryService(entry_id=42)
+    runtime = Runtime(cache, backend)
+    runtime.session_manager = SessionManager()
+    idle = IdleService(runtime, FakeIdleApi())
+    try:
+        idle.start()                                     # the real lifecycle, once
+        assert idle.idle_minutes == 1 and idle._config_loaded
+    finally:
+        idle.stop(timeout_ms=2000)
+        runtime.timer.stop(timeout_ms=500)
+
+
 # ── 2. Repeated recovery -> no duplicate idle period ─────────────────────────
 
 def test_2_recovering_the_same_interruption_again_opens_no_second_period(qapp, cache, clock):
@@ -232,6 +277,7 @@ def test_a_report_that_lands_twice_is_answered_with_the_same_period(qapp, cache,
         # Force the interruption back and tick again, as a retry would.
         second.idle._interruption = {
             "client_op": second.timer.active_session()["client_op"],
+            "gap_seconds": 3600.0,
             "idle_started_at": last_beat.isoformat(),
             "idle_detected_at": clock.now.isoformat(),
             "client_event_id": first_id,
