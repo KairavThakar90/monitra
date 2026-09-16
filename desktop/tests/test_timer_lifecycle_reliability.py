@@ -403,6 +403,35 @@ def test_a_remembered_minimise_keeps_tracking(qapp, window, live_runtime, isolat
     runtime.timer.stop_tracking()
 
 
+def test_the_window_accepts_the_close_that_quit_itself_delivers(qapp, window, live_runtime):
+    """Qt 6's QApplication.quit() closes every top-level window first and
+    abandons the quit if one ignores the close. Found on the real display:
+    the timer stopped, the stop landed, "quitting the application" was
+    logged -- and the process ran on."""
+    from PySide6.QtGui import QCloseEvent
+
+    runtime = live_runtime
+    _start_and_bind(qapp, runtime)
+    window.quit_application()
+    assert _pump(qapp, lambda: bool(window.quits))
+    assert window._exiting
+
+    # While preparing (not yet ready), a close is held off.
+    window._exit_ready = False
+    held = QCloseEvent()
+    window.closeEvent(held)
+    assert not held.isAccepted()
+
+    # The real _on_exit_ready marks the window ready before calling quit();
+    # the close that quit() then sends must be accepted.
+    import main as main_module
+    main_module.MainWindow._on_exit_ready.__get__(window)  # exists
+    window._exit_ready = True
+    final = QCloseEvent()
+    window.closeEvent(final)
+    assert final.isAccepted(), "quit() would be abandoned and the process would run on"
+
+
 def test_the_tray_quit_stops_the_timer(qapp, window, live_runtime):
     runtime = live_runtime
     _start_and_bind(qapp, runtime)
@@ -660,6 +689,53 @@ def test_a_stop_is_never_abandoned_over_transient_failures(qapp, runtime):
     backend.mode = "ok"
     _drain(runtime.sync, runtime.cache)
     assert [s["entry_id"] for s in backend.stopped] == [5]
+
+
+def test_a_stop_in_backoff_is_retried_the_moment_the_hold_ends(qapp, runtime):
+    """Found by the soak: a stop that had earned a minute of backoff during
+    flapping was still waiting after the backend came back, and the queue
+    reported as not drained."""
+    backend = RecordingBackend(entry_id=5)
+    runtime.sync._time_entry_service = backend
+    cache = runtime.cache
+    action_id = cache.enqueue_action(
+        "stop_timer", {"entry_id": 5, "client_op": "timer:7:k", "stopped_at": "2026-09-16T10:00:00+00:00"},
+        priority=1, idempotency_key="stop:5",
+    )
+    task_id = cache.enqueue_action("update_task", {"project_id": 1, "task_id": 1, "task_name": "x"}, priority=5)
+    cache.storage.execute(
+        "UPDATE pending_actions SET status = 'retry', retry_count = 7, next_retry_at = ? WHERE id IN (?, ?)",
+        (time.time() + 60, action_id, task_id),
+    )
+    assert cache.get_next_pending_action() is None, "both are in backoff"
+
+    # The consumer comes out of a hold: the stop is attempted at once, the
+    # task keeps its jittered backoff.
+    runtime.sync._set_state(ServiceState.DEGRADED, "network NO_NETWORK")
+    runtime.network.note_backend_reachable()
+    assert runtime.sync.tick() is not None
+    assert [s["entry_id"] for s in backend.stopped] == [5]
+    assert cache.get_next_pending_action() is None, "the task action must keep its backoff"
+
+
+def test_quit_retries_a_stop_that_is_waiting_out_a_backoff(qapp, live_runtime):
+    runtime = live_runtime
+    _start_and_bind(qapp, runtime)
+    runtime.backend.mode = "offline"
+    runtime.timer.stop_tracking()
+    assert _pump(qapp, lambda: runtime.cache.pending_stop_count() == 1)
+    # Let the first attempt fail and earn a backoff, then the backend returns.
+    _pump(qapp, lambda: any("connection" in (r or "") for r in [
+        runtime.cache.storage.query_one("SELECT error_message FROM pending_actions WHERE action_type='stop_timer'")["error_message"]
+    ]), timeout=3.0)
+    runtime.cache.storage.execute(
+        "UPDATE pending_actions SET next_retry_at = ? WHERE action_type = 'stop_timer'", (time.time() + 60,)
+    )
+    runtime.backend.mode = "ok"
+    ready = []
+    runtime.prepare_exit(lambda: ready.append(True))
+    assert _pump(qapp, lambda: bool(ready), timeout=4.0)
+    assert [s["entry_id"] for s in runtime.backend.stopped] == [42], "the stop waited out its backoff"
 
 
 def test_a_stop_parked_as_failed_by_an_older_build_is_revived_at_launch(cache):

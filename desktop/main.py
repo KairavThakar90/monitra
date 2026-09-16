@@ -125,6 +125,12 @@ class MainWindow(QMainWindow):
         #: Set once an exit is under way, whichever path started it. From
         #: then on a close is neither questioned nor repeated.
         self._exiting = False
+        #: Set when the runtime has finished preparing the exit. Qt 6's
+        #: `QApplication.quit()` first asks every top-level window to close
+        #: and abandons the quit if one ignores the close, so the window
+        #: ignores closes while the exit is being prepared and accepts the
+        #: one that `quit()` itself delivers.
+        self._exit_ready = False
         #: The exit is a restart (an update being installed), not a quit: the
         #: running session is meant to survive it, as after any interruption.
         self._exit_is_restart = False
@@ -499,10 +505,16 @@ class MainWindow(QMainWindow):
         application quits.
         """
         if self._exiting:
-            # The close is already being carried out; a second X or tray
-            # Quit joins it. Ignored rather than accepted so the window stays
-            # up until the exit preparation calls back and quits.
-            event.ignore()
+            # The close is already being carried out. Until the runtime has
+            # called back, a second X or tray Quit joins the wait and the
+            # close is ignored so the window stays up. Once it has, the close
+            # is the one `QApplication.quit()` sends to every window before
+            # it exits the event loop -- and Qt 6 abandons the quit if that
+            # close is ignored -- so it is accepted.
+            if self._exit_ready:
+                event.accept()
+            else:
+                event.ignore()
             return
 
         # Recorded before anything hides or closes, while the window still
@@ -546,6 +558,7 @@ class MainWindow(QMainWindow):
     def _on_exit_ready(self) -> None:
         """The runtime has done what it can for the exit; leave now."""
         log.info("exit preparation complete; quitting the application")
+        self._exit_ready = True
         QApplication.instance().quit()
 
     def _ask_close_intent(self) -> str:

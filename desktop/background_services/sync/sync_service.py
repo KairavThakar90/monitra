@@ -226,6 +226,17 @@ class SyncService(LoopService):
 
         if self.state == ServiceState.DEGRADED:
             self._set_state(ServiceState.RUNNING)
+            # The hold is over: the backend is reachable again, or the user
+            # has signed back in. A timer action waiting out a backoff earned
+            # against the outage is attempted now rather than up to a minute
+            # later -- a stop delivered late is an entry running late.
+            try:
+                brought_forward = self._cache.make_timer_actions_ready()
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not bring timer actions forward")
+            else:
+                if brought_forward:
+                    self.log.info("hold ended; %d timer action(s) retried now", brought_forward)
 
         action = self._cache.get_next_pending_action()
         if action is None:

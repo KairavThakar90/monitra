@@ -185,6 +185,27 @@ through the durable queue. At every instant the disk holds either the record
 or the queued stop. A stop queued before the backend issued an id also
 queues its start, so it always has one to wait for.
 
+### ❌ Do not ignore the close that `QApplication.quit()` delivers
+
+```python
+def closeEvent(self, event):
+    if self._exiting:
+        event.ignore()          # "the exit is already under way"
+        return
+```
+
+**What it caused:** the timer stopped, the stop reached the backend,
+"quitting the application" was logged -- and the process ran on, with its
+window open, until it was killed. Found on the real display, not by any
+test: in Qt 6, `QApplication.quit()` first asks every top-level window to
+close and *abandons the quit* if a window ignores that close. The window was
+ignoring every close once an exit had begun, including the one `quit()`
+itself sent.
+
+**Instead:** hold off closes only while the runtime is still preparing the
+exit, mark the window ready in the exit callback, and accept the close that
+follows (`MainWindow._exit_ready`).
+
 ### ❌ Do not let a start overtake a queued stop
 
 A switch is stop-then-start. With the stop in the queue and the start sent

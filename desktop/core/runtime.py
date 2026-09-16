@@ -468,6 +468,15 @@ class ApplicationRuntime(QObject):
         self._exit_prepared = True
         log.info("exit requested (stop_timer=%s)", stop_timer)
 
+        # Subscribed *before* the stop is queued: the consumer runs on its own
+        # thread and can complete the stop the instant it is enqueued, and a
+        # completion emitted before this subscription exists is never
+        # delivered to it -- the exit would then wait out its whole budget
+        # for a stop that had already landed.
+        self.sync.action_completed.connect(self._on_exit_sync_progress)
+        self.sync.action_failed.connect(self._on_exit_sync_failed)
+        self._exit_connected = True
+
         if stop_timer and self.timer.is_running():
             self.timer.stop_tracking()
 
@@ -475,9 +484,6 @@ class ApplicationRuntime(QObject):
             self._finish_exit_preparation("nothing to wait for")
             return
 
-        self.sync.action_completed.connect(self._on_exit_sync_progress)
-        self.sync.action_failed.connect(self._on_exit_sync_failed)
-        self._exit_connected = True
         self._exit_timer = QTimer(self)
         self._exit_timer.setSingleShot(True)
         self._exit_timer.timeout.connect(
@@ -485,6 +491,12 @@ class ApplicationRuntime(QObject):
         )
         self._exit_timer.start(budget_ms)
         log.info("waiting up to %dms for the queued stop to reach the backend", budget_ms)
+        # A stop already waiting out a retry backoff would not be attempted
+        # inside the budget at all; the user is waiting, so it is tried now.
+        try:
+            self.cache.make_timer_actions_ready()
+        except Exception:  # noqa: BLE001
+            log.exception("could not bring the queued stop forward")
         # The consumer may be idle: make sure it looks now rather than at its
         # next scheduled poll.
         self.sync.wake()

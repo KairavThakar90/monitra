@@ -645,6 +645,28 @@ class LocalCache:
             log.info("revived %d failed timer action(s) for a fresh attempt", revived)
         return revived
 
+    def make_timer_actions_ready(self) -> int:
+        """Let every waiting timer action be attempted now.
+
+        A retry backoff is computed against a backend that was erroring; it
+        says nothing once the backend is known to be back. The sync consumer
+        calls this the moment its hold ends, and the exit path calls it
+        before waiting for the stop, so a stop never sits out a backoff of
+        up to a minute while the user waits for Quit or the next launch. The
+        jitter that protects the backend from a fleet retrying in lockstep is
+        kept for the ordinary retry path.
+
+        :return: how many rows were brought forward.
+        """
+        placeholders = ", ".join("?" for _ in self.TIMER_ACTION_TYPES)
+        cursor = self._storage.execute(
+            f"UPDATE pending_actions SET next_retry_at = ? "
+            f"WHERE status IN ('pending', 'retry') AND next_retry_at > ? "
+            f"AND action_type IN ({placeholders})",
+            (time.time(), time.time(), *self.TIMER_ACTION_TYPES),
+        )
+        return cursor.rowcount or 0
+
     def pending_stop_count(
         self,
         exclude_client_op: Optional[str] = None,
