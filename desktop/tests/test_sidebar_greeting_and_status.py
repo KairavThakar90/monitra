@@ -127,6 +127,23 @@ def test_the_circular_control_sits_centred_under_the_duration(sidebar, qapp):
     assert control.isVisible()
 
 
+def test_the_caption_under_the_disc_is_never_clipped(sidebar, qapp):
+    """"Select a task to start" was cut to "ct a task to s" on the real
+    display: the control was centred as a block and shrank to the disc."""
+    control = sidebar._timer_control
+    sidebar.set_play_available(False)
+    _drain(qapp)
+    caption = control.caption
+    needed = caption.fontMetrics().horizontalAdvance(caption.text())
+    assert caption.text(), "the idle caption is the one that says what to do"
+    assert caption.width() >= needed, (caption.width(), needed)
+    assert control.width() >= sidebar._time_display.width() - 2, "spans the column like the hero duration"
+    # And the disc is still on the column's centre line.
+    button = control.button
+    centre = control.x() + button.x() + button.width() / 2
+    assert abs(centre - sidebar._time_section.width() / 2) <= 1
+
+
 def test_the_status_pill_sits_on_the_account_name_row(sidebar, qapp):
     """`Smit Prajapati ............ ● Active` on one line, the email below."""
     sidebar.set_user({"name": "Smit Prajapati", "email": "smit@example.com"})

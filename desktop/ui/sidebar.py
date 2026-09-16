@@ -586,7 +586,9 @@ class SidebarWidget(QWidget):
         self._timer_control.start_requested.connect(self.start_requested)
         self._timer_control.stop_requested.connect(self.stop_requested)
         ts_layout.addSpacing(2)
-        ts_layout.addWidget(self._timer_control, 0, Qt.AlignmentFlag.AlignHCenter)
+        # Full width: the control centres its disc itself, and its caption
+        # needs the column's width, not the disc's.
+        ts_layout.addWidget(self._timer_control)
 
         layout.addWidget(self._time_section)
 

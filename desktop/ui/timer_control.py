@@ -133,7 +133,12 @@ class TimerControl(QWidget):
         self.caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.caption.setFont(QFont("Segoe UI", CAPTION_FONT_SIZE, QFont.Weight.DemiBold))
         self.caption.setFixedHeight(CAPTION_HEIGHT)
-        self.caption.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        # The block spans whatever width it is given and centres the disc
+        # inside it, so the caption has the whole column to draw in. Centred
+        # as a block instead, the widget shrank to the disc's 64px and the
+        # caption was clipped to "ct a task to s" on the real display.
+        self.caption.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self.caption)
 
         self._settle = QTimer(self)
