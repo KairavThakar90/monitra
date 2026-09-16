@@ -50,10 +50,20 @@ _CARD_VALUE_WIDTH = 190
 #: Gap between cards, in both directions.
 _CARD_SPACING = 14
 
-#: Gap between a card's text and a trailing action, and what the ACTIVE
-#: TASK card needs on top of the others for its Break In / Break Out button.
+#: Gap between a card's text and a trailing action.
 _ACTION_SPACING = 12
-ACTIVE_CARD_EXTRA_WIDTH = BREAK_BUTTON_WIDTH + _ACTION_SPACING
+
+#: How much wider the ACTIVE TASK card's floor is than the others', for its
+#: Break In / Break Out button. Deliberately less than the button's own
+#: 108px: the button is paid for partly by the card and partly by the task
+#: name, which elides. A task name shortens gracefully and a clock does not,
+#: and adding the button's whole width to the floor would have moved the
+#: one-row threshold past what a 1600px-wide window has left for content,
+#: wrapping the cards two-by-two on a screen that showed them in one row
+#: before. At the floor the name still has ~120px; above it, the columns
+#: stretch in proportion to their floors (see `_arrange`), so the name
+#: gets more room the moment there is any.
+ACTIVE_CARD_EXTRA_WIDTH = 40
 
 
 class ElidingLabel(QLabel):
@@ -200,14 +210,14 @@ class StatCard(QFrame):
         layout.addLayout(text_col, 1)
         self._layout = layout
 
-    def add_action(self, widget: QWidget) -> None:
+    def add_action(self, widget: QWidget, extra_min_width: int) -> None:
         """Place a control on the card's right, vertically centred beside
-        the text. The card's floor grows by the control's width so the
-        value keeps the room it is guaranteed; the text column, which is
-        the stretchy one, gives up the rest."""
+        the text, and raise the card's floor by `extra_min_width`. The text
+        column, the stretchy one, gives up whatever the control takes beyond
+        that; its labels elide."""
         self._layout.addSpacing(_ACTION_SPACING - self._layout.spacing())
         self._layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.setMinimumWidth(self.minimumWidth() + widget.minimumWidth() + _ACTION_SPACING)
+        self.setMinimumWidth(self.minimumWidth() + extra_min_width)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(f"""
@@ -300,7 +310,7 @@ class StatCardsRow(QWidget):
         # acts on. A double-click is one click on it, and a burst of clicks
         # does one thing (see ui/break_button.py).
         self.break_button = BreakButton(self.active_card)
-        self.active_card.add_action(self.break_button)
+        self.active_card.add_action(self.break_button, ACTIVE_CARD_EXTRA_WIDTH)
         self.break_button.break_in_requested.connect(self.break_in_requested)
         self.break_button.break_out_requested.connect(self.break_out_requested)
         #: 0 until the first arrangement is applied, so the first call is

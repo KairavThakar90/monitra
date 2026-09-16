@@ -311,6 +311,29 @@ backend has since finalized elsewhere — keeping any session the backend
 could not know about yet (an unsent or queued start, or one bound after the
 question was asked).
 
+### Three controls, one service
+
+Three things on screen start or stop tracking: each task row's Start/Stop,
+the sidebar's circular Play/Pause under the day's total, and Break In /
+Break Out in the ACTIVE TASK card. None of them holds timer state. Every one
+turns a click into a `TimerService` verb -- the rows and the disc through
+`TaskSection.start_task` / `stop_running_task` (the rows' own handlers, so
+the disc *is* the row's button), the break button through `break_in` /
+`break_out` -- and every one is rendered back from the service's signals by
+`DashboardWindow._render_timer_controls`. There is no second path, so they
+cannot disagree, and a burst of clicks on any of them does one thing: a
+double-click is folded into one click (`SingleClickButton`) and the control
+is held disabled for a short settle window after each click, then re-rendered
+from the service's state.
+
+Play needs a task. It starts the task selected in the list (a click on a
+row's body, or a row's Start, selects it; switching projects clears it) or,
+failing that, the task tracked last in the session, so Pause then Play
+resumes the same task after browsing elsewhere. With neither it is disabled
+and its caption says to select a task -- it never guesses one. During a break
+it is disabled: Break Out is the one control that resumes the held task, and
+a start from anywhere else ends the break (`_leave_break`) and loses it.
+
 ### The timer only ever runs against today
 
 `core/date_mode.py` is the one definition of what a selected date means:

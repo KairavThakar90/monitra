@@ -58,8 +58,8 @@ def window(qapp, desktop, principal):
 
     runtime = desktop
     qapp.setStyleSheet(APP_QSS)
-    # A signed-in session, as `MainWindow` would have restored it.
-    runtime.session_manager.access_token = principal["token"]
+    # The client already carries the principal's token (see `desktop`); the
+    # window reads the profile from the real /auth/me, as login does.
     runtime.api_client.access_token = principal["token"]
     widget = DashboardWindow(
         runtime=runtime,
@@ -120,7 +120,20 @@ def _click_row_body(qapp, row) -> None:
 
 
 def _active_entry(api):
-    return api.get("/time-entries/active").json()["entry"]
+    """The backend's running entry for the principal, or None.
+
+    Retried once on a transport error: the test client keeps a pooled
+    keep-alive connection across the sleeps between steps, and the server
+    may have closed it meanwhile (WinError 10053 on Windows). That is the
+    harness's own connection, not the desktop's, so a fresh request is the
+    honest answer rather than a failure.
+    """
+    import httpx
+
+    try:
+        return api.get("/time-entries/active").json()["entry"]
+    except httpx.TransportError:
+        return api.get("/time-entries/active").json()["entry"]
 
 
 @pytest.mark.usefixtures("clean_slate")

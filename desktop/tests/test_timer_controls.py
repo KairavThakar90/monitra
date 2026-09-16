@@ -165,13 +165,28 @@ def test_the_break_button_sits_on_the_right_of_the_active_task_card(qapp):
     row.deleteLater()
 
 
-def test_the_active_card_keeps_the_value_its_floor_beside_the_button(qapp):
-    """The value's guaranteed width is the card's whole reason for a floor;
-    the button must be paid for by the card, not taken from the name."""
+def test_the_active_card_is_wider_and_the_name_keeps_room_at_the_floor(qapp):
+    """The button is paid for partly by the card and partly by the name,
+    which elides; at the narrowest one-row width the name still has room,
+    and above it the active column stretches faster than the others."""
     row = _laid_out(qapp, StatCardsRow(), StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH)
     assert row.columns() == 4
     assert row.active_card.width() > row.total_card.width()
-    assert row.active_card._value.width() >= 186
+    assert row.active_card._value.width() >= 118
+    assert row.active_card._value.x() + row.active_card._value.width() <= row.break_button.x()
+
+    _laid_out(qapp, row, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH + 200)
+    assert row.active_card._value.width() >= 118 + 50, "slack goes to the name first"
+    row.hide()
+    row.deleteLater()
+
+
+def test_a_1600px_window_still_shows_the_cards_in_one_row(qapp):
+    """1600x900 leaves 1260px of content once the sidebar and margins are
+    taken out; the row showed one line there before the button and must
+    still."""
+    row = _laid_out(qapp, StatCardsRow(), 1600 - 300 - 40)
+    assert row.columns() == 4
     row.hide()
     row.deleteLater()
 
@@ -511,7 +526,11 @@ def test_break_in_disables_the_circle_and_break_out_resumes_the_task(qapp, dashb
     _drain(qapp)
     assert not runtime.timer.is_running()
     assert runtime.timer.break_status == BreakStatus.ON_BREAK
-    assert len(runtime.backend.started) == 1
+    # The one session ever started is the first; nothing new reached the
+    # backend (its start may still be landing on the pool -- wait for it).
+    _wait_started(qapp, runtime, [10])
+    _drain(qapp)
+    assert _started_tasks(runtime) == [10]
 
     _click_break(qapp, dashboard)  # Break Out
 
