@@ -13,9 +13,11 @@ from PySide6.QtWidgets import (
     QLineEdit, QScrollArea, QFrame, QSizePolicy, QSpacerItem,
     QMenu, QStackedWidget, QToolButton, QProxyStyle, QStyle
 )
+from background_services.public_api import BreakStatus
 from core.time_format import format_hms, ist_greeting
 from core.validation import SEARCH_MAX_LENGTH
 from ui import icons
+from ui.task_table import SingleClickButton
 from core.branding import logo_pixmap
 from ui.styles import (
     SIDEBAR_BG, SIDEBAR_BG_HOVER, SIDEBAR_SELECTED, SIDEBAR_MUTED,
@@ -36,6 +38,26 @@ HEADER_HEIGHT_COLLAPSED = 96
 # Total Time Today hero text sizing
 TIME_DISPLAY_FONT_SIZE = 36
 STATUS_FONT_SIZE = 12
+
+#: The Break In / Break Out control, on the right of the Active/Idle row.
+#: Compact on purpose: it shares the row with the status pill inside the
+#: 300px column, so it is sized like the header's collapse button rather
+#: than like a task row's Start button.
+BREAK_BUTTON_HEIGHT = 26
+BREAK_BUTTON_FONT_SIZE = 10
+BREAK_IN_LABEL = "Break In"
+BREAK_OUT_LABEL = "Break Out"
+BREAK_RESUMING_LABEL = "Resuming…"
+
+#: How long the button stays disabled after a click, whatever the state
+#: becomes meanwhile. Break In stops the task synchronously, so the button
+#: reads "Break Out" before the user's finger has lifted; without this a
+#: burst of clicks -- three fast taps on "Break In" -- stopped the task on
+#: the first tap and resumed it on the third. `SingleClickButton` already
+#: folds a double-click into one click; this covers the third and later
+#: ones. A UI-only single-shot: it schedules no work and only re-renders
+#: the button from the state it is then given.
+BREAK_BUTTON_SETTLE_MS = 600
 
 # Greeting block ("Welcome Sam!" / "Good morning") sizing
 WELCOME_FONT_SIZE = 14
@@ -344,6 +366,12 @@ class SidebarWidget(QWidget):
     project_selected = Signal(dict)
     logout_requested = Signal()
     collapse_toggled = Signal(bool)
+    #: The Break In / Break Out button. Intent only: the sidebar holds no
+    #: break state of its own and decides nothing about tracking. It renders
+    #: the `BreakStatus` DashboardWindow pushes through `set_break_status`,
+    #: the same way `set_timer_active` renders the timer's state.
+    break_in_requested = Signal()
+    break_out_requested = Signal()
     #: The footer's Feedback & Help action. The sidebar opens nothing itself;
     #: DashboardWindow owns the dialog's lifetime, exactly as it owns the idle
     #: alert's, so a transient widget never owns a window that outlives it.
@@ -367,6 +395,7 @@ class SidebarWidget(QWidget):
         self._user_info: Dict[str, Any] = {}
         self._total_seconds = 0
         self._is_active = False
+        self._break_status = BreakStatus.NONE
         self._search_text = ""
         self._current_page = 1
         self._selected_project_id: Optional[int] = None
@@ -555,6 +584,11 @@ class SidebarWidget(QWidget):
         )
         ts_layout.addWidget(self._time_display)
 
+        # One row under the hero duration: the Active/Idle pill on the left,
+        # the Break In / Break Out button on the right. The pill keeps its
+        # dot, word, colours and font; only its position changed when the
+        # button joined the row, because a control on the right needs the
+        # status to hold the left rather than float in the middle.
         status_row = QHBoxLayout()
         status_row.setSpacing(6)
         status_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
@@ -563,17 +597,30 @@ class SidebarWidget(QWidget):
         self._status_text = QLabel(self._time_section)
         self._status_text.setFont(QFont("Segoe UI", STATUS_FONT_SIZE, QFont.Weight.Bold))
 
-        # Stretch on both sides, so the dot and its word centre as one unit
-        # rather than being pinned to the left edge of a centred block.
-        status_row.addStretch()
+        # A double-click is one click here, as on the task rows' Start/Stop:
+        # the first click re-labels the button before the second lands, and
+        # a plain button would then fire the opposite action.
+        self._break_btn = SingleClickButton(BREAK_IN_LABEL, self._time_section)
+        self._break_btn.setFixedHeight(BREAK_BUTTON_HEIGHT)
+        self._break_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._break_btn.setFont(QFont("Segoe UI", BREAK_BUTTON_FONT_SIZE, QFont.Weight.Bold))
+        self._break_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._break_btn.clicked.connect(self._on_break_clicked)
+        self._break_settle = QTimer(self)
+        self._break_settle.setSingleShot(True)
+        self._break_settle.setInterval(BREAK_BUTTON_SETTLE_MS)
+        self._break_settle.timeout.connect(self._render_break_control)
+
         status_row.addWidget(self._status_dot)
         status_row.addWidget(self._status_text)
         status_row.addStretch()
+        status_row.addWidget(self._break_btn)
         ts_layout.addLayout(status_row)
 
         # The idle look is defined once, in `set_timer_active`, rather than
         # written out here and again there -- two spellings of one state is
-        # how they drift apart.
+        # how they drift apart. The button's look is likewise defined once,
+        # in `_render_break_control`, which that call reaches.
         self.set_timer_active(False)
 
         layout.addWidget(self._time_section)
@@ -933,6 +980,75 @@ class SidebarWidget(QWidget):
             f"color: {color}; font-size: {STATUS_FONT_SIZE}pt; font-weight: 900;"
         )
         self._status_text.setText("Active" if active else "Idle")
+        self._render_break_control()
+
+    def set_break_status(self, status: str) -> None:
+        """Render the break state (a `BreakStatus` value) on the button.
+
+        A readout, like `set_timer_active`: the state is TimerService's and
+        arrives here through DashboardWindow. The sidebar never enters or
+        leaves a break by itself.
+        """
+        self._break_status = status
+        self._render_break_control()
+
+    def break_button_text(self) -> str:
+        return self._break_btn.text()
+
+    def _render_break_control(self) -> None:
+        """The button, from the two facts it depends on and nothing else.
+
+        * Not on break: "Break In", enabled only while a task is running --
+          with nothing running there is nothing to step away from, and a
+          disabled button makes no request.
+        * On break: "Break Out", enabled; the held task is what it resumes.
+        * Resuming: "Resuming…", disabled, until the start has committed or
+          been refused. That is the in-progress protection: the service
+          refuses a second Break Out anyway, and the button says so.
+        """
+        status = self._break_status
+        if status == BreakStatus.ON_BREAK:
+            text, enabled, accent = BREAK_OUT_LABEL, True, True
+        elif status == BreakStatus.RESUMING:
+            text, enabled, accent = BREAK_RESUMING_LABEL, False, True
+        else:
+            text, enabled, accent = BREAK_IN_LABEL, self._is_active, False
+        self._break_btn.setText(text)
+        self._break_btn.setEnabled(enabled and not self._break_settle.isActive())
+        # Neutral while working (the same translucent surface as the
+        # collapse button); the brand accent while on break, so the way back
+        # to the task is the one thing on the sidebar asking to be pressed.
+        background = PRIMARY if accent else "rgba(255,255,255,0.08)"
+        hover = "#3B57E8" if accent else "rgba(255,255,255,0.14)"
+        border = PRIMARY if accent else "rgba(255,255,255,0.16)"
+        self._break_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {background}; color: {SIDEBAR_TEXT};
+                border: 1px solid {border}; border-radius: 6px;
+                padding: 0 10px;
+                font-size: {BREAK_BUTTON_FONT_SIZE}pt; font-weight: 700;
+            }}
+            QPushButton:hover {{ background: {hover}; }}
+            QPushButton:disabled {{
+                background: rgba(255,255,255,0.04);
+                border-color: rgba(255,255,255,0.08);
+                color: rgba(255,255,255,0.35);
+            }}
+        """)
+
+    def _on_break_clicked(self) -> None:
+        # Disabled at once, and held disabled for the settle window (see
+        # BREAK_BUTTON_SETTLE_MS), so a burst of clicks does one thing. The
+        # next `set_break_status` / `set_timer_active` after the window
+        # re-enables the button from the service's state.
+        self._break_btn.setEnabled(False)
+        self._break_settle.start()
+        if self._break_status == BreakStatus.ON_BREAK:
+            self.break_out_requested.emit()
+        elif self._break_status == BreakStatus.NONE and self._is_active:
+            self.break_in_requested.emit()
+        else:
+            self._render_break_control()
 
     def select_project(self, project_id: int) -> None:
         self._selected_project_id = project_id

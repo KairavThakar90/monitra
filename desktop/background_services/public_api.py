@@ -30,12 +30,12 @@ from background_services.activity.today_summary import (
 from background_services.activity.url_usage import build_url_usage_summary
 from background_services.network import NetworkState
 from background_services.notifications import NotificationLevel, create_app_icon, set_windows_app_identity
-from background_services.timer import TimerStatus
+from background_services.timer import BreakStatus, TimerStatus
 from background_services.update import ReleaseInfo, UpdateState
 from core.tasks import TaskHandle
 
 __all__ = [
-    "ACTIVITY_DESKTOP_DAYS", "ActivityTotals", "BackgroundApi",
+    "ACTIVITY_DESKTOP_DAYS", "ActivityTotals", "BackgroundApi", "BreakStatus",
     "DateAvailability", "NetworkState", "NotificationLevel", "ReleaseInfo",
     "SCREENSHOT_DESKTOP_DAYS", "TimerStatus", "TaskHandle", "TodaySnapshot",
     "UpdateState", "create_app_icon", "set_windows_app_identity",
@@ -160,6 +160,29 @@ class BackgroundApi:
         self._runtime.timer.switch_tracking(
             project_id, task_id, task_name, for_date=for_date
         )
+
+    def break_in(self, *, for_date: Optional[date] = None) -> bool:
+        """Break In: stop the running task through the ordinary stop flow and
+        hold it for `break_out`. Returns whether a break was entered; with
+        nothing running it does nothing and creates nothing. Same date rule
+        and the same `for_date` meaning as `stop_timer`."""
+        return self._runtime.timer.break_in(for_date=for_date)
+
+    def break_out(self, *, for_date: Optional[date] = None) -> bool:
+        """Break Out: resume exactly the task `break_in` held, through the
+        ordinary start flow, after checking with the backend that it can
+        still be started. Whatever the user has selected meanwhile is not
+        consulted. Returns whether a resume was begun; watch
+        `timer.break_state_changed` for its outcome."""
+        return self._runtime.timer.break_out(for_date=for_date)
+
+    def break_status(self) -> str:
+        """A `BreakStatus` value."""
+        return self._runtime.timer.break_status
+
+    def pre_break_task(self) -> Optional[Dict[str, Any]]:
+        """The task Break Out will resume, or None when not on break."""
+        return self._runtime.timer.pre_break_task()
 
     def request_exit(
         self, on_ready: Callable[[], None], *, stop_timer: bool = True

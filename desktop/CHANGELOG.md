@@ -20,6 +20,20 @@ re-grant a permission.
 
 ## [Unreleased]
 
+### Added
+
+- **Break In / Break Out.** A button beside the Active/Idle status in the
+  sidebar. **Break In** stops the task you are tracking and remembers it;
+  **Break Out** starts that same task again, so you never have to find it in
+  the list after a break. The break itself is not counted as work: it is
+  simply the gap between the two time entries, exactly as if you had pressed
+  Stop and then Start yourself. You can browse other projects while on break
+  without changing what Break Out will resume. If the task was archived,
+  completed or taken away from you meanwhile, Break Out tells you so and
+  starts nothing -- it never picks a different task for you. Closing Monitra
+  during a break just leaves the timer stopped; nothing starts by itself when
+  you open it again.
+
 ### Fixed
 
 - **Discarded idle time now leaves the running clock at once.** When you

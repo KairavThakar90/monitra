@@ -94,6 +94,43 @@ class TimerStatus:
     RECOVERING = "RECOVERING"
 
 
+class BreakStatus:
+    """The break-resume reference, beside the timer's own states.
+
+    A break is *not* a timer state. Break In is the existing stop flow and
+    Break Out is the existing start flow; what the break adds is one thing
+    the timer does not otherwise keep -- which task was running when the
+    user stepped away -- so Break Out can resume exactly that task without
+    the user finding it again. While on break the timer is IDLE: no session,
+    no trackers, no screenshots, no time.
+
+    * `NONE`      -- not on break. `pre_break_task` is empty.
+    * `ON_BREAK`  -- the running task was stopped by Break In and is held in
+                     `pre_break_task`, independent of whatever the user
+                     browses to meanwhile.
+    * `RESUMING`  -- Break Out was pressed and the held task is being checked
+                     against the backend before the start is issued. A second
+                     press in this state does nothing.
+
+    In memory only. Nothing about a break is persisted: a restart during a
+    break comes up with no timer and no break, and never starts a task by
+    itself (a phantom timer after a restart is the failure this rule
+    prevents). `pre_break_task` cannot outlive the process, which is the
+    honest outcome -- the timer it refers to is already stopped and saved.
+    """
+    NONE = "NONE"
+    ON_BREAK = "ON_BREAK"
+    RESUMING = "RESUMING"
+
+
+#: The backend answers these when the task can no longer be started by this
+#: user: archived or deleted (404 -- the backend's task chokepoint answers
+#: 404 for "not yours to see" as well), access revoked (403), or a project
+#: the user is no longer on (400/404). A definitive answer; the held task is
+#: released rather than retried.
+_TASK_GONE_STATUS_CODES = frozenset({400, 403, 404})
+
+
 class _QueuedConflict(Exception):
     """A 409 delivered by the queue, shaped like `ActiveTimerConflict`."""
 
@@ -133,6 +170,15 @@ def new_client_op(task_id: int, started_at: datetime) -> str:
     """
     stamp = started_at.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"timer:{task_id}:{stamp}:{uuid.uuid4().hex[:8]}"
+
+
+def _task_status_name(task: Dict[str, Any]) -> str:
+    """Lowered status name of a task as either task endpoint serialises it:
+    a plain string, or a `{"id", "name", "color"}` object."""
+    status = task.get("status")
+    if isinstance(status, dict):
+        status = status.get("name")
+    return (status or "").strip().lower()
 
 
 def _entry_adjustment(entry: Dict[str, Any]) -> int:
@@ -199,6 +245,8 @@ class TimerService(BaseService):
     timer_recovered = Signal(dict)
     timer_error = Signal(str)
     status_changed = Signal(str)
+    #: `BreakStatus`, on every transition and only on a transition.
+    break_state_changed = Signal(str)
 
     # NOTE: the tracking verbs are `start_tracking` / `stop_tracking` /
     # `switch_tracking`, deliberately distinct from `BaseService.start()` and
@@ -215,6 +263,13 @@ class TimerService(BaseService):
         self._status = TimerStatus.IDLE
         self._trackers: list = []
         self._sync_connected = False
+
+        #: The break-resume reference (see `BreakStatus`). Never persisted.
+        self._break_status = BreakStatus.NONE
+        self._pre_break_task: Optional[Dict[str, Any]] = None
+        #: Bumped on every Break Out and on every reset, so the verdict of a
+        #: check that was in flight when the state moved on is dropped.
+        self._break_resume_token = 0
 
         self._tick_timer = QTimer(self)
         self._tick_timer.setInterval(1000)
@@ -242,6 +297,17 @@ class TimerService(BaseService):
     @property
     def task_id(self) -> Optional[int]:
         return self._session.get("task_id") if self._session else None
+
+    @property
+    def break_status(self) -> str:
+        return self._break_status
+
+    def is_on_break(self) -> bool:
+        return self._break_status != BreakStatus.NONE
+
+    def pre_break_task(self) -> Optional[Dict[str, Any]]:
+        """A copy of the task Break Out will resume, or None."""
+        return dict(self._pre_break_task) if self._pre_break_task else None
 
     def measured_seconds(self) -> int:
         """
@@ -515,6 +581,10 @@ class TimerService(BaseService):
         self._set_status(TimerStatus.RUNNING)
         self._tick_timer.start()
         self._start_trackers(self._session)
+        # A running task means the user is working, whichever way it began:
+        # Break Out, or a task started by hand during a break. Either way
+        # the break is over before anyone hears the timer started.
+        self._leave_break("a task started")
         self.timer_started.emit(dict(self._session))
         self._emit_tick()
         self._timing("start.local")
@@ -904,6 +974,185 @@ class TimerService(BaseService):
             self.stop_tracking()
         self.start_tracking(project_id, task_id, task_name)
 
+    # ── Break In / Break Out ─────────────────────────────────────────────────
+    #
+    # Neither of these owns any timer mechanics. Break In *is* `stop_tracking`
+    # and Break Out *is* `start_tracking`; the durable record, the queued
+    # request, the sub-trackers, the cache fold and every signal are the ones
+    # those two already produce. What the pair adds is the held task and the
+    # rule that it is resumed and nothing else. Both run on the GUI thread,
+    # like the verbs they wrap, and both are idempotent under a repeated
+    # click: the first Break In leaves nothing running for a second to stop,
+    # and a Break Out in flight refuses another.
+
+    def break_in(self, *, for_date: Optional[date] = None) -> bool:
+        """Stop the running task and remember it for Break Out.
+
+        The stop is the ordinary one: refused for any day but today (and
+        reported on `timer_error`), queued durably before the record is
+        cleared, finalized by the backend through the queue. The break is
+        entered only once that stop has actually taken the session down; a
+        refused stop leaves no break and no held task. Returns whether the
+        break was entered.
+        """
+        if self._break_status != BreakStatus.NONE:
+            self.log.info("break in ignored: already %s", self._break_status)
+            return False
+        if self._session is None or self._status != TimerStatus.RUNNING:
+            # Nothing to step away from -- or a start/stop is mid-flight,
+            # which a second click during the same instant would be.
+            self.log.info("break in ignored: no running task (status %s)", self._status)
+            return False
+        session = dict(self._session)
+        self.stop_tracking(for_date=for_date)
+        if self.is_running():
+            # `stop_tracking` refused (a browsed date) and has said so.
+            return False
+        self._pre_break_task = {
+            "project_id": session.get("project_id"),
+            "task_id": session.get("task_id"),
+            "task_name": session.get("task_name"),
+            "entry_id": session.get("entry_id"),
+            "client_op": session.get("client_op"),
+            "break_started_at_utc": _utc_now().isoformat(),
+        }
+        self._set_break_status(BreakStatus.ON_BREAK)
+        self._timing(
+            "break.in", task_id=session.get("task_id"),
+            entry_id=session.get("entry_id"), client_op=session.get("client_op"),
+        )
+        return True
+
+    def break_out(self, *, for_date: Optional[date] = None) -> bool:
+        """Resume the task held by Break In, and only that task.
+
+        The held task is first checked against the backend -- the same
+        project task list the dashboard renders, under the same visibility
+        rules -- so a task archived, deleted, completed or taken out of the
+        user's reach during the break is never started, and never replaced
+        by another. Then the ordinary `start_tracking` runs. Until the start
+        has committed the break stands: a refused start, or a check that
+        answered "gone", leaves nothing running. Returns whether a resume
+        was begun.
+        """
+        if self._break_status != BreakStatus.ON_BREAK or self._pre_break_task is None:
+            self.log.info("break out ignored: status %s", self._break_status)
+            return False
+        if self.is_running():
+            # Cannot happen through the UI (a start ends the break), but the
+            # invariant is stated here rather than assumed: a running task
+            # means the break is over.
+            self._leave_break("a task is already running")
+            return False
+        if self._refuse_for_date(for_date, "resume"):
+            return False
+
+        task = dict(self._pre_break_task)
+        self._break_resume_token += 1
+        token = self._break_resume_token
+        self._set_break_status(BreakStatus.RESUMING)
+
+        def call():
+            return self._resume_verdict(task)
+
+        def on_success(verdict) -> None:
+            self._on_resume_verdict(token, task, verdict, for_date)
+
+        def on_error(exc: BaseException) -> None:
+            # `_resume_verdict` classifies API errors itself; anything that
+            # escapes is unexpected, and unexpected is "unknown", never "gone".
+            self.log.exception("could not check the held task before resuming")
+            self._on_resume_verdict(token, task, ("unknown", str(exc)), for_date)
+
+        self.runtime.tasks.submit(
+            call, on_success=on_success, on_error=on_error, key="break-out"
+        )
+        return True
+
+    def _resume_verdict(self, task: Dict[str, Any]) -> tuple:
+        """Ask the backend whether `task` can still be started. Off the GUI thread.
+
+        Returns `("ok", None)`, `("gone", reason)` or `("unknown", reason)`.
+        "Unknown" is the honest answer when the backend cannot be asked
+        (offline, a 5xx, a stale token being refreshed): the resume then
+        goes ahead exactly as a manual Start does offline -- the start is
+        queued durably and the backend validates it when it lands.
+        """
+        task_service = getattr(self.runtime, "task_service", None)
+        if task_service is None:
+            return ("unknown", "no task service")
+        try:
+            tasks = task_service.get_tasks_for_project(task["project_id"])
+        except Exception as exc:  # noqa: BLE001 -- classified, not swallowed
+            status = getattr(exc, "status_code", None)
+            if status in _TASK_GONE_STATUS_CODES:
+                return ("gone", str(exc))
+            self.log.warning("could not verify the held task (%s); resuming anyway", exc)
+            return ("unknown", str(exc))
+        for candidate in tasks or ():
+            if not isinstance(candidate, dict) or candidate.get("id") != task["task_id"]:
+                continue
+            if _task_status_name(candidate) == "completed":
+                # The same rule the task list applies: a completed task has
+                # no Start button. Resuming it by another route would be a
+                # second, looser rule for one thing.
+                return ("gone", "the task has been marked completed")
+            return ("ok", None)
+        return ("gone", "the task is no longer in the project")
+
+    def _on_resume_verdict(
+        self, token: int, task: Dict[str, Any], verdict: tuple,
+        for_date: Optional[date],
+    ) -> None:
+        if token != self._break_resume_token or self._break_status != BreakStatus.RESUMING:
+            self.log.info("dropping a stale break-out verdict")
+            return
+        kind, reason = verdict
+        if kind == "gone":
+            # Definitive. Holding a task that cannot be started would leave
+            # the user pressing Break Out for ever; release it and say why.
+            # Nothing else is started -- the user chooses what comes next.
+            self._timing("break.out.refused", task_id=task.get("task_id"), reason=reason)
+            self._pre_break_task = None
+            self._set_break_status(BreakStatus.NONE)
+            self.timer_error.emit(
+                f"'{task.get('task_name') or 'The previous task'}' can no longer be "
+                f"resumed ({reason}). Choose a task to continue."
+            )
+            return
+        self._timing("break.out", task_id=task.get("task_id"), verified=(kind == "ok"))
+        self.start_tracking(
+            task["project_id"], task["task_id"], task.get("task_name"), for_date=for_date
+        )
+        if self.is_running() and self.task_id == task["task_id"]:
+            # `start_tracking` has already left the break, before it told
+            # anyone the timer started.
+            return
+        # The start was refused (it has said why on `timer_error`). The break
+        # stands, with its task, for the user to try again.
+        self._set_break_status(BreakStatus.ON_BREAK)
+
+    def reset_break(self) -> None:
+        """Forget the break entirely. For logout: the held task belongs to the
+        session that is ending."""
+        self._break_resume_token += 1
+        self._pre_break_task = None
+        self._set_break_status(BreakStatus.NONE)
+
+    def _leave_break(self, reason: str) -> None:
+        if self._break_status == BreakStatus.NONE and self._pre_break_task is None:
+            return
+        self.log.info("break over: %s", reason)
+        self._break_resume_token += 1
+        self._pre_break_task = None
+        self._set_break_status(BreakStatus.NONE)
+
+    def _set_break_status(self, status: str) -> None:
+        if status == self._break_status:
+            return
+        self._break_status = status
+        self.break_state_changed.emit(status)
+
     # ── Queued stops ──────────────────────────────────────────────────────────
 
     def on_start(self) -> None:
@@ -1089,6 +1338,7 @@ class TimerService(BaseService):
         self._set_status(TimerStatus.RUNNING)
         self._tick_timer.start()
         self._start_trackers(self._session)
+        self._leave_break("a session was recovered")
         self.timer_recovered.emit(dict(self._session))
         self.timer_started.emit(dict(self._session))
         self._emit_tick()
@@ -1269,6 +1519,10 @@ class TimerService(BaseService):
         self._set_status(TimerStatus.RUNNING)
         self._tick_timer.start()
         self._start_trackers(self._session)
+        # The backend is running an entry (started on the web, or found by
+        # reconciliation); the user is not on a break the backend knows
+        # nothing about.
+        self._leave_break("the backend reports a running entry")
         self.timer_started.emit(dict(self._session))
         self._emit_tick()
         self._timing("adopt.remote")

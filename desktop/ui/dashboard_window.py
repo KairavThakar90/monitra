@@ -37,8 +37,8 @@ from app.projects.service import ProjectService
 from app.tasks.service import TaskService
 from app.time_entries.service import TimeEntryService
 from background_services.public_api import (
-    ActivityTotals, BackgroundApi, NetworkState, NotificationLevel, TodaySnapshot,
-    UpdateState,
+    ActivityTotals, BackgroundApi, BreakStatus, NetworkState, NotificationLevel,
+    TodaySnapshot, UpdateState,
 )
 from core.date_mode import DateMode, as_calendar_day, date_mode, is_live_date
 from core.logging_setup import get_logger
@@ -274,6 +274,12 @@ class DashboardWindow(QWidget):
         #: is allowed to bleed into the sidebar/task totals: any day but today
         #: must show completed hours only, never a ticking value.
         self._current_date: date = ist_today()
+        #: The last `BreakStatus` the timer service reported. Held only to
+        #: tell a Break Out that just committed (RESUMING -> NONE with a task
+        #: running) from any other way a break ends, because that is the one
+        #: transition after which the resumed task's project is brought on
+        #: screen for the user.
+        self._break_status: str = BreakStatus.NONE
         #: Whether the last committed network state was usable. Starts None so
         #: the first observation is not announced as a recovery — telling the
         #: user they are "back online" before they were ever seen offline was
@@ -384,6 +390,11 @@ class DashboardWindow(QWidget):
         self._sidebar = SidebarWidget(self)
         self._sidebar.project_selected.connect(self._on_project_selected)
         self._sidebar.logout_requested.connect(self._handle_logout)
+        # Break In / Break Out. The sidebar reports the click; the timer
+        # service owns the break, exactly as it owns the timer the task rows'
+        # Start/Stop buttons drive.
+        self._sidebar.break_in_requested.connect(self._on_break_in_requested)
+        self._sidebar.break_out_requested.connect(self._on_break_out_requested)
         self._sidebar.feedback_requested.connect(self._open_feedback_dialog)
         self._sidebar.profile_requested.connect(self._open_web_profile)
         self._sidebar.updates_requested.connect(self._open_update_download)
@@ -523,6 +534,8 @@ class DashboardWindow(QWidget):
         # and not on the local stop.
         timer.timer_finalized.connect(self._on_timer_finalized)
         timer.timer_conflict.connect(self._on_timer_conflict)
+        # The break, on its transitions only (never a poll of it).
+        timer.break_state_changed.connect(self._on_break_state_changed)
 
         # Unwanted-activity warnings: edge-triggered by the rule engine (one
         # emission per threshold crossing, already cooldown-throttled there);
@@ -1027,6 +1040,10 @@ class DashboardWindow(QWidget):
         self._sidebar.set_projects([])
         self._sidebar.set_timer_active(False)
         self._sidebar.set_active_timer_project(None)
+        # The runtime forgets the break itself at logout; this is the
+        # sidebar's copy of that fact.
+        self._break_status = BreakStatus.NONE
+        self._sidebar.set_break_status(BreakStatus.NONE)
         self._sidebar.set_total_seconds(0)
         self._task_section.set_all_projects([])
         self._task_section.clear()
@@ -1992,6 +2009,54 @@ class DashboardWindow(QWidget):
             # stop. The activity read is forced: stopping flushes the final
             # window, and the last measured percentage must stay on screen.
             self._load_today_activity(force=True)
+
+    # ── Break In / Break Out ─────────────────────────────────────────────────
+
+    def _on_break_in_requested(self) -> None:
+        """Break In: the ordinary stop, with the running task held for later.
+
+        `for_date` carries the day on screen, as the task rows' Stop does,
+        so a break cannot be taken from a browsed date any more than a stop
+        can. Whatever the service decided, the button is re-rendered from
+        its state: a refused Break In (nothing running, another day on
+        screen) must not leave the button disabled.
+        """
+        self.api.break_in(for_date=self._current_date)
+        self._render_break_control()
+
+    def _on_break_out_requested(self) -> None:
+        """Break Out: resume the held task -- never the selected one."""
+        self.api.break_out(for_date=self._current_date)
+        self._render_break_control()
+
+    def _render_break_control(self) -> None:
+        self._sidebar.set_break_status(self.api.break_status())
+
+    def _on_break_state_changed(self, status: str) -> None:
+        previous, self._break_status = self._break_status, status
+        self._sidebar.set_break_status(status)
+        if status == BreakStatus.ON_BREAK:
+            held = self.api.pre_break_task() or {}
+            name = held.get("task_name") or "your task"
+            self._status_bar.set_message(f"On break. Break Out resumes '{name}'.")
+            return
+        if status != BreakStatus.NONE or previous != BreakStatus.RESUMING:
+            return
+        # Break Out committed. The row now counting may be in a project the
+        # user browsed away from during the break; bring that project on
+        # screen so the resumed task is visible, the way a timer found
+        # running at login is. Selecting a project is a read of its tasks
+        # and touches nothing about the timer.
+        session = self.api.active_session()
+        if not session:
+            return
+        project_id = session.get("project_id")
+        if self._current_project and self._current_project.get("id") == project_id:
+            return
+        for project in self._projects:
+            if project.get("id") == project_id:
+                self._on_project_selected(project)
+                break
 
     def _on_timer_finalized(self, payload: dict) -> None:
         """The backend has committed the stop: re-read the day from it.

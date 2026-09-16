@@ -10,10 +10,11 @@ Three behaviours are asserted here:
   Idle is `ERROR` and active is `SUCCESS`, and the dot and the word always
   agree, because both come from one branch in `set_timer_active`.
 
-* **The day's total is centred.** The caption, the hero duration and the
-  status pill share one horizontal centre. The pill is the easy one to get
-  wrong: centring a row whose only stretch sits *after* its widgets leaves
-  them pinned to the left of a block that is otherwise centred.
+* **The day's total is centred.** The caption and the hero duration share
+  one horizontal centre. The status pill no longer does: since the Break
+  In / Break Out button joined its row, the pill holds the left of that row
+  and the button the right, on one line under the duration -- the layout the
+  feature specification prescribes -- and that is what is asserted instead.
 
 * **The greeting follows the IST clock, on an edge.** `core.time_format`
   decides where the afternoon ends — the widget never spells the boundaries
@@ -113,18 +114,24 @@ def test_the_hero_duration_sits_on_the_section_centre_line(sidebar, qapp):
     assert abs(label_centre - section_centre) <= 1
 
 
-def test_the_status_pill_is_centred_rather_than_left_pinned(sidebar, qapp):
+def test_the_status_pill_holds_the_left_and_the_break_button_the_right(sidebar, qapp):
+    """One row: `● Active` on the left, `[ Break In ]` on the right."""
     sidebar.set_timer_active(True)
     _drain(qapp)
 
-    section_centre = sidebar._time_section.width() / 2
-    pill_left = sidebar._status_dot.x()
-    pill_right = sidebar._status_text.x() + sidebar._status_text.width()
-    pill_centre = (pill_left + pill_right) / 2
-
-    assert abs(pill_centre - section_centre) <= 2, "the dot + word must centre as one unit"
-    assert pill_left > sidebar._time_section.contentsRect().left() + 20, (
-        "a left-pinned pill is the regression this guards"
+    section = sidebar._time_section.contentsRect()
+    dot, text, button = sidebar._status_dot, sidebar._status_text, sidebar._break_btn
+    assert dot.x() < text.x() < button.x(), "dot, word, then the button, left to right"
+    assert dot.x() <= section.left() + 24, "the pill is pinned to the row's left edge"
+    assert button.x() + button.width() >= section.right() - 24, (
+        "the button is pinned to the row's right edge"
+    )
+    assert text.x() + text.width() < button.x(), "the word and the button never overlap"
+    # Same row: the three share a vertical centre line under the duration.
+    centres = [w.y() + w.height() / 2 for w in (dot, text, button)]
+    assert max(centres) - min(centres) <= 2
+    assert min(w.y() for w in (dot, text, button)) >= (
+        sidebar._time_display.y() + sidebar._time_display.height() - 1
     )
 
 

@@ -347,6 +347,9 @@ class ApplicationRuntime(QObject):
         self.updates.reset_session()
         if self.timer.is_running():
             self.timer.stop_tracking()
+        # A break, and the task it holds, belong to the session that is
+        # ending; the next user must not be offered Break Out into it.
+        self.timer.reset_break()
         try:
             cancelled = self.cache.cancel_actions_for_generation(generation)
             if cancelled:
