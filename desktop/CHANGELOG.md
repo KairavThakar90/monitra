@@ -92,10 +92,13 @@ this build at any time.
   before anything else and are never given up on, so a crash or power cut
   right after you press Stop, or a long server outage, cannot leave a timer
   running on the server for the next launch to resurrect.
-- **A timer interrupted by a crash or power cut is recovered as one
-  continuous session** and the recovery notice now says how long Monitra
-  was not running. A timer stopped from the web or another machine while
-  Monitra was away is ended here too, instead of counting on.
+- **A timer interrupted by a crash or power cut is recovered, and the
+  time Monitra was not running is treated as idle time.** The same entry
+  carries on, and if the gap reaches your idle threshold you get the usual
+  idle prompt to keep it, discard it, or stop — the gap is never counted as
+  work on its own. The recovery notice says how long Monitra was not
+  running. A timer stopped from the web or another machine while Monitra
+  was away is ended here too, instead of counting on.
 - **Double-clicking Start or Stop counts as one click.** It used to start
   and immediately stop (or stop and restart) the timer.
 - **Working with several browser tabs no longer triggers the unwanted-activity

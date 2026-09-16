@@ -159,12 +159,31 @@ the last input before the machine went down, and the backend's keep/discard/
 stop rule decides whether it counts. Nothing stops the timer silently and
 nothing counts the sleep silently.
 
-**The gap of an interruption is counted, pending a business rule.** A
-session recovered after a power cut or crash continues from its original
-start with the outage inside it, and the recovery notice states how long
-Monitra was not running. No rule yet says whether that gap should instead be
-offered to the user as idle time; see the reliability report. Nothing
-fabricates activity or screenshots for it.
+**The gap of an interruption is idle time, and the user decides it.** A
+session recovered after a power cut, a crash, a kill or a hang continues from
+its original start -- the record is adopted, no second entry is created --
+but a powered-off machine is not evidence of work. The gap runs from the
+dead process's last durable heartbeat to the recovery instant. When it
+reaches the user's own `idle_minutes` threshold, `IdleService` reports it
+through the same `POST /idle-periods` an ordinary idle stretch uses, the
+same popup asks, and the same backend rule accounts for it: the gap counts
+only for keep + resume, discard + resume deducts it as a signed adjustment,
+and stop discards it and stops the entry at the answer. Below the threshold
+nothing is reported, exactly as for any shorter pause. No new threshold and
+no maximum session length exist. The report is idempotent three ways: a
+client event id keyed on the session and the interruption instant, the
+backend's one-pending-period-per-entry rule, and the pending lookup every
+entry id gets at recovery. Nothing fabricates activity or screenshots for
+the gap; capture restarts at recovery.
+
+**A forgotten timer while Monitra keeps running is the ordinary idle rule**
+-- the user's threshold, the popup, the same four answers -- and nothing
+more. **Still undefined, deliberately:** what happens to an idle period that
+is never answered. Today the entry keeps running with the period pending
+until the user returns or the timer is stopped (a stop discards it). No
+automatic finalization and no maximum unattended duration are implemented,
+because no business rule names one; that decision is recorded here as
+pending rather than invented.
 
 **An explicit quit is not an interruption.** Quit, X with Quit chosen, a
 remembered Quit and the tray's Quit all stop the timer first, at the instant

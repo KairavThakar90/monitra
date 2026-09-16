@@ -2127,15 +2127,16 @@ class DashboardWindow(QWidget):
         self._sidebar.set_timer_active(True)
         self._sidebar.set_active_timer_project(session.get("project_id"))
         self._status_bar.set_message("Recovered a timer that was still running.", SUCCESS)
-        # Say how long Monitra was not running, when that is known: the
-        # session continued through the gap, and the user should be able to
-        # see that the figure on screen includes it.
+        # Say how long Monitra was not running, when that is known. Whether
+        # that gap counts is not decided here: when it reaches the user's
+        # idle threshold the idle service reports it and the ordinary idle
+        # popup asks, exactly as for any other stretch of inactivity.
         gap = self._interruption_gap_text(session)
         message = "Recovered a timer that was still running from your last session."
         if gap:
             message = (
                 f"Recovered a timer that was still running. Monitra was not "
-                f"running for {gap}; that time is part of the session."
+                f"running for {gap}."
             )
         self.api.notify(message, NotificationLevel.INFO, key="timer-recovered")
 

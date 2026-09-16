@@ -48,6 +48,7 @@ from PySide6.QtCore import Signal, Slot
 
 from app.api.exceptions import ApiError
 from core.service import LoopService
+from core.time_format import parse_utc as _parse_utc
 
 #: How often inactivity is evaluated. The reading itself is two syscalls, so
 #: this is deliberately unhurried — a threshold measured in minutes does not
@@ -111,6 +112,7 @@ class IdleService(LoopService):
     #: the slot that actually calls the backend runs on the GUI thread and
     #: submits through the shared task pool.
     _threshold_reached = Signal(float)
+    _interruption_due = Signal(int)
     _entry_observed = Signal(int)
     _config_refresh_due = Signal()
 
@@ -142,8 +144,15 @@ class IdleService(LoopService):
         self._recovery_checked: set = set()
         self._last_entry_id: Optional[int] = None
         self._unsupported_logged = False
+        #: An interruption gap (power cut, crash, kill, hang) that reached the
+        #: user's threshold and has not yet been reported as an idle period.
+        #: Set by `_on_tracking_recovered`, reported once the entry id is
+        #: known and the backend is reachable, cleared when the report lands
+        #: or is definitively refused. See `_on_interruption_due`.
+        self._interruption: Optional[Dict[str, Any]] = None
 
         self._threshold_reached.connect(self._on_threshold_reached)
+        self._interruption_due.connect(self._on_interruption_due)
         self._entry_observed.connect(self._on_entry_observed)
         self._config_refresh_due.connect(self._refresh_config)
 
@@ -153,6 +162,7 @@ class IdleService(LoopService):
         timer = self.runtime.timer
         timer.timer_started.connect(self._on_tracking_started)
         timer.timer_recovered.connect(self._on_tracking_started)
+        timer.timer_recovered.connect(self._on_tracking_recovered)
         timer.timer_stopped.connect(self._on_tracking_stopped)
         super().on_start()
 
@@ -266,6 +276,13 @@ class IdleService(LoopService):
             # The start has not reached the backend yet, so there is no entry
             # to attach an idle period to. Detection resumes as soon as the
             # id arrives; no local-only idle period is invented.
+            return POLL_INTERVAL_MS
+
+        if self._interruption is not None:
+            # An interruption gap is waiting to be reported. It takes
+            # precedence over fresh inactivity: it is older, and the backend
+            # holds at most one pending period per entry anyway.
+            self._interruption_due.emit(int(entry_id))
             return POLL_INTERVAL_MS
 
         idle = self._effective_idle_seconds()
@@ -411,6 +428,125 @@ class IdleService(LoopService):
         self.log.info("recovered pending idle period %s from the backend", period.get("id"))
         self._adopt_pending(period, entry_id)
 
+    # ── Interruption gaps ─────────────────────────────────────────────────────
+    #
+    # The business rule for an unexpected interruption -- power cut, cable
+    # pulled, battery exhausted, hard power-off, crash, kill, hang -- is the
+    # idle rule. A powered-off machine is not evidence of work, and a session
+    # recovered after one must not silently count the gap; but the session
+    # itself is preserved, so the user, not the client, decides. The gap runs
+    # from the previous process's last durable heartbeat to the recovery
+    # instant. When it reaches the user's own `idle_minutes` it is reported
+    # through the same `POST /idle-periods` an ordinary idle stretch uses, and
+    # the same popup, the same keep/discard/resume/stop answer and the same
+    # backend accounting apply. Below the threshold nothing is reported, as
+    # for any shorter pause. No new threshold, no new maximum.
+    #
+    # Idempotent by three layers: a client event id keyed on the session and
+    # the interruption instant; the backend's "one unresolved period per
+    # entry", which answers a second report with the period already pending;
+    # and the pending lookup every entry id already gets at recovery, which
+    # brings back a period the user has not yet answered.
+
+    @Slot(dict)
+    def _on_tracking_recovered(self, session: dict) -> None:
+        interrupted_at = _parse_utc(session.get("interrupted_at_utc"))
+        recovered_at = _parse_utc(session.get("recovered_at_utc"))
+        client_op = session.get("client_op")
+        if interrupted_at is None or recovered_at is None or not client_op:
+            self._interruption = None
+            return
+        gap = (recovered_at - interrupted_at).total_seconds()
+        if gap + DETECTION_MARGIN_SECONDS < self._idle_minutes * 60:
+            self.log.info(
+                "recovered session was interrupted for %.0fs, under the %dm idle "
+                "threshold; nothing to reconcile", gap, self._idle_minutes,
+            )
+            self._interruption = None
+            return
+        self._interruption = {
+            "client_op": client_op,
+            "idle_started_at": interrupted_at.isoformat(),
+            "idle_detected_at": recovered_at.isoformat(),
+            "client_event_id": f"interruption:{client_op}:{interrupted_at.isoformat()}",
+        }
+        self.log.info(
+            "recovered session was interrupted for %.0fs (>= %dm); reporting the gap "
+            "as an idle period for the user to decide", gap, self._idle_minutes,
+        )
+
+    def _network_usable(self) -> bool:
+        network = getattr(self.runtime, "network", None)
+        if network is None:
+            return True
+        state = getattr(network, "network_state", None)
+        if state is None:
+            return True
+        from background_services.network import NetworkState
+        return state in NetworkState.USABLE or state == NetworkState.UNKNOWN
+
+    @Slot(int)
+    def _on_interruption_due(self, entry_id: int) -> None:
+        """Report the recorded interruption gap as an idle period, once."""
+        interruption = self._interruption
+        if interruption is None or not self._idle_enabled:
+            return
+        if self._state != IdleState.MONITORING or not self.runtime.timer.is_running():
+            return
+        session = self.runtime.timer.active_session() or {}
+        if session.get("client_op") != interruption["client_op"]:
+            # The session the gap belonged to is gone; nothing to reconcile.
+            self._interruption = None
+            return
+        if not self._network_usable():
+            return  # kept; the next tick tries again once the network is back
+
+        self._state = IdleState.REPORTING
+        self.log.info(
+            "reporting interruption %s -> %s on entry %s",
+            interruption["idle_started_at"], interruption["idle_detected_at"], entry_id,
+        )
+
+        def call():
+            return self._api.report_idle_period(
+                time_entry_id=int(entry_id),
+                idle_started_at=interruption["idle_started_at"],
+                idle_detected_at=interruption["idle_detected_at"],
+                client_event_id=interruption["client_event_id"],
+            )
+
+        def on_success(period) -> None:
+            self._interruption = None
+            self._adopt_pending(period, int(entry_id))
+
+        self.runtime.tasks.submit(
+            call,
+            on_success=on_success,
+            on_error=self._on_interruption_report_failed,
+            key=f"idle-report:{interruption['client_event_id']}",
+        )
+
+    def _on_interruption_report_failed(self, exc: BaseException) -> None:
+        """A definitive refusal ends the attempt; anything else is retried.
+
+        400 (the gap is under the user's threshold on the server's clock),
+        404 (the entry is gone) and 409 (the entry has already stopped, or
+        idle detection is off for this user) are answers, and the backend
+        is authoritative: the gap is then not reconciled through a popup.
+        A connection error, a 5xx or a timeout is not an answer: the gap is
+        kept and reported at the next tick once the backend is reachable, so
+        an interruption that ends with the network still down is reconciled
+        as soon as it returns.
+        """
+        status_code = getattr(exc, "status_code", None)
+        if status_code in (400, 404, 409):
+            self.log.warning("interruption gap not accepted by the backend (%s); dropping it", exc)
+            self._interruption = None
+        else:
+            self.log.warning("could not report the interruption gap yet: %s", exc)
+        if self._state == IdleState.REPORTING:
+            self._state = IdleState.MONITORING
+
     # ── Tracking lifecycle ────────────────────────────────────────────────────
 
     def _on_tracking_started(self, session: dict) -> None:
@@ -430,6 +566,7 @@ class IdleService(LoopService):
         """
         self._monitoring_since = time.monotonic()
         self._last_entry_id = None
+        self._interruption = None
         if self._pending is not None:
             self.log.info(
                 "timer stopped with idle period %s pending; the backend "
@@ -450,6 +587,7 @@ class IdleService(LoopService):
         """Drop all session-scoped state. Called on logout."""
         self._recovery_checked.clear()
         self._last_entry_id = None
+        self._interruption = None
         self._config_loaded = False
         self._config_read_at = time.monotonic()
         self._monitoring_since = time.monotonic()

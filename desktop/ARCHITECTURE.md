@@ -667,15 +667,22 @@ create duplicate time entries.
 
 What is recovered is the *session*, not evidence of work. A timer started at
 13:00 on a machine that lost power at 17:00 and came back at 18:00 is
-recovered at 18:00 as one session running since 13:00 — the same entry, the
-same `started_at_utc`, the outage inside it, exactly as if the process had
-survived. The sub-trackers (activity, application and URL usage,
-screenshots) start again at 18:00 and record nothing for the hour the
-machine was off. The recovery notice tells the user how long Monitra was not
-running. The timer record itself is the only thing that distinguishes an
-interruption from a stop: an explicit stop has already queued its stop
-action and removed the record, and a record whose stop is queued is never
-resurrected.
+recovered at 18:00 as the same entry with the same `started_at_utc` — no
+second entry, ever. The hour the machine was off is **not** taken as work:
+`IdleService._on_tracking_recovered` measures the gap from the previous
+process's last heartbeat to the recovery instant and, when it reaches the
+user's own `idle_minutes`, reports it through the ordinary idle-period
+path (`POST /idle-periods`, the same popup, the same keep/discard/resume/
+stop accounting on the backend). The report waits for the entry id when
+the start was queued, is retried while the network is unusable, is dropped
+on a definitive 4xx, and cannot open a second period: the client event id
+is keyed on the session and the interruption instant, and the backend
+answers a repeat with the period already pending. The sub-trackers
+(activity, application and URL usage, screenshots) start again at 18:00
+and record nothing for the hour the machine was off. The timer record is
+the only thing that distinguishes an interruption from a stop: an explicit
+stop has already queued its stop action and removed the record, and a
+record whose stop is queued is never resurrected.
 
 ---
 
