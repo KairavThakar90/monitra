@@ -17,6 +17,14 @@ dismiss it either. It is a top-level window with `WindowStaysOnTopHint`, so it
 is visible when the main window is minimised or hidden in the tray — which is
 exactly when a user is most likely to have gone idle.
 
+Mandatory does not mean immovable
+---------------------------------
+A frameless window has no title bar to grab, so without help it is stuck
+wherever it appeared -- on top of whatever the user was about to look at.
+The card itself is the grab handle: press anywhere on it that is not a
+control and drag, and the popup follows the pointer anywhere on screen. It
+still cannot be closed that way; moving it is the one thing dragging does.
+
 The one number this widget computes
 -----------------------------------
 The live "you have been idle for" figure, from the period's own
@@ -30,7 +38,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
-from PySide6.QtCore import QByteArray, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import (
@@ -133,6 +141,9 @@ class IdleAlertDialog(QDialog):
         self._finished = False
         self._busy = False
         self._reassign_dialog: Optional[ReassignTimeDialog] = None
+        #: Where the pointer was, relative to the window's top-left corner,
+        #: when a drag began; None while no drag is in progress.
+        self._drag_offset: Optional[QPoint] = None
 
         self.setWindowTitle("Idle time alert")
         # Frameless: no system close button to dismiss a mandatory prompt with.
@@ -588,6 +599,35 @@ class IdleAlertDialog(QDialog):
         dialog, self._reassign_dialog = self._reassign_dialog, None
         if dialog is not None:
             dialog.close_after_success()
+
+    # ── Dragging ──────────────────────────────────────────────────────────────
+    #
+    # There is no title bar, so the whole card is the handle. A press on a
+    # button or radio is consumed by that control and never reaches here;
+    # a press on the card, a label or the padding starts a drag. The window
+    # moves with the pointer as an offset from where it was grabbed, so it
+    # does not jump under the cursor when the drag starts.
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if self._drag_offset is not None and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = None
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     # ── Mandatory-dismissal guards ────────────────────────────────────────────
 
