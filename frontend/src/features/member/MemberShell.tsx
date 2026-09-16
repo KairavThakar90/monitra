@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/authContext";
+import { openPathInNewTab, opensInNewTab } from "../../utils/navigation";
 import { BrandLockup } from "../dashboard/v2/V2Shell";
 
 /**
@@ -118,7 +119,16 @@ export const MemberShell: React.FC<{
   const isActive = (path: string) =>
     location.pathname === path || location.pathname.startsWith(`${path}/`);
 
-  const go = (path: string) => {
+  /**
+   * A plain click moves this tab; a Ctrl-click (⌘ on macOS) opens the entry in
+   * a new tab and leaves this one — and the mobile drawer — as it was, since
+   * nothing about the current view changed.
+   */
+  const go = (event: React.MouseEvent, path: string) => {
+    if (opensInNewTab(event)) {
+      openPathInNewTab(path);
+      return;
+    }
     navigate(path);
     setMobileMenuOpen(false);
   };
@@ -128,7 +138,7 @@ export const MemberShell: React.FC<{
     return (
       <button
         key={item.path}
-        onClick={() => go(item.path)}
+        onClick={(event) => go(event, item.path)}
         className={
           "flex w-full cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3 text-left text-sm font-medium leading-snug transition duration-150 " +
           (active ? "text-white shadow-sm" : "text-[#94A3B8] hover:bg-slate-800/40 hover:text-white")
@@ -215,7 +225,7 @@ export const MemberShell: React.FC<{
                     return (
                       <li key={report.id}>
                         <button
-                          onClick={() => go(`/member/reports/${report.id}`)}
+                          onClick={(event) => go(event, `/member/reports/${report.id}`)}
                           className={
                             "flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] font-medium transition duration-150 " +
                             (active
