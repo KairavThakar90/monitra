@@ -316,7 +316,12 @@ def test_a_second_quit_joins_the_first(qapp, live_runtime):
     calls = []
     runtime.prepare_exit(lambda: calls.append("first"))
     runtime.prepare_exit(lambda: calls.append("second"))
-    assert _pump(qapp, lambda: len(calls) == 2)
+    # Both callbacks fire when the queued stop lands or, on a runner slow
+    # enough that it does not, when the exit budget (EXIT_STOP_FLUSH_BUDGET_MS,
+    # 5 s) runs out. The pump must outlast that budget: at the default 5 s it
+    # gave up in the same instant the budget expired, and the Linux gate
+    # failed this test once for no fault in the code under it.
+    assert _pump(qapp, lambda: len(calls) == 2, timeout=EXIT_STOP_FLUSH_BUDGET_MS / 1000 + 3.0)
     assert sorted(calls) == ["first", "second"]
     assert len(runtime.backend.stopped) == 1, "one stop, however many quits"
 
