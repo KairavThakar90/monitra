@@ -12,7 +12,7 @@ from __future__ import annotations
 import threading
 
 import pytest
-from PySide6.QtCore import QThread
+from PySide6.QtCore import Qt, QThread, QTimer
 from unittest.mock import MagicMock
 
 from background_services.notifications.notification_service import (
@@ -30,8 +30,27 @@ def service(qapp):
     svc._tray = MagicMock()
     svc._icon = MagicMock()
     svc._icon.isNull.return_value = False
+    # These tests are about admission and dispatch, and they read the message
+    # off the tray. The in-app card is the surface a user actually sees (see
+    # the popup section at the foot of this file); switching it off here means
+    # delivery falls through to the tray, which is the same code path a machine
+    # with no screen for the card takes.
+    svc._popup_enabled = False
     yield svc
     svc._dismiss_timer.stop()
+
+
+@pytest.fixture
+def popup_service(qapp):
+    """The same service with its in-app card enabled — the real delivery path."""
+    svc = NotificationService(MagicMock())
+    svc._available = True
+    svc._tray = MagicMock()
+    svc._icon = MagicMock()
+    svc._icon.isNull.return_value = False
+    yield svc
+    svc._dismiss_timer.stop()
+    svc.on_stop(1000)
 
 
 def test_repeat_of_the_same_key_is_suppressed(service):
@@ -222,3 +241,141 @@ def test_a_click_still_opens_the_link_late_in_the_display_window(service):
 
     service._retire_current()          # only now does the window close
     assert service._pending_link is None
+
+
+# ── The in-app card ───────────────────────────────────────────────────────────
+#
+# `DISPLAY_MS` used to be a hint nothing honoured: Windows ignores the timeout
+# passed to `showMessage` and uses the user's accessibility setting instead --
+# five seconds by default, about twenty-five for a long toast -- so a minute's
+# worth of notification was on screen for a fraction of it. Monitra now draws
+# the notification itself, and these tests pin the properties that make that
+# both correct and safe.
+
+
+def test_a_notification_is_drawn_by_the_app_not_the_platform(popup_service):
+    """The card is the surface, because it is the one that honours the minute."""
+    popup_service.notify("Timer started", key="timer-started")
+
+    popup = popup_service._popup
+    assert popup is not None
+    assert popup.isVisible()
+    assert popup._message.text() == "Timer started"
+
+
+def test_the_platform_toast_is_not_fired_alongside_the_card(popup_service):
+    """One event, one notification. Both surfaces would notify twice."""
+    popup_service.notify("Timer started", key="timer-started")
+
+    popup_service._tray.showMessage.assert_not_called()
+
+
+def test_the_card_stays_up_for_at_least_a_minute(popup_service):
+    """The whole point of the change: a full minute of real on-screen time."""
+    popup_service.notify("Drink water", key="wellbeing:hydrate")
+
+    assert popup_service._popup.isVisible()
+    assert popup_service._dismiss_timer.remainingTime() >= 60_000
+
+
+def test_the_card_owns_no_timer_of_its_own(popup_service):
+    """DO_NOT_DO: a widget owning a dismissal timer can orphan it.
+
+    The service owns exactly one, for the whole application.
+    """
+    popup_service.notify("Timer started", key="timer-started")
+
+    assert popup_service._popup.findChildren(QTimer) == []
+
+
+def test_retiring_hides_the_card(popup_service):
+    popup_service.notify("Timer started", key="timer-started")
+    popup_service._retire_current()
+
+    assert not popup_service._popup.isVisible()
+
+
+def test_one_card_is_reused_so_a_burst_cannot_stack_windows(popup_service):
+    popup_service.notify("First", key="one")
+    first = popup_service._popup
+    popup_service.notify("Second", key="two")
+
+    assert popup_service._popup is first
+    assert first._message.text() == "Second"
+
+
+def test_the_card_never_steals_focus(popup_service):
+    """A toast arriving mid-sentence must not take the keystroke."""
+    popup_service.notify("Timer started", key="timer-started")
+
+    assert popup_service._popup.testAttribute(
+        Qt.WidgetAttribute.WA_ShowWithoutActivating
+    )
+
+
+def test_clicking_the_card_opens_its_link_and_ends_the_notification(
+    popup_service, monkeypatch
+):
+    opened = []
+    monkeypatch.setattr(
+        "background_services.notifications.notification_service.QDesktopServices.openUrl",
+        lambda url: opened.append(url.toString()),
+    )
+
+    popup_service.notify("Update available", key="update", link="https://example.invalid/r")
+    popup_service._popup.clicked.emit()
+
+    assert opened == ["https://example.invalid/r"]
+    assert not popup_service._popup.isVisible()
+    # The display window is over, so no timer may still be armed for it.
+    assert not popup_service._dismiss_timer.isActive()
+
+
+def test_closing_the_card_ends_the_notification_without_opening_anything(
+    popup_service, monkeypatch
+):
+    opened = []
+    monkeypatch.setattr(
+        "background_services.notifications.notification_service.QDesktopServices.openUrl",
+        lambda url: opened.append(url.toString()),
+    )
+
+    popup_service.notify("Update available", key="update", link="https://example.invalid/r")
+    popup_service._popup.dismissed.emit()
+
+    assert opened == []
+    assert not popup_service._popup.isVisible()
+    assert popup_service._pending_link is None
+
+
+def test_a_card_that_cannot_be_placed_falls_back_to_the_platform_toast(popup_service):
+    """A machine with no screen to place the card on still gets notified."""
+    popup = popup_service._ensure_popup()
+    popup.present = lambda *args, **kwargs: False
+
+    assert popup_service.notify("Timer started", key="timer-started") is True
+    popup_service._tray.showMessage.assert_called_once()
+
+
+def test_a_popup_that_raises_falls_back_and_still_arms_the_timer(popup_service):
+    """A broken window must not swallow the notification."""
+    popup = popup_service._ensure_popup()
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("no compositor")
+
+    popup.present = explode
+
+    assert popup_service.notify("Sync failed", key="sync-error") is True
+    popup_service._tray.showMessage.assert_called_once()
+    assert popup_service._dismiss_timer.isActive()
+
+
+def test_stopping_the_service_takes_the_card_down(popup_service):
+    popup_service.notify("Timer started", key="timer-started")
+    popup = popup_service._popup
+
+    popup_service.on_stop(1000)
+
+    assert not popup.isVisible()
+    assert popup_service._popup is None

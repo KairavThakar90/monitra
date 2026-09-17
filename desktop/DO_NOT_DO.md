@@ -679,6 +679,27 @@ Sections load independently. A failure in one must not leave another spinning.
 If the widget is destroyed, the timer is orphaned and the toast never dismisses.
 `NotificationService` owns exactly one dismissal timer.
 
+### ❌ Do not trust a platform toast to stay up for the time you asked for
+
+```python
+self._tray.showMessage(title, message, icon, 60_000)   # "a minute"
+```
+
+**What it caused:** the timeout is a hint, and Windows does not take it.
+`Shell_NotifyIcon`'s `uTimeout` has been ignored since Vista — the on-screen
+time is the user's accessibility setting (Settings → Accessibility → Visual
+effects → "Dismiss notifications after this amount of time"), five seconds by
+default and about twenty-five at its longest. A minute-long notification was
+measured on screen for twenty to twenty-five seconds, and the service's own
+lifecycle (when the link dies, when `_retire_current` runs) was the only thing
+that value ever controlled.
+
+**Instead:** draw the notification in a window this application owns
+(`background_services/notifications/toast_popup.py`) and let the service's
+single dismissal timer take it down. Keep the platform toast as the fallback
+for a machine the card cannot be placed on, and show one or the other — never
+both, or a single event notifies the user twice.
+
 ### ❌ Do not emit a notification per state transition without throttling
 
 Network flapping produced a burst of toasts. Notifications are de-duplicated by

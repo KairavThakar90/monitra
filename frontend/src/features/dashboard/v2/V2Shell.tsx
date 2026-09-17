@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../auth/authContext";
 import { canManageSystem, canViewAllFeedback } from "../../auth/roles";
+import { openPathInNewTab, opensInNewTab } from "../../../utils/navigation";
 import { brandGradient } from "./theme";
 
 const getInitials = (name: string) => {
@@ -99,6 +100,21 @@ export const V2Shell: React.FC<{
     navigate("/login");
   };
 
+  /**
+   * Every sidebar entry navigates through here. A plain click moves this tab,
+   * a Ctrl-click (⌘ on macOS) opens the entry in a new tab and leaves this one
+   * where it is — so the mobile drawer stays open too, since nothing about the
+   * current view changed.
+   */
+  const go = (event: React.MouseEvent, path: string) => {
+    if (opensInNewTab(event)) {
+      openPathInNewTab(path);
+      return;
+    }
+    navigate(path);
+    setMobileMenuOpen(false);
+  };
+
   // Color accents for the brand
   const brandGradient = "linear-gradient(135deg, #0ea5e9 0%, #3b82f6 50%, #8b5cf6 100%)";
 
@@ -129,7 +145,7 @@ export const V2Shell: React.FC<{
 
             {/* Dashboard — sits directly below Task Listing */}
             <button
-              onClick={() => { navigate("/dashboard"); setMobileMenuOpen(false); }}
+              onClick={(event) => go(event, "/dashboard")}
               className={
                 "flex w-full cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3 text-left text-sm font-medium leading-snug transition duration-150 " +
                 (onV2
@@ -192,7 +208,7 @@ export const V2Shell: React.FC<{
                     return (
                       <li key={report.id}>
                         <button
-                          onClick={() => { navigate(`/dashboard/reports/${report.id}`); setMobileMenuOpen(false); }}
+                          onClick={(event) => go(event, `/dashboard/reports/${report.id}`)}
                           className={
                             "flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] font-medium transition duration-150 " +
                             (active
@@ -218,7 +234,7 @@ export const V2Shell: React.FC<{
               <>
               {/* Project Management */}
               <button
-                onClick={() => { navigate("/admin/project-management"); setMobileMenuOpen(false); }}
+                onClick={(event) => go(event, "/admin/project-management")}
                 className={
                   "flex w-full cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3 text-left text-sm font-medium leading-snug transition duration-150 " +
                   (location.pathname === "/admin/project-management"
@@ -240,7 +256,7 @@ export const V2Shell: React.FC<{
 
               {/* Task Listing */}
               <button
-                onClick={() => { navigate("/admin/task-listing"); setMobileMenuOpen(false); }}
+                onClick={(event) => go(event, "/admin/task-listing")}
                 className={
                   "flex w-full cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3 text-left text-sm font-medium leading-snug transition duration-150 " +
                   (location.pathname === "/admin/task-listing"
@@ -263,7 +279,7 @@ export const V2Shell: React.FC<{
             )}
 
             <button
-              onClick={() => { navigate("/admin/members"); setMobileMenuOpen(false); }}
+              onClick={(event) => go(event, "/admin/members")}
               className={
                 "flex w-full cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3 text-left text-sm font-medium leading-snug transition duration-150 " +
                 (location.pathname === "/admin/members"
@@ -285,7 +301,7 @@ export const V2Shell: React.FC<{
 
             {/* Time Tracking */}
             <button
-              onClick={() => { navigate("/admin/time-tracking"); setMobileMenuOpen(false); }}
+              onClick={(event) => go(event, "/admin/time-tracking")}
               className={
                 "flex w-full cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3 text-left text-sm font-medium leading-snug transition duration-150 " +
                 (location.pathname === "/admin/time-tracking"
@@ -307,7 +323,7 @@ export const V2Shell: React.FC<{
 
             {/* Screenshots */}
             <button
-              onClick={() => { navigate("/admin/screenshots"); setMobileMenuOpen(false); }}
+              onClick={(event) => go(event, "/admin/screenshots")}
               className={
                 "flex w-full cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3 text-left text-sm font-medium leading-snug transition duration-150 " +
                 (location.pathname === "/admin/screenshots"
@@ -330,7 +346,7 @@ export const V2Shell: React.FC<{
 
             {/* Teams — leader > projects > members drill-down */}
             <button
-              onClick={() => { navigate("/admin/teams"); setMobileMenuOpen(false); }}
+              onClick={(event) => go(event, "/admin/teams")}
               className={
                 "flex w-full cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3 text-left text-sm font-medium leading-snug transition duration-150 " +
                 (onTeams
@@ -354,7 +370,7 @@ export const V2Shell: React.FC<{
                 read the whole organization's feedback (Admin, HR, Leader). */}
             {canSeeAllFeedback && (
               <button
-                onClick={() => { navigate("/admin/feedback"); setMobileMenuOpen(false); }}
+                onClick={(event) => go(event, "/admin/feedback")}
                 className={
                   "flex w-full cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3 text-left text-sm font-medium leading-snug transition duration-150 " +
                   (onFeedback
