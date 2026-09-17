@@ -255,6 +255,15 @@ def test_the_notice_never_calls_a_tracking_verb(qapp, window, live_runtime, monk
     """Belt and braces on the test above: spy on every verb that could stop
     or restart anything and drive both edges through the real slot chain."""
     runtime = live_runtime
+    # Hold the network service still for the duration of the spy. Its own
+    # probe (`GET /auth/me`, answered 401 for a runtime with no token) commits
+    # a REACHABLE -> AUTH_REQUIRED edge, and the runtime wakes the consumer
+    # on every usable edge -- a wake that has nothing to do with the notice.
+    # Against a local backend that probe lands before the spies exist; on a
+    # CI runner reaching the deployed backend it landed inside the window and
+    # was counted against the notice.
+    monkeypatch.setattr(runtime.network, "_probe", lambda: runtime.network.network_state)
+    _pump(qapp, lambda: False, timeout=0.3)
     calls = []
     for name in ("timer",):
         for verb in ("start_tracking", "stop_tracking", "switch_tracking"):
