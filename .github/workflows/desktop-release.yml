@@ -49,9 +49,9 @@ jobs:
         shell: pwsh
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -169,7 +169,7 @@ jobs:
               Write-Host "$hash  $($_.Name)"
             }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: Monitra-Windows-${{ steps.version.outputs.version }}
           path: |
@@ -218,9 +218,9 @@ jobs:
         working-directory: desktop
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -240,10 +240,18 @@ jobs:
       - name: Changelog entry for this version
         run: python tools/check_changelog.py
 
+      # One interpreter per test module. Under the offscreen platform on these
+      # runners the single-process run dies inside Qt (bus error on Apple
+      # Silicon, segmentation fault on Intel) while a test shows an ordinary
+      # top-level window, at a point that moved between builds -- state one
+      # module leaves behind for the next, which one crash then hides for
+      # every module after it. Each module gets its own QApplication, every
+      # module reports, and a crash is attributed to its file. Nothing is
+      # skipped or retried; see tools/run_tests_per_module.py.
       - name: Regression suite
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest tests/ -q
+        run: python tools/run_tests_per_module.py
 
       # Signing and notarization are driven entirely by repository secrets. If
       # they are absent -- which is the current state -- the build produces an
@@ -352,7 +360,7 @@ jobs:
             cat "$dmg.sha256"
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: Monitra-macOS-${{ matrix.arch }}-${{ steps.version.outputs.version }}
           path: |
@@ -389,13 +397,13 @@ jobs:
       RELEASES_REPO: ${{ vars.RELEASES_REPO || github.repository }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           path: artifacts
 

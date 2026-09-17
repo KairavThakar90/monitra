@@ -531,6 +531,17 @@ python tests/soak/run_launch_cycles.py --cycles 10    # 10/10 clean
 python tests/soak/run_soak.py --duration 60           # PASS
 ```
 
+On the macOS release runners the suite is run one module per interpreter
+instead -- `python tools/run_tests_per_module.py` -- because the
+single-process run there dies inside Qt (a bus error on Apple Silicon, a
+segmentation fault on Intel) while a test shows an ordinary window under the
+offscreen platform, at a point that moved from build to build. Each module
+gets its own QApplication, every module reports its result, and a crash is
+attributed to the file it happened in rather than ending the run. Nothing is
+skipped or retried; the same tests run, and every failure still fails the
+build. The runner works on any platform if you want the same attribution
+locally.
+
 Then verify the *package*, which is the thing users get:
 
 ```powershell

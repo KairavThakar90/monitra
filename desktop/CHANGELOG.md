@@ -36,6 +36,18 @@ Privacy & Security.
 
 ### Added
 
+- **Project rows show the day's time.** Each project in the sidebar list now
+  carries its tracked time for the day on screen -- the sum of its tasks'
+  HOURS column, ticking while a task in it is being tracked.
+- **The task list turns pages.** A project with more than ten tasks shows
+  ten at a time with the same previous / next control the project list has,
+  and says which rows of how many you are looking at.
+- **The idle alert can be moved.** It still has no close button and still
+  has to be answered, but you can drag it by its body anywhere on the
+  screen instead of it sitting on top of what you were about to read.
+- **Notifications carry the Monitra mark**, so a card in the corner reads
+  as Monitra's at a glance.
+
 - **A Play / Pause button under the day's total.** The sidebar now has one
   circular control beneath TOTAL TIME TODAY. Press Play to start the task
   you have selected in the list (click a task's row to select it, or press
@@ -76,6 +88,26 @@ Privacy & Security.
 - **The wellbeing reminders are back on the schedule the catalogue documents.**
 
 ### Fixed
+
+- **"Yes, keep idle time" keeps it, whichever button you press next.** It
+  used to keep the time only if you also pressed Resume; pressing Stop timer
+  after choosing to keep it quietly deducted the idle minutes anyway. Now the
+  two radio buttons decide what happens to the time and the two action
+  buttons decide only whether the timer goes on running. A Stop pressed
+  while the alert is still unanswered still discards, as before.
+- **Totals no longer jump when you press Stop.** For a task tracked for the
+  first time that day, TOTAL TIME TODAY and the task's hours briefly showed
+  roughly double the session the instant Stop was pressed -- and stayed
+  there offline -- because the just-stopped session was added on top of a
+  figure the server had already counted it in. Most visible right after
+  "No, discard idle time" + Stop, where the total was supposed to drop.
+- **Notifications are fully on screen.** The card in the bottom-right corner
+  was placed as if it were narrower than it is, so its right third -- close
+  button included -- hung off the edge of the screen. It now sits inside the
+  working area at a fixed margin whatever the message length.
+- **Compact task rows.** Every task row carried about 22px of empty height
+  from layout margins nothing asked for, and its name sat 11px to the right
+  of the TASK header. Both are gone; the buttons and the columns are unchanged.
 
 - **Discarded idle time now leaves the running clock at once.** When you
   answer the idle alert with "No, discard idle time" and Resume, the timer on
