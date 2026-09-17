@@ -423,7 +423,14 @@ jobs:
           # derives are reachable without a GitHub account. Falls back to this
           # repository when RELEASES_REPO is unset.
           repository: ${{ env.RELEASES_REPO }}
-          token: ${{ secrets.RELEASES_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          # Publishing into THIS repository uses the job's own GITHUB_TOKEN,
+          # which the `permissions: contents: write` above lets create a
+          # release. RELEASES_REPO_TOKEN is a personal access token scoped to
+          # a *separate* installer repository and cannot create a release
+          # here -- using it against this repo is what returned 403 on
+          # v1.2.1's fifth attempt. A separate installer repo still uses that
+          # token.
+          token: ${{ (env.RELEASES_REPO == github.repository && secrets.GITHUB_TOKEN) || secrets.RELEASES_REPO_TOKEN || secrets.GITHUB_TOKEN }}
           tag_name: ${{ env.RELEASE_TAG }}
           draft: true          # a human checks the artifacts before it goes out
           # GitHub composes release notes from the commits behind the tag, so
