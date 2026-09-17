@@ -40,16 +40,21 @@ assert uia.read_address_bar(12345) is None, "off Windows the reader must answer 
 print("IMPORT_OK")
 """
 
-#: The full chain the runtime pulls in is exercised as Linux, which is what the
-#: correctness gate runs on. Under a simulated `darwin` the standard library
-#: itself reaches for macOS-only modules (`urllib.request` imports `_scproxy`),
-#: which has nothing to do with this defect, so that case stays on the browser
-#: package -- the module that actually failed.
-_CASES = [
-    ("linux", ["tracking.browsers", "background_services.activity.url_usage_service",
-               "core.runtime"]),
-    ("darwin", ["tracking.browsers"]),
-]
+_FULL_CHAIN = ["tracking.browsers", "background_services.activity.url_usage_service",
+               "core.runtime"]
+
+#: What can honestly be simulated depends on the host. Pretending to be
+#: another OS only fools *our* platform checks: the standard library and the
+#: dependencies still see the real one, so a Windows host can import the full
+#: runtime chain "as linux" but not "as darwin" (`urllib.request` reaches for
+#: the macOS-only `_scproxy`), and a Mac cannot import it "as linux" either
+#: (the input backends pick the X11 stack). Off Windows the host itself already
+#: proves the runtime imports without `ctypes.windll` -- the whole suite does
+#: that -- so those hosts probe only the browser package, under their own name.
+if sys.platform == "win32":
+    _CASES = [("linux", _FULL_CHAIN), ("darwin", ["tracking.browsers"])]
+else:
+    _CASES = [(sys.platform, ["tracking.browsers"])]
 
 
 @pytest.mark.parametrize("platform,modules", _CASES)

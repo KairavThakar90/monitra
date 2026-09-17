@@ -30,6 +30,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QPushButton
 
 from app.api.exceptions import ApiError
+from background_services.network import NetworkState
 from background_services.timer import timer_service as timer_module
 from background_services.timer.timer_service import (
     TIMER_STATE_KEY, TimerService, TimerStatus,
@@ -226,6 +227,13 @@ def live_runtime(qapp, runtime):
     tracker = FakeTracker()
     runtime.timer._trackers = [tracker]
     runtime.start_services()
+    # The backend here is a stub, so the network service's own probe -- an
+    # HTTP request to whatever SMS_API_BASE_URL resolves to on this machine --
+    # says nothing about it. Pin the state: on the release runners, where the
+    # URL is the deployed backend, a probe that timed out degraded the state
+    # mid-test, the consumer held, and a queued stop sat out the whole exit
+    # budget instead of landing in one round trip.
+    runtime.network._probe = lambda: NetworkState.BACKEND_REACHABLE
     runtime.network.note_backend_reachable()
     assert _pump(qapp, lambda: runtime.sync.state == ServiceState.RUNNING)
     runtime.backend = backend

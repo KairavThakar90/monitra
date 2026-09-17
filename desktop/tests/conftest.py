@@ -20,6 +20,26 @@ if str(DESKTOP_ROOT) not in sys.path:
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("MONITRA_LOG_LEVEL", "WARNING")
 
+if sys.platform == "darwin":
+    # Realising a widget that carries a QGraphicsDropShadowEffect under the
+    # offscreen platform on the macOS release runners kills the interpreter
+    # inside Qt -- a bus error on Apple Silicon, a segmentation fault on
+    # Intel -- before any assertion runs, and takes the rest of the suite
+    # with it (first seen at the login window, then at the maintenance
+    # toast's host window). The shadow is decoration: nothing this suite
+    # asserts depends on it being painted, so on macOS every drop shadow is
+    # constructed disabled and Qt paints the widget directly. The packaged
+    # macOS application is unaffected; this file is never imported by it.
+    from PySide6.QtWidgets import QGraphicsDropShadowEffect
+
+    _shadow_init = QGraphicsDropShadowEffect.__init__
+
+    def _disabled_shadow_init(self, *args, **kwargs):
+        _shadow_init(self, *args, **kwargs)
+        self.setEnabled(False)
+
+    QGraphicsDropShadowEffect.__init__ = _disabled_shadow_init
+
 
 @pytest.fixture(scope="session")
 def qapp():
