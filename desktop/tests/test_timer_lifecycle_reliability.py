@@ -326,6 +326,22 @@ def test_a_second_quit_joins_the_first(qapp, live_runtime):
     assert len(runtime.backend.stopped) == 1, "one stop, however many quits"
 
 
+def test_a_quit_after_the_exit_already_finished_is_called_back_at_once(qapp, live_runtime):
+    """The first Quit can finish synchronously -- nothing queued to wait for,
+    or a stop the consumer landed inside the call. A Quit arriving after that
+    used to append its callback and return, and the callback never fired:
+    on the release gate the stub backend was fast enough to do exactly this
+    to test_a_second_quit_joins_the_first."""
+    runtime = live_runtime
+    calls = []
+    runtime.prepare_exit(lambda: calls.append("first"))      # nothing running: finishes now
+    assert calls == ["first"]
+    runtime.prepare_exit(lambda: calls.append("second"))
+    assert calls == ["first", "second"], "a late Quit must be called back immediately"
+    runtime.prepare_exit(lambda: calls.append("third"))
+    assert calls == ["first", "second", "third"]
+
+
 def test_quit_while_a_stop_is_already_in_flight_waits_for_it(qapp, live_runtime):
     """Stop, then Quit before the stop landed: nothing is running, but the
     exit still waits for the queued stop rather than abandoning it."""

@@ -396,6 +396,11 @@ class StorageManager:
         # Keyed by threading.get_ident(); see the module docstring for why this
         # is not a threading.local().
         self._conns: Dict[int, sqlite3.Connection] = {}
+        #: The thread each connection was opened by, keyed the same way. A
+        #: thread id is recycled the moment its thread exits, so an entry
+        #: whose owner is no longer alive belongs to a *dead* thread and must
+        #: not be handed to the new one wearing its id -- see connection().
+        self._owners: Dict[int, threading.Thread] = {}
         self._conns_lock = threading.RLock()
         self._closed = False
         self._initialise_schema()
@@ -428,16 +433,53 @@ class StorageManager:
         return conn
 
     def connection(self) -> sqlite3.Connection:
-        """Return this thread's connection, opening one if necessary."""
+        """Return this thread's connection, opening one if necessary.
+
+        Service threads release their connection as they stop
+        (`close_current_thread`), but a thread that simply exits -- a pool
+        worker, a one-off `threading.Thread` -- leaves its entry behind, and
+        the OS reuses thread ids freely (measured on the macOS release
+        runners: four sequential threads, three distinct ids). Without the
+        owner check the next thread with that id was handed the dead
+        thread's connection: a connection shared between threads, the exact
+        defect this manager exists to prevent. So an entry is only returned
+        to the thread that opened it; one whose owner has exited is dropped
+        and a fresh connection opened.
+        """
         if self._closed:
             raise RuntimeError("StorageManager is closed")
         ident = threading.get_ident()
+        me = threading.current_thread()
         with self._conns_lock:
             conn = self._conns.get(ident)
+            owner = self._owners.get(ident)
+            if conn is not None and owner is not None and owner is not me and not owner.is_alive():
+                log.debug(
+                    "thread id %d was recycled from %r; dropping its stale connection",
+                    ident, owner.name,
+                )
+                self._conns.pop(ident, None)
+                self._owners.pop(ident, None)
+                self._discard(conn, ident)
+                conn = None
             if conn is None:
                 conn = self._new_connection()
                 self._conns[ident] = conn
+                self._owners[ident] = me
             return conn
+
+    @staticmethod
+    def _discard(conn: sqlite3.Connection, ident: int) -> None:
+        """Close a connection its own thread can no longer close.
+
+        sqlite3 refuses to use a connection from a thread other than the one
+        that opened it, so this may raise; the reference is dropped either
+        way and the finaliser closes the handle.
+        """
+        try:
+            conn.close()
+        except sqlite3.Error:
+            log.debug("could not close the stale connection of thread %d here", ident)
 
     @property
     def connection_count(self) -> int:
@@ -576,6 +618,7 @@ class StorageManager:
         ident = threading.get_ident()
         with self._conns_lock:
             conn = self._conns.pop(ident, None)
+            self._owners.pop(ident, None)
         if conn is None:
             return
         try:
@@ -598,6 +641,7 @@ class StorageManager:
         with self._conns_lock:
             conns = list(self._conns.values())
             self._conns.clear()
+            self._owners.clear()
 
         # Checkpoint on whichever connection is still usable, so the WAL does
         # not keep growing across runs.

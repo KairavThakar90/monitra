@@ -382,19 +382,20 @@ jobs:
 
     # Where the installers are published for people to download.
     #
-    # This repository is private, and a private repository's release assets are
-    # never publicly downloadable -- assets inherit the repository's visibility
-    # and GitHub has no per-asset public switch. Publishing the release does not
-    # change that. The only thing that varies is whether the *browser* carries a
-    # GitHub session with access, which is why the download 404s in every
-    # browser except the one signed in as a collaborator.
+    # Release assets inherit the repository's visibility -- GitHub has no
+    # per-asset public switch -- so a download link only works for everyone
+    # when the repository holding the release is PUBLIC. This repository is
+    # public today, and `RELEASES_REPO` points at it, so the job's own token
+    # publishes here and the download page and the in-app updater can fetch
+    # the installers.
     #
-    # So the bytes go to a separate PUBLIC repository that holds installers and
-    # no source. Set the `RELEASES_REPO` variable to it (e.g.
-    # owner/monitra-releases) and `RELEASES_REPO_TOKEN` to a token with
-    # `contents: write` on that repository. With neither set -- a fork, or a
-    # deployment that has not created one -- both fall back to exactly today's
-    # behaviour, so this change is inert until it is configured.
+    # To publish somewhere else -- a separate installer-only repository, if
+    # this one is ever made private again -- set the `RELEASES_REPO` variable
+    # to it (owner/name) and `RELEASES_REPO_TOKEN` to a token with
+    # `contents: write` on that repository. Both are required together: with
+    # a token that cannot write there GitHub answers 404 and the publish
+    # fails (v1.2.1's second attempt against a private installer repository).
+    # That repository must be public too, for the same reason as above.
     env:
       RELEASES_REPO: ${{ vars.RELEASES_REPO || github.repository }}
       # The tag the release is filed under. On a tag push it is the pushed
