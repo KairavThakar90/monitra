@@ -9,7 +9,7 @@ outcomes down at the layer that renders them:
 
     1. No, discard  + Resume  -> the running clock drops by the idle time
     2. No, discard  + Stop    -> the banked figure is net of the idle time
-    3. Yes, keep    + Stop    -> the banked figure is net of the idle time
+    3. Yes, keep    + Stop    -> the banked figure keeps the idle time
     4. Yes, keep    + Resume  -> the running clock is unchanged
 
 and the rules that keep the figure honest: the client never computes the
@@ -228,7 +228,7 @@ def idle(qapp):
     [
         (False, "resume", -600, False),   # 1. discard + resume: clock drops now
         (False, "stop", -600, True),      # 2. discard + stop: banked net
-        (True, "stop", -600, True),       # 3. keep + stop: still discarded
+        (True, "stop", 0, True),          # 3. keep + stop: kept, timer ends
         (True, "resume", 0, False),       # 4. keep + resume: unchanged
     ],
 )

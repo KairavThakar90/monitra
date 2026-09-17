@@ -560,8 +560,9 @@ ActivityService.idle_seconds()   (GetLastInputInfo -- no second listener)
 
 Three properties are worth stating explicitly:
 
-- **The backend decides, always.** Idle time counts only for
-  `keep_idle_time AND action == "resume"`, and that rule lives in the API.
+- **The backend decides, always.** Idle time counts exactly when
+  `keep_idle_time` is true -- Stop and Resume only decide whether the timer
+  goes on -- and that rule lives in the API.
   The client sends the user's answer and applies the verdict; it never
   computes tracked time and never edits it. The verdict arrives as
   `time_entry_adjustment_seconds` on the resolve and reassign responses --

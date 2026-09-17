@@ -63,6 +63,8 @@ class ToastPopup(QWidget):
     #: Card width, and the gap kept from the screen's working-area edges.
     WIDTH = 360
     SCREEN_MARGIN = 18
+    #: The brand mark drawn beside the title.
+    LOGO_SIZE = 20
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(
@@ -106,6 +108,18 @@ class ToastPopup(QWidget):
         header.setSpacing(8)
         body.addLayout(header)
 
+        # The Monitra mark, so the card reads as Monitra's at a glance --
+        # the same brand pixmap the tray icon and the window icon are built
+        # from (core.branding), never a second drawing of the logo.
+        from core.branding import logo_pixmap  # local: Qt GUI at import time
+
+        self._logo = QLabel(self._card)
+        self._logo.setObjectName("toastLogo")
+        self._logo.setFixedSize(self.LOGO_SIZE, self.LOGO_SIZE)
+        self._logo.setPixmap(logo_pixmap(self.LOGO_SIZE))
+        self._logo.setScaledContents(True)
+        header.addWidget(self._logo, 0, Qt.AlignmentFlag.AlignVCenter)
+
         self._title = QLabel(self._card)
         self._title.setObjectName("toastTitle")
         header.addWidget(self._title, 1)
@@ -139,6 +153,10 @@ class ToastPopup(QWidget):
                 background: {accent};
                 border-top-left-radius: 10px;
                 border-bottom-left-radius: 10px;
+            }}
+            QLabel#toastLogo {{
+                background: transparent;
+                border: none;
             }}
             QLabel#toastTitle {{
                 color: #101828;
@@ -192,17 +210,30 @@ class ToastPopup(QWidget):
         The working area, not the full screen, so the card never sits under the
         taskbar. False if the platform reports no screen at all, which is the
         one case this widget cannot be shown in.
+
+        The card is placed by its *actual* size, not `sizeHint()`. The card
+        is fixed at WIDTH, but the hint reports the word-wrapped label's
+        unconstrained width -- narrower than the card for a short message,
+        far wider for a long one -- and its unwrapped height. Placing by the
+        hint put a 360px card where a 263px one would fit, so its right
+        third, close button included, hung off the screen: the "notification
+        shows half" report. `adjustSize()` (run by `present`) has already
+        sized the card to WIDTH and to the wrapped text's height, so
+        `self.size()` is the rectangle that will be drawn. The position is
+        then clamped into the working area, so no message length can push
+        any edge of the card off screen.
         """
         screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         if screen is None:
             return False
 
         area = screen.availableGeometry()
-        size = self.sizeHint()
-        self.move(
-            area.right() - size.width() - self.SCREEN_MARGIN,
-            area.bottom() - size.height() - self.SCREEN_MARGIN,
-        )
+        size = self.size()
+        # Exclusive edges (x + width), not QRect.right()/bottom(), which are
+        # inclusive and would leave the card one pixel short of the margin.
+        x = area.x() + area.width() - size.width() - self.SCREEN_MARGIN
+        y = area.y() + area.height() - size.height() - self.SCREEN_MARGIN
+        self.move(max(area.x(), x), max(area.y(), y))
         return True
 
     # ── Interaction ──────────────────────────────────────────────────────────

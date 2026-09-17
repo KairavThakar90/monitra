@@ -405,6 +405,14 @@ def test_captures_of_a_queued_start_still_reach_drive_and_the_database(
 
     monkeypatch.setattr(desktop.time_entry_service, "start_time_entry", flaky_start)
 
+    # Hold the consumer until the captures exist. Nothing else keeps the
+    # queued start from landing the instant it is enqueued -- against a local
+    # backend it did so mid-way through the three captures, which attributed
+    # the first of them early, failed the count below, and left the entry
+    # running for every later test in this module to trip over with a 409.
+    # The scenario is "captures taken *before* the start lands", so make it so.
+    desktop.sync._should_hold = lambda: "held by the test until the captures exist"
+
     timer = desktop.timer
     timer.start_tracking(principal["project_id"], principal["task_id"], "E2E queued start")
     _pump(qapp, lambda: calls["n"] >= 1, 30, "the first start attempt to fail")
@@ -422,6 +430,7 @@ def test_captures_of_a_queued_start_still_reach_drive_and_the_database(
     )
 
     # Let the queued start land. This is the moment that used to lose them all.
+    del desktop.sync._should_hold   # back to the class's own rule
     desktop.sync.wake()
     _pump(qapp, lambda: timer.entry_id is not None, 120, "the queued start to land")
     entry_id = timer.entry_id

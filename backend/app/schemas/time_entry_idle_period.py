@@ -38,7 +38,7 @@ class IdlePeriodResolve(BaseModel):
 
     `keep_idle_time` is the radio button; `action` is the button they pressed.
     The server, not the client, decides whether the time is actually counted:
-    only keep + resume counts.
+    it counts exactly when `keep_idle_time` is true, for either action.
     """
 
     keep_idle_time: bool

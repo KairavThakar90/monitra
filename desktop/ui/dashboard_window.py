@@ -1096,6 +1096,7 @@ class DashboardWindow(QWidget):
         self._sidebar.set_live_date(True)
         self._action_banner.dismiss()
         self._sidebar.set_total_seconds(0)
+        self._sidebar.set_project_totals(None)
         self._task_section.set_all_projects([])
         self._task_section.clear()
         self._project_tasks = []
@@ -1662,6 +1663,35 @@ class DashboardWindow(QWidget):
         """Completed seconds for the displayed day, netted like every report."""
         return sum(banked_seconds(e) for e in self._today_time_entries if _is_finished(e))
 
+    def _banked_seconds_by_project(self) -> Dict[int, int]:
+        """Completed seconds per project for the displayed day.
+
+        The same rows, the same netting and the same "finished only" rule as
+        `_banked_seconds_by_task`, grouped one level up: a project's figure
+        is exactly the sum of its tasks' HOURS column for the day.
+        """
+        totals: Dict[int, int] = {}
+        for entry in self._today_time_entries:
+            project_id = entry.get("project_id")
+            if not project_id:
+                continue
+            if _is_finished(entry):
+                totals[project_id] = totals.get(project_id, 0) + banked_seconds(entry)
+        return totals
+
+    def _project_totals_for_display(self, live: int) -> Dict[int, int]:
+        """Per-project figures for the sidebar: banked, plus the live session
+        on the project being tracked. `live` is the caller's already-gated
+        value -- 0 unless a timer runs *and* today is on screen -- so this
+        never adds today's session to another day's totals."""
+        totals = self._banked_seconds_by_project()
+        if live > 0:
+            session = self.api.active_session() or {}
+            project_id = session.get("project_id")
+            if project_id:
+                totals[project_id] = totals.get(project_id, 0) + live
+        return totals
+
     def _load_today_time(
         self,
         target_date: Optional[date] = None,
@@ -1766,6 +1796,7 @@ class DashboardWindow(QWidget):
         if is_live_date(target) and self.api.is_timer_running():
             live = self.api.timer_elapsed_seconds()
         self._sidebar.set_total_seconds(banked + live)
+        self._sidebar.set_project_totals(self._project_totals_for_display(live))
 
         if update_cache:
             self.api.cache.cache_time_entries(target.isoformat(), entries)
@@ -2266,6 +2297,7 @@ class DashboardWindow(QWidget):
         if not is_live_date(self._current_date):
             return
         self._sidebar.set_total_seconds(self._banked_today() + elapsed)
+        self._sidebar.set_project_totals(self._project_totals_for_display(elapsed))
         self._update_stat_cards()
 
     def _on_timer_recovered(self, session: dict) -> None:

@@ -5,6 +5,7 @@ The screen carries exactly two controls -- the credentials and Sign In. In
 particular the password reveal toggle must never survive a reset(), or a
 cleared form could leave the next person's typing on screen.
 """
+import sys
 from unittest.mock import MagicMock
 
 import pytest
@@ -122,6 +123,15 @@ def shown_window(window):
     actually get on screen, which is not the geometry under test.
     """
     from PySide6.QtWidgets import QApplication
+
+    if sys.platform == "darwin":
+        # Realising this window under QT_QPA_PLATFORM=offscreen on the macOS
+        # CI runners takes the interpreter down with a bus error (arm64) or
+        # a segmentation fault (x86_64) inside Qt, before any assertion runs
+        # -- and with it the rest of the suite. The geometry these tests pin
+        # is the Windows offscreen metric described above; the macOS build is
+        # smoke-tested as a packaged application instead.
+        pytest.skip("showing the login window crashes Qt's offscreen platform on macOS")
 
     window.resize(518, 576)
     window.show()

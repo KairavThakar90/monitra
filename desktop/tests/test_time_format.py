@@ -96,7 +96,7 @@ def test_timer_folds_elapsed_time_into_the_ist_day(timer, cache, monkeypatch):
     """
     recorded = {}
 
-    def capture(target_date, task_id, elapsed):
+    def capture(target_date, task_id, elapsed, **_details):
         recorded["target_date"] = target_date
 
     monkeypatch.setattr(cache, "add_elapsed_to_cached_time_entry", capture)

@@ -370,9 +370,39 @@ class LocalCache:
         return [json.loads(row["data"]) for row in rows]
 
     def add_elapsed_to_cached_time_entry(
-        self, target_date: str, task_id: Optional[int], elapsed_seconds: int
+        self,
+        target_date: str,
+        task_id: Optional[int],
+        elapsed_seconds: int,
+        *,
+        entry_id: Optional[int] = None,
+        stopped_at: Optional[str] = None,
+        measured_seconds: Optional[int] = None,
     ) -> None:
-        """Fold newly tracked seconds into the cached entries for a date."""
+        """Fold a just-stopped session into the cached entries for a date.
+
+        `elapsed_seconds` is the session's *netted* figure -- measured time
+        plus the backend's signed adjustments, the same number the task row
+        banks -- so it lands in `net_seconds`, which is what every total
+        reads. `measured_seconds` (the raw interval) goes to `total_seconds`
+        when the caller has it.
+
+        Which cached row receives it matters. The day's cache is the server's
+        own list, and the entry being stopped is usually *in* it as a running
+        row (`end_time` null) whose `net_seconds` the server already filled
+        with the live elapsed time at the moment the list was read. Adding
+        the session on top of that counted it twice: on a task tracked for
+        the first time that day, TOTAL TIME TODAY and the task's hours jumped
+        to roughly double the session the instant Stop was pressed, and
+        stayed there until the next server read -- for ever, offline. Most
+        visible right after "No, discard idle time" + Stop, where the total
+        was expected to *drop*.
+
+        So: the stopping entry's own row (`entry_id`) is *replaced* with the
+        finished figures, never added to; a running row is never folded into
+        (its number is live, not banked); and only a finished row of the same
+        task, or a fresh synthetic row, is added to.
+        """
         if elapsed_seconds <= 0:
             return
         now = time.time()
@@ -380,25 +410,56 @@ class LocalCache:
             rows = conn.execute(
                 "SELECT id, data FROM time_entries_today WHERE target_date = ?", (target_date,)
             ).fetchall()
+            decoded = [(row["id"], json.loads(row["data"])) for row in rows]
 
-            for row in rows:
-                data = json.loads(row["data"])
-                if task_id is not None and data.get("task_id") == task_id:
-                    data["total_seconds"] = data.get("total_seconds", 0) + elapsed_seconds
-                    if data.get("net_seconds") is not None:
-                        data["net_seconds"] = data["net_seconds"] + elapsed_seconds
-                    data["status"] = "completed"
-                    conn.execute(
-                        "UPDATE time_entries_today SET data = ?, cached_at = ? WHERE id = ?",
-                        (json.dumps(data), now, row["id"]),
-                    )
-                    return
+            def write(row_id, data):
+                conn.execute(
+                    "UPDATE time_entries_today SET data = ?, cached_at = ? WHERE id = ?",
+                    (json.dumps(data), now, row_id),
+                )
 
+            # 1. The entry that just stopped, as the server last listed it.
+            if entry_id is not None:
+                for row_id, data in decoded:
+                    if data.get("id") == entry_id:
+                        data["total_seconds"] = int(
+                            measured_seconds if measured_seconds is not None else elapsed_seconds
+                        )
+                        data["net_seconds"] = int(elapsed_seconds)
+                        data["status"] = "completed"
+                        if stopped_at is not None:
+                            data["end_time"] = stopped_at
+                        data["pending_stop"] = True
+                        write(row_id, data)
+                        return
+
+            # 2. A finished row of the same task. A running row is skipped:
+            #    its net_seconds is the live figure the server computed when
+            #    the list was read, and adding to it double-counts.
+            for row_id, data in decoded:
+                if task_id is None or data.get("task_id") != task_id:
+                    continue
+                if data.get("end_time") is None and data.get("status") not in ("stopped", "completed"):
+                    continue
+                data["total_seconds"] = data.get("total_seconds", 0) + int(
+                    measured_seconds if measured_seconds is not None else elapsed_seconds
+                )
+                if data.get("net_seconds") is not None:
+                    data["net_seconds"] = data["net_seconds"] + int(elapsed_seconds)
+                data["status"] = "completed"
+                write(row_id, data)
+                return
+
+            # 3. Nothing to fold into: a row of its own.
             new_entry = {
                 "id": -int(now * 1000) % 1000000,
                 "task_id": task_id,
-                "total_seconds": elapsed_seconds,
+                "total_seconds": int(
+                    measured_seconds if measured_seconds is not None else elapsed_seconds
+                ),
+                "net_seconds": int(elapsed_seconds),
                 "status": "completed",
+                "end_time": stopped_at,
                 "target_date": target_date,
             }
             conn.execute(

@@ -839,6 +839,7 @@ class TimerService(BaseService):
         # It is what the task row and the day total fold in, so a session
         # whose idle time was discarded banks what the reports will show.
         elapsed = self.elapsed_seconds()
+        measured = self.measured_seconds()
         entry_id = session.get("entry_id")
         task_id = session.get("task_id")
         # The instant the user actually stopped, captured here and carried
@@ -885,7 +886,10 @@ class TimerService(BaseService):
                 # a machine in another timezone folds the elapsed time into a
                 # day the server will never show it under.
                 today = ist_today().isoformat()
-                self._cache.add_elapsed_to_cached_time_entry(today, task_id, elapsed)
+                self._cache.add_elapsed_to_cached_time_entry(
+                    today, task_id, elapsed,
+                    entry_id=entry_id, stopped_at=stopped_at, measured_seconds=measured,
+                )
             except Exception:  # noqa: BLE001
                 self.log.exception("could not fold elapsed time into cache")
 

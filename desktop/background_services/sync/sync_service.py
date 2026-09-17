@@ -88,6 +88,18 @@ class SyncService(LoopService):
     IDLE_INTERVAL_MS = 2_000
     #: Cadence while holding (offline or awaiting auth).
     HOLD_INTERVAL_MS = 5_000
+    #: How many *deferred* rows one tick may step past on its way to the first
+    #: action it can actually attempt. A deferral is two cheap SQL statements,
+    #: not a request, so it must not cost a whole tick: when it did, twenty
+    #: stops each waiting two seconds for their own session's start took
+    #: 20 x 100 ms = the entire deferral window between them, were eligible
+    #: again the moment the last one was pushed back, and -- ranked above the
+    #: starts by priority -- never let the consumer reach the very rows they
+    #: were waiting on. The queue livelocked for the life of the process and
+    #: every task edit behind it starved. The bound only guards against a
+    #: pathological backlog occupying the loop thread; the eligible set
+    #: shrinks with each deferral, so the walk cannot revisit a row.
+    MAX_DEFERRALS_PER_TICK = 500
     #: How many times a stop may wait for its start before being abandoned.
     #: At the 2s defer delay this is roughly a minute — long enough to cover a
     #: start request still in flight or retrying, short enough that an orphan
@@ -238,7 +250,20 @@ class SyncService(LoopService):
                 if brought_forward:
                     self.log.info("hold ended; %d timer action(s) retried now", brought_forward)
 
+        # Walk past rows that only defer (their prerequisite has not landed)
+        # to the first one that can be attempted. See MAX_DEFERRALS_PER_TICK
+        # for the livelock this prevents.
         action = self._cache.get_next_pending_action()
+        stepped_past = 0
+        while action is not None and stepped_past < self.MAX_DEFERRALS_PER_TICK:
+            if self._process_action(action):
+                break
+            stepped_past += 1
+            action = self._cache.get_next_pending_action()
+        if stepped_past >= self.MAX_DEFERRALS_PER_TICK:
+            self.log.warning(
+                "stepped past %d deferred actions in one pass; yielding", stepped_past
+            )
         if action is None:
             self._publish_depth()
             # Each of these uploads at most one bounded batch. When one comes
@@ -256,14 +281,23 @@ class SyncService(LoopService):
             self.heartbeat()
             return self.BUSY_INTERVAL_MS if backlog else self.IDLE_INTERVAL_MS
 
-        self._process_action(action)
+        # `action` was attempted (completed, failed, cancelled) by the walk
+        # above, or the walk hit its bound with the row deferred; either way
+        # the next pass is due at the busy cadence.
         self._publish_depth()
         self.heartbeat()
         return self.BUSY_INTERVAL_MS
 
     # ── Action processing ─────────────────────────────────────────────────────
 
-    def _process_action(self, action: Dict[str, Any]) -> None:
+    def _process_action(self, action: Dict[str, Any]) -> bool:
+        """Run one claimed action to a terminal outcome for this pass.
+
+        :return: True when the action was *attempted* -- completed, failed and
+            scheduled for retry, or cancelled -- and False when it was merely
+            deferred because a prerequisite has not landed yet. The caller
+            uses that to keep walking the queue instead of spending the tick.
+        """
         action_id = action["id"]
         action_type = action["action_type"]
         payload = action["payload"]
@@ -293,7 +327,7 @@ class SyncService(LoopService):
                 self.log.warning("unknown action type %s; dropping", action_type,
                                  extra={"op": action_id})
                 self._cache.complete_action(action_id)
-                return
+                return True
             if action_type == "stop_timer":
                 result = handler(payload, action.get("defer_count", 0)) or {}
             elif action_type == "start_timer":
@@ -303,6 +337,7 @@ class SyncService(LoopService):
         except DeferAction as exc:
             self.log.info("deferring %s: %s", action_type, exc, extra={"op": action_id})
             self._cache.defer_action(action_id, str(exc))
+            return False
         except UnresolvableAction as exc:
             self.log.warning("cancelling %s: %s", action_type, exc, extra={"op": action_id})
             self._cache.cancel_action(action_id, str(exc))
@@ -318,6 +353,7 @@ class SyncService(LoopService):
             self.log.info("action %s completed", action_type, extra={"op": action_id})
             self._mark_synced()
             self.action_completed.emit(action_id, action_type, result)
+        return True
 
     def _handle_api_error(
         self, action_id: str, action_type: str, exc: ApiError,
