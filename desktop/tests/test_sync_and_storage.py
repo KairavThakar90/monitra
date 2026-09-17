@@ -144,6 +144,61 @@ def test_each_thread_gets_its_own_connection(storage):
     )
 
 
+def test_a_recycled_thread_id_does_not_inherit_a_dead_threads_connection(storage, monkeypatch):
+    """The OS reuses a thread id the moment its thread exits. On the macOS
+    release runners four sequential threads drew three distinct ids, and the
+    fourth was handed the connection a finished thread had opened -- a
+    connection shared between threads. Pinned here by giving two sequential
+    threads the same id on purpose."""
+    import storage.manager as manager_module
+
+    class _SameIdent:
+        """`threading` as the manager sees it, with every thread id equal --
+        the recycled-id case made deterministic. Only the manager's view is
+        patched; the real module keeps running the threads."""
+        def __getattr__(self, name):
+            return getattr(threading, name)
+
+        @staticmethod
+        def get_ident():
+            return 424242
+
+    monkeypatch.setattr(manager_module, "threading", _SameIdent())
+    before = storage.connection_count      # the main thread's own connection
+    # The connection *objects* are kept, not their id()s: the manager closes
+    # and drops the dead thread's connection, and on macOS the next
+    # sqlite3.Connection was allocated at the very same address, so two
+    # different objects compared equal by id() (first CI run of this test).
+    seen = {}
+
+    def record(name):
+        seen[name] = storage.connection()
+
+    first = threading.Thread(target=record, args=("first",))
+    first.start()
+    first.join(5)
+    assert not first.is_alive()
+
+    second = threading.Thread(target=record, args=("second",))
+    second.start()
+    second.join(5)
+
+    assert seen["first"] is not seen["second"], (
+        "the second thread was handed the connection of a thread that had exited"
+    )
+    assert storage.connection_count == before + 1, (
+        "the dead thread's entry was dropped, not kept beside the new one"
+    )
+
+
+def test_a_live_thread_keeps_its_own_connection_across_calls(storage):
+    """The owner check must not churn connections for a thread that is alive."""
+    first = id(storage.connection())
+    second = id(storage.connection())
+    assert first == second
+    assert storage.connection_count == 1
+
+
 def test_concurrent_readers_and_writers_do_not_corrupt_the_cache(cache):
     """
     A reader must never observe a half-written task list.

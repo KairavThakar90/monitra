@@ -482,10 +482,18 @@ class ApplicationRuntime(QObject):
         (see docs/TIMING_MODEL.md §7).
 
         Idempotent: a second call while the first is waiting joins the wait
-        and is called back with it.
+        and is called back with it. A call that arrives *after* the
+        preparation has finished is called back at once: the first call can
+        finish synchronously -- nothing queued to wait for, or a stop the
+        consumer landed between enqueue and the check -- and a callback
+        appended after that would otherwise wait for a completion that never
+        comes again (found by the release gate, where the stub backend is
+        fast enough to land the stop inside the first call).
         """
         self._exit_callbacks.append(on_ready)
         if self._exit_prepared:
+            if self._exit_done:
+                self._run_exit_callbacks()
             return
         self._exit_prepared = True
         log.info("exit requested (stop_timer=%s)", stop_timer)
@@ -574,6 +582,10 @@ class ApplicationRuntime(QObject):
                 except (RuntimeError, TypeError):
                     pass
         log.info("exit preparation complete: %s", reason)
+        self._run_exit_callbacks()
+
+    def _run_exit_callbacks(self) -> None:
+        """Call back everyone waiting on the exit preparation, once each."""
         callbacks, self._exit_callbacks = self._exit_callbacks, []
         for callback in callbacks:
             try:

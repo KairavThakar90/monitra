@@ -357,7 +357,28 @@ def _started_tasks(runtime):
 
 
 def _wait_started(qapp, runtime, expected):
-    assert _pump(qapp, lambda: _started_tasks(runtime) == expected, timeout=20.0), (
+    """Wait for the backend to have been asked to start exactly `expected`.
+
+    A start that follows a stop (Play after Pause, Break Out) travels through
+    the durable queue, and the queue consumer polls on its own cadence. While
+    we wait we also *drive* the queue -- bring any timer action that is
+    waiting out a backoff forward and wake the consumer -- the same nudges
+    `ApplicationRuntime.prepare_exit` gives a queued stop. Without this the
+    resume start sat in the queue at the idle poll cadence, and on a heavily
+    loaded CI runner (the Windows package job measured the suite at ~7.5x its
+    local wall-clock) that outran the old fixed budget and failed the assert
+    for no fault in the code under test. The assertion is unchanged: the
+    backend must still see exactly the expected sessions, in order.
+    """
+    def ready() -> bool:
+        try:
+            runtime.cache.make_timer_actions_ready()
+        except Exception:  # noqa: BLE001
+            pass
+        runtime.sync.wake()
+        return _started_tasks(runtime) == expected
+
+    assert _pump(qapp, ready, timeout=45.0), (
         f"backend starts: {_started_tasks(runtime)} != {expected}"
     )
 

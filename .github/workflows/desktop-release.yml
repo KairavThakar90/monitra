@@ -43,15 +43,17 @@ jobs:
     name: Windows package
     runs-on: windows-latest
     timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     defaults:
       run:
         working-directory: desktop
         shell: pwsh
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -169,7 +171,7 @@ jobs:
               Write-Host "$hash  $($_.Name)"
             }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: Monitra-Windows-${{ steps.version.outputs.version }}
           path: |
@@ -218,9 +220,9 @@ jobs:
         working-directory: desktop
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -240,10 +242,18 @@ jobs:
       - name: Changelog entry for this version
         run: python tools/check_changelog.py
 
+      # One interpreter per test module. Under the offscreen platform on these
+      # runners the single-process run dies inside Qt (bus error on Apple
+      # Silicon, segmentation fault on Intel) while a test shows an ordinary
+      # top-level window, at a point that moved between builds -- state one
+      # module leaves behind for the next, which one crash then hides for
+      # every module after it. Each module gets its own QApplication, every
+      # module reports, and a crash is attributed to its file. Nothing is
+      # skipped or retried; see tools/run_tests_per_module.py.
       - name: Regression suite
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest tests/ -q
+        run: python tools/run_tests_per_module.py
 
       # Signing and notarization are driven entirely by repository secrets. If
       # they are absent -- which is the current state -- the build produces an
@@ -352,7 +362,7 @@ jobs:
             cat "$dmg.sha256"
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: Monitra-macOS-${{ matrix.arch }}-${{ steps.version.outputs.version }}
           path: |
@@ -372,30 +382,36 @@ jobs:
 
     # Where the installers are published for people to download.
     #
-    # This repository is private, and a private repository's release assets are
-    # never publicly downloadable -- assets inherit the repository's visibility
-    # and GitHub has no per-asset public switch. Publishing the release does not
-    # change that. The only thing that varies is whether the *browser* carries a
-    # GitHub session with access, which is why the download 404s in every
-    # browser except the one signed in as a collaborator.
+    # Release assets inherit the repository's visibility -- GitHub has no
+    # per-asset public switch -- so a download link only works for everyone
+    # when the repository holding the release is PUBLIC. This repository is
+    # public today, and `RELEASES_REPO` points at it, so the job's own token
+    # publishes here and the download page and the in-app updater can fetch
+    # the installers.
     #
-    # So the bytes go to a separate PUBLIC repository that holds installers and
-    # no source. Set the `RELEASES_REPO` variable to it (e.g.
-    # owner/monitra-releases) and `RELEASES_REPO_TOKEN` to a token with
-    # `contents: write` on that repository. With neither set -- a fork, or a
-    # deployment that has not created one -- both fall back to exactly today's
-    # behaviour, so this change is inert until it is configured.
+    # To publish somewhere else -- a separate installer-only repository, if
+    # this one is ever made private again -- set the `RELEASES_REPO` variable
+    # to it (owner/name) and `RELEASES_REPO_TOKEN` to a token with
+    # `contents: write` on that repository. Both are required together: with
+    # a token that cannot write there GitHub answers 404 and the publish
+    # fails (v1.2.1's second attempt against a private installer repository).
+    # That repository must be public too, for the same reason as above.
     env:
       RELEASES_REPO: ${{ vars.RELEASES_REPO || github.repository }}
+      # The tag the release is filed under. On a tag push it is the pushed
+      # tag; on a workflow_dispatch with "Attach the artifacts" it is derived
+      # from version.py, so the release is never filed under a *branch* name
+      # ("smit") -- which is what `github.ref_name` is on a dispatch.
+      RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', needs.windows.outputs.version) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           path: artifacts
 
@@ -407,9 +423,23 @@ jobs:
           # derives are reachable without a GitHub account. Falls back to this
           # repository when RELEASES_REPO is unset.
           repository: ${{ env.RELEASES_REPO }}
-          token: ${{ secrets.RELEASES_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          # Publishing into THIS repository uses the job's own GITHUB_TOKEN,
+          # which the `permissions: contents: write` above lets create a
+          # release. RELEASES_REPO_TOKEN is a personal access token scoped to
+          # a *separate* installer repository and cannot create a release
+          # here -- using it against this repo is what returned 403 on
+          # v1.2.1's fifth attempt. A separate installer repo still uses that
+          # token.
+          token: ${{ (env.RELEASES_REPO == github.repository && secrets.GITHUB_TOKEN) || secrets.RELEASES_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          tag_name: ${{ env.RELEASE_TAG }}
           draft: true          # a human checks the artifacts before it goes out
-          generate_release_notes: true
+          # GitHub composes release notes from the commits behind the tag, so
+          # it can only do that where the source lives. Asked to do it in an
+          # installer-only repository -- whose tag is created by this very
+          # step and has no history -- it answers 404 and the publish fails
+          # (v1.2.1, first attempt). The hand-written changelog is the release
+          # note either way; the generated list is a bonus in this repository.
+          generate_release_notes: ${{ env.RELEASES_REPO == github.repository }}
           body: |
             ## Monitra desktop
 
@@ -466,7 +496,7 @@ jobs:
           MONITRA_RELEASE_CREDENTIAL: ${{ secrets.MONITRA_RELEASE_CREDENTIAL }}
         run: |
           python tools/register_release.py \
-            --tag "${GITHUB_REF_NAME}" \
+            --tag "${RELEASE_TAG}" \
             --repo "${RELEASES_REPO}" \
             --artifacts $(find ../artifacts -type f \
               \( -name 'Monitra-Setup-*.exe' -o -name 'Monitra-macOS-*.dmg' \) | tr '\n' ' ')
