@@ -165,10 +165,14 @@ def test_a_recycled_thread_id_does_not_inherit_a_dead_threads_connection(storage
 
     monkeypatch.setattr(manager_module, "threading", _SameIdent())
     before = storage.connection_count      # the main thread's own connection
+    # The connection *objects* are kept, not their id()s: the manager closes
+    # and drops the dead thread's connection, and on macOS the next
+    # sqlite3.Connection was allocated at the very same address, so two
+    # different objects compared equal by id() (first CI run of this test).
     seen = {}
 
     def record(name):
-        seen[name] = id(storage.connection())
+        seen[name] = storage.connection()
 
     first = threading.Thread(target=record, args=("first",))
     first.start()
@@ -179,7 +183,7 @@ def test_a_recycled_thread_id_does_not_inherit_a_dead_threads_connection(storage
     second.start()
     second.join(5)
 
-    assert seen["first"] != seen["second"], (
+    assert seen["first"] is not seen["second"], (
         "the second thread was handed the connection of a thread that had exited"
     )
     assert storage.connection_count == before + 1, (
