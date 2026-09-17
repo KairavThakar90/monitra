@@ -16,10 +16,15 @@ excludes it without any per-report special casing.
 
 The counting rule
 -----------------
-    count_idle_time = keep_idle_time is True and action == "resume"
+    count_idle_time = keep_idle_time is True
 
-Every other combination discards, including "keep idle time" followed by
-"stop timer".
+The radio button is the whole answer. "Yes, keep idle time" keeps it and
+"No, discard idle time" removes it, whether the user then presses "Stop
+timer" or "Resume timer" -- those two buttons only decide whether the entry
+goes on running. (Until 2026-09-17 a Stop discarded the time even after
+"keep"; the owner's rule is that keep means keep.) The one case that always
+discards is a Stop issued while the popup is still unanswered
+(`resolve_pending_for_stop`): nobody chose to keep that time.
 
 Reassignment
 ------------
@@ -78,12 +83,14 @@ IDLE_THRESHOLD_TOLERANCE_SECONDS = 5
 def counts_idle_time(keep_idle_time: bool, action: str) -> bool:
     """The single authoritative keep/discard rule.
 
-    Idle time is added to tracked time only when the user asked to keep it
-    AND resumed the timer. Stopping always discards, even when the user
-    selected "Yes, keep idle time" -- the stop is the stronger signal that
-    the idle stretch was not work.
+    Idle time is added to tracked time exactly when the user asked to keep
+    it. Whether they then stopped or resumed the timer does not change the
+    answer: the radio button is the decision about the time, the action
+    button is the decision about the timer. `action` is kept in the
+    signature so the rule has one call shape wherever it is applied.
     """
-    return bool(keep_idle_time) and action == IdlePeriodAction.RESUME
+    del action  # the action never changes whether the time counts
+    return bool(keep_idle_time)
 
 
 def _as_utc(value: datetime) -> datetime:

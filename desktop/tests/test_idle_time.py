@@ -81,7 +81,7 @@ class FakeIdleApi:
             raise self.resolve_error
         # Mirrors the backend's own rule; the client asserts against it but
         # never computes it.
-        counted = bool(keep_idle_time) and action == "resume"
+        counted = bool(keep_idle_time)  # the backend's rule: keep means keep
         return {"id": idle_period_id, "time_entry_id": 100, "status": "resolved",
                 "counted": counted, "idle_duration_seconds": 600,
                 "time_entry_adjustment_seconds": self.entry_adjustment}
@@ -340,8 +340,8 @@ def test_unmeasurable_inactivity_never_fires(idle):
     [
         (False, "stop", False, True),    # condition 1
         (False, "resume", False, False),  # condition 2
-        (True, "stop", False, True),      # condition 3 — keep is overridden
-        (True, "resume", True, False),    # condition 4 — the only counted case
+        (True, "stop", True, True),      # condition 3 — keep means keep; Stop only ends the timer
+        (True, "resume", True, False),    # condition 4
     ],
 )
 def test_the_four_combinations(idle, keep, action, expect_counted, expect_timer_stopped):

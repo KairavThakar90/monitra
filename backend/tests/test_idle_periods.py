@@ -137,8 +137,8 @@ class TestCountingRule(unittest.TestCase):
     def test_the_four_combinations(self):
         self.assertFalse(counts_idle_time(False, IdlePeriodAction.STOP))
         self.assertFalse(counts_idle_time(False, IdlePeriodAction.RESUME))
-        # "Yes, keep idle time" is overridden by Stop -- condition 3.
-        self.assertFalse(counts_idle_time(True, IdlePeriodAction.STOP))
+        # "Yes, keep idle time" keeps it whichever button follows -- condition 3.
+        self.assertTrue(counts_idle_time(True, IdlePeriodAction.STOP))
         self.assertTrue(counts_idle_time(True, IdlePeriodAction.RESUME))
 
 
@@ -173,10 +173,12 @@ class TestResolution(unittest.TestCase):
         self.assertEqual(adjust.call_args.kwargs["adjustment_seconds"], -FULL_IDLE_SECONDS)
         stop.assert_not_called()
 
-    def test_keep_and_stop_still_discards_idle_time(self):
+    def test_keep_and_stop_counts_idle_time(self):
+        """Keep means keep: Stop only ends the timer, it does not override
+        the answer the user gave about the time."""
         result, adjust, stop = self._resolve(True, "stop")
-        self.assertFalse(result.counted)
-        self.assertEqual(adjust.call_args.kwargs["adjustment_seconds"], -FULL_IDLE_SECONDS)
+        self.assertTrue(result.counted)
+        adjust.assert_not_called()          # nothing is deducted
         stop.assert_called_once()
 
     def test_keep_and_resume_counts_idle_time(self):
@@ -575,7 +577,7 @@ class TestMultipleIdlePeriods(unittest.TestCase):
         for offset, keep, action in (
             (0, False, "resume"),   # discarded
             (1, True, "resume"),    # counted
-            (2, True, "stop"),      # discarded despite "keep"
+            (2, True, "stop"),      # counted: keep means keep, Stop just ends the timer
         ):
             started = IDLE_START + timedelta(hours=offset)
             period = _idle(
@@ -599,7 +601,7 @@ class TestMultipleIdlePeriods(unittest.TestCase):
 
         self.assertEqual(outcomes[0], (False, 1, -FULL_IDLE_SECONDS))
         self.assertEqual(outcomes[1], (True, 0, 0))
-        self.assertEqual(outcomes[2], (False, 1, -FULL_IDLE_SECONDS))
+        self.assertEqual(outcomes[2], (True, 0, 0))
 
 
 class TestStopWhileIdlePending(unittest.TestCase):

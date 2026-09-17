@@ -391,16 +391,23 @@ class IdleAlertDialog(QDialog):
             QRadioButton::indicator {{
                 width: 16px;
                 height: 16px;
-                border: 1.5px solid {BORDER_MID};
-                border-radius: 9px;
+                border: 2px solid {BORDER_MID};
+                border-radius: 10px;
                 background-color: #FFFFFF;
             }}
             QRadioButton::indicator:hover {{
                 border-color: {PRIMARY};
             }}
             QRadioButton::indicator:checked {{
-                border: 5px solid {PRIMARY};
-                background-color: #FFFFFF;
+                width: 16px;
+                height: 16px;
+                border: 2px solid {PRIMARY};
+                border-radius: 10px;
+                background-color: {PRIMARY};
+            }}
+            QRadioButton::indicator:checked:hover {{
+                border-color: {PRIMARY_HOVER};
+                background-color: {PRIMARY_HOVER};
             }}
             QRadioButton:disabled {{
                 color: {TEXT_MUTED};

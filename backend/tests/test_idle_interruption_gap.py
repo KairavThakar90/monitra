@@ -111,7 +111,7 @@ class InterruptionGapTests(unittest.TestCase):
     def test_the_four_answers_account_for_the_gap_like_any_idle_period(self):
         self.assertTrue(counts_idle_time(True, "resume"))
         self.assertFalse(counts_idle_time(False, "resume"))
-        self.assertFalse(counts_idle_time(True, "stop"))
+        self.assertTrue(counts_idle_time(True, "stop"))   # keep means keep
         self.assertFalse(counts_idle_time(False, "stop"))
 
 

@@ -616,9 +616,10 @@ class IdleService(LoopService):
     def resolve(self, keep_idle_time: bool, action: str) -> None:
         """Send the user's answer to the backend.
 
-        The server decides the outcome: idle time counts only for keep +
-        resume. `action="stop"` stops the time entry through the backend's own
-        stop path, so there is no second stop implementation here.
+        The server decides the outcome: idle time counts exactly when the
+        user chose to keep it, for either action. `action="stop"` stops the
+        time entry through the backend's own stop path, so there is no second
+        stop implementation here.
 
         Guarded by state, so a double-clicked button sends one request.
         """

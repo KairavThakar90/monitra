@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 from PySide6.QtCore import Qt, Signal, QTimer, QPropertyAnimation, QEasingCurve, QSize
-from PySide6.QtGui import QFont, QColor, QPainter
+from PySide6.QtGui import QFont, QColor, QFontMetrics, QPainter
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QLineEdit, QScrollArea, QFrame, QSizePolicy, QSpacerItem,
@@ -139,6 +139,11 @@ class ProjectItem(QPushButton):
         self.project_color = color
         self._collapsed = collapsed
         self._has_active_timer = has_active_timer
+        #: Tracked seconds for this project on the day the window shows --
+        #: the sum of its tasks' HOURS column, live session included. None
+        #: until the dashboard has a day to report, so nothing is drawn
+        #: rather than a fabricated 00:00:00.
+        self._total_seconds: Optional[int] = None
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._update_tooltip()
@@ -146,7 +151,28 @@ class ProjectItem(QPushButton):
 
     def _update_tooltip(self) -> None:
         name = self.project_data.get("project_name", "")
-        self.setToolTip(f"{name} — timer running" if self._has_active_timer else name)
+        parts = [name]
+        if self._total_seconds is not None:
+            parts.append(f"{_format_seconds(self._total_seconds)} tracked on this day")
+        if self._has_active_timer:
+            parts.append("timer running")
+        self.setToolTip(" — ".join(parts))
+
+    def set_total_seconds(self, seconds: Optional[int]) -> None:
+        """Show the project's tracked time for the displayed day.
+
+        Repaints only on a change: this is called on every timer tick for
+        every listed project, and an unchanged row must not repaint.
+        """
+        value = None if seconds is None else max(0, int(seconds))
+        if value == self._total_seconds:
+            return
+        self._total_seconds = value
+        self._update_tooltip()
+        self.update()
+
+    def total_seconds(self) -> Optional[int]:
+        return self._total_seconds
 
     def set_active_timer(self, active: bool) -> None:
         """Toggle the running-timer indicator without rebuilding the row."""
@@ -242,7 +268,19 @@ class ProjectItem(QPushButton):
             text_x = dot_x + dot_r + 10
             chev_w = 20
             timer_w = 20 if self._has_active_timer else 0
-            max_text_w = max(10, w - text_x - chev_w - timer_w - 6)
+
+            # The day's tracked time, right-aligned against the chevron. Its
+            # width is reserved before the name is elided, so a long name
+            # can never run under the figure.
+            total_text = (
+                _format_seconds(self._total_seconds) if self._total_seconds is not None else ""
+            )
+            total_font = QFont("Segoe UI", 9, QFont.Weight.DemiBold)
+            total_w = 0
+            if total_text:
+                total_w = QFontMetrics(total_font).horizontalAdvance("00:00:00") + 10
+
+            max_text_w = max(10, w - text_x - chev_w - timer_w - total_w - 6)
 
             fm = painter.fontMetrics()
             elided_name = fm.elidedText(name, Qt.TextElideMode.ElideRight, max_text_w)
@@ -260,6 +298,16 @@ class ProjectItem(QPushButton):
                 timer_pixmap = icons.pixmap("timer", SUCCESS, 14)
                 timer_x = text_x + max_text_w + 4
                 painter.drawPixmap(timer_x, (h - timer_pixmap.height()) // 2, timer_pixmap)
+
+            if total_text:
+                painter.setFont(total_font)
+                painter.setPen(QColor(SIDEBAR_MUTED))
+                total_x = w - chev_w - 6 - total_w
+                painter.drawText(
+                    total_x, 0, total_w - 4, h,
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                    total_text,
+                )
 
             # Chevron
             chev_pixmap = icons.pixmap("chevron_right", SIDEBAR_MUTED, 14)
@@ -390,6 +438,8 @@ class SidebarWidget(QWidget):
         self._live_date = True
         self._search_text = ""
         self._current_page = 1
+        #: See set_project_totals. None until the dashboard reports a day.
+        self._project_totals: Optional[Dict[int, int]] = None
         self._selected_project_id: Optional[int] = None
         self._active_timer_project_id: Optional[int] = None
         #: Pending updates, for the account menu's badge. The sidebar never
@@ -940,6 +990,26 @@ class SidebarWidget(QWidget):
         self._current_page = 1
         self._rebuild_project_list()
 
+    def set_project_totals(self, totals: Optional[Dict[int, int]]) -> None:
+        """Tracked seconds per project id for the displayed day.
+
+        The dashboard computes these from the day's time entries -- the same
+        netted figures the task table's HOURS column shows, plus the live
+        session for the project being tracked -- and pushes them here on
+        every day load and every timer tick. None means "no day loaded yet":
+        the rows show nothing rather than a zero nobody measured. A listed
+        project absent from a loaded day's totals tracked nothing that day
+        and shows 00:00:00, exactly as its task rows do.
+        """
+        self._project_totals = None if totals is None else dict(totals)
+        for item in self._project_items:
+            item.set_total_seconds(self._total_for(item.get_project_id()))
+
+    def _total_for(self, project_id: Optional[int]) -> Optional[int]:
+        if self._project_totals is None:
+            return None
+        return int(self._project_totals.get(project_id, 0))
+
     def set_total_seconds(self, total: int) -> None:
         self._total_seconds = total
         self._time_display.setText(_format_seconds(self._total_seconds))
@@ -1158,6 +1228,7 @@ class SidebarWidget(QWidget):
             )
             if self._selected_project_id is not None and project.get("id") == self._selected_project_id:
                 item.setChecked(True)
+            item.set_total_seconds(self._total_for(project.get("id")))
             item.clicked.connect(lambda checked, p=project, c=color: self._on_project_clicked(p, c))
             self._projects_layout.insertWidget(self._projects_layout.count() - 1, item)
             self._project_items.append(item)

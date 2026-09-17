@@ -524,8 +524,8 @@ def main():
                            False, "stop", False)
         scenario_condition(harness, "CONDITION 2: No, discard + Resume -> NOT counted",
                            False, "resume", False)
-        scenario_condition(harness, "CONDITION 3: Yes, keep + Stop     -> NOT counted",
-                           True, "stop", False)
+        scenario_condition(harness, "CONDITION 3: Yes, keep + Stop     -> COUNTED",
+                           True, "stop", True)
         scenario_condition(harness, "CONDITION 4: Yes, keep + Resume   -> COUNTED",
                            True, "resume", True)
         scenario_reassign(harness)
