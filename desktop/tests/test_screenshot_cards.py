@@ -46,7 +46,9 @@ TIMELINE = {
                 {"id": 1, "captured_at": "2026-09-07T14:04:00+00:00",
                  "monitor_number": 1, "width": 1000, "height": 1000,
                  "file_size_bytes": 26114,
-                 "view_url": "/time-entry-screenshots/1/view"},
+                 "view_url": "/time-entry-screenshots/1/view",
+                 "task_id": 7, "task_name": "Reviewing Client Updates",
+                 "project_id": 5, "project_name": "Neurodivergent Insights"},
             ],
             "screenshot_count": 1,
         },
@@ -56,10 +58,14 @@ TIMELINE = {
             "activity_percentage": 0,
             "activity_measured_seconds": 0,
             "screenshots": [
+                # No task/project: the entry (or its task/project) was
+                # deleted after capture -- covered below.
                 {"id": 2, "captured_at": "2026-09-07T14:17:00+00:00",
                  "monitor_number": 1, "width": 1000, "height": 1000,
                  "file_size_bytes": 25070,
-                 "view_url": "/time-entry-screenshots/2/view"},
+                 "view_url": "/time-entry-screenshots/2/view",
+                 "task_id": None, "task_name": None,
+                 "project_id": None, "project_name": None},
             ],
             "screenshot_count": 1,
         },
@@ -128,6 +134,24 @@ class TestFlattenTimeline:
         assert _flatten_timeline([]) == []
         assert _flatten_timeline({"windows": None}) == []
 
+    def test_the_task_and_project_pass_through_unchanged(self, qapp):
+        # _flatten_timeline spreads the raw screenshot dict; the backend's
+        # task_name/project_name must survive that untouched -- never
+        # recomputed or renamed on this side.
+        cards = _flatten_timeline(TIMELINE)
+        by_id = {c["id"]: c for c in cards}
+        assert by_id[1]["task_name"] == "Reviewing Client Updates"
+        assert by_id[1]["project_name"] == "Neurodivergent Insights"
+
+    def test_a_screenshot_with_no_task_or_project_carries_none_not_a_missing_key(self, qapp):
+        # A screenshot whose entry (or its task/project) was deleted after
+        # capture: the field must still exist, as None, so the card can tell
+        # "recorded as nothing" apart from "the backend never sent this".
+        cards = _flatten_timeline(TIMELINE)
+        by_id = {c["id"]: c for c in cards}
+        assert by_id[2]["task_name"] is None
+        assert by_id[2]["project_name"] is None
+
 
 class TestThumbnail:
     def test_it_shows_nothing_until_a_real_image_arrives(self, qapp):
@@ -176,6 +200,18 @@ class TestCard:
         texts = [w.text() for w in card.findChildren(QLabel)]
         assert "No activity data" in texts
         assert "0% Activity" not in texts
+
+    def test_the_card_names_what_it_was_captured_under(self, qapp):
+        card = self._card()  # the 62% window: has task/project, see TIMELINE
+        assert card.project_lbl.toolTip() == "Neurodivergent Insights"
+        assert card.task_lbl.toolTip() == "Reviewing Client Updates"
+
+    def test_a_screenshot_with_no_recorded_task_or_project_says_so_plainly(self, qapp):
+        # Never blank, and never a guessed or placeholder name -- the entry
+        # was deleted, and the card says exactly that.
+        card = self._card(task_id=None, task_name=None, project_id=None, project_name=None)
+        assert card.project_lbl.toolTip() == "No project recorded"
+        assert card.task_lbl.toolTip() == "No task recorded"
 
 
 class TestTabView:

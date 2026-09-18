@@ -49,6 +49,16 @@ export interface ScreenshotView {
    * plain `<img src>`.
    */
   view_url: string;
+  /**
+   * The task and project this screenshot's own time entry was tracked
+   * against at the moment of capture, resolved server-side from
+   * `time_entry_id`. `null` only when that time entry, or its task/project,
+   * has since been deleted — never a guessed or fabricated name.
+   */
+  task_id: number | null;
+  task_name: string | null;
+  project_id: number | null;
+  project_name: string | null;
 }
 
 /**

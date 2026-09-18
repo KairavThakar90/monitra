@@ -92,6 +92,17 @@ export const ENDPOINTS = {
   REPORTS: {
     BASE: `${API_BASE_URL}/reports`,
     DETAILED_LOGS: `${API_BASE_URL}/reports/detailed-logs`,
+    PROJECT_TASK_SUMMARY: `${API_BASE_URL}/reports/project-task-summary`,
+  },
+  // The React reports page's own summary/list/trend endpoints. A distinct
+  // prefix from REPORTS above, not a variant of it -- kept as first-class
+  // entries here rather than derived by string surgery on REPORTS.BASE at
+  // call time, which is what this used to be and is fragile if BASE's own
+  // path ever changes shape.
+  REACT_REPORTS: {
+    SUMMARY: `${API_BASE_URL}/react/reports/summary`,
+    DIMENSION: (dimension: string) => `${API_BASE_URL}/react/reports/${dimension}`,
+    TREND: `${API_BASE_URL}/react/reports/trend`,
   },
   // Feedback & Help. Submission happens in the desktop client; the dashboard
   // only reads. `MY` is scoped to the caller by the token, and `BASE` is the

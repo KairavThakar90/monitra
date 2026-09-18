@@ -477,22 +477,25 @@ class TimelineTests(unittest.TestCase):
     #: whichever value happens to be in the developer's .env.
     WINDOW_MINUTES = 10
 
-    def _timeline(self, screenshots, activity, user=None, intervals=()):
+    def _timeline(self, screenshots, activity, user=None, intervals=(), task_project=None):
         db = MagicMock()
         with patch(f"{SVC}.settings") as settings, \
              patch(f"{SVC}.TimeEntryScreenshotRepository.list_screenshots", return_value=screenshots), \
              patch(f"{SVC}.TimeEntryScreenshotRepository.list_tracked_intervals",
                    return_value=list(intervals)), \
-             patch(f"{SVC}.TimeEntryScreenshotRepository.get_activity_totals_in_range", return_value=activity):
+             patch(f"{SVC}.TimeEntryScreenshotRepository.get_activity_totals_in_range", return_value=activity), \
+             patch(f"{SVC}.TimeEntryScreenshotRepository.get_task_project_names_for_entries",
+                   return_value=task_project or {}) as lookup:
             settings.SCREENSHOT_WINDOW_MINUTES = self.WINDOW_MINUTES
+            self._last_lookup_mock = lookup
             return TimeEntryScreenshotService.get_timeline(
                 db=db, current_user=user or _user(), target_date=T0.date()
             )
 
     @staticmethod
-    def _shot(offset_seconds: int, shot_id: int = 1) -> TimeEntryScreenshot:
+    def _shot(offset_seconds: int, shot_id: int = 1, entry_id: int = 100) -> TimeEntryScreenshot:
         return TimeEntryScreenshot(
-            id=shot_id, organization_id=10, time_entry_id=100,
+            id=shot_id, organization_id=10, time_entry_id=entry_id,
             captured_at=T0 + timedelta(seconds=offset_seconds),
             file_path="p", monitor_number=1, width=1000, height=1000,
             file_size_bytes=1234,
@@ -575,6 +578,40 @@ class TimelineTests(unittest.TestCase):
         _, windows = self._timeline([self._shot(60)], [], intervals=[])
         self.assertEqual(windows[0]["tracked_seconds"], 0)
 
+    def test_each_screenshot_carries_its_own_entrys_task_and_project(self):
+        # entry 100 is what every _shot() in this test class is tagged with
+        # (see _shot() above): one lookup row is enough to label it.
+        _, windows = self._timeline(
+            [self._shot(60, 1)], [],
+            task_project={100: {
+                "task_id": 7, "task_name": "Reviewing Client Updates",
+                "project_id": 5, "project_name": "Neurodivergent Insights",
+            }},
+        )
+        shot = windows[0]["screenshots"][0]
+        self.assertEqual(shot["task_id"], 7)
+        self.assertEqual(shot["task_name"], "Reviewing Client Updates")
+        self.assertEqual(shot["project_id"], 5)
+        self.assertEqual(shot["project_name"], "Neurodivergent Insights")
+
+    def test_a_screenshot_whose_entry_has_no_lookup_row_reports_none(self):
+        # Never a guessed or placeholder name -- the entry (or its task or
+        # project) was deleted, and the client is told nothing rather than
+        # something stale.
+        _, windows = self._timeline([self._shot(60, 1)], [], task_project={})
+        shot = windows[0]["screenshots"][0]
+        self.assertIsNone(shot["task_id"])
+        self.assertIsNone(shot["task_name"])
+        self.assertIsNone(shot["project_id"])
+        self.assertIsNone(shot["project_name"])
+
+    def test_the_lookup_is_asked_for_every_distinct_entry_in_the_day_at_once(self):
+        self._timeline(
+            [self._shot(60, 1, entry_id=100), self._shot(700, 2, entry_id=200)], [],
+        )
+        self.assertEqual(self._last_lookup_mock.call_count, 1)
+        self.assertEqual(self._last_lookup_mock.call_args.kwargs["entry_ids"], {100, 200})
+
     def test_an_employee_may_not_read_another_members_timeline(self):
         db = MagicMock()
         with self.assertRaises(HTTPException) as raised:
@@ -599,16 +636,16 @@ class DayGridTests(unittest.TestCase):
     WINDOW_MINUTES = 10
 
     @staticmethod
-    def _shot(offset_seconds: int, shot_id: int) -> TimeEntryScreenshot:
+    def _shot(offset_seconds: int, shot_id: int, entry_id: int = 100) -> TimeEntryScreenshot:
         return TimeEntryScreenshot(
-            id=shot_id, organization_id=10, time_entry_id=100,
+            id=shot_id, organization_id=10, time_entry_id=entry_id,
             captured_at=T0 + timedelta(seconds=offset_seconds),
             file_path="p", monitor_number=1, width=1000, height=1000,
             file_size_bytes=1234,
         )
 
     def _grid(self, tagged_shots, activity=(), user=None, names=None, visible=None,
-              date_from=None, date_to=None, intervals=()):
+              date_from=None, date_to=None, intervals=(), task_project=None):
         """Run the grid with the repositories and the name lookup mocked."""
         db = MagicMock()
         db.query.return_value.filter.return_value.all.return_value = [
@@ -625,8 +662,13 @@ class DayGridTests(unittest.TestCase):
              patch(
                  f"{SVC}.TimeEntryScreenshotRepository.list_tracked_intervals_by_user",
                  return_value=list(intervals),
-             ):
+             ), \
+             patch(
+                 f"{SVC}.TimeEntryScreenshotRepository.get_task_project_names_for_entries",
+                 return_value=task_project or {},
+             ) as lookup:
             settings.SCREENSHOT_WINDOW_MINUTES = self.WINDOW_MINUTES
+            self._last_lookup_mock = lookup
             return TimeEntryScreenshotService.get_day_grid(
                 db=db,
                 current_user=user or _user(id=1, role_name="administrator"),
@@ -685,6 +727,44 @@ class DayGridTests(unittest.TestCase):
     def test_a_span_with_no_captures_returns_no_members(self):
         _, members = self._grid([])
         self.assertEqual(members, [])
+
+    def test_screenshots_carry_task_and_project_names_across_the_grid(self):
+        _, members = self._grid(
+            [(2, self._shot(60, 1, entry_id=100)), (3, self._shot(120, 2, entry_id=200))],
+            names={2: "Alice", 3: "Bob"},
+            task_project={
+                100: {"task_id": 7, "task_name": "Reviewing Client Updates",
+                      "project_id": 5, "project_name": "Neurodivergent Insights"},
+                200: {"task_id": 9, "task_name": "Project Management",
+                      "project_id": 6, "project_name": "Vinay Upreti"},
+            },
+        )
+        by_name = {m["user_name"]: m for m in members}
+        alice_shot = by_name["Alice"]["days"][0]["windows"][0]["screenshots"][0]
+        bob_shot = by_name["Bob"]["days"][0]["windows"][0]["screenshots"][0]
+        self.assertEqual(alice_shot["task_name"], "Reviewing Client Updates")
+        self.assertEqual(alice_shot["project_name"], "Neurodivergent Insights")
+        self.assertEqual(bob_shot["task_name"], "Project Management")
+        self.assertEqual(bob_shot["project_name"], "Vinay Upreti")
+
+    def test_the_task_project_lookup_runs_once_for_the_whole_grid(self):
+        # Every member, every day -- one query, not one per member or per day.
+        self._grid(
+            [(2, self._shot(60, 1, entry_id=100)),
+             (3, self._shot(120, 2, entry_id=200)),
+             (2, self._shot(-2 * 3600, 3, entry_id=300))],
+            names={2: "Alice", 3: "Bob"},
+        )
+        self.assertEqual(self._last_lookup_mock.call_count, 1)
+        self.assertEqual(
+            self._last_lookup_mock.call_args.kwargs["entry_ids"], {100, 200, 300}
+        )
+
+    def test_a_screenshot_whose_entry_has_no_lookup_row_reports_none(self):
+        _, members = self._grid([(2, self._shot(60, 1))], names={2: "Alice"})
+        shot = members[0]["days"][0]["windows"][0]["screenshots"][0]
+        self.assertIsNone(shot["task_name"])
+        self.assertIsNone(shot["project_name"])
 
     def test_an_employee_is_narrowed_to_themselves_however_wide_their_scope_reads(self):
         # `visible_member_ids` returns None -- "the whole organization" -- for

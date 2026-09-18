@@ -43,13 +43,18 @@ IMAGE_RETRY_BASE_MS = 700
 #: captured that day.
 SCREENSHOT_COLUMNS = 4
 SCREENSHOT_THUMB_HEIGHT = 120
-SCREENSHOT_CARD_HEIGHT = 184
+#: 184px of thumbnail + time/count (the original card), plus 26px for a new
+#: block above the thumbnail naming the project and task the screenshot was
+#: captured under -- two single lines and the layout's own spacing to the
+#: thumbnail below.
+SCREENSHOT_CARD_HEIGHT = 184 + 26
 #: Rows revealed at a time, matching the "Load more" behaviour of the Apps and
 #: URLs tabs. A multiple of the column count, so a page never leaves a ragged
 #: half-row above the button.
 SCREENSHOT_PAGE_SIZE = SCREENSHOT_COLUMNS * 2
 from ui import icons
 from ui.icon_manager import IconManager, safe_open_url
+from ui.sidebar import ElidedLabel
 from ui.styles import (
     TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED,
     BORDER_LIGHT, BORDER_MID, CARD_BG, CONTENT_BG, PRIMARY, SUCCESS, WARNING, ERROR
@@ -459,6 +464,37 @@ class ScreenshotCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
+
+        # What was captured under: the project and task this screenshot's
+        # own time entry was tracked against at the moment of capture, read
+        # verbatim from the backend (`task_name` / `project_name` on
+        # `ScreenshotView`) -- never derived or guessed on this side. A
+        # screenshot whose entry, task or project has since been deleted
+        # carries `None` here, and that is said plainly rather than left
+        # blank or filled with a placeholder.
+        context_col = QWidget(self)
+        context_col.setStyleSheet("border: none; background: transparent;")
+        context_layout = QVBoxLayout(context_col)
+        context_layout.setContentsMargins(6, 0, 6, 0)
+        context_layout.setSpacing(0)
+
+        self.project_lbl = ElidedLabel(
+            self.screenshot.get("project_name") or "No project recorded", context_col
+        )
+        self.project_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+        self.project_lbl.setStyleSheet(
+            "color: %s;" % (PRIMARY if self.screenshot.get("project_name") else TEXT_MUTED)
+        )
+        context_layout.addWidget(self.project_lbl)
+
+        self.task_lbl = ElidedLabel(
+            self.screenshot.get("task_name") or "No task recorded", context_col
+        )
+        self.task_lbl.setFont(QFont("Segoe UI", 8))
+        self.task_lbl.setStyleSheet("color: %s;" % TEXT_SECONDARY)
+        context_layout.addWidget(self.task_lbl)
+
+        layout.addWidget(context_col)
 
         self.thumbnail = ScreenshotThumbnail(SCREENSHOT_THUMB_HEIGHT, self)
         self.thumbnail.setCursor(Qt.CursorShape.PointingHandCursor)

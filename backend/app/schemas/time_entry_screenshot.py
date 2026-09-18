@@ -89,6 +89,17 @@ class ScreenshotView(BaseModel):
     #: check as this response. Never a Google Drive link.
     view_url: str
 
+    #: The task and project this screenshot's own time entry was tracked
+    #: against at the moment of capture -- resolved server-side from
+    #: `time_entry_id`, never guessed and never averaged across the window
+    #: it falls in. `None` only when that time entry, or its task/project,
+    #: has since been deleted; a client shows nothing rather than a stale
+    #: or fabricated name.
+    task_id: Optional[int] = None
+    task_name: Optional[str] = None
+    project_id: Optional[int] = None
+    project_name: Optional[str] = None
+
     model_config = ConfigDict(from_attributes=True)
 
 

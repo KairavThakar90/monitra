@@ -156,6 +156,60 @@ class TimeEntryScreenshotRepository:
         return query.order_by(TimeEntryScreenshot.captured_at.desc()).limit(limit).all()
 
     @staticmethod
+    def get_task_project_names_for_entries(
+        db: Session,
+        entry_ids: set[int],
+    ) -> dict[int, dict]:
+        """The task and project each of these time entries was tracked
+        against, keyed by ``time_entry_id``.
+
+        One query for however many screenshots are on screen -- a busy day's
+        timeline or the all-members grid -- never one per screenshot. A
+        screenshot only ever knows its own ``time_entry_id`` (see
+        ``TimeEntryScreenshot``, which has no task/project column of its
+        own); this is the one place that walks from there to the task and
+        project the desktop was actually tracking against at capture time.
+
+        ``outerjoin`` on both sides: a time entry whose task or project has
+        since been deleted still returns a row here, with that side ``None``
+        rather than the whole entry silently dropping out and its
+        screenshots reading as if they belonged to no session at all.
+
+        :return: ``{time_entry_id: {"task_id", "task_name", "project_id",
+            "project_name"}}``. An id with no matching entry (already
+            deleted) is simply absent; callers look it up with ``.get(...,
+            {})``.
+        """
+        if not entry_ids:
+            return {}
+        from app.models.project import Project
+        from app.models.task import Task
+        from app.models.time_entry import TimeEntry
+
+        rows = (
+            db.query(
+                TimeEntry.id,
+                TimeEntry.task_id,
+                Task.task_name,
+                TimeEntry.project_id,
+                Project.project_name,
+            )
+            .outerjoin(Task, Task.id == TimeEntry.task_id)
+            .outerjoin(Project, Project.id == TimeEntry.project_id)
+            .filter(TimeEntry.id.in_(entry_ids))
+            .all()
+        )
+        return {
+            int(entry_id): {
+                "task_id": task_id,
+                "task_name": task_name,
+                "project_id": project_id,
+                "project_name": project_name,
+            }
+            for entry_id, task_id, task_name, project_id, project_name in rows
+        }
+
+    @staticmethod
     def get_activity_totals_in_range(
         db: Session,
         organization_id: int,

@@ -233,21 +233,21 @@ export const reportsApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
     getReactReportsSummary: builder.query<ReactReportsSummaryResponse, ReactReportQueryParams>({
       query: (params) => ({
-        url: `${ENDPOINTS.REPORTS.BASE.replace('/reports', '/react/reports')}/summary?${buildQueryParams(params)}`,
+        url: `${ENDPOINTS.REACT_REPORTS.SUMMARY}?${buildQueryParams(params)}`,
         method: 'GET',
       }),
       providesTags: ['TimeTracking'],
     }),
     getReactReportsList: builder.query<ReactReportsListResponse, { dimension: string; search?: string; sort_by?: string; sort_order?: string; page?: number; limit?: number; } & ReactReportQueryParams>({
       query: ({ dimension, ...params }) => ({
-        url: `${ENDPOINTS.REPORTS.BASE.replace('/reports', '/react/reports')}/${dimension}?${buildQueryParams(params)}`,
+        url: `${ENDPOINTS.REACT_REPORTS.DIMENSION(dimension)}?${buildQueryParams(params)}`,
         method: 'GET',
       }),
       providesTags: ['TimeTracking'],
     }),
     getReactReportsTrend: builder.query<ReactReportsTrendResponse, ReactReportQueryParams>({
       query: (params) => ({
-        url: `${ENDPOINTS.REPORTS.BASE.replace('/reports', '/react/reports')}/trend?${buildQueryParams(params)}`,
+        url: `${ENDPOINTS.REACT_REPORTS.TREND}?${buildQueryParams(params)}`,
         method: 'GET',
       }),
       providesTags: ['TimeTracking'],
@@ -269,7 +269,7 @@ export const reportsApi = baseApi.injectEndpoints({
     }),
     getProjectTaskSummary: builder.query<ProjectTaskSummaryResponse, ProjectTaskSummaryQueryParams>({
       query: (params) => ({
-        url: `${ENDPOINTS.REPORTS.BASE}/project-task-summary?${buildQueryParams(params)}`,
+        url: `${ENDPOINTS.REPORTS.PROJECT_TASK_SUMMARY}?${buildQueryParams(params)}`,
         method: 'GET',
       }),
       providesTags: ['TimeTracking', 'Project', 'Task'],

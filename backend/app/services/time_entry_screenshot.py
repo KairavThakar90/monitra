@@ -136,6 +136,7 @@ def _build_windows(
     screenshots: List[TimeEntryScreenshot],
     activity: List[Tuple[datetime, int, int]],
     intervals: Optional[List[Tuple[datetime, datetime]]] = None,
+    task_project_by_entry: Optional[Dict[int, dict]] = None,
 ) -> List[dict]:
     """Bucket one member's captures and activity into fixed windows.
 
@@ -153,7 +154,16 @@ def _build_windows(
     of its seconds they cover as ``tracked_seconds``. That is the window's
     *worked* time, which is a different fact from ``activity_measured_seconds``
     -- the part of it activity was actually sampled for.
+
+    ``task_project_by_entry`` is the batch lookup from
+    ``get_task_project_names_for_entries``, keyed by ``time_entry_id`` -- one
+    query for the whole call, not one per screenshot. Each screenshot carries
+    the task and project its *own* time entry was tracked against, read
+    straight from that lookup by the screenshot's ``time_entry_id``; never
+    the window's, since one window can hold screenshots from more than one
+    session if the member switched tasks inside it.
     """
+    task_project_by_entry = task_project_by_entry or {}
     buckets: Dict[int, dict] = {}
 
     def bucket(when: datetime) -> dict:
@@ -207,6 +217,10 @@ def _build_windows(
                     "height": s.height,
                     "file_size_bytes": s.file_size_bytes,
                     "view_url": f"/time-entry-screenshots/{s.id}/view",
+                    **task_project_by_entry.get(s.time_entry_id, {
+                        "task_id": None, "task_name": None,
+                        "project_id": None, "project_name": None,
+                    }),
                 }
                 for s in shots
             ],
@@ -705,9 +719,14 @@ class TimeEntryScreenshotService:
             start=start,
             end=end,
         )
+        # One extra query for the whole day, not one per screenshot -- see
+        # get_task_project_names_for_entries.
+        task_project_by_entry = TimeEntryScreenshotRepository.get_task_project_names_for_entries(
+            db=db, entry_ids={s.time_entry_id for s in screenshots},
+        )
 
         return window_minutes, _build_windows(
-            window_seconds, screenshots, activity, intervals
+            window_seconds, screenshots, activity, intervals, task_project_by_entry,
         )
 
     #: The widest span the grid will read in one request. "Last 30 days" is the
@@ -833,6 +852,12 @@ class TimeEntryScreenshotService:
             user.id: user.name
             for user in db.query(User).filter(User.id.in_(shots.keys())).all()
         }
+        # One query for every screenshot in the whole grid -- every member,
+        # every day of the requested span -- never one per screenshot or
+        # per member.
+        task_project_by_entry = TimeEntryScreenshotRepository.get_task_project_names_for_entries(
+            db=db, entry_ids={shot.time_entry_id for _, shot in tagged},
+        )
 
         members: List[dict] = []
         for user_id, by_day in shots.items():
@@ -845,6 +870,7 @@ class TimeEntryScreenshotService:
                         day_shots,
                         activity.get(user_id, {}).get(day, []),
                         member_intervals,
+                        task_project_by_entry,
                     ),
                     "screenshot_count": len(day_shots),
                     # The whole IST day, not the sum of the windows below: time

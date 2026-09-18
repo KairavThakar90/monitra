@@ -31,6 +31,26 @@ const WindowCard: React.FC<{
 
   return (
     <figure className="w-[260px] shrink-0 overflow-hidden rounded-xl border border-[#E2E8F0] bg-white shadow-sm transition hover:shadow-md">
+      {cover && (
+        // The project and task `cover`'s own time entry was tracked
+        // against at the moment of capture -- resolved server-side, never
+        // guessed here. `null` (an entry, task or project deleted since
+        // capture) is said plainly rather than left blank.
+        <div className="border-b border-[#EEF2F6] px-3 py-2">
+          <p
+            className="truncate text-[12px] font-semibold text-[#1D4ED8]"
+            title={cover.project_name ?? 'No project recorded'}
+          >
+            {cover.project_name ?? 'No project recorded'}
+          </p>
+          <p
+            className="truncate text-[11px] text-[#64748B]"
+            title={cover.task_name ?? 'No task recorded'}
+          >
+            {cover.task_name ?? 'No task recorded'}
+          </p>
+        </div>
+      )}
       <div className="relative">
         {cover ? (
           <button
