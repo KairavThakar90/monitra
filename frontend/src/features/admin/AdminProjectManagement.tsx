@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { V2Shell } from '../dashboard/v2/V2Shell';
 import { 
   useGetProjectMetadataQuery, 
@@ -19,6 +20,7 @@ import { useAuth } from '../auth/authContext';
 import { isTeamScoped } from '../../utils/roles';
 import { exportToCsv } from '../dashboard/v2/filters';
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
+import { formatApiError } from '../../api/utils';
 
 const GRADIENT_CYAN_PURPLE = 'bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[#8b5cf6]';
 
@@ -81,7 +83,10 @@ const Pagination: React.FC<{
   );
 };
 
-const AssigneeSelector: React.FC<{
+// Exported so the click area and the open-direction math can be tested
+// directly, without mounting the whole page and its data dependencies --
+// see __tests__/assigneeSelector.test.tsx.
+export const AssigneeSelector: React.FC<{
   selectedIds: number[];
   options: any[];
   onChange: (newIds: number[]) => void;
@@ -89,7 +94,22 @@ const AssigneeSelector: React.FC<{
   setIsOpen: (val: boolean) => void;
   onClose: () => void;
   label?: string;
-}> = ({ selectedIds, options, onChange, isOpen, setIsOpen, onClose, label = "ASSIGN TO" }) => {
+  /**
+   * Renders its own full-width, bordered "field" look and makes the whole
+   * thing the click target and the thing measured for the menu's position
+   * -- rather than a compact avatar stack with nothing else clickable
+   * around it. The project drawer used to wrap the compact version in its
+   * own separate input-styled `<div>` with no click handler of its own, so
+   * only the small avatar stack (or, empty, the small dashed "+" circle)
+   * opened anything -- clicking the border or the empty space beside it,
+   * which is most of what looks like a field, did nothing. It also meant
+   * the menu's "open above or below" decision was computed from that small
+   * inner element's position, not the field it visually sits inside.
+   * `false` (the table row usage) is unchanged: a bare avatar stack with no
+   * field chrome, where "the whole input" is not the design.
+   */
+  fullWidth?: boolean;
+}> = ({ selectedIds, options, onChange, isOpen, setIsOpen, onClose, label = "ASSIGN TO", fullWidth = false }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const triggerRef = useRef<HTMLDivElement>(null);
   const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 });
@@ -133,48 +153,97 @@ const AssigneeSelector: React.FC<{
     if (trigger) {
       const menuWidth = 256;
       const menuHeight = 380;
-      const opensUpward = trigger.bottom + menuHeight > window.innerHeight && trigger.top > menuHeight;
+      const roomBelow = window.innerHeight - trigger.bottom;
+      const roomAbove = trigger.top;
+      // Below is the default -- a menu opening above the field it belongs
+      // to reads as backwards. It flips up only when below is genuinely
+      // too tight *and* above actually has more room, never just because
+      // the full (worst-case) menuHeight wouldn't fit below -- a shorter
+      // list still fits below more often than that comparison alone admits.
+      const opensUpward = roomBelow < 160 && roomAbove > roomBelow;
+      const top = opensUpward ? trigger.top - menuHeight - 8 : trigger.bottom + 8;
       setMenuPosition({
         left: Math.min(trigger.left, Math.max(12, window.innerWidth - menuWidth - 12)),
-        top: opensUpward ? trigger.top - menuHeight - 8 : trigger.bottom + 8,
+        // However it was placed, keep the whole menu on screen: 8px of
+        // margin at both edges, never occupying more than the viewport
+        // actually has.
+        top: Math.min(Math.max(8, top), Math.max(8, window.innerHeight - menuHeight - 8)),
       });
     }
     setIsOpen(true);
   };
 
+  const avatarStack = selectedMembers.length > 0 ? (
+    <div className="flex -space-x-2 items-center p-1">
+      {selectedMembers.slice(0, 3).map(m => (
+        <div
+          key={m.id}
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ring-2 ring-white text-white text-[10px] font-bold shadow-sm ${getColor(m.id)}`}
+          title={m.name}
+        >
+          {(m.name || 'U').split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase()}
+        </div>
+      ))}
+      {selectedMembers.length > 3 && (
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full ring-2 ring-white bg-slate-100 text-slate-500 text-[10px] font-bold shadow-sm">
+          +{selectedMembers.length - 3}
+        </div>
+      )}
+    </div>
+  ) : (
+    // A plain marker, not a nested `<button>`: when `fullWidth`, this sits
+    // inside the outer clickable field itself, and a button inside a
+    // button is invalid HTML that browsers "fix" by breaking one of them.
+    <div className={`flex items-center justify-center h-8 w-8 rounded-full border border-dashed transition ${fullWidth ? 'border-slate-300 text-slate-400 group-hover:text-slate-600 group-hover:border-slate-400 bg-slate-50' : 'border-slate-300 text-slate-400 hover:text-slate-600 hover:border-slate-400 bg-slate-50'}`}>
+      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
+    </div>
+  );
+
   return (
     <div className="relative">
-      <div 
-        ref={triggerRef}
-        className="flex items-center gap-1 cursor-pointer group"
-        onClick={toggleMenu}
-      >
-        {selectedMembers.length > 0 ? (
-          <div className="flex -space-x-2 items-center p-1">
-            {selectedMembers.slice(0, 3).map(m => (
-              <div 
-                key={m.id} 
-                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ring-2 ring-white text-white text-[10px] font-bold shadow-sm ${getColor(m.id)}`}
-                title={m.name}
-              >
-                {(m.name || 'U').split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase()}
-              </div>
-            ))}
-            {selectedMembers.length > 3 && (
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full ring-2 ring-white bg-slate-100 text-slate-500 text-[10px] font-bold shadow-sm">
-                +{selectedMembers.length - 3}
-              </div>
-            )}
-          </div>
-        ) : (
-          <button type="button" className="flex items-center justify-center h-8 w-8 rounded-full border border-dashed border-slate-300 text-slate-400 hover:text-slate-600 hover:border-slate-400 bg-slate-50 transition">
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
-          </button>
-        )}
-      </div>
+      {fullWidth ? (
+        // The whole field is the trigger and the thing measured for the
+        // menu's position -- not just the avatar stack floating inside a
+        // separately-styled, non-interactive box the caller used to draw
+        // around it. Clicking anywhere in what looks like an input now
+        // actually opens the picker.
+        <div
+          ref={triggerRef}
+          role="button"
+          tabIndex={0}
+          onClick={toggleMenu}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleMenu(); } }}
+          className="group flex w-full min-h-[46px] cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-1.5 shadow-sm outline-none transition focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
+        >
+          {avatarStack}
+          {selectedMembers.length === 0 && (
+            <span className="text-sm font-medium text-slate-400">Add members...</span>
+          )}
+        </div>
+      ) : (
+        <div
+          ref={triggerRef}
+          className="flex items-center gap-1 cursor-pointer group"
+          onClick={toggleMenu}
+        >
+          {avatarStack}
+        </div>
+      )}
 
-      {isOpen && (
+      {isOpen && createPortal(
         <>
+          {/* Rendered into `document.body`, not this component's own tree.
+              The create/edit drawer slides in with a CSS `transform`
+              (`translate-x-...`), and per spec *any* transformed ancestor
+              becomes the containing block for a `position: fixed`
+              descendant -- so this menu's `getBoundingClientRect()`-computed
+              coordinates, meant for the viewport, were instead being
+              measured against the drawer's own box and clipped by its
+              `overflow-hidden` wrapper. Opening the picker inside the
+              drawer did nothing visible; outside it (the project table) it
+              happened to work, because nothing there is transformed. A
+              portal escapes every ancestor's containing block and overflow,
+              so the menu always positions against the real viewport. */}
           <div className="fixed inset-0 z-10" onClick={onClose}></div>
           <div
             className="fixed z-50 w-64 rounded-xl border border-slate-200 bg-white p-3 shadow-2xl"
@@ -240,7 +309,8 @@ const AssigneeSelector: React.FC<{
               )}
             </div>
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </div>
   );
@@ -304,8 +374,12 @@ const StatusPillDropdown = ({
         </svg>
       </button>
 
-      {isOpen && (
+      {isOpen && createPortal(
         <>
+          {/* See AssigneeSelector's identical portal above: this menu is
+              also positioned by viewport coordinates, and the create/edit
+              drawer's slide-in `transform` would otherwise hijack its
+              `position: fixed` containing block and clip it invisibly. */}
           <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)}></div>
           <div
             className="fixed z-50 rounded-xl border border-slate-100 bg-white p-2 shadow-xl"
@@ -332,7 +406,8 @@ const StatusPillDropdown = ({
               ))}
             </div>
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </div>
   );
@@ -455,7 +530,13 @@ export const AdminProjectManagement: React.FC = () => {
   const projectForm = useFormValidation({
     name: { rule: 'name', label: 'Project name', required: true },
     description: { rule: 'description', label: 'Description' },
-    deadline: { rule: 'date', label: 'Deadline' },
+    // Required: the backend's `ProjectCreate.deadline` is a plain `date`
+    // field, not `Optional`, so a project without one was rejected with a
+    // 422 the moment "Create Project" was pressed -- with every other
+    // field filled in correctly. Marking it required here catches that
+    // before the request is even sent, with a message next to the field
+    // itself rather than a generic failure after the round trip.
+    deadline: { rule: 'date', label: 'Deadline', required: true },
     billingHours: {
       rule: 'decimal',
       label: 'Hour budget',
@@ -525,6 +606,17 @@ export const AdminProjectManagement: React.FC = () => {
       showToast('Please correct the highlighted fields.', 'error');
       return;
     }
+    // The backend requires a leader on every project (create *and* update --
+    // `ProjectManagementService.update` refuses a null one with a 400), but
+    // nothing here stopped a non-team-scoped user from submitting with the
+    // placeholder still selected. That request always failed, and because
+    // the catch below used to show one generic message for every failure,
+    // it looked like the whole save -- team and status included -- silently
+    // "didn't work" rather than "you have not picked a leader yet."
+    if (!leaderIsFixed && formLeader === '') {
+      showToast('Please select a project leader.', 'error');
+      return;
+    }
 
     const payload = {
       project_name: check.values.name as string,
@@ -556,7 +648,10 @@ export const AdminProjectManagement: React.FC = () => {
       showToast(drawerMode === 'create' ? 'Project created successfully.' : 'Project updated successfully.', 'success');
     } catch (err) {
       console.error("Failed to save project:", err);
-      showToast('Unable to save project. Please try again.', 'error');
+      showToast(
+        formatApiError((err as { data?: unknown })?.data, 'Unable to save project. Please try again.'),
+        'error',
+      );
     }
   };
 
@@ -567,9 +662,17 @@ export const AdminProjectManagement: React.FC = () => {
         project_name: proj.project_name,
         description: proj.description,
         status_id: newStatusId !== undefined ? newStatusId : proj.status?.id,
-        leader_id: proj.leader?.id || null,
-        employee_ids: newEmployeeIds !== undefined 
-          ? newEmployeeIds 
+        // No leader_id here: this function only ever changes status or team,
+        // never the leader, and `updateProject` sends only the keys present
+        // in this object (`exclude_unset` on the backend). Sending
+        // `proj.leader?.id || null` unconditionally used to mean that
+        // changing the status or the team on a project with no leader
+        // assigned -- shown in this same table as "Unassigned" -- always
+        // failed with "leader_id is required", because the backend saw an
+        // explicit null rather than a field that was simply not part of
+        // this request.
+        employee_ids: newEmployeeIds !== undefined
+          ? newEmployeeIds
           : (proj.employees || []).map((e: any) => e.id),
         deadline: proj.deadline ? proj.deadline.split('T')[0] : null,
         billing_type: proj.billing_type || 'fixed',
@@ -578,6 +681,10 @@ export const AdminProjectManagement: React.FC = () => {
       await updateProject({ id: proj.id, body: payload }).unwrap();
     } catch (err) {
       console.error(err);
+      showToast(
+        formatApiError((err as { data?: unknown })?.data, 'Unable to update the project. Please try again.'),
+        'error',
+      );
     }
   };
 
@@ -610,7 +717,10 @@ export const AdminProjectManagement: React.FC = () => {
         showToast('Project deleted successfully.', 'success');
       } catch (err) {
         console.error("Failed to delete project:", err);
-        showToast('Unable to delete project. Please try again.', 'error');
+        showToast(
+          formatApiError((err as { data?: unknown })?.data, 'Unable to delete project. Please try again.'),
+          'error',
+        );
       }
     }
   };
@@ -671,7 +781,10 @@ export const AdminProjectManagement: React.FC = () => {
       showToast('Projects exported successfully.', 'success');
     } catch (err) {
       console.error('Failed to export projects:', err);
-      showToast('Unable to export projects. Please try again.', 'error');
+      showToast(
+        formatApiError((err as { data?: unknown })?.data, 'Unable to export projects. Please try again.'),
+        'error',
+      );
     } finally {
       setIsExporting(false);
     }
@@ -722,7 +835,11 @@ export const AdminProjectManagement: React.FC = () => {
                 const next = e.target.value;
                 setSearch(next);
                 const result = validateSearchTerm(next, { fieldLabel: 'Search' });
-                setSearchError(result.ok ? null : result.error);
+                if (result.ok) {
+                  setSearchError(null);
+                } else {
+                  setSearchError(result.error);
+                }
                 setPage(1);
               }}
               className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-10 pr-4 text-sm font-semibold text-slate-700 outline-none transition focus:border-[#3B82F6] focus:bg-white focus:ring-1 focus:ring-[#3B82F6]"
@@ -1145,16 +1262,21 @@ export const AdminProjectManagement: React.FC = () => {
                   <div className="space-y-4">
                     <div className="relative">
                       <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Project Members</label>
-                      <div className="w-full rounded-lg border border-slate-300 px-4 py-1.5 bg-white shadow-sm min-h-[46px] flex items-center">
-                        <AssigneeSelector
-                          selectedIds={formEmployees}
-                          options={assignableEmployees || []}
-                          onChange={(newIds) => setFormEmployees(newIds)}
-                          isOpen={isEmpDropdownOpen}
-                          setIsOpen={(open) => setIsEmpDropdownOpen(open)}
-                          onClose={() => setIsEmpDropdownOpen(false)}
-                        />
-                      </div>
+                      {/* No separate styled wrapper any more: it used to draw
+                          the field's border and padding around the selector
+                          without being part of its click target, so clicking
+                          anywhere but the small avatar stack (or the "+" when
+                          empty) did nothing. `fullWidth` makes the selector
+                          the field. */}
+                      <AssigneeSelector
+                        selectedIds={formEmployees}
+                        options={assignableEmployees || []}
+                        onChange={(newIds) => setFormEmployees(newIds)}
+                        isOpen={isEmpDropdownOpen}
+                        setIsOpen={(open) => setIsEmpDropdownOpen(open)}
+                        onClose={() => setIsEmpDropdownOpen(false)}
+                        fullWidth
+                      />
                     </div>
                   </div>
                 </div>
