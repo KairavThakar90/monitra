@@ -13,6 +13,7 @@ import { AdminTimeTracking } from './features/admin/AdminTimeTracking'
 import { AdminScreenshots } from './features/admin/AdminScreenshots'
 import { AdminFeedback } from './features/admin/AdminFeedback'
 import { AdminSettings } from './features/admin/AdminSettings'
+import { AdminUserManagement } from './features/admin/AdminUserManagement'
 import { MaintenanceToast } from './components/MaintenanceToast'
 import { MemberFeedback } from './features/member/MemberFeedback'
 import { canManageSystem, canViewAllFeedback } from './features/auth/roles'
@@ -259,9 +260,21 @@ const AppRoutes: React.FC = () => {
       />
       <Route
         path="/admin/settings"
+        element={<Navigate to="/admin/settings/maintenance" replace />}
+      />
+      <Route
+        path="/admin/settings/maintenance"
         element={
           <SystemAdminRoute>
             <AdminSettings />
+          </SystemAdminRoute>
+        }
+      />
+      <Route
+        path="/admin/settings/user-management"
+        element={
+          <SystemAdminRoute>
+            <AdminUserManagement />
           </SystemAdminRoute>
         }
       />

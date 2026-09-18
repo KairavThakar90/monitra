@@ -1,9 +1,35 @@
 import re
 from datetime import date, datetime
 from enum import Enum
-from typing import Optional
+from typing import Annotated, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.core.validation import optional_integer_field
+
+#: Screenshot capture interval, in minutes (`users.capture_frequency`).
+#:
+#: The column has no unit of its own, and production data is not consistent:
+#: `AuthService`'s SSO sync path (app/services/auth.py) writes a literal `300`
+#: as a "seconds" default, but every account created any other way -- 61 of
+#: 63 real accounts on the live database at the time this was added -- holds
+#: a plain minute count (`10`, matching the desktop's actual 10-minute
+#: screenshot window). This type follows the convention the data actually
+#: uses. Do not reintroduce a seconds conversion here without first fixing
+#: the SSO path that disagrees with it.
+#:
+#: No upper bound: the admin sets this per member based on their own
+#: monitoring requirements, and the desktop's screenshot scheduler has no
+#: fixed ceiling of its own to enforce here. A positive whole number is the
+#: only real constraint -- zero or negative minutes is not an interval.
+CaptureFrequencyMinutes = Annotated[
+    Optional[int], optional_integer_field(label="Screenshot capture frequency", minimum=1)
+]
+
+#: Idle detection threshold in minutes (`users.idle_minutes`).
+IdleMinutes = Annotated[
+    Optional[int], optional_integer_field(label="Idle time threshold", minimum=1, maximum=120)
+]
 
 
 class MemberRole(str, Enum):
@@ -67,6 +93,9 @@ class MemberUpdate(BaseModel):
     date_of_joining: Optional[date] = None
     date_of_birth: Optional[date] = None
     designation: Optional[str] = Field(None, max_length=150)
+    idle_enabled: Optional[bool] = None
+    idle_minutes: IdleMinutes = None
+    capture_frequency: CaptureFrequencyMinutes = None
 
     @field_validator("name", "designation")
     @classmethod
@@ -95,6 +124,9 @@ class MemberResponse(BaseModel):
     date_of_joining: Optional[date]
     date_of_birth: Optional[date]
     designation: Optional[str]
+    idle_enabled: bool
+    idle_minutes: int
+    capture_frequency: int
     created_at: datetime
     updated_at: datetime
 

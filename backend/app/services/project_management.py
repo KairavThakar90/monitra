@@ -33,7 +33,13 @@ from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 # migration b4f7c2d9e1a6 raised a bare KeyError -- a 500 on project creation, for
 # a database that is merely numbered differently. The keys are names normalised
 # by `_status_key`, so "To Do", "Todo" and "to do" are all the same status.
-PROJECT_STATUS_NAMES = {"active": "active", "pending": "pending", "todo": "todo", "completed": "completed"}
+#
+# Migration c1a2b3d4e5f6 renamed the "Pending" row to "Paused" and dropped
+# "To Do" -- the picker now offers only Active, Paused, Completed. "paused"
+# maps to the legacy value "pending" (not a new "paused" string) because
+# `projects.status` has a CHECK constraint whose allowed values were never
+# migrated; introducing a legacy value outside that set would 500 on write.
+PROJECT_STATUS_NAMES = {"active": "active", "paused": "pending", "completed": "completed"}
 TASK_STATUS_NAMES = {"todo": "todo", "inprogress": "in_progress", "completed": "completed"}
 DEFAULT_PROJECT_TASKS = (
     "Project Setup / Understanding",

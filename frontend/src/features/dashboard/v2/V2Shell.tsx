@@ -20,6 +20,12 @@ export const REPORT_LINKS = [
   { id: "urls", label: "URL-Wise" },
 ];
 
+/** The two pages under Settings, mirrored in the sidebar accordion. */
+export const SETTINGS_LINKS = [
+  { id: "maintenance", label: "Maintenance" },
+  { id: "user-management", label: "User Management" },
+];
+
 /** Brand mark from the Monitra logo: gradient ring + check. */
 export const BrandMark: React.FC<{ size?: number }> = ({ size = 40 }) => (
   <div
@@ -89,10 +95,11 @@ export const V2Shell: React.FC<{
    * sidebar is either unconditional or permission-gated.
    */
   const canSeeAllFeedback = canViewAllFeedback(currentUser);
-  /** System settings (the maintenance notice) are an administrator's alone. */
+  /** System settings (maintenance, user management) are an administrator's alone. */
   const canSeeSettings = canManageSystem(currentUser);
-  const onSettings = location.pathname === "/admin/settings";
+  const onSettings = location.pathname.startsWith("/admin/settings");
   const [reportsOpen, setReportsOpen] = useState(onReports);
+  const [settingsOpen, setSettingsOpen] = useState(onSettings);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const handleLogout = () => {
@@ -391,29 +398,61 @@ export const V2Shell: React.FC<{
               </button>
             )}
 
-            {/* Settings — System → Maintenance Mode. Administrators only. */}
+            {/* Settings — expandable group: Maintenance, User Management. Administrators only. */}
             {canSeeSettings && (
-              <button
-                onClick={() => { navigate("/admin/settings"); setMobileMenuOpen(false); }}
-                className={
-                  "flex w-full cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3 text-left text-sm font-medium leading-snug transition duration-150 " +
-                  (onSettings
-                    ? "text-white shadow-sm"
-                    : "text-[#94A3B8] hover:bg-slate-800/40 hover:text-white")
-                }
-                style={onSettings ? { background: brandGradient } : undefined}
-              >
-                <svg
-                  className={"h-5 w-5 " + (onSettings ? "text-white" : "text-[#22D3EE]")}
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+              <div>
+                <button
+                  onClick={() => setSettingsOpen((open) => !open)}
+                  className={
+                    "flex w-full cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3 text-left text-sm font-medium leading-snug transition duration-150 " +
+                    (onSettings
+                      ? "bg-slate-800/60 text-white"
+                      : "text-[#94A3B8] hover:bg-slate-800/40 hover:text-white")
+                  }
                 >
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                <span className="flex-1">Settings</span>
-              </button>
+                  <svg className="h-5 w-5 text-[#22D3EE]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                  <span className="flex-1">Settings</span>
+                  <svg
+                    className={"h-3.5 w-3.5 transition-transform " + (settingsOpen ? "rotate-180" : "")}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+
+                {settingsOpen && (
+                  <ul className="ml-6 mt-1 space-y-0.5 border-l border-slate-800 pl-2.5">
+                    {SETTINGS_LINKS.map((entry) => {
+                      const active = location.pathname === `/admin/settings/${entry.id}`;
+                      return (
+                        <li key={entry.id}>
+                          <button
+                            onClick={(event) => go(event, `/admin/settings/${entry.id}`)}
+                            className={
+                              "flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] font-medium transition duration-150 " +
+                              (active
+                                ? "bg-[#2563EB]/15 text-white"
+                                : "text-[#94A3B8] hover:bg-slate-800/40 hover:text-white")
+                            }
+                          >
+                            <span
+                              className={
+                                "h-1.5 w-1.5 shrink-0 rounded-full " + (active ? "bg-[#22D3EE]" : "bg-slate-600")
+                              }
+                            />
+                            {entry.label}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
             )}
           </div>
         </div>

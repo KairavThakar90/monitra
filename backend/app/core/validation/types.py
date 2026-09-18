@@ -120,6 +120,22 @@ def integer_field(
     )
 
 
+def optional_integer_field(
+    *,
+    label: str = "Value",
+    minimum: Optional[int] = None,
+    maximum: Optional[int] = None,
+) -> BeforeValidator:
+    """The same range check as :func:`integer_field`, but the field may be omitted."""
+
+    def _validate(value):
+        if value is None:
+            return None
+        return v.validate_integer(value, field_label=label, minimum=minimum, maximum=maximum)
+
+    return BeforeValidator(_validate)
+
+
 def decimal_field(
     *,
     label: str = "Value",
@@ -258,6 +274,7 @@ __all__ = [
     "plain_text_field",
     "identifier_field",
     "integer_field",
+    "optional_integer_field",
     "decimal_field",
     "search_field",
     "url_field",
