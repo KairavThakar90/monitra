@@ -71,18 +71,43 @@ def test_replacing_a_long_message_with_a_short_one_repositions(qapp):
     popup.deleteLater()
 
 
-def test_the_card_carries_the_monitra_mark(qapp):
-    """The same brand pixmap the tray and window icons are built from, drawn
-    beside the title so the card reads as Monitra's at a glance."""
-    from core.branding import logo_pixmap
+def test_the_card_carries_the_monitra_badge(qapp):
+    """The same badge tile `MaintenanceToast` draws, built from
+    core.branding, so every floating notification card reads as one
+    notification system rather than each inventing its own logo framing."""
+    from core.branding import logo_badge_pixmap
 
     popup = ToastPopup()
     _present(qapp, popup, SHORT)
     shown = popup._logo.pixmap()
     assert shown is not None and not shown.isNull()
     assert popup._logo.size().width() == ToastPopup.LOGO_SIZE
-    assert shown.toImage() == logo_pixmap(ToastPopup.LOGO_SIZE).toImage()
-    # Title and mark share the header row: the mark sits left of the title.
+    assert shown.toImage() == logo_badge_pixmap(ToastPopup.LOGO_SIZE).toImage()
+    # The mark sits left of the title, both inside the card.
     assert popup._logo.geometry().right() <= popup._title.geometry().left()
+    popup.hide()
+    popup.deleteLater()
+
+
+def test_the_badge_top_edge_lines_up_with_the_titles_top_edge(qapp):
+    """The badge used to sit flush with the card's raw top edge while the
+    title sat inset beneath it (TOP_INSET), so it read as floating well
+    above the title instead of beside it -- reported directly from a real
+    notification's screenshot. `QVBoxLayout` centres a lone fixed-size
+    widget in whatever height it is stretched to unless told otherwise, so
+    this also pins the fix against that default coming back."""
+    popup = ToastPopup()
+    _present(qapp, popup, SHORT)
+    assert popup._logo.geometry().y() == popup._title.geometry().y()
+    popup.hide()
+    popup.deleteLater()
+
+
+def test_the_badge_stays_top_aligned_for_a_message_long_enough_to_wrap(qapp):
+    """A tall, multi-line message must not pull the badge down with it --
+    the badge aligns with the *title*, not the vertical centre of the card."""
+    popup = ToastPopup()
+    _present(qapp, popup, LONG)
+    assert popup._logo.geometry().y() == popup._title.geometry().y()
     popup.hide()
     popup.deleteLater()

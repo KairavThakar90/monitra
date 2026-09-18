@@ -21,7 +21,7 @@ import sys
 from typing import Optional
 
 from PySide6.QtCore import QByteArray, Qt
-from PySide6.QtGui import QPainter, QPixmap
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
 def _assets_dir() -> str:
@@ -82,6 +82,7 @@ MONITRA_MARK_SVG = """
 _logo_path_cache: Optional[str] = None
 _logo_path_resolved = False
 _pixmap_cache: dict[int, QPixmap] = {}
+_badge_cache: dict[int, QPixmap] = {}
 
 
 def logo_file_path() -> Optional[str]:
@@ -125,6 +126,47 @@ def logo_pixmap(size: int) -> QPixmap:
         pixmap = _render_svg(QSvgRenderer(QByteArray(MONITRA_MARK_SVG.encode())), size)
 
     _pixmap_cache[size] = pixmap
+    return pixmap
+
+
+def logo_badge_pixmap(tile_size: int, *, mark_ratio: float = 0.82) -> QPixmap:
+    """The Monitra mark centered on a soft rounded-square tile.
+
+    Every place the mark needs to read as a small *app icon* -- a
+    notification card, the maintenance notice -- draws this instead of the
+    bare mark floating directly on the surface's own background. One shared
+    tile is what keeps those surfaces looking like one notification system
+    instead of each inventing its own framing (a plain 20px icon on one
+    card, a bare 40px icon on another, no two notifications matching).
+
+    The tile is a light brand-tinted rounded square -- not the mark's own
+    saturated gradient -- so the coloured mark stays legible on top of it
+    rather than fighting a background in the same hue.
+    """
+    cache_key = (tile_size, mark_ratio)
+    cached = _badge_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    pixmap = QPixmap(tile_size, tile_size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    gradient = QLinearGradient(0, 0, tile_size, tile_size)
+    gradient.setColorAt(0.0, QColor("#E7EFFF"))
+    gradient.setColorAt(1.0, QColor("#F1EAFF"))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(gradient)
+    radius = tile_size * 0.28
+    painter.drawRoundedRect(0, 0, tile_size, tile_size, radius, radius)
+
+    mark_size = round(tile_size * mark_ratio)
+    offset = (tile_size - mark_size) // 2
+    painter.drawPixmap(offset, offset, logo_pixmap(mark_size))
+
+    painter.end()
+    _badge_cache[cache_key] = pixmap
     return pixmap
 
 

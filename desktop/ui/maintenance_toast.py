@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 from background_services.public_api import (
     MAINTENANCE_BODY, MAINTENANCE_STATUS_LABEL, MAINTENANCE_TITLE,
 )
-from core.branding import logo_pixmap
+from core.branding import logo_badge_pixmap
 from ui.styles import (
     BORDER_LIGHT, CARD_BG, ERROR, ERROR_BG, TEXT_PRIMARY, TEXT_SECONDARY,
 )
@@ -67,7 +67,7 @@ class MaintenanceToast(QFrame):
         self._logo = QLabel(self)
         self._logo.setObjectName("MaintenanceLogo")
         self._logo.setFixedSize(LOGO_SIZE, LOGO_SIZE)
-        self._logo.setPixmap(logo_pixmap(LOGO_SIZE))
+        self._logo.setPixmap(logo_badge_pixmap(LOGO_SIZE))
         self._logo.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         outer.addWidget(self._logo, 0, Qt.AlignmentFlag.AlignTop)
 

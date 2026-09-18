@@ -604,18 +604,15 @@ class SidebarWidget(QWidget):
         layout.addWidget(self._greeting_section)
 
         # ── Total Time Today ───────────────────────────────────────
-        # Centred as a block: the label, the hero duration and the status pill
-        # share one horizontal centre line under the greeting above them.
+        # Centred as a block: the hero duration and the status pill share
+        # one horizontal centre line under the greeting above them. The
+        # "TOTAL TIME TODAY" caption that used to sit above the duration
+        # was removed at the owner's request (2026-09-18) -- the duration
+        # reads on its own without a label repeating what it is.
         self._time_section = QWidget(self)
         ts_layout = QVBoxLayout(self._time_section)
         ts_layout.setContentsMargins(18, 16, 18, 16)
         ts_layout.setSpacing(6)
-
-        total_label = QLabel("Total Time Today", self._time_section)
-        total_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        total_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        total_label.setStyleSheet(f"color: {SIDEBAR_MUTED}; letter-spacing: 1.2px; text-transform: uppercase;")
-        ts_layout.addWidget(total_label)
 
         self._time_display = QLabel("00:00:00", self._time_section)
         self._time_display.setFont(QFont("Segoe UI", TIME_DISPLAY_FONT_SIZE, QFont.Weight.Black))

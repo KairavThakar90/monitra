@@ -5,16 +5,19 @@ colour the idle tracking state is drawn in.
 Three behaviours are asserted here:
 
 * **Idle reads as red.** The status pill under the day's total used to draw
-  idle in `SIDEBAR_MUTED` — the same grey as the "TOTAL TIME TODAY" caption
-  beside it — so "not tracking" looked like a caption rather than a state.
-  Idle is `ERROR` and active is `SUCCESS`, and the dot and the word always
-  agree, because both come from one branch in `set_timer_active`.
+  idle in `SIDEBAR_MUTED` — the same grey the section's old "TOTAL TIME
+  TODAY" caption used, back when it still had one — so "not tracking"
+  looked like a caption rather than a state. Idle is `ERROR` and active is
+  `SUCCESS`, and the dot and the word always agree, because both come from
+  one branch in `set_timer_active`.
 
-* **The day's total is centred.** The caption, the hero duration and the
-  circular Play / Pause control under it share one horizontal centre. The
-  status pill is not under the duration at all any more: it sits on the
-  account card's name row, to the right of the signed-in user's name, and
-  that is what is asserted instead.
+* **The day's total is centred.** The hero duration and the circular
+  Play / Pause control under it share one horizontal centre. The status
+  pill is not under the duration at all any more: it sits on the account
+  card's name row, to the right of the signed-in user's name, and that is
+  what is asserted instead. The "TOTAL TIME TODAY" caption that used to sit
+  above the duration was removed at the owner's request (2026-09-18); the
+  duration is the only thing on this centre line now.
 
 * **The greeting follows the IST clock, on an edge.** `core.time_format`
   decides where the afternoon ends — the widget never spells the boundaries
@@ -91,17 +94,20 @@ def test_the_status_survives_repeated_transitions(sidebar, qapp):
 
 # ── the day's total is centred ───────────────────────────────────────────────
 
-def test_the_total_and_its_caption_are_centre_aligned(sidebar):
-    from PySide6.QtWidgets import QLabel
-
+def test_the_total_is_centre_aligned(sidebar):
     assert sidebar._time_display.alignment() & Qt.AlignmentFlag.AlignHCenter
+
+
+def test_the_total_time_today_caption_is_gone(sidebar):
+    """Removed at the owner's request (2026-09-18): the section now shows
+    only the duration and the Play / Pause control, no label above it."""
+    from PySide6.QtWidgets import QLabel
 
     captions = [
         label for label in sidebar._time_section.findChildren(QLabel)
         if label.text() == "Total Time Today"
     ]
-    assert len(captions) == 1
-    assert captions[0].alignment() & Qt.AlignmentFlag.AlignHCenter
+    assert captions == []
 
 
 def test_the_hero_duration_sits_on_the_section_centre_line(sidebar, qapp):

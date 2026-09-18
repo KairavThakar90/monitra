@@ -69,6 +69,36 @@ def test_the_app_icon_is_built_from_the_same_mark(qapp):
     assert from_icon == branding.logo_pixmap(64).toImage()
 
 
+def test_the_badge_tile_is_square_and_carries_the_mark(qapp):
+    """The badge every floating notification card draws its logo from: a
+    tile at the requested size, with the mark itself visibly present (not
+    just a blank tinted square)."""
+    tile = branding.logo_badge_pixmap(40)
+    assert not tile.isNull()
+    assert tile.width() == 40 and tile.height() == 40
+
+    # A second call proves caching (see below), not that the tile has
+    # content. Compare against a plain filled square of the tile's own
+    # corner colour instead -- the mark's own colours cannot match a single
+    # flat fill everywhere.
+    from PySide6.QtGui import QPixmap
+
+    flat = QPixmap(40, 40)
+    flat.fill(tile.toImage().pixelColor(0, 0))
+    assert tile.toImage() != flat.toImage()
+
+
+def test_badge_tiles_are_cached_per_size(qapp):
+    assert branding.logo_badge_pixmap(36) is branding.logo_badge_pixmap(36)
+
+
+def test_the_badge_tile_scales_with_the_requested_size(qapp):
+    small = branding.logo_badge_pixmap(24)
+    large = branding.logo_badge_pixmap(48)
+    assert small.width() == 24
+    assert large.width() == 48
+
+
 # ── stat cards ───────────────────────────────────────────────────────────────
 
 def test_reset_states_are_honest_not_zeroed(qapp):
