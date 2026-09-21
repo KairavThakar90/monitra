@@ -52,6 +52,8 @@ export interface FeedbackFilterState {
   category: FeedbackCategory | null;
   range: DateRange;
   scope: FeedbackScope;
+  /** Empty means everyone — the same convention every other filter uses. */
+  selectedMembers: string[];
 }
 
 /** `YYYY-MM-DD` for an ISO timestamp, read in the viewer's own timezone. */
@@ -73,7 +75,7 @@ const dayOf = (isoTimestamp: string) => {
  */
 export const filterFeedback = (
   items: Feedback[],
-  { search, category, range, scope }: FeedbackFilterState,
+  { search, category, range, scope, selectedMembers }: FeedbackFilterState,
   currentUserId: number | null,
   /**
    * For a leader, the ids of the people they lead. `null` means "no
@@ -89,6 +91,10 @@ export const filterFeedback = (
 
   return items.filter((item) => {
     if (category && item.category !== category) return false;
+
+    if (selectedMembers.length > 0 && !selectedMembers.includes(String(item.employee_id))) {
+      return false;
+    }
 
     const day = dayOf(item.created_at);
     if (range.from && day && day < range.from) return false;
@@ -311,7 +317,11 @@ export const ScopeTabs: React.FC<{
   );
 };
 
-/** The filter bar. `scope` is omitted on the member screen, which has one. */
+/**
+ * The filter bar. `scope` is omitted on the member screen, which has one.
+ * `members` is omitted wherever a member picker would not narrow anything --
+ * the member's own "My feedback" screen, for instance.
+ */
 export const FeedbackFilterBar: React.FC<{
   search: string;
   onSearch: (value: string) => void;
@@ -322,12 +332,14 @@ export const FeedbackFilterBar: React.FC<{
   onReset: () => void;
   isDirty: boolean;
   scope?: React.ReactNode;
-}> = ({ search, onSearch, category, onCategory, range, onRange, onReset, isDirty, scope }) => (
+  members?: React.ReactNode;
+}> = ({ search, onSearch, category, onCategory, range, onRange, onReset, isDirty, scope, members }) => (
   <div className="rounded-xl border border-[#E2E8F0] bg-white p-4 shadow-sm">
     <div className="flex flex-wrap items-center gap-3">
       <SearchInput value={search} onChange={onSearch} />
       <CategorySelect value={category} onChange={onCategory} />
       <DateRangeFilter value={range} onChange={onRange} />
+      {members}
       {isDirty && (
         <button
           type="button"

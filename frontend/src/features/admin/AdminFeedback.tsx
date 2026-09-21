@@ -20,6 +20,7 @@ import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator"
 import { PaginationArrow } from "../../components/PaginationArrow";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import type { DateRange } from "../dashboard/v2/filters";
+import { MemberMultiSelect } from "../dashboard/v2/filters";
 
 /**
  * Every feedback the caller may read, for Admin, HR and Leader.
@@ -67,7 +68,12 @@ export const AdminFeedback: React.FC = () => {
   const canManage = canManageFeedback(currentUser);
 
   const teamScoped = isTeamScoped(currentUser);
-  const { data: members } = useGetAllMembersQuery(undefined, { skip: !teamScoped });
+  /**
+   * Loaded for everyone who reaches this page, not only a leader: a leader
+   * needs it to compute `teamIds` below, and Admin/HR need it to populate the
+   * member filter picker.
+   */
+  const { data: members } = useGetAllMembersQuery();
   const teamIds = useMemo(
     () => (teamScoped && members ? new Set(members.map((member) => member.id)) : null),
     [teamScoped, members],
@@ -76,6 +82,7 @@ export const AdminFeedback: React.FC = () => {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<FeedbackCategory | null>(null);
   const [scope, setScope] = useState<FeedbackScope>("all");
+  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   const [page, setPage] = useState(1);
 
   // Typing filters a list already in memory, but debouncing still keeps a long
@@ -95,8 +102,8 @@ export const AdminFeedback: React.FC = () => {
   const currentUserId = currentUser?.id ?? null;
 
   const filters = useMemo(
-    () => ({ search: debouncedSearch, category, range: effectiveRange, scope }),
-    [debouncedSearch, category, effectiveRange, scope],
+    () => ({ search: debouncedSearch, category, range: effectiveRange, scope, selectedMembers }),
+    [debouncedSearch, category, effectiveRange, scope, selectedMembers],
   );
 
   const visible = useMemo(
@@ -115,20 +122,25 @@ export const AdminFeedback: React.FC = () => {
   }, [items, filters, currentUserId, teamIds]);
 
   const isDirty =
-    search !== "" || category !== null || scope !== "all" || range !== null;
+    search !== "" ||
+    category !== null ||
+    scope !== "all" ||
+    range !== null ||
+    selectedMembers.length > 0;
 
   const resetFilters = () => {
     setSearch("");
     setCategory(null);
     setScope("all");
     setRange(null);
+    setSelectedMembers([]);
   };
 
   // Any change to the filters invalidates the current page number: page 3 of a
   // result that now has one page would render as empty.
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, category, scope, effectiveRange.from, effectiveRange.to]);
+  }, [debouncedSearch, category, scope, effectiveRange.from, effectiveRange.to, selectedMembers]);
 
   const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
   const pageItems = visible.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -153,6 +165,13 @@ export const AdminFeedback: React.FC = () => {
           onRange={setRange}
           onReset={resetFilters}
           isDirty={isDirty}
+          members={
+            <MemberMultiSelect
+              members={members ?? []}
+              selected={selectedMembers}
+              onChange={setSelectedMembers}
+            />
+          }
           scope={
             <ScopeTabs
               value={scope}

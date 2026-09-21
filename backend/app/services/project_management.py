@@ -300,7 +300,7 @@ class ProjectManagementService:
             raise
 
     @staticmethod
-    def list(db: Session, user: User, page: int, limit: int, search: Optional[str], status_id: Optional[int], leader_id: Optional[int], billing_type: Optional[BillingType], include_tasks: bool = True):
+    def list(db: Session, user: User, page: int, limit: int, search: Optional[str], status_id: Optional[int], leader_id: Optional[int], billing_type: Optional[BillingType], include_tasks: bool = True, employee_ids: Optional[list[int]] = None):
         """A page of projects.
 
         `include_tasks=False` is for the callers that only ever render a
@@ -329,6 +329,16 @@ class ProjectManagementService:
             filters.append(Project.status_id == status_id)
         if leader_id:
             filters.append(Project.leader_id == leader_id)
+        if employee_ids:
+            # A project's team, for the member filter -- matches any project
+            # the selected people are staffed on, the same membership table
+            # `visible_project_ids`/the employee-scope branch above already
+            # reads from.
+            filters.append(
+                Project.id.in_(
+                    select(ProjectMember.project_id).where(ProjectMember.user_id.in_(employee_ids))
+                )
+            )
         if billing_type:
             filters.append(Project.billing_type == billing_type.value)
         # The page and its total in one statement. Each round trip to a managed

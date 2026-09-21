@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { V2Shell } from '../dashboard/v2/V2Shell';
 import { 
@@ -18,7 +18,8 @@ import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { PaginationArrow } from '../../components/PaginationArrow';
 import { useAuth } from '../auth/authContext';
 import { isTeamScoped } from '../../utils/roles';
-import { exportToCsv } from '../dashboard/v2/filters';
+import { exportToCsv, MemberMultiSelect } from '../dashboard/v2/filters';
+import { useGetAllMembersQuery } from '../../store/api/membersApi';
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
 import { formatApiError } from '../../api/utils';
 
@@ -465,6 +466,13 @@ export const AdminProjectManagement: React.FC = () => {
   const [search, setSearch] = useState('');
   const [searchError, setSearchError] = useState<string | null>(null);
   const [filterStatusId, setFilterStatusId] = useState<number | null>(null);
+  /** Empty means every member — the same convention every other filter uses. */
+  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const { data: allMembers = [] } = useGetAllMembersQuery();
+  const selectedMemberIds = useMemo(
+    () => selectedMembers.map(Number),
+    [selectedMembers],
+  );
 
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>({
     project: true, status: true, leader: true, team: true, tasks: true, billing: true, deadline: true, manage: true
@@ -495,6 +503,7 @@ export const AdminProjectManagement: React.FC = () => {
     limit: pageSize,
     search: projectSearchCheck.ok ? projectSearchCheck.value : '',
     status_id: filterStatusId,
+    employee_ids: selectedMemberIds,
   });
   const [fetchProjectsForExport] = useLazyGetProjectsQuery();
   
@@ -741,6 +750,7 @@ export const AdminProjectManagement: React.FC = () => {
           limit: 100,
           search: debouncedSearch,
           status_id: filterStatusId,
+          employee_ids: selectedMemberIds,
         }).unwrap();
         exportedProjects.push(...(response.items || []));
         totalPages = response.pagination?.total_pages || 1;
@@ -773,6 +783,9 @@ export const AdminProjectManagement: React.FC = () => {
         [
           ['Search', debouncedSearch || 'All projects'],
           ['Status', metadata?.project_statuses?.find((status) => status.id === filterStatusId)?.project_status || 'All statuses'],
+          ['Members', selectedMemberIds.length
+            ? allMembers.filter((m) => selectedMemberIds.includes(m.id)).map((m) => m.name).join('; ')
+            : 'All members'],
           ['Projects', exportedProjects.length],
           [],
         ]
@@ -896,6 +909,11 @@ export const AdminProjectManagement: React.FC = () => {
                 onChange={(val) => setFilterStatusId(val === 0 ? null : val)}
                 className="w-full sm:w-auto min-h-[38px] flex items-center"
               />
+            <MemberMultiSelect
+              members={allMembers}
+              selected={selectedMembers}
+              onChange={(ids) => { setSelectedMembers(ids); setPage(1); }}
+            />
           </div>
         </div>
 

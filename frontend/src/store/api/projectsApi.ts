@@ -89,6 +89,8 @@ export type GetProjectsArgs = {
   status_id?: number | null;
   leader_id?: number | null;
   billing_type?: string | null;
+  /** Only projects staffed with at least one of these members. */
+  employee_ids?: number[];
 };
 
 type ThunkParts = { dispatch: (action: any) => any; getState: () => any };
@@ -172,6 +174,7 @@ export const projectsApi = baseApi.injectEndpoints({
         if (params.status_id) url += `&status_id=${params.status_id}`;
         if (params.leader_id) url += `&leader_id=${params.leader_id}`;
         if (params.billing_type) url += `&billing_type=${params.billing_type}`;
+        for (const id of params.employee_ids || []) url += `&employee_ids=${id}`;
         return url;
       },
       providesTags: (result) =>

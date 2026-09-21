@@ -56,7 +56,7 @@ export const MemberFeedback: React.FC = () => {
     () =>
       filterFeedback(
         items,
-        { search: debouncedSearch, category, range: effectiveRange, scope: "all" },
+        { search: debouncedSearch, category, range: effectiveRange, scope: "all", selectedMembers: [] },
         null,
       ),
     [items, debouncedSearch, category, effectiveRange],

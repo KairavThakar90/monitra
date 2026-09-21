@@ -3,12 +3,13 @@ import { V2Shell } from '../dashboard/v2/V2Shell';
 import { useAuth } from '../auth/authContext';
 import { canDeleteScreenshots, canViewAllScreenshots } from '../auth/roles';
 import { useGetAllMembersQuery } from '../../store/api/membersApi';
+import { useGetAllProjectsQuery } from '../../store/api/projectsApi';
 import {
   useDeleteScreenshotMutation,
   useGetScreenshotDayQuery,
 } from '../../store/api/screenshotsApi';
 import type { ScreenshotDay, ScreenshotMemberDays } from '../../store/api/screenshotsApi';
-import { MemberMultiSelect } from '../dashboard/v2/filters';
+import { MemberMultiSelect, ProjectMultiSelect } from '../dashboard/v2/filters';
 import { DayFilter, istTodayIso } from '../screenshots/DayFilter';
 import { groupWindowsByHour } from '../screenshots/hours';
 import { HourRow } from '../screenshots/HourRow';
@@ -77,6 +78,44 @@ const itemsOfDay = (day: ScreenshotDay, subjectName: string): LightboxItem[] =>
     .flatMap((window) =>
       window.screenshots.map((shot) => ({ shot, window, subjectName })),
     );
+
+/**
+ * Narrow a day's response to the selected projects.
+ *
+ * Project is per-screenshot (`ScreenshotView.project_id`, resolved
+ * server-side from the entry it was captured against), not per-member or
+ * per-window, so this reaches all the way into `windows[].screenshots`
+ * rather than filtering whole members the way the member picker does.
+ * `tracked_seconds` at every level is left untouched — it describes time
+ * actually worked, independent of which screenshots are shown.
+ */
+const filterByProjects = (
+  members: ScreenshotMemberDays[],
+  selectedProjects: string[],
+): ScreenshotMemberDays[] => {
+  if (selectedProjects.length === 0) return members;
+  const wanted = new Set(selectedProjects);
+  return members
+    .map((member) => {
+      const days = member.days
+        .map((day) => {
+          const windows = day.windows
+            .map((window) => {
+              const screenshots = window.screenshots.filter(
+                (shot) => shot.project_id !== null && wanted.has(String(shot.project_id)),
+              );
+              return { ...window, screenshots, screenshot_count: screenshots.length };
+            })
+            .filter((window) => window.screenshot_count > 0);
+          const screenshot_count = windows.reduce((sum, w) => sum + w.screenshot_count, 0);
+          return { ...day, windows, screenshot_count };
+        })
+        .filter((day) => day.screenshot_count > 0);
+      const screenshot_count = days.reduce((sum, d) => sum + d.screenshot_count, 0);
+      return { ...member, days, screenshot_count };
+    })
+    .filter((member) => member.screenshot_count > 0);
+};
 
 const DaySection: React.FC<{
   day: ScreenshotDay;
@@ -205,6 +244,8 @@ export const AdminScreenshots: React.FC = () => {
   const [day, setDay] = useState<string>(istTodayIso);
   /** Empty means every employee — the same convention the dashboard uses. */
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  /** Empty means every project — same convention. */
+  const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
   const [viewer, setViewer] = useState<{ items: LightboxItem[]; index: number } | null>(null);
 
   /**
@@ -213,6 +254,7 @@ export const AdminScreenshots: React.FC = () => {
    * empty. This one pages through and returns the whole roster.
    */
   const { data: members = [] } = useGetAllMembersQuery(undefined, { skip: !seesEveryone });
+  const { data: projects = [] } = useGetAllProjectsQuery(undefined, { skip: !seesEveryone });
 
   const [deleteScreenshot, { isLoading: isDeleting }] = useDeleteScreenshotMutation();
 
@@ -231,10 +273,15 @@ export const AdminScreenshots: React.FC = () => {
    */
   const shown = useMemo(() => {
     const all = data?.members ?? [];
-    if (selectedMembers.length === 0) return all;
-    const wanted = new Set(selectedMembers);
-    return all.filter((member) => wanted.has(String(member.user_id)));
-  }, [data, selectedMembers]);
+    const byMember =
+      selectedMembers.length === 0
+        ? all
+        : (() => {
+            const wanted = new Set(selectedMembers);
+            return all.filter((member) => wanted.has(String(member.user_id)));
+          })();
+    return filterByProjects(byMember, selectedProjects);
+  }, [data, selectedMembers, selectedProjects]);
 
   const totalShots = shown.reduce((sum, member) => sum + member.screenshot_count, 0);
 
@@ -295,11 +342,18 @@ export const AdminScreenshots: React.FC = () => {
           <DayFilter value={day} onChange={setDay} />
 
           {seesEveryone ? (
-            <MemberMultiSelect
-              members={members}
-              selected={selectedMembers}
-              onChange={setSelectedMembers}
-            />
+            <>
+              <MemberMultiSelect
+                members={members}
+                selected={selectedMembers}
+                onChange={setSelectedMembers}
+              />
+              <ProjectMultiSelect
+                projects={projects}
+                selected={selectedProjects}
+                onChange={setSelectedProjects}
+              />
+            </>
           ) : (
             <span className="text-[13px] font-semibold text-[#64748B]">
               Showing your own screenshots
@@ -330,8 +384,9 @@ export const AdminScreenshots: React.FC = () => {
           <div className="rounded-xl border border-[#E2E8F0] bg-white p-6 shadow-sm">
             <div className="py-10 text-center">
               <p className="text-sm font-bold text-[#475569]">
-                {selectedMembers.length > 0 && (data?.members?.length ?? 0) > 0
-                  ? 'No screenshots for the selected employees on this day.'
+                {(selectedMembers.length > 0 || selectedProjects.length > 0) &&
+                (data?.members?.length ?? 0) > 0
+                  ? 'No screenshots match the selected filters on this day.'
                   : 'No screenshots were captured on this day.'}
               </p>
               <p className="mt-1 text-xs font-medium text-[#94A3B8]">

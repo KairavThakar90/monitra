@@ -1,8 +1,9 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { V2Shell } from '../dashboard/v2/V2Shell';
 import { useGetTimeTrackingDetailsQuery, useGetTimeTrackingQuery, type TimeTrackingProject } from '../../store/api/timeTrackingApi';
-import { useGetMembersQuery } from '../../store/api/membersApi';
+import { useGetAllMembersQuery, useGetMembersQuery } from '../../store/api/membersApi';
 import { useGetAllProjectsQuery } from '../../store/api/projectsApi';
+import { MemberMultiSelect } from '../dashboard/v2/filters';
 import { useCreateManualTimeEntryRequestMutation, useGetManualTimeEntryRequestsQuery, useApproveManualTimeEntryRequestMutation, useRejectManualTimeEntryRequestMutation, useDeleteManualTimeEntryRequestMutation } from '../../store/api/manualTimeEntryApi';
 import { useFeedback } from '../../components/FeedbackProvider';
 import { useAuth } from '../auth/authContext';
@@ -297,6 +298,15 @@ export const AdminTimeTracking: React.FC = () => {
   const [page, setPage] = useState(1);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | null>(null);
   /**
+   * The Time Entries table's own member filter, distinct from
+   * `selectedEmployeeId` above -- that one opens the details dialog for one
+   * employee (and separately narrows the Manual Requests tab, which the
+   * backend only accepts a single `user_id` for). Empty means everyone, the
+   * same convention every other filter in the app uses.
+   */
+  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const { data: allMembers = [] } = useGetAllMembersQuery();
+  /**
    * Which projects are expanded in the details dialog. Empty is the default --
    * every project starts collapsed, including after the dialog is reopened on
    * a different employee, which is why this is cleared alongside the id rather
@@ -491,13 +501,15 @@ export const AdminTimeTracking: React.FC = () => {
   const filteredEntries = useMemo(() => {
     return apiEntries.filter(e => {
       if (search && !getEmployeeName(e.employeeId, e.employeeName).toLowerCase().includes(search.toLowerCase())) return false;
-      
+
+      if (selectedMembers.length > 0 && !selectedMembers.includes(e.employeeId)) return false;
+
       if (filterStartDate && e.date < filterStartDate) return false;
       if (filterEndDate && e.date > filterEndDate) return false;
-      
+
       return true;
     }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [apiEntries, getEmployeeName, search, filterStartDate, filterEndDate]);
+  }, [apiEntries, getEmployeeName, search, selectedMembers, filterStartDate, filterEndDate]);
 
   const totalPages = trackingData?.pagination?.total_pages || Math.ceil(filteredEntries.length / PAGE_SIZE) || 1;
   const paginatedEntries = trackingData ? filteredEntries : filteredEntries.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -695,6 +707,12 @@ export const AdminTimeTracking: React.FC = () => {
               </>
             )}
           </div>
+
+          <MemberMultiSelect
+            members={allMembers}
+            selected={selectedMembers}
+            onChange={(ids) => { setSelectedMembers(ids); setPage(1); }}
+          />
 
           <button
             onClick={openDrawer}
