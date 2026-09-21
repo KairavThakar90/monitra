@@ -159,7 +159,6 @@ def test_login_issues_each_initial_load_once(dashboard):
     assert len(runner.keys) == len(set(runner.keys)), runner.keys
     assert "load-projects" in runner.keys
     assert "load-statuses" in runner.keys
-    assert "load-today-activity" in runner.keys
     assert "check-active-timer" in runner.keys
     assert any(k.startswith("load-today:") for k in runner.keys)
 

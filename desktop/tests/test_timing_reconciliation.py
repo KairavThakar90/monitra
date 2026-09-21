@@ -441,7 +441,6 @@ def dashboard(qapp, runtime):
 def test_stopping_locally_does_not_re_read_the_day_but_finalizing_does(dashboard, monkeypatch):
     loads = []
     monkeypatch.setattr(dashboard, "_load_today_time", lambda *a, **k: loads.append("today") or True)
-    monkeypatch.setattr(dashboard, "_load_today_activity", lambda *a, **k: None)
     monkeypatch.setattr(dashboard, "_load_tasks", lambda *a, **k: loads.append("tasks"))
 
     dashboard._on_timer_state_changed(False)
@@ -579,18 +578,21 @@ def test_totals_sum_the_backends_net_seconds_not_the_raw_column(dashboard):
 
     day = ist_today().isoformat()
     entries = [
-        {"id": 1, "task_id": 10, "status": "stopped", "total_seconds": 2721, "net_seconds": 2721,
+        {"id": 1, "task_id": 10, "project_id": 99, "status": "stopped", "total_seconds": 2721, "net_seconds": 2721,
          "adjustment_seconds": 0, "start_time": f"{day}T05:00:00+00:00", "end_time": f"{day}T05:45:00+00:00"},
-        {"id": 2, "task_id": 11, "status": "stopped", "total_seconds": 4198, "net_seconds": 2901,
+        {"id": 2, "task_id": 11, "project_id": 99, "status": "stopped", "total_seconds": 4198, "net_seconds": 2901,
          "adjustment_seconds": -1297, "start_time": f"{day}T06:00:00+00:00", "end_time": f"{day}T07:10:00+00:00"},
         # An older backend sends no net figure: the raw total stands.
-        {"id": 3, "task_id": 11, "status": "stopped", "total_seconds": 34,
+        {"id": 3, "task_id": 11, "project_id": 99, "status": "stopped", "total_seconds": 34,
          "start_time": f"{day}T07:20:00+00:00", "end_time": f"{day}T07:21:00+00:00"},
     ]
     assert [banked_seconds(e) for e in entries] == [2721, 2901, 34]
     dashboard._current_date = ist_today()
+    dashboard._current_project = {"id": 99, "project_name": "Apollo"}
     dashboard._apply_time_entries(entries, ist_today(), update_cache=False)
     assert dashboard._banked_today() == 5656
     assert dashboard._banked_seconds_by_task() == {10: 2721, 11: 2935}
     dashboard._update_stat_cards()
+    # PROJECT HOURS shows the selected project's own net total -- all three
+    # entries belong to it here, so the figure matches the old aggregate.
     assert dashboard._stat_cards.total_card._value.full_text() == "01:34:16"
