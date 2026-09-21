@@ -471,8 +471,8 @@ def scenario_popup_contract(h):
 
     check("the live figure reads the real elapsed idle time",
           dialog.duration_label.text(), "7 minutes")
-    check("default selection is 'Yes, keep idle time'",
-          dialog.keep_radio.isChecked(), True)
+    check("default selection is 'No, discard idle time'",
+          dialog.discard_radio.isChecked(), True)
 
     dialog.force_close()  # the shutdown/logout path
     h.settle(0.2)

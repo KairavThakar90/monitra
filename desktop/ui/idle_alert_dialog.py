@@ -303,7 +303,7 @@ class IdleAlertDialog(QDialog):
         # Default per the product design. It is a UI default only: the server
         # still applies the rule that idle time counts for keep + resume and
         # for nothing else, so this cannot bypass the business rule.
-        self.keep_radio.setChecked(True)
+        self.discard_radio.setChecked(True)
         self._choice_group = QButtonGroup(self)
         self._choice_group.addButton(self.discard_radio)
         self._choice_group.addButton(self.keep_radio)

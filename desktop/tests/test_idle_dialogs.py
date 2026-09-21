@@ -208,9 +208,9 @@ def test_a_right_button_press_does_not_start_a_drag(qapp, alert):
     assert alert.frameGeometry().topLeft() == before
 
 
-def test_the_default_answer_is_keep_idle_time(alert):
-    assert alert.keep_radio.isChecked()
-    assert not alert.discard_radio.isChecked()
+def test_the_default_answer_is_discard_idle_time(alert):
+    assert alert.discard_radio.isChecked()
+    assert not alert.keep_radio.isChecked()
 
 
 def test_the_two_actions_are_present_and_enabled(alert):
