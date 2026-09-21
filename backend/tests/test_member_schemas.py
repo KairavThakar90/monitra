@@ -1,8 +1,10 @@
 from datetime import date, timedelta
 import unittest
+from unittest.mock import MagicMock
 
 from pydantic import ValidationError
 
+from app.repositories.member import MemberRepository
 from app.schemas.member import MemberCreate, MemberUpdate
 
 
@@ -71,3 +73,19 @@ class MemberUpdateTrackingSettingsTests(unittest.TestCase):
             MemberUpdate(capture_frequency=0)
         update = MemberUpdate(capture_frequency=999999)
         self.assertEqual(update.capture_frequency, 999999)
+
+
+class MemberCreationDefaultsTests(unittest.TestCase):
+    """A newly created member gets a `capture_frequency` that matches the
+    convention every other read path assumes (plain minutes) -- not the old
+    `300` default, which meant "seconds" and disagreed with the column's
+    actual, documented convention (see app/schemas/member.py)."""
+
+    def test_a_new_member_defaults_to_ten_minutes_not_three_hundred(self):
+        db = MagicMock()
+        member = MemberRepository.create(db, organization_id=10, data={
+            "email": "new@example.com", "name": "New Member",
+            "designation": "Engineer", "role": "employee", "status": "active",
+            "date_of_joining": date(2026, 1, 1), "date_of_birth": date(1990, 1, 1),
+        })
+        self.assertEqual(member.capture_frequency, 10)

@@ -91,9 +91,30 @@ class ScreenshotService(BaseService):
     #: and a system clock jump cannot park it for a whole window.
     MAX_SLEEP_MS = 30_000
 
-    def __init__(self, runtime, cache, parent=None) -> None:
+    #: How often the user's capture-frequency configuration is re-read from
+    #: the backend. Matches `IdleService.CONFIG_REFRESH_SECONDS`: an
+    #: administrator's change should reach a running desktop within the same
+    #: window idle already promises, for consistency between the two
+    #: settings. Seeded immediately at login/session-verify (see
+    #: `apply_user_profile`); this is the slow correction for a value an
+    #: administrator changed mid-session.
+    CONFIG_REFRESH_SECONDS = 15 * 60
+
+    def __init__(self, runtime, cache, screenshot_api=None, parent=None) -> None:
         super().__init__(runtime, parent)
         self._cache = cache
+        self._screenshot_api = screenshot_api
+
+        #: The user's own capture interval in minutes, once known. None
+        #: until `apply_user_profile`/`_refresh_config` has run at least
+        #: once, in which case `_window_seconds()` falls back to
+        #: `config.window_seconds()` -- today's hardcoded/env default --
+        #: exactly like `IdleService._idle_minutes` defaults to 5 pre-seed.
+        self._capture_frequency_minutes: Optional[int] = None
+
+        self._config_refresh_timer = QTimer(self)
+        self._config_refresh_timer.setInterval(self.CONFIG_REFRESH_SECONDS * 1000)
+        self._config_refresh_timer.timeout.connect(self._refresh_config)
 
         #: Schedules only; every millisecond of real work happens on the pool.
         self._due_timer = QTimer(self)
@@ -140,7 +161,7 @@ class ScreenshotService(BaseService):
         self._authorize(session.get("entry_id"), session.get("client_op"))
         self.log.info(
             "screenshot capture started for entry %s (%d per %ds window)",
-            self._entry_id, config.screenshots_per_window(), config.window_seconds(),
+            self._entry_id, config.screenshots_per_window(), self._window_seconds(),
         )
         # Plan and arm immediately, so a session that begins mid-window still
         # gets whatever the window has left rather than waiting for the next.
@@ -196,6 +217,75 @@ class ScreenshotService(BaseService):
         self._planned_index = None
         self._planned_times = []
         self._revoke()
+
+    # ── Configuration ─────────────────────────────────────────────────────────
+    #
+    # Mirrors IdleService's apply_user_profile/_refresh_config exactly
+    # (background_services/idle/idle_service.py): the backend is
+    # authoritative for how often this user's screen is captured, seeded
+    # from the login profile and corrected periodically for a mid-session
+    # admin change. Nothing here computes or guesses the interval.
+
+    def apply_user_profile(self, user_data: Optional[Dict[str, Any]]) -> None:
+        """Seed the capture interval from a `/auth/me` payload.
+
+        Called on login and on session verification, both of which already
+        hold the profile -- so the user's own interval is in effect before
+        tracking can start, without an extra request.
+        """
+        if not isinstance(user_data, dict):
+            return
+        user = user_data.get("user") if isinstance(user_data.get("user"), dict) else user_data
+        if "capture_frequency" not in user:
+            return
+        self._set_capture_frequency(user.get("capture_frequency"))
+
+    def _set_capture_frequency(self, minutes: Any) -> None:
+        try:
+            minutes_value = int(minutes)
+        except (TypeError, ValueError):
+            return
+        # A zero or negative interval is not a valid interval. Ignored
+        # rather than applied, so a bad read never blanks a good value --
+        # the same defensive posture IdleService._set_config uses.
+        if minutes_value <= 0:
+            self.log.warning("ignoring non-positive capture_frequency=%r", minutes)
+            return
+        if minutes_value == self._capture_frequency_minutes:
+            return
+        self._capture_frequency_minutes = minutes_value
+        self.log.info("screenshot capture frequency: %d minute(s)", minutes_value)
+
+    def _window_seconds(self) -> int:
+        """The effective window length in seconds: the user's own capture
+        interval once known, else today's hardcoded/env default -- exactly
+        like `IdleService._idle_minutes` defaults to 5 pre-seed."""
+        if self._capture_frequency_minutes:
+            return self._capture_frequency_minutes * 60
+        return config.window_seconds()
+
+    def _refresh_config(self) -> None:
+        """Re-read the capture interval from the backend. Off the GUI
+        thread for the request; applied back on it via `on_success`."""
+        if self._screenshot_api is None:
+            return
+        tasks = getattr(self.runtime, "tasks", None)
+        if tasks is None:
+            return
+
+        def on_success(cfg: Dict[str, Any]) -> None:
+            if isinstance(cfg, dict):
+                self._set_capture_frequency(cfg.get("capture_frequency"))
+
+        tasks.submit(
+            self._screenshot_api.get_config,
+            on_success=on_success,
+            # A failed refresh keeps the last known interval. Blanking a
+            # valid local value because the network blipped is a
+            # regression, not error handling.
+            on_error=lambda exc: self.log.info("screenshot config refresh failed: %s", exc),
+            key="screenshot-config",
+        )
 
     # ── Capture authorisation ─────────────────────────────────────────────────
 
@@ -306,7 +396,7 @@ class ScreenshotService(BaseService):
             return
 
         now = time.time()
-        window = config.window_seconds()
+        window = self._window_seconds()
         index = scheduler.window_index(now, window)
         self._plan(index, window, now)
 
@@ -345,7 +435,7 @@ class ScreenshotService(BaseService):
         if not self._tracking:
             return
         now = time.time()
-        window = config.window_seconds()
+        window = self._window_seconds()
         index = self._planned_index
         if index is None:
             index = scheduler.window_index(now, window)
@@ -452,7 +542,7 @@ class ScreenshotService(BaseService):
         if path is None:
             return None
 
-        window_start = _iso(scheduler.window_bounds(index, config.window_seconds())[0])
+        window_start = _iso(scheduler.window_bounds(index, self._window_seconds())[0])
 
         # Attribution is read again here rather than reused from the check at
         # the top. The grab and the encode take a second or more on a dense
@@ -573,6 +663,7 @@ class ScreenshotService(BaseService):
             store.prune_orphans(self._cache.get_screenshot_backlog_paths())
         except Exception:  # noqa: BLE001
             self.log.exception("could not prune orphaned screenshot files")
+        self._config_refresh_timer.start()
         super().on_start()
 
     def on_stop(self, timeout_ms: int) -> bool:
@@ -580,6 +671,7 @@ class ScreenshotService(BaseService):
         # on the shared pool, which the runtime drains before it stops
         # services.
         self._due_timer.stop()
+        self._config_refresh_timer.stop()
         self._tracking = False
         # A capture already on the pool must not take the screen during
         # shutdown either; the runtime drains the pool after this, so without

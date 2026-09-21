@@ -209,6 +209,10 @@ class AuthFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "token-pair")
         create_user.assert_called_once()
         self.assertEqual(db.scalar.call_count, 2)
+        # The provider response above carries no capture_frequency, so the
+        # default applies -- plain minutes (10), not the old "seconds" 300.
+        provisioned = create_user.call_args.args[1]
+        self.assertEqual(provisioned.capture_frequency, 10)
 
 
 def _login_response(user_overrides):

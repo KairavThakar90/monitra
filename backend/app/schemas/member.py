@@ -9,14 +9,16 @@ from app.core.validation import optional_integer_field
 
 #: Screenshot capture interval, in minutes (`users.capture_frequency`).
 #:
-#: The column has no unit of its own, and production data is not consistent:
-#: `AuthService`'s SSO sync path (app/services/auth.py) writes a literal `300`
-#: as a "seconds" default, but every account created any other way -- 61 of
-#: 63 real accounts on the live database at the time this was added -- holds
-#: a plain minute count (`10`, matching the desktop's actual 10-minute
-#: screenshot window). This type follows the convention the data actually
-#: uses. Do not reintroduce a seconds conversion here without first fixing
-#: the SSO path that disagrees with it.
+#: The column has no unit of its own. `AuthService`'s SSO sync path
+#: (app/services/auth.py) used to default new accounts to a literal `300`
+#: meaning "seconds", disagreeing with every account created any other way --
+#: 61 of 63 real accounts on the live database at the time this was added
+#: held a plain minute count (`10`, matching the desktop's actual 10-minute
+#: screenshot window). That default is now `10` everywhere a new account is
+#: created, matching the convention the data actually uses. Existing rows
+#: still holding the old `300` default are not migrated automatically -- an
+#: admin can correct them per member from the User Management page. Do not
+#: reintroduce a seconds conversion here.
 #:
 #: No upper bound: the admin sets this per member based on their own
 #: monitoring requirements, and the desktop's screenshot scheduler has no

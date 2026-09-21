@@ -418,6 +418,14 @@ class BackgroundApi:
         """
         self._runtime.idle.apply_user_profile(user_data)
 
+    def apply_screenshot_profile(self, user_data: Optional[Dict[str, Any]]) -> None:
+        """Seed screenshot capture frequency from a `/auth/me` payload.
+
+        Called on login and on session verification, both of which already
+        hold the profile — mirrors `apply_idle_profile` exactly.
+        """
+        self._runtime.screenshot.apply_user_profile(user_data)
+
     def resolve_idle_period(self, keep_idle_time: bool, action: str) -> None:
         """Answer the pending idle popup. `action` is "stop" or "resume"."""
         self._runtime.idle.resolve(keep_idle_time, action)

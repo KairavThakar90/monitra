@@ -10,8 +10,8 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
 from app.schemas.time_entry_screenshot import (
-    ScreenshotDayResponse, ScreenshotDeleteResponse, ScreenshotTimelineResponse,
-    ScreenshotUploadResponse,
+    ScreenshotConfigResponse, ScreenshotDayResponse, ScreenshotDeleteResponse,
+    ScreenshotTimelineResponse, ScreenshotUploadResponse,
     TimeEntryScreenshotCreate, TimeEntryScreenshotRead,
 )
 from app.services.time_entry_screenshot import TimeEntryScreenshotService
@@ -44,6 +44,17 @@ def require_screenshot_delete(current_user: User = Depends(get_current_user)) ->
             detail="You do not have permission to delete screenshots.",
         )
     return current_user
+
+
+@router.get("/screenshots/config", response_model=ScreenshotConfigResponse)
+def get_screenshot_config(current_user: User = Depends(get_current_user)):
+    """The authenticated user's screenshot capture configuration.
+
+    `GET /auth/me` already returns the same field as part of the profile;
+    this is the narrow projection the desktop's screenshot scheduler polls,
+    mirroring `GET /idle-periods/config`.
+    """
+    return TimeEntryScreenshotService.get_screenshot_config(current_user)
 
 
 @router.post(

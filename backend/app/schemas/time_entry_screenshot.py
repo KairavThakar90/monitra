@@ -3,6 +3,20 @@ from datetime import date, datetime
 from typing import List, Optional
 
 
+class ScreenshotConfigResponse(BaseModel):
+    """The authenticated user's own screenshot capture configuration.
+
+    Mirrors `IdleConfigResponse` (`time_entry_idle_period.py`): `GET /auth/me`
+    already carries `capture_frequency` as part of the profile; this is the
+    narrow projection the desktop's screenshot scheduler polls so it does not
+    have to re-fetch the whole profile just to learn its capture interval.
+    """
+
+    capture_frequency: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TimeEntryScreenshotBase(BaseModel):
     monitor_number: int = 1
     #: Displays composited into this one image. Defaults to 1, which is both

@@ -1008,6 +1008,7 @@ class DashboardWindow(QWidget):
         # own threshold is in effect before tracking can start -- without the
         # sign-in path paying for another request.
         self.api.apply_idle_profile(user_data)
+        self.api.apply_screenshot_profile(user_data)
 
         self._render_cached_projects()
 
@@ -1033,6 +1034,7 @@ class DashboardWindow(QWidget):
     def on_session_verified(self, user_data: dict) -> None:
         """The restored token was confirmed by the backend."""
         self.api.apply_idle_profile(user_data)
+        self.api.apply_screenshot_profile(user_data)
         self._sidebar.set_user(user_data)
         self._task_section.set_user_role(user_data.get("role_name"))
         self._user_id = user_data.get("id")

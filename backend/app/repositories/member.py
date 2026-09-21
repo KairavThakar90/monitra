@@ -65,7 +65,11 @@ class MemberRepository:
             is_active=data["status"] == "active",
             date_of_joining=data["date_of_joining"],
             date_of_birth=data["date_of_birth"],
-            capture_frequency=300,
+            # 10 plain minutes, matching the real convention the column uses
+            # in production (see app/schemas/member.py's CaptureFrequencyMinutes
+            # comment) -- not 300, which was a "seconds" default that never
+            # matched how the value is actually read.
+            capture_frequency=10,
         )
         db.add(member)
         db.commit()

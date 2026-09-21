@@ -469,6 +469,27 @@ class HealthReportsStorageTests(unittest.TestCase):
         self.assertNotIn("BEGIN PRIVATE KEY", str(body))
 
 
+class ScreenshotConfigurationTests(unittest.TestCase):
+    """Mirrors TestIdleConfiguration (test_idle_periods.py) for the
+    screenshot side: the desktop's scheduler polls this to learn its own
+    capture cadence, so it must be strict about a misconfigured row rather
+    than silently substituting a default the user never asked for."""
+
+    def test_the_stored_frequency_is_read_from_the_user_row(self):
+        config = TimeEntryScreenshotService.get_screenshot_config(_user(capture_frequency=15))
+        self.assertEqual(config, {"capture_frequency": 15})
+
+    def test_a_null_frequency_is_refused_rather_than_defaulted(self):
+        with self.assertRaises(HTTPException) as raised:
+            TimeEntryScreenshotService.get_screenshot_config(_user(capture_frequency=None))
+        self.assertEqual(raised.exception.status_code, 500)
+
+    def test_a_non_positive_frequency_is_refused(self):
+        with self.assertRaises(HTTPException) as raised:
+            TimeEntryScreenshotService.get_screenshot_config(_user(capture_frequency=0))
+        self.assertEqual(raised.exception.status_code, 500)
+
+
 class TimelineTests(unittest.TestCase):
     """A window's activity percentage must describe that window alone."""
 
@@ -477,9 +498,12 @@ class TimelineTests(unittest.TestCase):
     #: whichever value happens to be in the developer's .env.
     WINDOW_MINUTES = 10
 
-    def _timeline(self, screenshots, activity, user=None, intervals=(), task_project=None):
+    def _timeline(self, screenshots, activity, user=None, intervals=(), task_project=None,
+                  user_id=None, subject_capture_frequency=None, visible=None):
         db = MagicMock()
+        db.query.return_value.filter.return_value.scalar.return_value = subject_capture_frequency
         with patch(f"{SVC}.settings") as settings, \
+             patch(f"{SVC}.visible_member_ids", return_value=visible), \
              patch(f"{SVC}.TimeEntryScreenshotRepository.list_screenshots", return_value=screenshots), \
              patch(f"{SVC}.TimeEntryScreenshotRepository.list_tracked_intervals",
                    return_value=list(intervals)), \
@@ -489,7 +513,7 @@ class TimelineTests(unittest.TestCase):
             settings.SCREENSHOT_WINDOW_MINUTES = self.WINDOW_MINUTES
             self._last_lookup_mock = lookup
             return TimeEntryScreenshotService.get_timeline(
-                db=db, current_user=user or _user(), target_date=T0.date()
+                db=db, current_user=user or _user(), target_date=T0.date(), user_id=user_id,
             )
 
     @staticmethod
@@ -629,6 +653,33 @@ class TimelineTests(unittest.TestCase):
                 )
         self.assertEqual(raised.exception.status_code, 403)
 
+    def test_window_length_follows_the_viewers_own_frequency(self):
+        window_minutes, windows = self._timeline(
+            [self._shot(60, 1), self._shot(400, 2)], [],
+            user=_user(capture_frequency=5),
+        )
+        self.assertEqual(window_minutes, 5)
+        # Five minutes apart at the 5-minute cadence: two separate windows.
+        self.assertEqual(len(windows), 2)
+
+    def test_window_length_follows_the_viewed_subjects_frequency_not_the_viewers(self):
+        window_minutes, windows = self._timeline(
+            [self._shot(60, 1), self._shot(400, 2)], [],
+            user=_user(id=1, role_name="leader", capture_frequency=30),
+            user_id=9, subject_capture_frequency=5, visible={1, 9},
+        )
+        self.assertEqual(window_minutes, 5)
+        self.assertEqual(len(windows), 2)
+
+    def test_a_missing_subject_frequency_falls_back_to_the_org_default_not_an_error(self):
+        # A read-only report must not 500 over one misconfigured row.
+        window_minutes, _ = self._timeline(
+            [self._shot(60, 1)], [],
+            user=_user(id=1, role_name="leader", capture_frequency=30),
+            user_id=9, subject_capture_frequency=None, visible={1, 9},
+        )
+        self.assertEqual(window_minutes, self.WINDOW_MINUTES)
+
 
 class DayGridTests(unittest.TestCase):
     """The all-members grid must group by person and day, and never widen scope."""
@@ -645,11 +696,14 @@ class DayGridTests(unittest.TestCase):
         )
 
     def _grid(self, tagged_shots, activity=(), user=None, names=None, visible=None,
-              date_from=None, date_to=None, intervals=(), task_project=None):
+              date_from=None, date_to=None, intervals=(), task_project=None,
+              capture_frequency=None):
         """Run the grid with the repositories and the name lookup mocked."""
         db = MagicMock()
+        capture_frequency = capture_frequency or {}
         db.query.return_value.filter.return_value.all.return_value = [
-            User(id=uid, organization_id=10, name=name, permissions={}, role_name="employee")
+            User(id=uid, organization_id=10, name=name, permissions={}, role_name="employee",
+                 capture_frequency=capture_frequency.get(uid))
             for uid, name in (names or {}).items()
         ]
         with patch(f"{SVC}.settings") as settings,              patch(f"{SVC}.visible_member_ids", return_value=visible),              patch(
@@ -904,6 +958,26 @@ class DayGridTests(unittest.TestCase):
         _, members = self._grid([(2, self._shot(60, 5))], names={2: "Alice"})
         url = members[0]["days"][0]["windows"][0]["screenshots"][0]["view_url"]
         self.assertEqual(url, "/time-entry-screenshots/5/view")
+
+    def test_each_member_is_grouped_at_their_own_capture_frequency(self):
+        # Alice: 5-minute cadence, two shots 5 minutes apart -> two windows.
+        # Bob: 10-minute (default) cadence, the same gap -> one window.
+        _, members = self._grid(
+            [(2, self._shot(60, 1)), (2, self._shot(360, 2)),
+             (3, self._shot(60, 3)), (3, self._shot(360, 4))],
+            names={2: "Alice", 3: "Bob"},
+            capture_frequency={2: 5},
+        )
+        by_name = {m["user_name"]: m for m in members}
+        self.assertEqual(len(by_name["Alice"]["days"][0]["windows"]), 2)
+        self.assertEqual(len(by_name["Bob"]["days"][0]["windows"]), 1)
+
+    def test_a_members_missing_frequency_falls_back_to_the_org_default(self):
+        _, members = self._grid(
+            [(2, self._shot(60, 1)), (2, self._shot(700, 2))],
+            names={2: "Alice"}, capture_frequency={2: None},
+        )
+        self.assertEqual(len(members[0]["days"][0]["windows"]), 2)
 
 
 if __name__ == "__main__":

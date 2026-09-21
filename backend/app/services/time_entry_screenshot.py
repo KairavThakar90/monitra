@@ -668,6 +668,36 @@ class TimeEntryScreenshotService:
     # ── Timeline ──────────────────────────────────────────────────────────────
 
     @staticmethod
+    def _window_minutes_for(capture_frequency: Optional[int]) -> int:
+        """A safe window length in minutes.
+
+        `capture_frequency` when it is a genuine positive value, else the
+        org-wide default. Read-only reporting surfaces must not 500 the
+        whole response over one misconfigured row -- they fall back and
+        move on. Only `get_screenshot_config` needs to be strict about a bad
+        value, because that one is the desktop's own scheduler reading its
+        own setting, not a report about someone else's.
+        """
+        if capture_frequency and int(capture_frequency) > 0:
+            return int(capture_frequency)
+        return max(1, int(settings.SCREENSHOT_WINDOW_MINUTES))
+
+    @staticmethod
+    def get_screenshot_config(current_user: User) -> dict:
+        """The authenticated user's own screenshot configuration, straight
+        from the users table. Strict, like `TimeEntryIdlePeriodService.
+        get_idle_config`: this is the value the desktop's own scheduler will
+        use for itself, so a misconfigured row must not be silently patched
+        over here -- it needs to be visible and fixed at the source."""
+        frequency = current_user.capture_frequency
+        if frequency is None or int(frequency) <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Screenshot capture frequency is misconfigured for this user.",
+            )
+        return {"capture_frequency": int(frequency)}
+
+    @staticmethod
     def get_timeline(
         db: Session,
         current_user: User,
@@ -683,6 +713,11 @@ class TimeEntryScreenshotService:
         backfilled and changing the window length is a configuration change
         rather than a migration.
 
+        The window length is the *subject's* own `capture_frequency` -- the
+        cadence they were actually captured at -- not the viewer's, and not
+        the org-wide default, so a report always matches the desktop that
+        produced it.
+
         Only windows that contain a screenshot or measured activity are
         returned — an untracked hour produces no empty blocks to scroll past.
 
@@ -692,7 +727,11 @@ class TimeEntryScreenshotService:
         day = target_date or ist_today()
         start = ist_day_start_utc(day)
         end = ist_day_end_utc(day)
-        window_minutes = max(1, int(settings.SCREENSHOT_WINDOW_MINUTES))
+        subject_capture_frequency = (
+            current_user.capture_frequency if subject_id == current_user.id
+            else db.query(User.capture_frequency).filter(User.id == subject_id).scalar()
+        )
+        window_minutes = TimeEntryScreenshotService._window_minutes_for(subject_capture_frequency)
         window_seconds = window_minutes * 60
 
         screenshots = TimeEntryScreenshotRepository.list_screenshots(
@@ -780,8 +819,14 @@ class TimeEntryScreenshotService:
 
         start = ist_day_start_utc(start_day)
         end = ist_day_end_utc(end_day)
-        window_minutes = max(1, int(settings.SCREENSHOT_WINDOW_MINUTES))
-        window_seconds = window_minutes * 60
+        # The top-level figure is informational only (the viewer's own
+        # setting) -- each member below is grouped at their *own* cadence,
+        # since the grid can and does mix members with different
+        # capture_frequency values. Authoritative boundaries live on each
+        # window's window_start/window_end, not on this label.
+        window_minutes = TimeEntryScreenshotService._window_minutes_for(
+            current_user.capture_frequency
+        )
 
         # A caller with no org-wide reach sees one row: themselves. Narrowing
         # here rather than trusting the read surfaces below keeps it in one
@@ -848,10 +893,11 @@ class TimeEntryScreenshotService:
                 continue
             intervals.setdefault(member_id, []).append((began, ended))
 
-        names = {
-            user.id: user.name
-            for user in db.query(User).filter(User.id.in_(shots.keys())).all()
-        }
+        names = {}
+        capture_frequency_by_user = {}
+        for user in db.query(User).filter(User.id.in_(shots.keys())).all():
+            names[user.id] = user.name
+            capture_frequency_by_user[user.id] = user.capture_frequency
         # One query for every screenshot in the whole grid -- every member,
         # every day of the requested span -- never one per screenshot or
         # per member.
@@ -862,11 +908,18 @@ class TimeEntryScreenshotService:
         members: List[dict] = []
         for user_id, by_day in shots.items():
             member_intervals = intervals.get(user_id, [])
+            # Each member is grouped at their *own* capture_frequency, not
+            # the shared window_seconds above -- a grid mixing members with
+            # different cadences must not misattribute one member's
+            # screenshots into another's window length.
+            member_window_seconds = TimeEntryScreenshotService._window_minutes_for(
+                capture_frequency_by_user.get(user_id)
+            ) * 60
             days = [
                 {
                     "date": day,
                     "windows": _build_windows(
-                        window_seconds,
+                        member_window_seconds,
                         day_shots,
                         activity.get(user_id, {}).get(day, []),
                         member_intervals,

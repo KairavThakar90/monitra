@@ -145,7 +145,15 @@ def _int_env(name: str, default: int, *, minimum: int = 1) -> int:
 
 
 def window_seconds() -> int:
-    """Window length in seconds, honouring `MONITRA_SCREENSHOT_WINDOW_MINUTES`."""
+    """The fallback window length in seconds, honouring
+    `MONITRA_SCREENSHOT_WINDOW_MINUTES`.
+
+    This is no longer the effective cadence once a user's own
+    `capture_frequency` is known: `ScreenshotService._window_seconds()` is
+    what the scheduler actually reads, and it only falls back to this value
+    before a profile has loaded, or if the user's setting is missing. See
+    `ScreenshotService.apply_user_profile`/`_refresh_config`.
+    """
     return _int_env("MONITRA_SCREENSHOT_WINDOW_MINUTES", WINDOW_DURATION_MINUTES) * 60
 
 

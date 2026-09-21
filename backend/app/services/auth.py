@@ -332,7 +332,10 @@ class AuthService:
         hubstaff_designation = wp_user.get("hubstaff_designation")
         idle_enabled = wp_user.get("idle_enabled", True)
         idle_minutes = wp_user.get("idle_minutes", 5)
-        capture_frequency = wp_user.get("capture_frequency", 300)
+        # Plain minutes, matching the convention capture_frequency actually
+        # uses (see app/schemas/member.py) -- not 300, which was a "seconds"
+        # default that disagreed with every account created any other way.
+        capture_frequency = wp_user.get("capture_frequency", 10)
 
         permission_schema = wp_user.get("permission_schema") or {}
         if not isinstance(permission_schema, dict):
@@ -678,7 +681,9 @@ class AuthService:
                 name=name,
                 role_name=role_name,
                 permissions={p: True for p in ROLE_PERMISSIONS[role_name]},
-                capture_frequency=300,
+                # Plain minutes -- see the note beside the other
+                # capture_frequency default above in this file.
+                capture_frequency=10,
                 status="active",
             )
             try:
