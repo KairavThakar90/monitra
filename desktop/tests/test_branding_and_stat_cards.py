@@ -125,7 +125,7 @@ def test_status_card_shows_the_projects_own_status(qapp):
     row = StatCardsRow()
     row.set_project_status("Active", "#3B82F6")
     assert row.status_card._value.full_text() == "Active"
-    assert row.status_card._sub.full_text() == "Set by admin"
+    assert row.status_card._sub.full_text() == ""
 
 
 def test_status_card_without_a_project_says_so(qapp):

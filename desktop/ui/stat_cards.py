@@ -381,7 +381,7 @@ class StatCardsRow(QWidget):
             self.status_card.set_sub("No project selected")
             return
         self.status_card.set_value(name)
-        self.status_card.set_sub("Set by admin", color)
+        self.status_card.set_sub("", color)
 
     def set_active_task(self, task_name: Optional[str], project_name: Optional[str]) -> None:
         if not task_name:

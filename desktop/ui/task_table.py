@@ -1037,6 +1037,7 @@ class TaskRow(QFrame):
         project_id: int,
         project_name: str,
         project_color: str,
+        project_status: Optional[str] = None,
         is_running: bool = False,
         readonly: bool = False,
         column_widths: Optional[Dict[str, int]] = None,
@@ -1047,6 +1048,7 @@ class TaskRow(QFrame):
         self.project_id = project_id
         self.project_name = project_name
         self.project_color = project_color
+        self.project_status = project_status
         self._is_running = is_running
         #: Whether this is the task the circular Play control would start.
         #: Rendered only; TaskSection decides it.
@@ -1333,6 +1335,7 @@ class TaskRow(QFrame):
         if self._progress_bar is not None:
             self._progress_bar.set_dark(False)
 
+        self._menu_btn.setEnabled(self.project_status not in ["Paused", "Completed"])
         self._menu_btn.setIcon(icons.icon("more_vert", TEXT_SECONDARY, 18))
         self._menu_btn.setStyleSheet(f"""
             QToolButton {{
@@ -1349,9 +1352,18 @@ class TaskRow(QFrame):
         # the running row is unmistakable among any number of idle ones.
         if running:
             self._timer_btn.setText("Stop")
+            self._timer_btn.setEnabled(True)
             fill, fill_hover = TIMER_BUTTON_STOP, TIMER_BUTTON_STOP_HOVER
         else:
-            self._timer_btn.setText("Start")
+            if self.project_status == "Paused":
+                self._timer_btn.setText("Paused")
+                self._timer_btn.setEnabled(False)
+            elif self.project_status == "Completed":
+                self._timer_btn.setText("Completed")
+                self._timer_btn.setEnabled(False)
+            else:
+                self._timer_btn.setText("Start")
+                self._timer_btn.setEnabled(not self._readonly)
             fill, fill_hover = BUTTON_GRADIENT, BUTTON_GRADIENT_HOVER
         self._timer_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1869,7 +1881,10 @@ class TaskSection(QWidget):
             self._current_page = 1
         self._project_color = color
         self._search_text = ""
-        self.add_task_available.emit(True)
+        
+        status_name = (project.get("status") or {}).get("name") if project else None
+        can_add = status_name not in ["Paused", "Completed"]
+        self.add_task_available.emit(can_add)
 
         # _rebuild_rows() sets the title (name + task count) below -- no
         # need to set it here too and have it immediately overwritten.
@@ -1959,6 +1974,13 @@ class TaskSection(QWidget):
         if row is not None:
             self._handle_start_request(row)
             return
+            
+        if self._project and self._project.get("id") == project_id:
+            status_name = (self._project.get("status") or {}).get("name")
+            if status_name in ["Paused", "Completed"]:
+                log.info(f"refusing to start tracking: project is {status_name}")
+                return
+                
         if not is_live_date(self._viewing_date):
             log.info("refusing to start tracking: %s is not today", self._viewing_date)
             return
@@ -2120,6 +2142,7 @@ class TaskSection(QWidget):
         project_name = (
             self._project.get("project_name", "Project") if self._project else "Project"
         )
+        status_name = (self._project.get("status") or {}).get("name") if self._project else None
 
         if not filtered:
             msg = "No tasks match your search." if self._search_text else "No tasks found for this project."
@@ -2147,6 +2170,7 @@ class TaskSection(QWidget):
                 project_id=self._project.get("id", 0) if self._project else 0,
                 project_name=project_name,
                 project_color=color,
+                project_status=status_name,
                 is_running=(task.get("id") == self._running_task_id),
                 readonly=self._readonly_date,
                 column_widths=self._column_widths,
@@ -2277,6 +2301,10 @@ class TaskSection(QWidget):
         # `for_date` carries the day the user is acting on down to TimerService,
         # which refuses anything that is not today at the action layer. A
         # disabled control is a courtesy, not a guarantee.
+        if row.project_status in ["Paused", "Completed"]:
+            log.info(f"refusing to start tracking: project is {row.project_status}")
+            return
+            
         if not is_live_date(self._viewing_date):
             log.info("refusing to start tracking: %s is not today", self._viewing_date)
             return
