@@ -20,6 +20,20 @@ class _StubSignal:
         return None
 
 
+class _RecordingSignal(_StubSignal):
+    """A stub signal the test can fire directly, recording who connected."""
+
+    def __init__(self) -> None:
+        self._slots = []
+
+    def connect(self, slot):
+        self._slots.append(slot)
+
+    def emit(self, *args):
+        for slot in list(self._slots):
+            slot(*args)
+
+
 class StubIdleSignals:
     resolve_succeeded = _StubSignal()
     resolve_failed = _StubSignal()
@@ -27,9 +41,18 @@ class StubIdleSignals:
     reassign_failed = _StubSignal()
     idle_period_cleared = _StubSignal()
 
+    def __init__(self) -> None:
+        # Instance-level (not class-level, like the others above) so each
+        # dialog's connection is independent and the test can target one.
+        self.interruption_withdrawn = _RecordingSignal()
+
 
 class StubApi:
-    idle = StubIdleSignals()
+    def __init__(self) -> None:
+        # Per-instance, not per-class: each dialog under test gets its own
+        # `interruption_withdrawn` connection list, so tests cannot leak
+        # slots into one another through a shared signal.
+        self.idle = StubIdleSignals()
 
     def active_session(self):
         return {"project_id": 5, "task_id": 7, "task_name": "Backend work"}
@@ -194,6 +217,96 @@ def test_the_two_actions_are_present_and_enabled(alert):
     assert alert.stop_btn.isEnabled() and alert.stop_btn.text() == "Stop timer"
     assert alert.resume_btn.isEnabled() and alert.resume_btn.text() == "Resume timer"
     assert alert.reassign_btn.text() == "Reassign time"
+
+
+# ── Provisional (instant, unconfirmed) dialogs ────────────────────────────────
+
+def _interruption(gap_minutes: int = 12) -> dict:
+    now = datetime.now(timezone.utc)
+    return {
+        "client_op": "timer:7:20260916T090000Z:ab12cd34",
+        "gap_seconds": gap_minutes * 60,
+        "idle_started_at": (now - timedelta(minutes=gap_minutes)).isoformat(),
+        "idle_detected_at": now.isoformat(),
+        "client_event_id": "interruption:timer:7:20260916T090000Z:ab12cd34:...",
+    }
+
+
+@pytest.fixture
+def provisional_alert(qapp):
+    from ui.idle_alert_dialog import IdleAlertDialog
+
+    dialog = IdleAlertDialog(StubApi(), provisional=_interruption())
+    dialog.show()
+    qapp.processEvents()
+    yield dialog
+    dialog.force_close()
+    dialog.deleteLater()
+
+
+def test_a_provisional_dialog_opens_instantly_with_actions_disabled(qapp, provisional_alert):
+    assert provisional_alert.isVisible()
+    assert provisional_alert._locked is True
+    for widget in (
+        provisional_alert.stop_btn, provisional_alert.resume_btn,
+        provisional_alert.reassign_btn, provisional_alert.discard_radio,
+        provisional_alert.keep_radio,
+    ):
+        assert not widget.isEnabled()
+    assert provisional_alert.duration_label.text() == "12 minutes"
+    assert "Confirming" in provisional_alert.status_label.text()
+
+
+def test_bind_confirmed_period_unlocks_actions(qapp, provisional_alert):
+    provisional_alert.bind_confirmed_period({
+        "id": 77, "status": "pending", "reassigned": False, "original_project_id": 5,
+        "idle_started_at": provisional_alert._period["idle_started_at"],
+    })
+    qapp.processEvents()
+
+    assert provisional_alert._locked is False
+    assert provisional_alert.stop_btn.isEnabled()
+    assert provisional_alert.resume_btn.isEnabled()
+    assert provisional_alert.status_label.text() == ""
+    assert provisional_alert._period.get("id") == 77
+
+
+def test_a_matching_confirmation_is_recognised(qapp, provisional_alert):
+    assert provisional_alert.is_provisional_for({"client_op": "timer:7:20260916T090000Z:ab12cd34"})
+    assert not provisional_alert.is_provisional_for({"client_op": "some-other-session"})
+
+
+def test_interruption_withdrawn_closes_the_provisional_dialog(qapp, provisional_alert):
+    provisional_alert.api.idle.interruption_withdrawn.emit()
+    qapp.processEvents()
+    assert not provisional_alert.isVisible()
+    assert provisional_alert._finished is True
+
+
+def test_interruption_withdrawn_is_a_no_op_once_confirmed(qapp, provisional_alert):
+    provisional_alert.bind_confirmed_period({
+        "id": 77, "status": "pending", "reassigned": False,
+        "idle_started_at": provisional_alert._period["idle_started_at"],
+    })
+    provisional_alert.api.idle.interruption_withdrawn.emit()
+    qapp.processEvents()
+    assert provisional_alert.isVisible(), "a confirmed dialog must not be withdrawn"
+    assert provisional_alert._finished is False
+
+
+def test_escape_and_close_are_swallowed_while_provisional(qapp, provisional_alert):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+
+    provisional_alert.keyPressEvent(QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier
+    ))
+    qapp.processEvents()
+    assert provisional_alert.isVisible()
+
+    provisional_alert.reject()
+    qapp.processEvents()
+    assert provisional_alert.isVisible()
 
 
 # ── 9/13. The live idle figure ────────────────────────────────────────────────

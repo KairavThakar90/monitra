@@ -220,6 +220,78 @@ def test_the_threshold_is_seeded_from_the_restored_session_at_start(qapp, cache,
         runtime.timer.stop(timeout_ms=500)
 
 
+# ── The instant, provisional popup ────────────────────────────────────────────
+
+def test_interruption_pending_fires_instantly_on_recovery(qapp, cache, clock):
+    """The provisional signal fires the moment recovery computes the gap --
+    synchronously, before any tick or network round trip -- so the popup can
+    open instantly. `idle_period_opened` still only fires once the backend
+    confirms it."""
+    backend = FakeTimeEntryService(entry_id=42)
+    first = _process(cache, backend)
+    first.timer.start_tracking(1, 7, "Task")
+    last_beat = clock.advance(hours=4)
+    _die(first)
+    clock.advance(hours=1)
+
+    second = _process(cache, backend)
+    pending = []
+    opened = []
+    second.idle.interruption_pending.connect(pending.append)
+    second.idle.idle_period_opened.connect(opened.append)
+    try:
+        recovered = second.timer.recover(previous_run={"last_heartbeat": last_beat.timestamp()})
+        assert recovered is not None
+        assert len(pending) == 1, "fired synchronously from recovery, before any tick"
+        assert opened == [], "not yet confirmed by the backend"
+        assert pending[0]["gap_seconds"] == pytest.approx(3600.0)
+        assert pending[0]["client_op"] == recovered["client_op"]
+
+        second.idle.tick()                                # now reports and confirms
+        assert len(opened) == 1
+    finally:
+        _finish(second)
+
+
+def test_a_gap_under_threshold_withdraws_the_provisional_popup(qapp, cache, clock):
+    backend = FakeTimeEntryService(entry_id=42)
+    first = _process(cache, backend, idle_minutes=10)
+    first.timer.start_tracking(1, 7, "Task")
+    last_beat = clock.advance(minutes=30)
+    _die(first)
+    clock.advance(minutes=4)
+
+    second = _process(cache, backend, idle_minutes=10)
+    withdrawn = []
+    second.idle.interruption_withdrawn.connect(lambda: withdrawn.append(True))
+    try:
+        _recover(second, last_beat)
+        assert withdrawn == [True]
+    finally:
+        _finish(second)
+
+
+def test_a_definitive_refusal_withdraws_the_provisional_popup(qapp, cache, clock):
+    backend = FakeTimeEntryService(entry_id=42)
+    first = _process(cache, backend)
+    first.timer.start_tracking(1, 7, "Task")
+    last_beat = clock.advance(hours=4)
+    _die(first)
+    clock.advance(hours=1)
+
+    second = _process(cache, backend)
+    second.idle_api.report_error = ApiError(
+        "Idle time can only be reported against a running timer.", status_code=409
+    )
+    withdrawn = []
+    second.idle.interruption_withdrawn.connect(lambda: withdrawn.append(True))
+    try:
+        _recover(second, last_beat)
+        assert withdrawn == [True]
+    finally:
+        _finish(second)
+
+
 # ── 2. Repeated recovery -> no duplicate idle period ─────────────────────────
 
 def test_2_recovering_the_same_interruption_again_opens_no_second_period(qapp, cache, clock):

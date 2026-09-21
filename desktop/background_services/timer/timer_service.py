@@ -44,7 +44,7 @@ response carries, and the offset is kept on the record for diagnostics.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import QTimer, Signal, Slot
@@ -52,7 +52,7 @@ from PySide6.QtCore import QTimer, Signal, Slot
 from core.date_mode import DateMode, date_mode
 from core.logging_setup import get_logger, session_generation
 from core.service import BaseService
-from core.time_format import ist_today, parse_utc as _parse_utc
+from core.time_format import ist_day_bounds_utc, ist_today, to_ist, parse_utc as _parse_utc
 
 log = get_logger("timer")
 
@@ -66,6 +66,14 @@ TIMER_STATE_KEY = "timer_state"
 #: each login for no gain. A larger difference means a clock was stepped, and
 #: the backend's record -- the one that will be billed -- wins.
 REANCHOR_TOLERANCE_SECONDS = 5
+
+#: A crash-recovered session whose interruption gap (last heartbeat -> this
+#: launch) exceeds this is not resumed -- it is stopped at
+#: `interrupted_at + this`, never "now", so the outcome is deterministic and
+#: replayable. Applied only at the moment the app is reopened: there is no
+#: background or real-time enforcement while the app stays closed, since
+#: nothing runs to enforce it.
+RECOVERY_CAP_SECONDS = 60 * 60
 
 
 class TimerStatus:
@@ -499,6 +507,8 @@ class TimerService(BaseService):
             self.log.exception("could not persist timer state")
 
     def _emit_tick(self) -> None:
+        if self._session is not None:
+            self._maybe_roll_over_midnight()
         self.timer_tick.emit(self.elapsed_seconds())
 
     def _timing(self, event: str, **fields: Any) -> None:
@@ -978,6 +988,99 @@ class TimerService(BaseService):
             self.stop_tracking()
         self.start_tracking(project_id, task_id, task_name)
 
+    # ── Midnight rollover ────────────────────────────────────────────────────
+    #
+    # A running session's entry is attributed to whichever calendar day
+    # contains its `start_time` -- the backend's day-keyed reports filter on
+    # that column alone. Left alone, an overnight session would bill its
+    # whole duration to the day it started. This splits it at the IST day
+    # boundary it crosses: the old entry is stopped exactly at midnight, and
+    # a new one starts for the same project/task at the same instant, so
+    # there is no gap and no overlap. IST, not the machine's local midnight,
+    # because that is the day the backend and the cache fold already use
+    # (see `ist_today()` in `stop_tracking()`).
+    #
+    # Reused from two call sites: the live one-second tick (via `_emit_tick`)
+    # and `recover()`, for a session recovered into a new IST day. One
+    # implementation, two callers -- never two implementations of a split.
+
+    def _maybe_roll_over_midnight(self, *, emit_started: bool = True) -> bool:
+        """Split the running session if it has crossed an IST day boundary.
+
+        :return: True if a rollover happened.
+        """
+        if self._session is None:
+            return False
+        started = parse_utc(self._session.get("started_at_utc"))
+        if started is None:
+            return False
+        boundary = ist_day_bounds_utc(to_ist(started).date())[1]
+        if _utc_now() < boundary:
+            return False
+        self._roll_over_at(boundary, emit_started=emit_started)
+        return True
+
+    def _roll_over_at(self, boundary: datetime, *, emit_started: bool = True) -> None:
+        """Stop the running session at `boundary` and start a fresh one there.
+
+        Built from the same primitives `stop_tracking()`/`start_tracking()`
+        use internally rather than calling those methods themselves: both are
+        user-facing verbs with `for_date` guard semantics, break-state
+        handling and a `timer_stopped`/`timer_conflict` signal pairing tuned
+        for a real user action, none of which applies to a system-initiated
+        split.
+        """
+        assert self._session is not None
+        session = dict(self._session)
+        started_at = parse_utc(session.get("started_at_utc"))
+        stopped_at = boundary.isoformat()
+        elapsed = max(0, int((boundary - started_at).total_seconds())) if started_at else 0
+        entry_id = session.get("entry_id")
+        task_id = session.get("task_id")
+        project_id = session.get("project_id")
+        task_name = session.get("task_name")
+
+        self._timing("rollover.stop", stopped_at=stopped_at, elapsed_seconds=elapsed)
+        self._enqueue_stop(session, stopped_at, elapsed)
+
+        if self._cache and elapsed > 0:
+            try:
+                # The day the entry being closed belongs to -- one instant
+                # before the boundary, never the boundary itself (which is
+                # already the *new* day).
+                old_day = to_ist(boundary - timedelta(seconds=1)).date().isoformat()
+                self._cache.add_elapsed_to_cached_time_entry(
+                    old_day, task_id, elapsed,
+                    entry_id=entry_id, stopped_at=stopped_at, measured_seconds=elapsed,
+                )
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not fold rolled-over elapsed time into cache")
+
+        self.timer_stopped.emit(
+            {"session": session, "elapsed_seconds": elapsed, "result": {"rollover": True}}
+        )
+
+        started_at_new = boundary.isoformat()
+        client_op = new_client_op(task_id, boundary)
+        self._session = {
+            "entry_id": None,
+            "client_op": client_op,
+            "project_id": project_id,
+            "task_id": task_id,
+            "task_name": task_name,
+            "started_at_utc": started_at_new,
+            "status": TimerStatus.RUNNING,
+            "sync_status": "pending",
+            "updated_at": started_at_new,
+            "session_generation": session_generation(),
+            "adjustment_seconds": 0,
+        }
+        self._persist()
+        self._enqueue_start(project_id, task_id, started_at_new, client_op)
+        self._timing("rollover.start")
+        if emit_started:
+            self.timer_started.emit(dict(self._session))
+
     # ── Break In / Break Out ─────────────────────────────────────────────────
     #
     # Neither of these owns any timer mechanics. Break In *is* `stop_tracking`
@@ -1320,9 +1423,16 @@ class TimerService(BaseService):
             self._cache.clear_app_state(TIMER_STATE_KEY)
             return None
 
-        self._set_status(TimerStatus.RECOVERING)
         now = _utc_now()
         interrupted_at = self._interruption_instant(record, previous_run, now)
+        # Cap first: a session ending anyway needs no rollover.
+        if interrupted_at is not None:
+            gap = (now - interrupted_at).total_seconds()
+            if gap > RECOVERY_CAP_SECONDS:
+                self._force_stop_capped(record, interrupted_at)
+                return None
+
+        self._set_status(TimerStatus.RECOVERING)
         self._session = dict(record)
         self._session["recovery_count"] = int(record.get("recovery_count") or 0) + 1
         self._session["recovered_at_utc"] = now.isoformat()
@@ -1331,13 +1441,24 @@ class TimerService(BaseService):
         )
         self._session["updated_at"] = now.isoformat()
         self._persist()
+        # A session recovered into a new IST day is split immediately, so it
+        # never displays "yesterday" while today's report expects a same-day
+        # entry, and does not wait for the next natural midnight tick.
+        # `recover()` emits `timer_started` itself below, so the rollover
+        # must not emit a second one for the same transition.
+        # Captured before a possible rollover replaces `self._session` with a
+        # fresh post-boundary session that carries no `recovery_count` of its
+        # own -- the count belongs to the recovery that just happened, not
+        # to the split.
+        recovery_count = self._session["recovery_count"]
+        rolled_over = self._maybe_roll_over_midnight(emit_started=False)
         elapsed = self.elapsed_seconds()
         gap = int((now - interrupted_at).total_seconds()) if interrupted_at else None
         self.log.info(
             "recovered timer for task %s, entry %s, elapsed %ds (interrupted %ss ago, "
             "recovery %d)",
             record.get("task_id"), record.get("entry_id"), elapsed,
-            gap if gap is not None else "?", self._session["recovery_count"],
+            gap if gap is not None else "?", recovery_count,
         )
         self._set_status(TimerStatus.RUNNING)
         self._tick_timer.start()
@@ -1348,9 +1469,46 @@ class TimerService(BaseService):
         self._emit_tick()
         self._timing(
             "recover", elapsed_seconds=elapsed, interrupted_for_seconds=gap,
-            recovery_count=self._session["recovery_count"],
+            recovery_count=recovery_count, rolled_over=rolled_over,
         )
         return dict(self._session)
+
+    def _force_stop_capped(self, record: Dict[str, Any], interrupted_at: datetime) -> None:
+        """A crash-recovered session whose gap exceeded RECOVERY_CAP_SECONDS
+        is not resumed. It is stopped at interrupted_at + RECOVERY_CAP_SECONDS
+        -- a deterministic, replayable instant, never "now" -- so
+        `total_seconds` is exact and this is idempotent across retries and
+        repeated recovery attempts: once the stop is queued and the record
+        cleared, a second recovery attempt finds no record (the first guard
+        in `recover()`) and does nothing further.
+
+        No idle-period or adjustment is created for the capped remainder:
+        the entry's duration is simply `end_time - start_time` on the capped
+        instant, exactly as any other stop -- nothing is being discarded
+        from within a still-open entry, because the entry ends here.
+        """
+        stopped_at_dt = interrupted_at + timedelta(seconds=RECOVERY_CAP_SECONDS)
+        started = parse_utc(record.get("started_at_utc"))
+        elapsed = max(0, int((stopped_at_dt - started).total_seconds())) if started else 0
+        stopped_at = stopped_at_dt.isoformat()
+
+        self._timing_for(
+            record, "recover.capped",
+            interrupted_at_utc=interrupted_at.isoformat(),
+            stopped_at=stopped_at, elapsed_seconds=elapsed,
+            gap_seconds=int((_utc_now() - interrupted_at).total_seconds()),
+        )
+        self.log.warning(
+            "recovered session for task %s interrupted at %s exceeds the %ds cap; "
+            "stopping at %s instead of resuming",
+            record.get("task_id"), interrupted_at.isoformat(), RECOVERY_CAP_SECONDS, stopped_at,
+        )
+        # No live session exists yet at this point (recover() has not
+        # adopted the record), so this cannot race the in-memory RUNNING
+        # state. `_enqueue_stop` reads entry_id/client_op/task_id off
+        # whatever dict it is given -- it does not require `self._session`.
+        self._enqueue_stop(record, stopped_at, elapsed)
+        self._cache.clear_app_state(TIMER_STATE_KEY)
 
     def _stop_already_queued_for(self, record: Dict[str, Any]) -> bool:
         try:

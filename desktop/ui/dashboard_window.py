@@ -562,6 +562,10 @@ class DashboardWindow(QWidget):
         # rather than in the service because a service must not own a widget.
         idle = self.api.idle
         idle.idle_period_opened.connect(self._on_idle_period_opened)
+        # A crash-recovery gap, shown instantly before the backend has
+        # confirmed it -- the popup opens now with the live count, locked,
+        # and `_on_idle_period_opened` above unlocks it once confirmed.
+        idle.interruption_pending.connect(self._on_interruption_pending)
 
         # A screenshot was captured. Edge-triggered from the service, which
         # emits once per capture -- at most one per ten-minute window -- so
@@ -599,6 +603,41 @@ class DashboardWindow(QWidget):
 
     # ── Idle time ─────────────────────────────────────────────────────────────
 
+    def _on_interruption_pending(self, interruption: dict) -> None:
+        """A crash-recovery gap was detected -- open the popup instantly.
+
+        This is the provisional view: the live gap is shown at once, but the
+        dialog's actions stay locked until `_on_idle_period_opened` confirms
+        it with the backend's real idle period (via `bind_confirmed_period`),
+        or `IdleService.interruption_withdrawn` closes it because the backend
+        never accepted the gap. The backend still decides everything but the
+        on-screen count.
+        """
+        if self._idle_dialog is not None:
+            self._idle_dialog.raise_()
+            self._idle_dialog.activateWindow()
+            return
+
+        dialog = IdleAlertDialog(
+            self.api,
+            provisional=interruption,
+            project_name_resolver=self._project_name_for,
+            project_loader=self.project_service.get_projects,
+            task_loader=self.task_service.get_tasks_for_project,
+            parent=self.window(),
+        )
+        self._idle_dialog = dialog
+        dialog.resolved.connect(self._on_idle_period_resolved)
+        dialog.finished.connect(lambda _result: self._forget_idle_dialog())
+
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self.api.notify(
+            "You have been idle. Monitra needs to know whether to keep that time.",
+            NotificationLevel.WARNING, key="idle-alert",
+        )
+
     def _on_idle_period_opened(self, period: dict) -> None:
         """Raise the mandatory idle popup for a period the backend now holds.
 
@@ -607,6 +646,11 @@ class DashboardWindow(QWidget):
         pending period, so the two guards agree.
         """
         if self._idle_dialog is not None:
+            if self._idle_dialog.is_provisional_for(period):
+                # The dialog already on screen is the provisional view of
+                # this exact gap -- unlock it rather than build a second one.
+                self._idle_dialog.bind_confirmed_period(period)
+                return
             self._idle_dialog.raise_()
             self._idle_dialog.activateWindow()
             return

@@ -88,19 +88,31 @@ class IdleService(LoopService):
     Owns idle detection and every idle-period call to the backend.
 
     Signals (all delivered on the GUI thread):
-        idle_period_opened(dict)   — a pending period exists; show the popup
-        idle_period_cleared()      — it is gone; close the popup
-        resolve_succeeded(dict)    — the backend accepted the user's answer
-        resolve_failed(str)        — it did not; the period is still pending
-        reassign_succeeded(dict)   — idle time moved to another project/task
-        reassign_failed(str)       — it did not; nothing was written
-        config_changed(bool, int)  — idle_enabled, idle_minutes
+        idle_period_opened(dict)     — a pending period exists; show the popup
+        idle_period_cleared()        — it is gone; close the popup
+        interruption_pending(dict)   — a crash-recovery gap was detected,
+                                        before the backend has issued a real
+                                        idle-period id; the popup may open
+                                        immediately, showing the live gap, but
+                                        must not let the user act until
+                                        `idle_period_opened` confirms it
+        interruption_withdrawn()     — a gap shown via `interruption_pending`
+                                        was never accepted by the backend
+                                        (under threshold, entry gone, or idle
+                                        detection off); close the popup
+        resolve_succeeded(dict)      — the backend accepted the user's answer
+        resolve_failed(str)          — it did not; the period is still pending
+        reassign_succeeded(dict)     — idle time moved to another project/task
+        reassign_failed(str)         — it did not; nothing was written
+        config_changed(bool, int)    — idle_enabled, idle_minutes
     """
 
     name = "idle"
 
     idle_period_opened = Signal(dict)
     idle_period_cleared = Signal()
+    interruption_pending = Signal(dict)
+    interruption_withdrawn = Signal()
     resolve_succeeded = Signal(dict)
     resolve_failed = Signal(str)
     reassign_succeeded = Signal(dict)
@@ -481,6 +493,11 @@ class IdleService(LoopService):
             "recovered session was interrupted for %.0fs; it will be reported as an "
             "idle period if it reaches the user's idle threshold", gap,
         )
+        # Shown instantly, before the backend has confirmed anything: the
+        # popup may open now with the live gap, but nothing here asserts
+        # this is the final number -- only `idle_period_opened`, once the
+        # backend answers, may be acted on.
+        self.interruption_pending.emit(dict(self._interruption))
 
     def _network_usable(self) -> bool:
         network = getattr(self.runtime, "network", None)
@@ -514,6 +531,7 @@ class IdleService(LoopService):
                 interruption["gap_seconds"], self._idle_minutes,
             )
             self._interruption = None
+            self.interruption_withdrawn.emit()
             return
         if not self._network_usable():
             return  # kept; the next tick tries again once the network is back
@@ -560,6 +578,7 @@ class IdleService(LoopService):
         if status_code in (400, 404, 409):
             self.log.warning("interruption gap not accepted by the backend (%s); dropping it", exc)
             self._interruption = None
+            self.interruption_withdrawn.emit()
         else:
             self.log.warning("could not report the interruption gap yet: %s", exc)
         if self._state == IdleState.REPORTING:
@@ -584,7 +603,9 @@ class IdleService(LoopService):
         """
         self._monitoring_since = time.monotonic()
         self._last_entry_id = None
-        self._interruption = None
+        if self._interruption is not None:
+            self._interruption = None
+            self.interruption_withdrawn.emit()
         if self._pending is not None:
             self.log.info(
                 "timer stopped with idle period %s pending; the backend "
@@ -605,7 +626,9 @@ class IdleService(LoopService):
         """Drop all session-scoped state. Called on logout."""
         self._recovery_checked.clear()
         self._last_entry_id = None
-        self._interruption = None
+        if self._interruption is not None:
+            self._interruption = None
+            self.interruption_withdrawn.emit()
         self._config_loaded = False
         self._config_read_at = time.monotonic()
         self._monitoring_since = time.monotonic()

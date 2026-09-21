@@ -188,15 +188,16 @@ def test_a_frozen_machine_leaves_a_stale_heartbeat_and_is_recovered_like_a_crash
     backend = FakeTimeEntryService(entry_id=42)
     first = _new_timer(cache, backend)
     first.start_tracking(1, 7, "Task")
-    # The heartbeat wrote once, then the machine hung for three hours and was
-    # reset: no clean-shutdown flag, a heartbeat hours old.
+    # The heartbeat wrote once, then the machine hung for thirty minutes and
+    # was reset: no clean-shutdown flag, a heartbeat under the 1-hour
+    # recovery cap so this pins the hang-recovery behaviour, not the cap.
     frozen_at = clock.advance(minutes=20)
     cache.save_app_state(RUNTIME_STATE_KEY, {
         "pid": 1, "last_heartbeat": frozen_at.timestamp(), "clean_shutdown": False,
         "session_generation": 1,
     })
     first._tick_timer.stop()
-    clock.advance(hours=3)
+    clock.advance(minutes=30)
 
     second = _new_timer(cache, backend)
     recovery = RecoveryService(second.runtime, cache)
@@ -205,7 +206,7 @@ def test_a_frozen_machine_leaves_a_stale_heartbeat_and_is_recovered_like_a_crash
         summary = recovery.recover()
         assert summary["timer_recovered"] is True
         assert second.is_running() and second.entry_id == 42
-        assert second.elapsed_seconds() == 3 * 3600 + 20 * 60
+        assert second.elapsed_seconds() == 50 * 60
         assert parse_utc(second.active_session()["interrupted_at_utc"]) == frozen_at
         assert len(backend.started) == 1
     finally:
@@ -238,8 +239,8 @@ def test_a_start_after_recovery_switches_rather_than_doubling(qapp, cache, clock
 
 # ── power loss, short and long ───────────────────────────────────────────────
 
-@pytest.mark.parametrize("off_for", [timedelta(seconds=40), timedelta(hours=1), timedelta(hours=14)])
-def test_power_loss_of_any_length_is_recovered_as_the_same_session(qapp, cache, clock, off_for):
+@pytest.mark.parametrize("off_for", [timedelta(seconds=40), timedelta(minutes=59)])
+def test_power_loss_under_the_cap_is_recovered_as_the_same_session(qapp, cache, clock, off_for):
     backend = FakeTimeEntryService(entry_id=42)
     first = _new_timer(cache, backend)
     first.start_tracking(1, 7, "Task")
@@ -260,5 +261,77 @@ def test_power_loss_of_any_length_is_recovered_as_the_same_session(qapp, cache, 
         assert parse_utc(recovered["interrupted_at_utc"]) == last_beat
         assert len(backend.started) == 1
         assert [i for _, i in tracker.started] == [clock.now], "capture restarts now, not during the outage"
+    finally:
+        second.stop(timeout_ms=500)
+
+
+# ── the 1-hour recovery cap ──────────────────────────────────────────────────
+
+@pytest.mark.parametrize("off_for", [timedelta(hours=1, seconds=1), timedelta(hours=14)])
+def test_power_loss_over_the_cap_is_stopped_not_resumed(qapp, cache, clock, off_for):
+    """A gap that exceeds RECOVERY_CAP_SECONDS is not resumed -- it is
+    stopped at `interrupted_at + cap`, a deterministic instant, and the
+    persisted record is cleared so the session is not resurrected."""
+    backend = FakeTimeEntryService(entry_id=42)
+    first = _new_timer(cache, backend)
+    first.start_tracking(1, 7, "Task")
+    worked = timedelta(hours=3)
+    last_beat = clock.advance(seconds=worked.total_seconds())
+    first._tick_timer.stop()
+    clock.advance(seconds=off_for.total_seconds())
+
+    second = _new_timer(cache, backend)
+    try:
+        recovered = second.recover(previous_run={"last_heartbeat": last_beat.timestamp()})
+        assert recovered is None
+        assert second.is_running() is False
+        assert cache.load_app_state(TIMER_STATE_KEY) is None
+        stops = [p for a, p, _ in second.runtime.sync.enqueued if a == "stop_timer"]
+        assert len(stops) == 1
+        expected_stop = last_beat + timedelta(seconds=timer_module.RECOVERY_CAP_SECONDS)
+        assert parse_utc(stops[0]["stopped_at"]) == expected_stop
+        assert stops[0]["elapsed_seconds"] == int(
+            (worked + timedelta(seconds=timer_module.RECOVERY_CAP_SECONDS)).total_seconds()
+        )
+    finally:
+        second.stop(timeout_ms=500)
+
+
+def test_a_gap_exactly_at_the_cap_still_resumes(qapp, cache, clock):
+    """The rule is 'exceeds', not 'reaches' -- a gap equal to the cap resumes."""
+    backend = FakeTimeEntryService(entry_id=42)
+    first = _new_timer(cache, backend)
+    first.start_tracking(1, 7, "Task")
+    last_beat = clock.advance(minutes=1)
+    first._tick_timer.stop()
+    clock.advance(seconds=timer_module.RECOVERY_CAP_SECONDS)
+
+    second = _new_timer(cache, backend)
+    try:
+        recovered = second.recover(previous_run={"last_heartbeat": last_beat.timestamp()})
+        assert recovered is not None
+        assert second.is_running() is True
+    finally:
+        second.stop(timeout_ms=500)
+
+
+def test_recovering_an_over_cap_session_twice_queues_only_one_stop(qapp, cache, clock):
+    """A second crash before the capped stop's queued action confirms must
+    not queue a duplicate stop -- the record is already cleared after the
+    first `recover()` call, so the second finds nothing."""
+    backend = FakeTimeEntryService(entry_id=42)
+    first = _new_timer(cache, backend)
+    first.start_tracking(1, 7, "Task")
+    last_beat = clock.advance(minutes=1)
+    first._tick_timer.stop()
+    clock.advance(hours=2)
+
+    second = _new_timer(cache, backend)
+    try:
+        previous_run = {"last_heartbeat": last_beat.timestamp()}
+        assert second.recover(previous_run=previous_run) is None
+        assert second.recover(previous_run=previous_run) is None
+        stops = [p for a, p, _ in second.runtime.sync.enqueued if a == "stop_timer"]
+        assert len(stops) == 1
     finally:
         second.stop(timeout_ms=500)

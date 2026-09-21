@@ -120,16 +120,29 @@ class IdleAlertDialog(QDialog):
     def __init__(
         self,
         api,
-        period: Dict[str, Any],
+        period: Optional[Dict[str, Any]] = None,
         *,
+        provisional: Optional[Dict[str, Any]] = None,
         project_name_resolver: Optional[Callable[[Optional[int]], Optional[str]]] = None,
         project_loader: Optional[Callable[[], list]] = None,
         task_loader: Optional[Callable[[int], list]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
+        """
+        `period` is a confirmed, backend-issued idle period (has a real
+        `id`). `provisional` is a crash-recovery gap the desktop has computed
+        locally, before the backend has issued anything — exactly one of the
+        two is given. A provisional dialog shows the live gap instantly, per
+        `IdleService.interruption_pending`, but its actions stay locked until
+        `bind_confirmed_period()` is called with the backend's real period —
+        the backend decides everything but the on-screen count, always.
+        """
         super().__init__(parent)
         self.api = api
-        self._period = dict(period or {})
+        self._locked = provisional is not None and period is None
+        source = provisional if self._locked else period
+        self._period = dict(source or {})
+        self._provisional_client_op = (provisional or {}).get("client_op") if self._locked else None
         self._resolve_project_name = project_name_resolver or (lambda _pid: None)
         # The same loaders the dashboard uses, so the reassignment dropdowns
         # show exactly the projects and tasks this user is authorised for --
@@ -168,6 +181,9 @@ class IdleAlertDialog(QDialog):
         self._wire_service()
         self._refresh_duration()
         self._render_assignment()
+        if self._locked:
+            self._apply_action_availability()
+            self._set_status("Confirming with the server…", TEXT_SECONDARY)
 
     # ── Construction ──────────────────────────────────────────────────────────
 
@@ -426,6 +442,9 @@ class IdleAlertDialog(QDialog):
         # discards a still-pending period in that case), so the popup must
         # come down rather than demand an answer about a stopped timer.
         idle.idle_period_cleared.connect(self._on_period_cleared)
+        # A no-op unless this dialog is still provisional (`self._locked`):
+        # guarded inside the slot itself, so it is safe to connect always.
+        idle.interruption_withdrawn.connect(self._on_interruption_withdrawn)
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
@@ -487,13 +506,24 @@ class IdleAlertDialog(QDialog):
         nor a stuck button can send two.
         """
         self._busy = busy
+        self._apply_action_availability()
+        if message:
+            self._set_status(message, TEXT_SECONDARY)
+
+    def _apply_action_availability(self) -> None:
+        """Actions are enabled only once busy AND locked are both false.
+
+        `_busy` is "a request is in flight" (unlocks again once it
+        completes). `_locked` is "this dialog is still provisional -- the
+        backend has not confirmed a real idle period yet" (unlocks once via
+        `bind_confirmed_period`). Either alone is enough to disable acting.
+        """
+        enabled = not (self._busy or self._locked)
         for widget in (
             self.stop_btn, self.resume_btn, self.reassign_btn,
             self.discard_radio, self.keep_radio,
         ):
-            widget.setEnabled(not busy)
-        if message:
-            self._set_status(message, TEXT_SECONDARY)
+            widget.setEnabled(enabled)
 
     def _set_status(self, message: str, color: str) -> None:
         self.status_label.setText(message)
@@ -503,7 +533,7 @@ class IdleAlertDialog(QDialog):
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _resolve(self, action: str) -> None:
-        if self._busy or self._finished:
+        if self._busy or self._finished or self._locked:
             return
         keep = self.keep_radio.isChecked()
         self._set_busy(
@@ -538,10 +568,54 @@ class IdleAlertDialog(QDialog):
         self.resolved.emit({"cleared": True})
         self.accept()
 
+    def is_provisional_for(self, period: Dict[str, Any]) -> bool:
+        """True while this dialog is showing a gap the backend has not yet
+        confirmed, for the same interruption `period` belongs to.
+
+        Used by the dashboard to tell "this `idle_period_opened` is the
+        confirmation of the dialog already on screen" from "this is an
+        unrelated, fresh idle period" — the latter still builds a normal
+        dialog exactly as before this feature existed.
+        """
+        if not self._locked or self._finished:
+            return False
+        if self._provisional_client_op is None:
+            return True  # nothing to compare against; assume it is this one
+        return period.get("client_op") == self._provisional_client_op
+
+    def bind_confirmed_period(self, period: Dict[str, Any]) -> None:
+        """The backend's real idle period has landed for this provisional
+        dialog. Unlock the actions and switch to the ordinary confirmed
+        state -- everything downstream (resolve/reassign) already targets
+        this real id through `IdleService`, which keeps its own pending
+        state; this only unlocks the UI and refreshes what it shows.
+        """
+        if self._finished:
+            return
+        self._period = dict(period or {})
+        self._locked = False
+        self._apply_action_availability()
+        self._set_status("", TEXT_SECONDARY)
+        self._render_assignment()
+
+    def _on_interruption_withdrawn(self) -> None:
+        """The provisional gap this dialog was showing was never confirmed
+        by the backend (under threshold, entry gone, or idle detection off).
+        Nothing to resolve against -- close gracefully, the same way a
+        cleared confirmed period does.
+        """
+        if self._finished or not self._locked:
+            return  # already confirmed, or already resolved/closed
+        self._finished = True
+        self._tick_timer.stop()
+        self._close_reassign_dialog()
+        self.resolved.emit({"withdrawn": True})
+        self.accept()
+
     # ── Reassignment ──────────────────────────────────────────────────────────
 
     def _open_reassign(self) -> None:
-        if self._busy or self._finished:
+        if self._busy or self._finished or self._locked:
             return
         if self._reassign_dialog is not None:
             self._reassign_dialog.raise_()
