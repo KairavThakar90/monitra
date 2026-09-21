@@ -226,10 +226,10 @@ def test_the_row_fits_a_common_laptop(qapp):
     assert row.minimumWidth() <= COMMON_LAPTOP_CONTENT_WIDTH
 
 
-def test_a_wide_window_gets_one_row_of_three(qapp):
+def test_a_wide_window_gets_one_row_of_every_card(qapp):
     row = StatCardsRow()
     _laid_out(row, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH)
-    assert row.columns() == 3
+    assert row.columns() == len(row._cards)
     row.hide()
 
 
@@ -258,11 +258,11 @@ def test_the_arrangement_only_changes_on_a_real_transition(qapp):
     the level-triggered shape this project has paid for before."""
     row = StatCardsRow()
     _laid_out(row, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH + 200)
-    assert row.columns() == 3
+    assert row.columns() == len(row._cards)
 
     row.resize(StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH + 100, row.height())
     QApplication.processEvents()
-    assert row.columns() == 3, "still three across; nothing should have moved"
+    assert row.columns() == len(row._cards), "still in one row; nothing should have moved"
 
     row.resize(StatCardsRow.TWO_COLUMN_MINIMUM_WIDTH, row.height())
     QApplication.processEvents()

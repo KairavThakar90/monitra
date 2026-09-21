@@ -217,47 +217,80 @@ export const MemberMultiSelect: React.FC<{
       </button>
 
       {open && (
-        <div className="absolute right-0 lg:left-0 top-full z-40 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-3 shadow-2xl">
-          <div className="mb-2 px-1 text-[11px] font-black uppercase tracking-wider text-slate-500">MEMBERS</div>
-          <div className="mb-3 px-1">
-            <input 
-              type="text" 
-              placeholder="Search members..." 
+        <div className="absolute right-0 z-40 mt-2 w-[280px] rounded-xl border border-[#E2E8F0] bg-white shadow-xl">
+          <div className="border-b border-[#F1F5F9] p-2.5">
+            <input
+              type="text"
+              placeholder="Search members..."
               value={query}
-              onChange={e => setQuery(e.target.value)}
+              onChange={(e) => setQuery(e.target.value)}
               maxLength={SEARCH_MAX_LENGTH}
-              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 outline-none transition focus:border-blue-500 focus:bg-white"
+              className="w-full rounded-lg bg-[#F8FAFC] px-3 py-2 text-[13px] text-[#0F172A] outline-none placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#2563EB]/25"
             />
           </div>
-          <div className="max-h-60 overflow-y-auto custom-scrollbar pr-1">
-            {filteredOptions.length > 0 ? filteredOptions.map(emp => {
-              const isSelected = selected.includes(String(emp.id));
-              return (
-                <label key={emp.id} className="flex cursor-pointer items-center justify-between gap-3 rounded-lg p-2 hover:bg-slate-50 transition">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className={`shrink-0 flex h-8 w-8 items-center justify-center rounded-full text-[10px] font-bold text-white shadow-sm ${getColor(emp.id)}`}>
-                      {(emp.name || 'U').split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase()}
+
+          <div className="flex items-center justify-between border-b border-[#F1F5F9] px-3 py-2">
+            <button
+              onClick={() => onChange(members.map((m) => String(m.id)))}
+              className="text-[11px] font-bold uppercase tracking-wider text-[#2563EB] hover:underline"
+            >
+              Select all
+            </button>
+            <span className="text-[11px] text-[#94A3B8]">
+              {selected.length} / {members.length}
+            </span>
+            <button
+              onClick={() => onChange([])}
+              className="text-[11px] font-bold uppercase tracking-wider text-[#64748B] hover:underline"
+            >
+              Clear
+            </button>
+          </div>
+
+          <div className="max-h-64 overflow-y-auto p-1.5 custom-scrollbar">
+            {filteredOptions.length > 0 ? (
+              filteredOptions.map((emp) => {
+                const isSelected = selected.includes(String(emp.id));
+                return (
+                  <button
+                    key={emp.id}
+                    onClick={() => {
+                      if (isSelected) onChange(selected.filter((id) => id !== String(emp.id)));
+                      else onChange([...selected, String(emp.id)]);
+                    }}
+                    className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition hover:bg-[#F8FAFC]"
+                  >
+                    <span
+                      className={
+                        "flex h-4 w-4 shrink-0 items-center justify-center rounded border transition " +
+                        (isSelected ? "border-[#2563EB] bg-[#2563EB]" : "border-[#CBD5E1] bg-white")
+                      }
+                    >
+                      {isSelected && (
+                        <svg className="h-3 w-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3.5" d="M5 13l4 4L19 6" />
+                        </svg>
+                      )}
+                    </span>
+                    <div
+                      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white shadow-sm ${getColor(emp.id)}`}
+                    >
+                      {(emp.name || "U")
+                        .split(" ")
+                        .map((n: string) => n[0])
+                        .join("")
+                        .substring(0, 2)
+                        .toUpperCase()}
                     </div>
-                    <div className="min-w-0 flex flex-col">
-                      <span className="truncate text-sm font-bold text-slate-700">{emp.name}</span>
-                      <span className="truncate text-[10px] font-semibold text-slate-400">{emp.role}</span>
-                    </div>
-                  </div>
-                  <div className="shrink-0 flex items-center justify-center">
-                    <input 
-                      type="checkbox" 
-                      checked={isSelected}
-                      onChange={(e) => {
-                        if (e.target.checked) onChange([...selected, String(emp.id)]);
-                        else onChange(selected.filter(id => id !== String(emp.id)));
-                      }}
-                      className="h-4 w-4 rounded border-slate-300 text-blue-500 focus:ring-blue-500" 
-                    />
-                  </div>
-                </label>
-              );
-            }) : (
-              <div className="py-4 text-center text-xs text-slate-500">No members found.</div>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-semibold text-[#0F172A]">{emp.name}</span>
+                      <span className="block truncate text-[11px] text-[#94A3B8]">{emp.role}</span>
+                    </span>
+                  </button>
+                );
+              })
+            ) : (
+              <div className="px-3 py-6 text-center text-[12px] text-[#94A3B8]">No members found.</div>
             )}
           </div>
         </div>

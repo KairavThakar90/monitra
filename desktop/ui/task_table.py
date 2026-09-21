@@ -276,6 +276,7 @@ class AddTaskDialog(QDialog):
         self.save_btn = QPushButton("Save", self)
         self.save_btn.setObjectName("SaveBtn")
         self.save_btn.setFixedSize(80, 32)
+        self.save_btn.setDefault(True)
         self.save_btn.clicked.connect(self.accept)
         btn_layout.addWidget(self.save_btn)
 
@@ -431,6 +432,7 @@ class EditTaskDialog(QDialog):
 
         self.save_btn = QPushButton("Save", self)
         self.save_btn.setFixedSize(80, 30)
+        self.save_btn.setDefault(True)
         self.save_btn.clicked.connect(self.accept)
         btn_layout.addWidget(self.save_btn)
 
@@ -802,6 +804,7 @@ class ManualTimeEntryDialog(QDialog):
         self.save_btn = QPushButton("Save Entry", self)
         self.save_btn.setObjectName("SaveBtn")
         self.save_btn.setFixedSize(110, 32)
+        self.save_btn.setDefault(True)
         self.save_btn.clicked.connect(self._on_save_clicked)
         btn_layout.addWidget(self.save_btn)
 

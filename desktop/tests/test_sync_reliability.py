@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import pytest
 
-from background_services.public_api import NetworkState
+from background_services.public_api import NetworkState, TodaySnapshot
 
 
 @pytest.fixture
@@ -50,7 +50,9 @@ class FakeRunner:
     does. `succeed`/`fail` deliver a recorded callback and retire the key, as
     the real runner does before invoking a callback."""
 
-    TYPED_RESULTS = {}
+    #: "load-today-activity" expects a TodaySnapshot, not a bare list of
+    #: records -- every other refresh fetch's handler.
+    TYPED_RESULTS = {"load-today-activity": lambda: TodaySnapshot(remote_ok=True)}
 
     def __init__(self):
         self.calls = {}

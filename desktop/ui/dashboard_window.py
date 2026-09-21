@@ -37,7 +37,7 @@ from app.projects.service import ProjectService
 from app.tasks.service import TaskService
 from app.time_entries.service import TimeEntryService
 from background_services.public_api import (
-    BackgroundApi, BreakStatus, NetworkState, NotificationLevel, UpdateState,
+    BackgroundApi, BreakStatus, NetworkState, NotificationLevel, TodaySnapshot, UpdateState,
 )
 from core.date_mode import DateMode, as_calendar_day, date_mode, is_live_date
 from core.logging_setup import get_logger
@@ -256,6 +256,12 @@ class DashboardWindow(QWidget):
         self._current_project: Optional[Dict[str, Any]] = None
         self._current_project_color = PROJECT_COLORS[0]
         self._today_time_entries: List[Dict[str, Any]] = []
+        #: The last-fetched persisted activity for today (uploaded + still
+        #: queued locally). Refreshed periodically in the background; the
+        #: window still being sampled is added on top of this, live, every
+        #: tick (see `_update_stat_cards`) via `api.live_activity_totals()`,
+        #: which is cheap enough to call every second.
+        self._today_activity: TodaySnapshot = TodaySnapshot()
         #: The selected project's tasks, as last rendered. Held only so the
         #: summary cards can count completed vs total without re-fetching.
         self._project_tasks: List[Dict[str, Any]] = []
@@ -295,6 +301,23 @@ class DashboardWindow(QWidget):
         #: When the refresh round in flight was started (monotonic), for the
         #: REFRESH_STALE_AFTER_S watchdog.
         self._refresh_started_at = 0.0
+
+        #: Consecutive failures of the *first* project load, while nothing is
+        #: cached to show instead. A transient hiccup here (a cold backend, a
+        #: one-off timeout, a token that needed one refresh) is not a
+        #: connectivity change, so it never flips `NetworkState` and the
+        #: reconnect-triggered retry in `_on_network_state_changed` never
+        #: fires -- the dashboard sat on "Unable to load projects" for the
+        #: full two minutes to the next periodic refresh, which read as
+        #: "projects don't load; I have to reopen the app" until one of those
+        #: repeated launches happened to land after the hiccup passed. This
+        #: timer retries on its own bounded backoff instead of waiting on
+        #: either of those. Reset to 0 the moment a load succeeds or any
+        #: project is already on screen (see `_schedule_empty_project_retry`).
+        self._empty_project_load_retries = 0
+        self._project_retry_timer = QTimer(self)
+        self._project_retry_timer.setSingleShot(True)
+        self._project_retry_timer.timeout.connect(self.load_projects)
 
         #: The backend's change fingerprint as last seen, and whether the
         #: backend offers one at all (None until the first probe answers).
@@ -1045,6 +1068,8 @@ class DashboardWindow(QWidget):
         self._active = False
         self._refresh_timer.stop()
         self._sync_probe_timer.stop()
+        self._project_retry_timer.stop()
+        self._empty_project_load_retries = 0
         self._activity_section.set_enabled(False)
         self.api.cancel_key("load-projects")
         # Parameterised families: `load-tasks:{project_id}`, `load-today:{date}`.
@@ -1052,6 +1077,7 @@ class DashboardWindow(QWidget):
         # logout (their results were still dropped by the session guard).
         self.api.cancel_keys_with_prefix("load-tasks:")
         self.api.cancel_keys_with_prefix("load-today:")
+        self.api.cancel_key("load-today-activity")
         self.api.cancel_key("load-statuses")
         self.api.cancel_key("sync-probe")
         self.api.cancel_key("check-active-timer")
@@ -1075,6 +1101,7 @@ class DashboardWindow(QWidget):
         self._current_project = None
         self._user_id = None
         self._today_time_entries = []
+        self._today_activity = TodaySnapshot()
         self._pending_active_timer = None
         self._sync_revision = None
         self._sync_probe_supported = None
@@ -1193,6 +1220,10 @@ class DashboardWindow(QWidget):
         reported "showing cached tasks -- retrying" until the user signed out.
         """
         self._sync_log("server.received", resource="projects", count=len(projects))
+        # A real answer arrived, empty or not -- the empty-state retry loop
+        # was for "couldn't ask", not "asked and there are none".
+        self._empty_project_load_retries = 0
+        self._project_retry_timer.stop()
         self._projects = projects
         self._sidebar.set_projects(projects)
         self._task_section.set_all_projects(projects)
@@ -1272,6 +1303,29 @@ class DashboardWindow(QWidget):
         self._status_bar.set_message(f"Could not load projects: {exc}", ERROR)
         if "session expired" in str(exc).lower():
             self.unauthorized_error.emit()
+            return
+        self._schedule_empty_project_retry()
+
+    #: Backoff between automatic retries of an empty-state project load,
+    #: capped well under REFRESH_INTERVAL_MS so a genuinely transient failure
+    #: is not left on screen for the full periodic-refresh interval.
+    _EMPTY_PROJECT_RETRY_DELAYS_MS = (3_000, 6_000, 12_000, 24_000)
+
+    def _schedule_empty_project_retry(self) -> None:
+        """One more attempt at the first project load, on a short backoff.
+
+        Only for the case `_on_projects_error` already guards on: nothing is
+        cached, so there is nothing to show while this waits. A project
+        already on screen means a later refresh failed instead, which the
+        existing "showing cached data -- retrying" message and the
+        network-state/periodic paths already cover.
+        """
+        if self._projects or not self._active:
+            return
+        index = min(self._empty_project_load_retries, len(self._EMPTY_PROJECT_RETRY_DELAYS_MS) - 1)
+        delay = self._EMPTY_PROJECT_RETRY_DELAYS_MS[index]
+        self._empty_project_load_retries += 1
+        self._project_retry_timer.start(delay)
 
     def _cache_age_for_log(self) -> Optional[int]:
         try:
@@ -1540,6 +1594,21 @@ class DashboardWindow(QWidget):
         else:
             self._stat_cards.set_active_task(None, None)
 
+        # TODAY'S ACTIVITY: the persisted half (uploaded + still queued),
+        # last fetched by `_load_today_activity`, plus the window currently
+        # being sampled -- cheap and non-blocking enough to add on every
+        # tick, which is what keeps the figure moving between the periodic
+        # refreshes rather than jumping only once every couple of minutes.
+        # Always today, regardless of which date is browsed: this card has
+        # never been about a project or a browsed day, only "how active has
+        # this signed-in session been so far today".
+        totals = self._today_activity.totals + self.api.live_activity_totals()
+        self._stat_cards.set_today_activity(
+            totals.percent,
+            has_measurement=totals.has_measurement,
+            is_tracking=running,
+        )
+
     def _project_name_for(self, project_id: Optional[int]) -> Optional[str]:
         if project_id is None:
             return None
@@ -1643,6 +1712,29 @@ class DashboardWindow(QWidget):
             key=f"load-today:{target.isoformat()}",
             on_done=on_done,
         )
+
+    def _load_today_activity(self, on_done: Optional[Callable[[bool], None]] = None) -> bool:
+        """Refresh TODAY'S ACTIVITY's persisted half (uploaded + still queued)
+        in the background. The window still being sampled is layered on top
+        of whatever this last fetched, live, every timer tick -- see
+        `_update_stat_cards`."""
+        today = ist_today()
+        return self._run_load(
+            lambda: self.api.today_activity_snapshot(today),
+            self._on_today_activity_loaded,
+            lambda exc: log.info("could not refresh today's activity: %s", exc),
+            key="load-today-activity",
+            on_done=on_done,
+        )
+
+    def _on_today_activity_loaded(self, snapshot: TodaySnapshot) -> None:
+        # A failed backend read comes back as `remote_ok=False`, never as an
+        # exception (see `today_activity_snapshot`'s own contract) -- keeping
+        # the last good snapshot in that case is what stops one transient
+        # blip regressing a real percentage to a blank card.
+        if snapshot.remote_ok:
+            self._today_activity = snapshot
+        self._update_stat_cards()
 
     def _overlay_pending_stops(self, entries: list) -> list:
         """Show the day as the backend *will* record it.
@@ -1818,6 +1910,7 @@ class DashboardWindow(QWidget):
             self.load_projects(on_done=self._on_refresh_step),
             self._load_task_statuses(on_done=self._on_refresh_step),
             self._load_today_time(self._current_date, on_done=self._on_refresh_step),
+            self._load_today_activity(on_done=self._on_refresh_step),
             self._load_tasks(self._current_project.get("id"), on_done=self._on_refresh_step)
             if self._current_project else False,
         ))

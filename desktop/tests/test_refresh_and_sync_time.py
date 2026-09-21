@@ -14,7 +14,7 @@ returned. Running them inline would not exercise the real ordering.
 """
 import pytest
 
-from background_services.public_api import NetworkState
+from background_services.public_api import NetworkState, TodaySnapshot
 
 
 @pytest.fixture
@@ -48,7 +48,7 @@ class FakeRunner:
         return object()
 
     #: Keys whose handler expects something other than a list of records.
-    TYPED_RESULTS = {}
+    TYPED_RESULTS = {"load-today-activity": lambda: TodaySnapshot(remote_ok=True)}
 
     def succeed_all(self, result=None):
         for key, (on_success, _) in list(self.calls.items()):
@@ -56,7 +56,8 @@ class FakeRunner:
             on_success(typed() if typed else (result if result is not None else []))
 
     def succeed(self, key, result=None):
-        self.calls[key][0](result if result is not None else [])
+        typed = self.TYPED_RESULTS.get(key)
+        self.calls[key][0](result if result is not None else (typed() if typed else []))
 
     def fail(self, key, exc=None):
         self.calls[key][1](exc or RuntimeError("backend down"))
@@ -84,6 +85,7 @@ def test_refresh_refetches_every_view_the_dashboard_shows(ready):
         "load-statuses",
         "load-tasks:7",
         f"load-today:{dashboard._current_date.isoformat()}",
+        "load-today-activity",
     }
 
 
@@ -111,6 +113,9 @@ def test_last_sync_only_moves_once_every_fetch_has_returned(ready, runtime):
 
     runner.succeed("load-statuses")
     runner.succeed(f"load-today:{dashboard._current_date.isoformat()}")
+    assert runtime.sync.last_synced_at is None, "load-today-activity has not reported back yet"
+
+    runner.succeed("load-today-activity")
     assert runtime.sync.last_synced_at is not None
 
 
@@ -127,6 +132,7 @@ def test_a_failed_fetch_leaves_the_previous_sync_time_untouched(ready, runtime):
     runner.succeed("load-projects")
     runner.fail("load-statuses")
     runner.succeed(f"load-today:{dashboard._current_date.isoformat()}")
+    runner.succeed("load-today-activity")
 
     assert runtime.sync.last_synced_at == first
 

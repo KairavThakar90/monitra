@@ -170,7 +170,7 @@ def test_the_active_card_is_wider_and_the_name_keeps_room_at_the_floor(qapp):
     which elides; at the narrowest one-row width the name still has room,
     and above it the active column stretches faster than the others."""
     row = _laid_out(qapp, StatCardsRow(), StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH)
-    assert row.columns() == 3
+    assert row.columns() == len(row._cards)
     assert row.active_card.width() > row.total_card.width()
     assert row.active_card._value.width() >= 118
     assert row.active_card._value.x() + row.active_card._value.width() <= row.break_button.x()
@@ -186,7 +186,8 @@ def test_a_1600px_window_still_shows_the_cards_in_one_row(qapp):
     taken out; the row showed one line there before the button and must
     still."""
     row = _laid_out(qapp, StatCardsRow(), 1600 - 300 - 40)
-    assert row.columns() == 3
+    assert row.columns() == len(row._cards), \
+        "1260px of content must still fit every card (including TODAY'S ACTIVITY) in one row"
     row.hide()
     row.deleteLater()
 

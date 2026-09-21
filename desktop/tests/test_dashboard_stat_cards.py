@@ -152,3 +152,79 @@ def test_signing_out_clears_the_cards(dashboard):
 
     assert dashboard._stat_cards.status_card._value.full_text() == "—"
     assert dashboard._stat_cards.total_card._value.full_text() == "00:00:00"
+
+
+# ── TODAY'S ACTIVITY ──────────────────────────────────────────────────────────
+#
+# The fourth card: a single duration-weighted percentage from
+# background_services.activity.today_summary, combining whatever was last
+# fetched from the backend (plus anything still queued locally) with the
+# window currently being sampled -- added fresh on every call so the figure
+# moves between refreshes rather than jumping only once every couple of
+# minutes.
+
+def test_before_anything_is_measured_the_card_is_an_honest_blank(dashboard):
+    """Never a 0% before the first real measurement -- that would read as a
+    broken feature rather than an accurate one."""
+    dashboard._update_stat_cards()
+
+    assert dashboard._stat_cards.activity_card._value.full_text() == "—"
+    assert dashboard._stat_cards.activity_card._sub.full_text() == "Not tracking yet"
+
+
+def test_a_fetched_snapshot_drives_the_cards_percentage(dashboard):
+    from background_services.public_api import TodaySnapshot
+    from background_services.activity.today_summary import totals_from_percent
+
+    dashboard._on_today_activity_loaded(
+        TodaySnapshot(totals=totals_from_percent(42, 600), remote_ok=True)
+    )
+
+    assert dashboard._stat_cards.activity_card._value.full_text() == "42%"
+
+
+def test_a_failed_refresh_keeps_the_last_good_percentage(dashboard):
+    """`remote_ok=False` must not blank a real figure already on screen --
+    the same rule `today_activity_snapshot` documents for itself."""
+    from background_services.public_api import TodaySnapshot
+    from background_services.activity.today_summary import totals_from_percent
+
+    dashboard._on_today_activity_loaded(
+        TodaySnapshot(totals=totals_from_percent(55, 600), remote_ok=True)
+    )
+    dashboard._on_today_activity_loaded(TodaySnapshot(remote_ok=False))
+
+    assert dashboard._stat_cards.activity_card._value.full_text() == "55%"
+
+
+def test_the_live_window_is_added_on_top_of_the_last_fetch(dashboard, monkeypatch):
+    from background_services.public_api import TodaySnapshot
+    from background_services.activity.today_summary import ActivityTotals, totals_from_percent
+
+    dashboard._on_today_activity_loaded(
+        TodaySnapshot(totals=totals_from_percent(50, 600), remote_ok=True)
+    )
+    monkeypatch.setattr(
+        dashboard.api, "live_activity_totals", lambda: totals_from_percent(100, 600)
+    )
+
+    dashboard._update_stat_cards()
+
+    # (50*600 + 100*600) / 1200 == 75 -- weighted, not a plain average of the
+    # two headline percentages (which would coincidentally also read 75 here,
+    # but the arithmetic under test is the addable-totals one, not a mean).
+    assert dashboard._stat_cards.activity_card._value.full_text() == "75%"
+
+
+def test_today_activity_is_shown_as_tracking_only_while_a_timer_runs(dashboard, monkeypatch):
+    from background_services.public_api import TodaySnapshot
+    from background_services.activity.today_summary import totals_from_percent
+
+    dashboard._on_today_activity_loaded(
+        TodaySnapshot(totals=totals_from_percent(30, 600), remote_ok=True)
+    )
+    monkeypatch.setattr(dashboard.api, "is_timer_running", lambda: True)
+
+    dashboard._update_stat_cards()
+
+    assert dashboard._stat_cards.activity_card._sub.full_text() == "Tracking now"

@@ -269,12 +269,15 @@ class StatCardsRow(QWidget):
 
     #: One card, at its floor.
     CARD_MINIMUM_WIDTH = _CARD_CHROME_WIDTH + _CARD_VALUE_WIDTH
-    #: The width at or above which all three fit on one line. The ACTIVE TASK
+    #: The width at or above which all four fit on one line. The ACTIVE TASK
     #: card is wider than the others by its break button.
     SINGLE_ROW_MINIMUM_WIDTH = (
-        CARD_MINIMUM_WIDTH * 3 + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING * 2
+        CARD_MINIMUM_WIDTH * 4 + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING * 3
     )
     #: The width at or above which two fit on a line -- the widget's own floor.
+    #: Unchanged by the fourth card: at two columns the ACTIVE TASK card is
+    #: still the widest of the pair sharing its column (see `_arrange`'s
+    #: per-column max), whichever of the plain cards lands beside it.
     TWO_COLUMN_MINIMUM_WIDTH = (
         CARD_MINIMUM_WIDTH * 2 + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING
     )
@@ -302,8 +305,9 @@ class StatCardsRow(QWidget):
         self.status_card = StatCard("Project status", "task_alt", "blue", self)
         self.total_card = StatCard("Project hours", "timer", "violet", self)
         self.active_card = StatCard("Active task", "trending_up", "green", self)
+        self.activity_card = StatCard("Today's activity", "bolt", "amber", self)
 
-        self._cards = (self.status_card, self.total_card, self.active_card)
+        self._cards = (self.status_card, self.total_card, self.active_card, self.activity_card)
 
         # The one Break In / Break Out control, on the right of the task it
         # acts on. A double-click is one click on it, and a burst of clicks
@@ -361,6 +365,9 @@ class StatCardsRow(QWidget):
         self.active_card.set_value("No active task")
         self.active_card.set_sub("")
         self.break_button.set_state(BreakStatus.NONE, False)
+        self.activity_card.set_value("—")
+        self.activity_card.set_sub("Not tracking yet")
+        self.activity_card.set_progress(None)
 
     # ── Per-card updates ──────────────────────────────────────────────────────
 
@@ -413,3 +420,27 @@ class StatCardsRow(QWidget):
         """Render the break button from the timer service's state, as pushed
         by the window. Nothing here decides anything about the break."""
         self.break_button.set_state(break_status, timer_active)
+
+    def set_today_activity(
+        self, percent: int, *, has_measurement: bool, is_tracking: bool
+    ) -> None:
+        """Today's duration-weighted keyboard/mouse activity, as a single
+        number -- the same figure `background_services.activity.today_summary`
+        computes and the screenshot/app/URL views' own per-window percentages
+        are drawn from, just rolled up for the whole day.
+
+        `has_measurement` distinguishes an honest "nothing measured yet" from
+        a real 0%: a card reading "0%" before the first sample ever came in
+        would look like a broken feature rather than an accurate one.
+        """
+        if not has_measurement:
+            self.activity_card.set_value("—")
+            self.activity_card.set_sub("Not tracking yet")
+            self.activity_card.set_progress(None)
+            return
+        self.activity_card.set_value(f"{max(0, min(100, percent))}%")
+        self.activity_card.set_sub(
+            "Tracking now" if is_tracking else "Based on today's activity",
+            SUCCESS if is_tracking else None,
+        )
+        self.activity_card.set_progress(percent)
