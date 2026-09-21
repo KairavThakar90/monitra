@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import pytest
 
-from background_services.public_api import NetworkState, TodaySnapshot
+from background_services.public_api import NetworkState
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ class FakeRunner:
     does. `succeed`/`fail` deliver a recorded callback and retire the key, as
     the real runner does before invoking a callback."""
 
-    TYPED_RESULTS = {"load-today-activity": lambda: TodaySnapshot(remote_ok=True)}
+    TYPED_RESULTS = {}
 
     def __init__(self):
         self.calls = {}
@@ -349,7 +349,6 @@ def test_waking_from_sleep_refreshes_immediately(ready):
 
     assert runner.pending("load-projects")
     assert runner.pending("load-tasks:7")
-    assert runner.pending("load-today-activity")
 
 
 def test_the_recovery_service_detects_a_suspend_gap(runtime):

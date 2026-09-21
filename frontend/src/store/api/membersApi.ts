@@ -11,6 +11,9 @@ export interface Member {
   date_of_joining: string | null;
   date_of_birth: string | null;
   designation: string;
+  idle_enabled?: boolean;
+  idle_minutes?: number;
+  capture_frequency?: number;
   created_at?: string;
   updated_at?: string;
   organization?: { id: number; name: string };

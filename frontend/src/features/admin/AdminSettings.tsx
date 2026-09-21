@@ -67,7 +67,7 @@ export const AdminSettings: React.FC = () => {
   };
 
   return (
-    <V2Shell title="Settings" subtitle="System">
+    <V2Shell title="Settings" subtitle="Maintenance">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
         <Card
           title="Maintenance Mode"

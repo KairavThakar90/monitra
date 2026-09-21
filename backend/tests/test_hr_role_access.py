@@ -82,6 +82,7 @@ class HrMemberRouteTests(unittest.TestCase):
             "id": 7, "name": "Ada", "email": "ada@example.com", "role_name": "employee",
             "status": "active", "designation": "Engineer",
             "date_of_joining": "2026-01-05", "date_of_birth": "1990-03-02",
+            "idle_enabled": True, "idle_minutes": 5, "capture_frequency": 300,
             "created_at": "2026-01-05T00:00:00Z", "updated_at": "2026-01-05T00:00:00Z",
         }
         with patch("app.api.members.MemberService.get", return_value=member):

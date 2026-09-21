@@ -1,11 +1,14 @@
 """
 Coverage for the dashboard's summary-card snapshot.
 
-The four cards must be a readout of data the window already holds -- the
-day's time entries, the selected project's tasks and TimerService's session
--- and must never invent a value. In particular the running session belongs
-to today alone: folding it into a past date's totals would mix two different
-days, the same trap `_on_timer_tick` already avoids.
+The three cards must be a readout of data the window already holds -- the
+day's time entries for the *selected project*, that project's own status row,
+and TimerService's session -- and must never invent a value. In particular
+the running session belongs to today alone: folding it into a past date's
+totals would mix two different days, the same trap `_on_timer_tick` already
+avoids. And it belongs to whichever project is actually being tracked: the
+selected project's PROJECT HOURS card must not gain another project's live
+session just because it happens to be the one on screen.
 """
 from __future__ import annotations
 
@@ -36,117 +39,56 @@ def dashboard(qapp, runtime):
 def _entries():
     day = ist_today().isoformat()
     return [
-        {"id": 1, "task_id": 10, "status": "stopped", "total_seconds": 3600,
+        {"id": 1, "task_id": 10, "project_id": 1, "status": "stopped", "total_seconds": 3600,
          "start_time": f"{day}T09:00:00+00:00", "end_time": f"{day}T10:00:00+00:00"},
-        {"id": 2, "task_id": 11, "status": "stopped", "total_seconds": 1800,
+        {"id": 2, "task_id": 11, "project_id": 1, "status": "stopped", "total_seconds": 1800,
          "start_time": f"{day}T11:30:00+00:00", "end_time": f"{day}T12:00:00+00:00"},
+        {"id": 3, "task_id": 12, "project_id": 2, "status": "stopped", "total_seconds": 900,
+         "start_time": f"{day}T13:00:00+00:00", "end_time": f"{day}T13:15:00+00:00"},
     ]
 
 
-def test_total_card_reads_the_days_banked_seconds(dashboard):
+def test_total_card_reads_the_selected_projects_banked_seconds(dashboard):
+    """Project 1 banked 01:30:00 today; project 2 banked 00:15:00. Selecting
+    project 1 must show only its own figure, not the 01:45:00 combined total
+    the old organisation-wide card would have shown."""
     dashboard._today_time_entries = _entries()
+    dashboard._current_project = {"id": 1, "project_name": "Apollo"}
     dashboard._update_stat_cards()
     assert dashboard._stat_cards.total_card._value.full_text() == "01:30:00"
 
 
-def test_todays_activity_is_zero_until_something_is_measured(dashboard):
-    dashboard._today_time_entries = []
+def test_total_card_switches_with_the_selected_project(dashboard):
+    dashboard._today_time_entries = _entries()
+    dashboard._current_project = {"id": 2, "project_name": "Beta"}
     dashboard._update_stat_cards()
-    assert dashboard._stat_cards.activity_card._value.full_text() == "0%"
-    assert dashboard._stat_cards.activity_card._sub.full_text() == "No activity today"
+    assert dashboard._stat_cards.total_card._value.full_text() == "00:15:00"
 
 
-def test_todays_activity_is_weighted_by_duration_not_averaged(dashboard, monkeypatch):
-    """10 minutes at 90% plus an hour at 20% is 30%, not the 55% a plain
-    average of the two percentages would give."""
-    from background_services.activity.today_summary import ActivityTotals, TodaySnapshot
-
-    monkeypatch.setattr(dashboard.api, "live_activity_totals", ActivityTotals)
-    dashboard._activity_day = ist_today()
-    dashboard._activity_snapshot = TodaySnapshot(
-        totals=ActivityTotals(weighted=90 * 600 + 20 * 3600, measured=600 + 3600),
-        remote_ok=True,
-    )
-    dashboard._update_stat_cards()
-    assert dashboard._stat_cards.activity_card._value.full_text() == "30%"
-
-
-def test_todays_activity_adds_the_window_still_being_sampled(dashboard, monkeypatch):
-    """The in-flight window exists only in the service; it is added, and it is
-    added once -- it has not been written to the queue or uploaded."""
-    from background_services.activity.today_summary import ActivityTotals, TodaySnapshot
-
-    dashboard._activity_day = ist_today()
-    dashboard._activity_snapshot = TodaySnapshot(
-        totals=ActivityTotals(weighted=20 * 600, measured=600), remote_ok=True
-    )
-    monkeypatch.setattr(
-        dashboard.api, "live_activity_totals",
-        lambda: ActivityTotals(weighted=100 * 600, measured=600),
-    )
-    dashboard._update_stat_cards()
-    assert dashboard._stat_cards.activity_card._value.full_text() == "60%"
-
-
-def test_a_snapshot_from_a_previous_day_is_not_shown_as_today(dashboard, monkeypatch):
-    from background_services.activity.today_summary import ActivityTotals, TodaySnapshot
-
-    monkeypatch.setattr(dashboard.api, "live_activity_totals", ActivityTotals)
-    dashboard._activity_snapshot = TodaySnapshot(
-        totals=ActivityTotals(weighted=90 * 3600, measured=3600), remote_ok=True
-    )
-    dashboard._activity_day = ist_today() - timedelta(days=1)
-    dashboard._update_stat_cards()
-    assert dashboard._stat_cards.activity_card._value.full_text() == "0%"
-
-
-def test_a_stale_activity_reply_cannot_overwrite_a_newer_one(dashboard):
-    from background_services.activity.today_summary import ActivityTotals, TodaySnapshot
-
-    day = ist_today()
-    newer = TodaySnapshot(
-        totals=ActivityTotals(weighted=80 * 600, measured=600), remote_ok=True
-    )
-    older = TodaySnapshot(
-        totals=ActivityTotals(weighted=10 * 600, measured=600), remote_ok=True
-    )
-    dashboard._on_today_activity_loaded(2, day, newer)
-    dashboard._on_today_activity_loaded(1, day, older)
-    assert dashboard._activity_snapshot is newer
-
-
-def test_a_failed_activity_read_keeps_the_last_known_value(dashboard):
-    """A temporary outage must not collapse a real percentage to zero."""
-    from background_services.activity.today_summary import ActivityTotals, TodaySnapshot
-
-    day = ist_today()
-    good = TodaySnapshot(
-        totals=ActivityTotals(weighted=80 * 600, measured=600), remote_ok=True
-    )
-    dashboard._on_today_activity_loaded(1, day, good)
-    dashboard._on_today_activity_loaded(2, day, TodaySnapshot(remote_ok=False))
-    assert dashboard._activity_snapshot is good
-
-
-def test_tasks_completed_counts_the_projects_own_statuses(dashboard):
-    dashboard._current_project = {"id": 1, "project_name": "Apollo"}
-    dashboard._project_tasks = [
-        {"id": 10, "name": "A", "status": "completed"},
-        {"id": 11, "name": "B", "status": "in_progress"},
-        {"id": 12, "name": "C", "status": {"id": 3, "name": "Completed"}},
-        {"id": 13, "name": "D", "status": "todo"},
-    ]
-    dashboard._update_stat_cards()
-
-    assert dashboard._stat_cards.tasks_card._value.full_text() == "2 / 4"
-    assert dashboard._stat_cards.tasks_card._progress.value() == 50
-
-
-def test_tasks_card_without_a_project_says_so(dashboard):
+def test_total_card_without_a_project_shows_no_time(dashboard):
+    dashboard._today_time_entries = _entries()
     dashboard._current_project = None
-    dashboard._project_tasks = []
     dashboard._update_stat_cards()
-    assert dashboard._stat_cards.tasks_card._value.full_text() == "—"
+    assert dashboard._stat_cards.total_card._value.full_text() == "00:00:00"
+
+
+def test_status_card_reads_the_selected_projects_own_status(dashboard):
+    """The status is exactly what an admin set from the web frontend --
+    already inline on the project dict this window loaded, via
+    `projects.status_id` -> `project_statuses.name`/`color`."""
+    dashboard._current_project = {
+        "id": 1, "project_name": "Apollo",
+        "status": {"id": 1, "name": "Active", "color": "#3B82F6"},
+    }
+    dashboard._update_stat_cards()
+    assert dashboard._stat_cards.status_card._value.full_text() == "Active"
+
+
+def test_status_card_without_a_project_says_so(dashboard):
+    dashboard._current_project = None
+    dashboard._update_stat_cards()
+    assert dashboard._stat_cards.status_card._value.full_text() == "—"
+    assert dashboard._stat_cards.status_card._sub.full_text() == "No project selected"
 
 
 def test_a_past_date_never_shows_a_running_session(dashboard, monkeypatch):
@@ -156,6 +98,7 @@ def test_a_past_date_never_shows_a_running_session(dashboard, monkeypatch):
     monkeypatch.setattr(dashboard.api, "timer_elapsed_seconds", lambda: 600)
 
     dashboard._today_time_entries = _entries()
+    dashboard._current_project = {"id": 1, "project_name": "Apollo"}
     dashboard._current_date = ist_today() - timedelta(days=1)
     dashboard._update_stat_cards()
 
@@ -163,7 +106,7 @@ def test_a_past_date_never_shows_a_running_session(dashboard, monkeypatch):
     assert dashboard._stat_cards.total_card._sub.full_text() == "Not tracking"
 
 
-def test_todays_running_session_is_included(dashboard, monkeypatch):
+def test_todays_running_session_is_included_for_its_own_project(dashboard, monkeypatch):
     monkeypatch.setattr(dashboard.api, "is_timer_running", lambda: True)
     monkeypatch.setattr(dashboard.api, "timer_elapsed_seconds", lambda: 600)
     monkeypatch.setattr(
@@ -172,6 +115,7 @@ def test_todays_running_session_is_included(dashboard, monkeypatch):
     )
 
     dashboard._today_time_entries = _entries()
+    dashboard._current_project = {"id": 1, "project_name": "Apollo"}
     dashboard._current_date = ist_today()
     dashboard._update_stat_cards()
 
@@ -180,10 +124,31 @@ def test_todays_running_session_is_included(dashboard, monkeypatch):
     assert dashboard._stat_cards.active_card._value.full_text() == "Write the report"
 
 
+def test_a_running_session_on_another_project_does_not_inflate_this_ones_hours(dashboard, monkeypatch):
+    """The timer is running against project 2 while project 1 is the one on
+    screen: project 1's card must show its own banked time only, and must not
+    claim to be tracking."""
+    monkeypatch.setattr(dashboard.api, "is_timer_running", lambda: True)
+    monkeypatch.setattr(dashboard.api, "timer_elapsed_seconds", lambda: 600)
+    monkeypatch.setattr(
+        dashboard.api, "active_session",
+        lambda: {"task_id": 12, "task_name": "Design review", "project_id": 2},
+    )
+
+    dashboard._today_time_entries = _entries()
+    dashboard._current_project = {"id": 1, "project_name": "Apollo"}
+    dashboard._current_date = ist_today()
+    dashboard._update_stat_cards()
+
+    assert dashboard._stat_cards.total_card._value.full_text() == "01:30:00"
+    assert dashboard._stat_cards.total_card._sub.full_text() == "Not tracking"
+
+
 def test_signing_out_clears_the_cards(dashboard):
     dashboard._today_time_entries = _entries()
+    dashboard._current_project = {"id": 1, "project_name": "Apollo"}
     dashboard._update_stat_cards()
     dashboard.reset_state()
 
-    assert dashboard._stat_cards.activity_card._sub.full_text() == "No activity today"
-    assert dashboard._stat_cards.tasks_card._value.full_text() == "—"
+    assert dashboard._stat_cards.status_card._value.full_text() == "—"
+    assert dashboard._stat_cards.total_card._value.full_text() == "00:00:00"

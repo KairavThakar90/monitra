@@ -37,8 +37,7 @@ from app.projects.service import ProjectService
 from app.tasks.service import TaskService
 from app.time_entries.service import TimeEntryService
 from background_services.public_api import (
-    ActivityTotals, BackgroundApi, BreakStatus, NetworkState, NotificationLevel,
-    TodaySnapshot, UpdateState,
+    BackgroundApi, BreakStatus, NetworkState, NotificationLevel, UpdateState,
 )
 from core.date_mode import DateMode, as_calendar_day, date_mode, is_live_date
 from core.logging_setup import get_logger
@@ -54,7 +53,7 @@ from ui.styles import (
     BORDER_LIGHT, CONTENT_BG, ERROR, PROJECT_COLORS, SUCCESS, TEXT_MUTED, WARNING,
 )
 from ui.stat_cards import StatCardsRow
-from ui.task_table import TaskSection, is_task_completed
+from ui.task_table import TaskSection
 from ui.topbar import TopBar
 
 log = get_logger("dashboard")
@@ -118,19 +117,6 @@ def banked_seconds(entry: Dict[str, Any]) -> int:
     if net is None:
         return int(entry.get("total_seconds") or 0)
     return max(0, int(net))
-
-#: Fallback cadence for re-reading today's persisted activity. While a timer
-#: runs the card is driven by ActivityService's own signals — the completed
-#: window (once a minute) and the live percentage (every few seconds) — so
-#: this exists only to catch activity recorded outside this window, e.g. by a
-#: session on another machine. Deliberately slow: the card must never become
-#: a poll of the database.
-ACTIVITY_FALLBACK_INTERVAL_MS = 300_000
-
-#: Floor on how often today's activity may be re-fetched. Every trigger other
-#: than an explicit refresh is throttled to this, so a burst of signals
-#: (queue drained, timer stopped, window flushed) collapses into one request.
-ACTIVITY_MIN_FETCH_INTERVAL_S = 20.0
 
 
 def update_menu_action(
@@ -322,20 +308,6 @@ class DashboardWindow(QWidget):
         #: task vanish until the next refresh.
         self._task_list_version = 0
 
-        #: Today's persisted activity, as last read from the backend and the
-        #: local upload queue. `None` means it has never been read this
-        #: session -- distinct from "read, and it was zero".
-        self._activity_snapshot: Optional[TodaySnapshot] = None
-        #: The IST day `_activity_snapshot` describes. Held so a snapshot from
-        #: before local midnight is discarded rather than shown as today's.
-        self._activity_day: date = ist_today()
-        #: Monotonic ticket for activity fetches. A reply carrying an older
-        #: ticket than the newest one issued is discarded, so a slow response
-        #: can never overwrite a fresher value.
-        self._activity_seq = 0
-        self._activity_applied_seq = 0
-        self._activity_last_fetch = 0.0
-
         #: The mandatory idle popup, while one is on screen. Exactly one may
         #: exist: the idle service holds at most one pending period, and this
         #: reference is what stops a second alert being built for it.
@@ -376,12 +348,6 @@ class DashboardWindow(QWidget):
         # does not create threads and does not run while signed out.
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self.refresh_data)
-
-        # The activity card's fallback heartbeat. Same rules: a UI-only timer
-        # that schedules one de-duplicated background read, stopped on logout
-        # and destroyed with the window.
-        self._activity_timer = QTimer(self)
-        self._activity_timer.timeout.connect(self._load_today_activity)
 
         # The change probe. A UI-only timer scheduling one de-duplicated
         # background request; it refreshes nothing itself and runs only while
@@ -590,17 +556,6 @@ class DashboardWindow(QWidget):
         activity = self.api.activity
         activity.unwanted_activity_alert.connect(self._on_unwanted_activity_alert)
 
-        # TODAY'S ACTIVITY. Two subscriptions, no polling of the services:
-        #
-        #  * `activity_percent_changed` fires while a window is being sampled.
-        #    Its slot only re-renders from state already held -- no request,
-        #    no database read -- so a signal every few seconds costs nothing.
-        #  * `activity_window_recorded` is the edge that matters: a window has
-        #    just been written to the local queue, so the persisted totals
-        #    have genuinely changed and are worth re-reading (throttled).
-        activity.activity_percent_changed.connect(self._on_activity_percent_changed)
-        activity.activity_window_recorded.connect(self._on_activity_window_recorded)
-
         # Idle time. `idle_period_opened` is an edge: the service emits it once
         # when the backend accepts a new pending period (or when one is
         # recovered after a restart), never on a poll. The dialog is built here
@@ -692,7 +647,6 @@ class DashboardWindow(QWidget):
         """
         log.info("idle period resolved in UI: %s", result)
         self._load_today_time()
-        self._load_today_activity(force=True)
         self._update_stat_cards()
 
     def _forget_idle_dialog(self) -> None:
@@ -1014,7 +968,6 @@ class DashboardWindow(QWidget):
         self._render_cached_projects()
 
         self._refresh_timer.start(REFRESH_INTERVAL_MS)
-        self._activity_timer.start(ACTIVITY_FALLBACK_INTERVAL_MS)
         # Nothing is known about the backend's fingerprint for this session
         # yet: the first probe records it, later ones compare against it.
         self._sync_revision = None
@@ -1045,10 +998,8 @@ class DashboardWindow(QWidget):
         """Clear everything session-scoped on logout."""
         self._active = False
         self._refresh_timer.stop()
-        self._activity_timer.stop()
         self._sync_probe_timer.stop()
         self._activity_section.set_enabled(False)
-        self.api.cancel_key("load-today-activity")
         self.api.cancel_key("load-projects")
         # Parameterised families: `load-tasks:{project_id}`, `load-today:{date}`.
         # Cancelling the bare name matched nothing, so these ran on after
@@ -1078,8 +1029,6 @@ class DashboardWindow(QWidget):
         self._current_project = None
         self._user_id = None
         self._today_time_entries = []
-        self._activity_snapshot = None
-        self._activity_last_fetch = 0.0
         self._pending_active_timer = None
         self._sync_revision = None
         self._sync_probe_supported = None
@@ -1361,6 +1310,11 @@ class DashboardWindow(QWidget):
         self._current_project_color = PROJECT_COLORS[index % len(PROJECT_COLORS)]
         self._sidebar.select_project(project_id)
 
+        # PROJECT STATUS and PROJECT HOURS depend only on the project itself
+        # (already loaded) and today's time entries (already loaded) -- not
+        # on the task list, so they need not wait for _render_tasks below.
+        self._update_stat_cards()
+
         cached_tasks = self.api.cache.get_cached_tasks(project_id)
         if cached_tasks is not None:
             self._render_tasks(cached_tasks, from_cache=True)
@@ -1495,31 +1449,36 @@ class DashboardWindow(QWidget):
     # ── Summary cards ─────────────────────────────────────────────────────────
 
     def _update_stat_cards(self) -> None:
-        """Push a fresh snapshot into the four summary cards.
+        """Push a fresh snapshot into the three summary cards.
 
         Everything here is read from state this window already loaded. No
         request is made, no duration is counted: the live session's elapsed
-        seconds come from TimerService, exactly as the sidebar total does,
-        and only for today -- a past date shows its completed hours alone.
+        seconds come from TimerService, exactly as the sidebar's per-project
+        total does, and only for today -- a past date shows its completed
+        hours alone.
         """
-        banked = self._banked_today()
+        project = self._current_project
+        project_id = project.get("id") if project else None
 
+        # PROJECT STATUS: exactly what an admin set from the web frontend
+        # (`projects.status_id` -> `project_statuses.name`/`color`), already
+        # inline on every project this window loads. No new request.
+        status = (project or {}).get("status") or {}
+        self._stat_cards.set_project_status(status.get("name"), status.get("color"))
+
+        # PROJECT HOURS: the selected project's own tracked time for the day,
+        # not the total across every project -- the same figure the sidebar
+        # already shows next to this project's name.
         viewing_today = is_live_date(self._current_date)
         running = self.api.is_timer_running()
         live = self.api.timer_elapsed_seconds() if (running and viewing_today) else 0
-        self._stat_cards.set_total_seconds(banked + live, running and viewing_today)
-
-        # Tasks completed: the selected project's own tasks, by the server's
-        # status. Nothing is inferred -- a project with no tasks loaded shows
-        # the "no project selected" state rather than 0 / 0.
-        tasks = self._project_tasks
-        if self._current_project and tasks:
-            completed = sum(1 for t in tasks if is_task_completed(t))
-            self._stat_cards.set_tasks_completed(completed, len(tasks))
-        else:
-            self._stat_cards.set_tasks_completed(None, None)
-
         session = (self.api.active_session() or {}) if running else {}
+        tracking_this_project = bool(live) and project_id is not None and session.get("project_id") == project_id
+        hours = self._banked_seconds_by_project().get(project_id, 0) if project_id is not None else 0
+        if tracking_this_project:
+            hours += live
+        self._stat_cards.set_total_seconds(hours, tracking_this_project)
+
         if running:
             self._stat_cards.set_active_task(
                 session.get("task_name"),
@@ -1535,10 +1494,6 @@ class DashboardWindow(QWidget):
         else:
             self._stat_cards.set_active_task(None, None)
 
-        self._stat_cards.set_today_activity(
-            self._today_activity_percent(), tracking=running
-        )
-
     def _project_name_for(self, project_id: Optional[int]) -> Optional[str]:
         if project_id is None:
             return None
@@ -1546,105 +1501,6 @@ class DashboardWindow(QWidget):
             if project.get("id") == project_id:
                 return project.get("project_name")
         return None
-
-    # ── Today's activity ──────────────────────────────────────────────────────
-
-    def _today_activity_percent(self) -> Optional[int]:
-        """The TODAY'S ACTIVITY percentage, or None if nothing was measured.
-
-        Two addable weighted totals, never an average of averages:
-
-          * the persisted snapshot -- the backend's aggregate of uploaded
-            windows plus the windows still queued locally for upload, which
-            are disjoint sets;
-          * the window ActivityService is sampling right now, which has not
-            been written anywhere yet and so cannot be in either of those.
-
-        Always today, whatever date the top bar is showing: the card's caption
-        says TODAY'S, and quietly re-pointing it at a browsed historical day
-        would be a different statistic wearing the same label. A snapshot that
-        belongs to a day that has since ended is dropped rather than shown --
-        the reload that replaces it is already scheduled by the caller.
-        """
-        totals = ActivityTotals()
-        snapshot = self._activity_snapshot
-        if snapshot is not None and self._activity_day == ist_today():
-            totals = totals + snapshot.totals
-        try:
-            totals = totals + self.api.live_activity_totals()
-        except Exception:  # noqa: BLE001 — a display value must not raise
-            log.debug("could not read the live activity window", exc_info=True)
-
-        if not totals.has_measurement:
-            return None
-        return totals.percent
-
-    def _on_activity_percent_changed(self, _percent: int) -> None:
-        """The in-flight window moved. Re-render only -- no request, no query.
-
-        The service emits this every few sampled seconds while a timer runs;
-        anything heavier here would turn a display signal into a poll.
-        """
-        if not self._active:
-            return
-        self._update_stat_cards()
-
-    def _on_activity_window_recorded(self, _record: dict) -> None:
-        """A completed window was persisted locally, so the totals moved."""
-        if not self._active:
-            return
-        self._load_today_activity()
-
-    def _load_today_activity(self, force: bool = False) -> None:
-        """
-        Re-read today's persisted activity on the background pool.
-
-        De-duplicated by task key, so overlapping requests are impossible, and
-        throttled to ACTIVITY_MIN_FETCH_INTERVAL_S unless the caller is an
-        explicit refresh. Errors never reach the card: the snapshot is
-        replaced only by a reply that actually reached the backend, so a
-        network drop leaves the last valid percentage on screen.
-        """
-        if not self._active:
-            return
-
-        now = monotonic()
-        if not force and (now - self._activity_last_fetch) < ACTIVITY_MIN_FETCH_INTERVAL_S:
-            return
-        self._activity_last_fetch = now
-
-        day = ist_today()
-        self._activity_seq += 1
-        seq = self._activity_seq
-        snapshot_for = self.api.today_activity_snapshot
-
-        self.api.run_in_background(
-            lambda: snapshot_for(day),
-            on_success=lambda snapshot: self._on_today_activity_loaded(seq, day, snapshot),
-            on_error=lambda exc: log.info("could not read today's activity: %s", exc),
-            key="load-today-activity",
-        )
-
-    def _on_today_activity_loaded(
-        self, seq: int, day: date, snapshot: TodaySnapshot
-    ) -> None:
-        if seq <= self._activity_applied_seq:
-            # An older request finished after a newer one. Its value is stale
-            # by definition and must not overwrite what is on screen.
-            log.debug("discarding activity snapshot %s; %s already applied",
-                      seq, self._activity_applied_seq)
-            return
-        if not snapshot.remote_ok and self._activity_snapshot is not None:
-            # The backend could not be reached. Keeping the last known good
-            # total is honest; replacing it with the local queue alone would
-            # drop everything already uploaded and read as a sudden collapse
-            # in the user's activity.
-            log.debug("today's activity: backend unavailable, keeping last value")
-            return
-        self._activity_applied_seq = seq
-        self._activity_day = day
-        self._activity_snapshot = snapshot
-        self._update_stat_cards()
 
     # ── Today's time ──────────────────────────────────────────────────────────
 
@@ -1909,10 +1765,6 @@ class DashboardWindow(QWidget):
         self._refresh_failed = False
         self._refresh_started_at = monotonic()
         self._sync_log("refresh.started", project=(self._current_project or {}).get("id"))
-        # Today's activity is refreshed alongside, but not counted as a step
-        # of the round: it keeps the last good value on a failed read instead
-        # of surfacing an error, so it has no success or failure to report.
-        self._load_today_activity(force=True)
         # Callbacks are queued onto this thread, so none of them can run
         # before this method returns -- the count is complete before the
         # first step can decrement it.
@@ -2059,7 +1911,6 @@ class DashboardWindow(QWidget):
         if not self._active:
             return
         self._sync_log("resume", gap_seconds=int(gap_seconds))
-        self._activity_last_fetch = 0.0
         self.refresh_data()
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
@@ -2102,9 +1953,7 @@ class DashboardWindow(QWidget):
             # dropped the day's total by the whole session until the next
             # refresh -- "the time is wrong after Stop until I refresh". The
             # re-read happens on `timer_finalized`, once the backend has the
-            # stop. The activity read is forced: stopping flushes the final
-            # window, and the last measured percentage must stay on screen.
-            self._load_today_activity(force=True)
+            # stop.
         self._render_timer_controls()
 
     # ── The circular Play / Pause ─────────────────────────────────────────────
@@ -2498,11 +2347,8 @@ class DashboardWindow(QWidget):
             "Pending activity synced successfully.",
             NotificationLevel.SUCCESS, key="sync-drained",
         )
-        # Re-read what the server now holds, once. Activity included: the
-        # windows that just synced moved from the local queue to the backend,
-        # and the totals must be re-read from both to stay disjoint.
+        # Re-read what the server now holds, once.
         self._load_today_time()
-        self._load_today_activity(force=True)
         if self._current_project:
             self._load_tasks(self._current_project.get("id"))
 

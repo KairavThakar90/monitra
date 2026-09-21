@@ -48,8 +48,8 @@ class StatusKeyTests(unittest.TestCase):
                 self.assertEqual(ProjectManagementService._status_key(name), "todo")
 
     def test_every_seeded_name_maps_to_a_legacy_string(self):
-        """The names migration b4f7c2d9e1a6 seeds must all be recognised."""
-        for name in ("Active", "Pending", "To Do", "Completed"):
+        """The names migration c1a2b3d4e5f6 leaves seeded must all be recognised."""
+        for name in ("Active", "Paused", "Completed"):
             with self.subTest(name=name):
                 self.assertIn(ProjectManagementService._status_key(name), PROJECT_STATUS_NAMES)
         for name in ("Todo", "In Progress", "Completed"):
@@ -112,9 +112,11 @@ class CreateProjectTests(unittest.TestCase):
         self.assertTrue(tasks)
         self.assertEqual(tasks[0].status, "todo")
 
-    def test_a_pending_project_stores_the_legacy_pending_string(self):
-        """The value the projects_status_check constraint has to accept."""
-        project, _ = self._create(88, "Pending", 61, "Todo")
+    def test_a_paused_project_stores_the_legacy_pending_string(self):
+        """"Paused" reuses the legacy 'pending' value the
+        projects_status_check constraint already accepts -- the constraint
+        itself was never migrated to know a "paused" string."""
+        project, _ = self._create(88, "Paused", 61, "Todo")
         self.assertEqual(project.status, "pending")
 
 

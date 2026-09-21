@@ -1,13 +1,13 @@
 """
-stat_cards — the four summary cards between the header and the task list.
+stat_cards — the three summary cards between the header and the task list.
 
 Presentation only. Every number shown here is handed in by DashboardWindow
-from data it has already loaded (the day's time entries, the selected
-project's tasks, TimerService's session); this module fetches nothing, owns
-no timer and computes no elapsed time of its own.
+from data it has already loaded (the day's time entries for the selected
+project, the project's own status row, TimerService's session); this module
+fetches nothing, owns no timer and computes no elapsed time of its own.
 
-Where a value is genuinely unknown -- no timer running, no entries for the
-day -- the card says so rather than showing a zero that looks measured.
+Where a value is genuinely unknown -- no project selected, no timer running --
+the card says so rather than showing a zero that looks measured.
 
 The ACTIVE TASK card also carries the one Break In / Break Out button
 (`ui/break_button.py`), on its right: the task it pauses or resumes is the
@@ -253,26 +253,26 @@ class StatCard(QFrame):
 
 
 class StatCardsRow(QWidget):
-    """The four cards, updated together from one snapshot.
+    """The three cards, updated together from one snapshot.
 
     `update_stats` takes only values the dashboard already holds; nothing in
     this widget derives a duration or reads a service.
 
-    **It wraps.** Four cards side by side need 1186px before the total-time
-    clock starts being abbreviated, and a 1366x768 laptop -- the commonest
-    screen this application runs on -- has about 1066px left for content once
-    the sidebar is accounted for. Rather than shrink the numbers below
-    legibility, the cards fall into two rows of two, which every one of those
-    widths can show in full. Wide windows are unaffected: they still get the
-    single row the design intends.
+    **It wraps.** Three cards side by side need real width before the
+    project-hours clock starts being abbreviated, and a 1366x768 laptop --
+    the commonest screen this application runs on -- has limited space left
+    for content once the sidebar is accounted for. Rather than shrink the
+    numbers below legibility, the cards fall into two rows (two, then one),
+    which every one of those widths can show in full. Wide windows are
+    unaffected: they still get the single row the design intends.
     """
 
     #: One card, at its floor.
     CARD_MINIMUM_WIDTH = _CARD_CHROME_WIDTH + _CARD_VALUE_WIDTH
-    #: The width at or above which all four fit on one line. The ACTIVE TASK
+    #: The width at or above which all three fit on one line. The ACTIVE TASK
     #: card is wider than the others by its break button.
     SINGLE_ROW_MINIMUM_WIDTH = (
-        CARD_MINIMUM_WIDTH * 4 + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING * 3
+        CARD_MINIMUM_WIDTH * 3 + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING * 2
     )
     #: The width at or above which two fit on a line -- the widget's own floor.
     TWO_COLUMN_MINIMUM_WIDTH = (
@@ -299,12 +299,11 @@ class StatCardsRow(QWidget):
         self._grid.setSizeConstraint(QGridLayout.SizeConstraint.SetNoConstraint)
         self.setMinimumWidth(self.TWO_COLUMN_MINIMUM_WIDTH)
 
-        self.total_card = StatCard("Total time today", "timer", "violet", self)
-        self.tasks_card = StatCard("Tasks completed", "task_alt", "blue", self)
+        self.status_card = StatCard("Project status", "task_alt", "blue", self)
+        self.total_card = StatCard("Project hours", "timer", "violet", self)
         self.active_card = StatCard("Active task", "trending_up", "green", self)
-        self.activity_card = StatCard("Today's activity", "bolt", "amber", self)
 
-        self._cards = (self.total_card, self.tasks_card, self.active_card, self.activity_card)
+        self._cards = (self.status_card, self.total_card, self.active_card)
 
         # The one Break In / Break Out control, on the right of the task it
         # acts on. A double-click is one click on it, and a burst of clicks
@@ -316,7 +315,7 @@ class StatCardsRow(QWidget):
         #: 0 until the first arrangement is applied, so the first call is
         #: never mistaken for "nothing changed".
         self._columns = 0
-        self._arrange(4)
+        self._arrange(len(self._cards))
 
         self.reset()
 
@@ -336,7 +335,7 @@ class StatCardsRow(QWidget):
         # not equally: the ACTIVE TASK card carries a button beside its
         # text, and an equal share left its task name with less room than
         # the other cards' values -- the one thing a card may not shorten.
-        for column in range(4):
+        for column in range(columns):
             widths = [
                 card.minimumWidth() for index, card in enumerate(self._cards)
                 if index % columns == column
@@ -351,21 +350,17 @@ class StatCardsRow(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt's own casing
         super().resizeEvent(event)
-        self._arrange(4 if self.width() >= self.SINGLE_ROW_MINIMUM_WIDTH else 2)
+        self._arrange(len(self._cards) if self.width() >= self.SINGLE_ROW_MINIMUM_WIDTH else 2)
 
     def reset(self) -> None:
         """The signed-out / nothing-loaded state. Honest blanks, not zeros."""
+        self.status_card.set_value("—")
+        self.status_card.set_sub("No project selected")
         self.total_card.set_value("00:00:00", mono=True)
         self.total_card.set_sub("Not tracking")
-        self.tasks_card.set_value("—")
-        self.tasks_card.set_progress(None)
-        self.tasks_card.set_sub("No project selected")
         self.active_card.set_value("No active task")
         self.active_card.set_sub("")
         self.break_button.set_state(BreakStatus.NONE, False)
-        self.activity_card.set_value("0%")
-        self.activity_card.set_progress(None)
-        self.activity_card.set_sub("No activity today")
 
     # ── Per-card updates ──────────────────────────────────────────────────────
 
@@ -376,16 +371,17 @@ class StatCardsRow(QWidget):
             SUCCESS if tracking else None,
         )
 
-    def set_tasks_completed(self, completed: Optional[int], total: Optional[int]) -> None:
-        if completed is None or total is None:
-            self.tasks_card.set_value("—")
-            self.tasks_card.set_progress(None)
-            self.tasks_card.set_sub("No project selected")
+    def set_project_status(self, name: Optional[str], color: Optional[str] = None) -> None:
+        """The selected project's status, exactly as an admin set it from the
+        web frontend (`projects.status_id` -> `project_statuses.name`/`color`).
+        Nothing is inferred here: an unknown or missing status shows as such
+        rather than defaulting to "Active"."""
+        if not name:
+            self.status_card.set_value("—")
+            self.status_card.set_sub("No project selected")
             return
-        self.tasks_card.set_value(f"{completed} / {total}")
-        percent = round(completed / total * 100) if total else 0
-        self.tasks_card.set_progress(percent if total else None)
-        self.tasks_card.set_sub(f"{percent}% of this project's tasks" if total else "No tasks yet")
+        self.status_card.set_value(name)
+        self.status_card.set_sub("Set by admin", color)
 
     def set_active_task(self, task_name: Optional[str], project_name: Optional[str]) -> None:
         if not task_name:
@@ -417,30 +413,3 @@ class StatCardsRow(QWidget):
         """Render the break button from the timer service's state, as pushed
         by the window. Nothing here decides anything about the break."""
         self.break_button.set_state(break_status, timer_active)
-
-    def set_today_activity(
-        self, percent: Optional[int], *, tracking: bool = False
-    ) -> None:
-        """Today's duration-weighted keyboard/mouse activity, as a percentage.
-
-        The number is computed by `background_services.activity.today_summary`
-        and handed in whole; this widget clamps and renders it and does no
-        arithmetic of its own.
-
-        `None` means nothing has been measured today. That still shows 0% --
-        the card's whole subject is a percentage, and a dash there reads as a
-        broken value -- but the sub-line says so plainly rather than implying
-        a measured zero.
-        """
-        if percent is None:
-            self.activity_card.set_value("0%")
-            self.activity_card.set_progress(None)
-            self.activity_card.set_sub("No activity today")
-            return
-        value = max(0, min(100, int(percent)))
-        self.activity_card.set_value(f"{value}%")
-        self.activity_card.set_progress(value)
-        self.activity_card.set_sub(
-            "Live — keyboard & mouse" if tracking else "Based on today's activity",
-            SUCCESS if tracking else None,
-        )
