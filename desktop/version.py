@@ -49,7 +49,7 @@ version identifies exactly one build.
 from __future__ import annotations
 
 #: Release version. The only line to edit when cutting a release.
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 
 #: Pre-release label for an internal test build, or "" for a production
 #: release. See "Internal test builds" above. Letters, digits and dots only.

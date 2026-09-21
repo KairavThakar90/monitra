@@ -20,6 +20,54 @@ re-grant a permission.
 
 ## [Unreleased]
 
+## [1.2.2]
+
+The installer and the macOS bundles are still unsigned: Windows SmartScreen
+will warn on first run ("More info" → "Run anyway"), and macOS will refuse
+the app until you allow it under System Settings → Privacy & Security.
+
+### Added
+
+- **A TODAY'S ACTIVITY card** on the dashboard, beside Project Status,
+  Project Hours and Active Task -- one number for how active your keyboard
+  and mouse have been today, weighted by how long each stretch actually
+  lasted. It updates live while you track, and reads an honest "Not
+  tracking yet" rather than a fabricated 0% before anything has been
+  measured.
+- **Screenshot capture frequency now follows what an admin sets for you**,
+  the same way your idle threshold already did. It is picked up at sign-in
+  and re-checked periodically, so a change an admin makes reaches a running
+  desktop without needing a restart.
+- **A crash-recovered session more than an hour old is capped, not resumed
+  forever.** If Monitra was closed uncleanly and reopened over an hour
+  later, the session is stopped at the one-hour mark instead of quietly
+  running for however long the app was shut.
+- **A session left running across midnight now splits automatically** into
+  one entry per calendar day, so your hours land on the day you actually
+  worked them.
+- **The idle-time popup opens immediately** after a crash recovery, showing
+  the gap as it is being measured, instead of waiting on a round trip to
+  the server before you can see or answer it.
+- Admin pages (Project Management, Time Tracking, Screenshots, Feedback) on
+  the web dashboard gained project and member filters, matching the
+  checkbox picker already used on Reports.
+
+### Changed
+
+- **The idle-time popup now defaults to "No, discard idle time"** rather
+  than "Yes, keep idle time" -- you still choose either way, only the
+  starting selection changed.
+- Dashboard stat cards and project-specific hour tracking were reworked as
+  part of this release; task actions are now restricted based on a
+  project's own status (Active / Paused / Completed).
+
+### Fixed
+
+- **The project list occasionally failed to appear on launch** and needed
+  the app reopened before it would load. A failed first load now retries
+  itself on a short backoff instead of waiting on the next scheduled
+  refresh.
+
 ## [1.2.1]
 
 The production release of everything the pilot group tested as 1.2.0-beta.1,
