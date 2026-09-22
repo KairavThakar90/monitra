@@ -131,6 +131,33 @@ class TimeEntryRead(BaseModel):
         return format_hms(self.elapsed_seconds)
 
 
+class TimeEntryTransferRequest(BaseModel):
+    """Reassign an already-recorded entry to a different project/task.
+
+    Nothing here can touch `start_time`, `end_time` or `total_seconds` --
+    the schema has no fields for them, so a transfer literally cannot
+    create, extend or shorten tracked time; it can only change which
+    project/task the already-measured duration is attributed to.
+    """
+    to_project_id: Identifier
+    to_task_id: Identifier
+    reason: OptionalDescription = None
+
+
+class TimeEntryTransferRead(BaseModel):
+    id: int
+    time_entry_id: int
+    from_project_id: int
+    from_task_id: int
+    to_project_id: int
+    to_task_id: int
+    transferred_by_user_id: int
+    reason: str | None
+    transferred_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ActiveTimeEntryRead(BaseModel):
     """
     The caller's running entry, or an explicit "nothing is running".

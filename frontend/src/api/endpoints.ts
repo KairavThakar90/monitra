@@ -82,6 +82,11 @@ export const ENDPOINTS = {
   MANUAL_TIME_ENTRIES: {
     BASE: `${API_BASE_URL}/manual-time-entries`,
   },
+  TIME_ENTRIES: {
+    BASE: `${API_BASE_URL}/time-entries`,
+    TRANSFER: (id: string | number) => `${API_BASE_URL}/time-entries/${id}/transfer`,
+    TRANSFERS: (id: string | number) => `${API_BASE_URL}/time-entries/${id}/transfers`,
+  },
   MANUAL_TIME_ENTRY_REQUESTS: {
     BASE: `${API_BASE_URL}/manual-time-entry-requests`,
     APPROVE: (id: string | number) => `${API_BASE_URL}/manual-time-entry-requests/${id}/approve`,

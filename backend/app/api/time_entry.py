@@ -5,7 +5,10 @@ from datetime import datetime, timezone
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
-from app.schemas.time_entry import ActiveTimeEntryRead, TimeEntryStart, TimeEntryStop, TimeEntryRead
+from app.schemas.time_entry import (
+    ActiveTimeEntryRead, TimeEntryStart, TimeEntryStop, TimeEntryRead,
+    TimeEntryTransferRequest, TimeEntryTransferRead,
+)
 from app.services.time_entry import TimeEntryService
 
 router = APIRouter(prefix="/time-entries", tags=["Time Entries"])
@@ -126,3 +129,45 @@ def get_time_entry(
     db: Session = Depends(get_db)
 ):
     return _one(db, TimeEntryService.get_time_entry(db, id, current_user))
+
+
+@router.post(
+    "/{id}/transfer",
+    response_model=TimeEntryRead,
+    responses={
+        400: {"description": "Destination is the same project/task the entry already has."},
+        404: {"description": "Entry, destination project or destination task not found."},
+        409: {"description": "The entry is still running; stop it before transferring it."},
+    },
+)
+def transfer_time_entry(
+    id: int,
+    payload: TimeEntryTransferRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Move an already-recorded entry to a different project/task.
+
+    Attribution only: `start_time`, `end_time` and `total_seconds` are
+    untouched, so the total tracked duration cannot change -- only which
+    project/task it is counted against.
+    """
+    entry = TimeEntryService.transfer_entry(
+        db=db,
+        entry_id=id,
+        to_project_id=payload.to_project_id,
+        to_task_id=payload.to_task_id,
+        reason=payload.reason,
+        current_user=current_user,
+    )
+    return _one(db, entry)
+
+
+@router.get("/{id}/transfers", response_model=List[TimeEntryTransferRead])
+def list_time_entry_transfers(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """The audit trail of every project/task reassignment this entry has had."""
+    return TimeEntryService.list_transfers(db, id, current_user)

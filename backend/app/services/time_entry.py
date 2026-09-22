@@ -432,6 +432,93 @@ class TimeEntryService:
 
         return time_entry
 
+    # ── Transfer ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def transfer_entry(
+        db: Session,
+        entry_id: int,
+        to_project_id: int,
+        to_task_id: int,
+        reason: Optional[str],
+        current_user: User,
+    ) -> TimeEntry:
+        """Reassign an already-recorded entry to a different project/task.
+
+        The entry's owner only -- matches `stop_timer`'s ownership check
+        exactly, and for the same reason: whether somebody else's entry
+        exists is not this caller's to learn, so a mismatch is 404, not 403.
+        A running entry has nothing recorded yet to transfer, so it is
+        refused rather than let a transfer race a stop for the same columns.
+
+        `start_time`, `end_time` and `total_seconds` are never read or
+        written here -- only `project_id`/`task_id` move, and
+        `TimeEntryTransferRepository` records what they moved from.
+        """
+        time_entry = TimeEntryRepository.get_by_id(db, entry_id)
+        if not time_entry or time_entry.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Time entry not found"
+            )
+        if time_entry.end_time is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A running time entry cannot be transferred. Stop it first."
+            )
+
+        # Validates the destination exists, belongs to this organization, the
+        # task is under that project, and the caller may attribute time to
+        # it -- the same chokepoint `start_timer` and manual time entries use.
+        TaskService.get_task(db, to_project_id, to_task_id, current_user)
+
+        from_project_id, from_task_id = time_entry.project_id, time_entry.task_id
+        if from_project_id == to_project_id and from_task_id == to_task_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This entry is already assigned to that project and task."
+            )
+
+        from app.repositories.time_entry_transfer import TimeEntryTransferRepository
+
+        updated = TimeEntryRepository.transfer(db, time_entry, to_project_id, to_task_id)
+        TimeEntryTransferRepository.create(
+            db,
+            organization_id=current_user.organization_id,
+            time_entry_id=updated.id,
+            user_id=updated.user_id,
+            transferred_by_user_id=current_user.id,
+            from_project_id=from_project_id,
+            from_task_id=from_task_id,
+            to_project_id=to_project_id,
+            to_task_id=to_task_id,
+            reason=reason,
+        )
+        # Both tasks' rollups move together: the source loses this entry's
+        # seconds, the destination gains them, in the same transaction as
+        # the reassignment itself.
+        TimeEntryService.refresh_task_rollup(db, from_task_id)
+        TimeEntryService.refresh_task_rollup(db, to_task_id)
+        db.commit()
+        db.refresh(updated)
+
+        TimeEntryService._log(
+            "transfer", updated, current_user,
+            note=f"from project={from_project_id} task={from_task_id} "
+                 f"to project={to_project_id} task={to_task_id}",
+        )
+        return updated
+
+    @staticmethod
+    def list_transfers(db: Session, entry_id: int, current_user: User):
+        """The transfer history for one entry, oldest first."""
+        from app.repositories.time_entry_transfer import TimeEntryTransferRepository
+
+        # Reuses get_time_entry's own ownership/visibility rule rather than
+        # duplicating it.
+        TimeEntryService.get_time_entry(db, entry_id, current_user)
+        return TimeEntryTransferRepository.list_for_entry(db, entry_id)
+
     # ── Diagnostics ──────────────────────────────────────────────────────
 
     @staticmethod

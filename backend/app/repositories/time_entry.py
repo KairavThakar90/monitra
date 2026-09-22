@@ -184,6 +184,28 @@ class TimeEntryRepository:
         return time_entry
 
     @staticmethod
+    def transfer(
+        db: Session,
+        time_entry: TimeEntry,
+        to_project_id: int,
+        to_task_id: int,
+    ) -> TimeEntry:
+        """Reassign a completed entry's project/task. Flushes only -- the
+        caller commits it together with the `time_entry_transfers` audit row
+        in one transaction. `start_time`, `end_time` and `total_seconds` are
+        deliberately absent from `values`: a transfer changes attribution,
+        never the measurement.
+        """
+        db.execute(
+            update(TimeEntry)
+            .where(TimeEntry.id == time_entry.id)
+            .values(project_id=to_project_id, task_id=to_task_id)
+        )
+        db.flush()
+        db.refresh(time_entry)
+        return time_entry
+
+    @staticmethod
     def list_by_filters(
         db: Session,
         organization_id: int,

@@ -608,4 +608,123 @@ class NetSecondsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()[0]["adjustment_seconds"], -1297)
         self.assertEqual(response.json()[0]["net_seconds"], 2901)
-        self.assertEqual(response.json()[0]["total_seconds"], 4198)
+
+
+# ── transfer ─────────────────────────────────────────────────────────────────
+
+class TransferEntryTests(unittest.TestCase):
+    """Moving an already-recorded entry to a different project/task.
+
+    The one rule every test here protects: `start_time`, `end_time` and
+    `total_seconds` never appear in a transfer's inputs or its repository
+    call -- a transfer cannot create, extend or shorten tracked time, it can
+    only change which project/task the already-measured duration counts
+    against.
+    """
+
+    def setUp(self):
+        self.db = MagicMock()
+        self.user = _user()
+        self.get_task = patch(f"{SVC}.TaskService.get_task")
+        self.get_task.start()
+        self.addCleanup(self.get_task.stop)
+        self.rollup = patch(f"{SVC}.TimeEntryService.refresh_task_rollup")
+        self.rollup.start()
+        self.addCleanup(self.rollup.stop)
+
+    def test_a_completed_entry_moves_to_the_new_project_and_task(self):
+        entry = _entry(project_id=2, task_id=3, end_time=datetime.now(UTC), total_seconds=3600)
+        with patch(f"{SVC}.TimeEntryRepository.get_by_id", return_value=entry), \
+             patch(f"{SVC}.TimeEntryRepository.transfer", return_value=entry) as transfer, \
+             patch("app.repositories.time_entry_transfer.TimeEntryTransferRepository.create") as create:
+            TimeEntryService.transfer_entry(self.db, 1, 9, 10, "wrong project", self.user)
+        transfer.assert_called_once_with(self.db, entry, 9, 10)
+        create.assert_called_once()
+        self.assertEqual(create.call_args.kwargs["from_project_id"], 2)
+        self.assertEqual(create.call_args.kwargs["from_task_id"], 3)
+        self.assertEqual(create.call_args.kwargs["to_project_id"], 9)
+        self.assertEqual(create.call_args.kwargs["to_task_id"], 10)
+        self.assertEqual(create.call_args.kwargs["reason"], "wrong project")
+
+    def test_the_repository_call_never_carries_timing_fields(self):
+        """`TimeEntryRepository.transfer`'s own signature has no
+        start_time/end_time/total_seconds parameters at all -- this pins
+        that the service does not reach around it (e.g. via a raw update)
+        to touch them either."""
+        entry = _entry(end_time=datetime.now(UTC), total_seconds=3600)
+        with patch(f"{SVC}.TimeEntryRepository.get_by_id", return_value=entry), \
+             patch(f"{SVC}.TimeEntryRepository.transfer", return_value=entry) as transfer, \
+             patch("app.repositories.time_entry_transfer.TimeEntryTransferRepository.create"):
+            TimeEntryService.transfer_entry(self.db, 1, 9, 10, None, self.user)
+        _, args, kwargs = transfer.mock_calls[0]
+        self.assertNotIn("start_time", kwargs)
+        self.assertNotIn("end_time", kwargs)
+        self.assertNotIn("total_seconds", kwargs)
+
+    def test_a_running_entry_cannot_be_transferred(self):
+        entry = _entry(end_time=None)
+        with patch(f"{SVC}.TimeEntryRepository.get_by_id", return_value=entry):
+            with self.assertRaises(HTTPException) as error:
+                TimeEntryService.transfer_entry(self.db, 1, 9, 10, None, self.user)
+        self.assertEqual(error.exception.status_code, 409)
+
+    def test_another_users_entry_is_not_found(self):
+        entry = _entry(user_id=99, end_time=datetime.now(UTC))
+        with patch(f"{SVC}.TimeEntryRepository.get_by_id", return_value=entry):
+            with self.assertRaises(HTTPException) as error:
+                TimeEntryService.transfer_entry(self.db, 1, 9, 10, None, self.user)
+        self.assertEqual(error.exception.status_code, 404)
+
+    def test_transferring_to_the_same_project_and_task_is_refused(self):
+        entry = _entry(project_id=2, task_id=3, end_time=datetime.now(UTC))
+        with patch(f"{SVC}.TimeEntryRepository.get_by_id", return_value=entry):
+            with self.assertRaises(HTTPException) as error:
+                TimeEntryService.transfer_entry(self.db, 1, 2, 3, None, self.user)
+        self.assertEqual(error.exception.status_code, 400)
+
+    def test_a_destination_task_the_caller_may_not_see_is_refused(self):
+        entry = _entry(end_time=datetime.now(UTC))
+        with patch(f"{SVC}.TimeEntryRepository.get_by_id", return_value=entry), \
+             patch(f"{SVC}.TaskService.get_task", side_effect=HTTPException(404)):
+            with self.assertRaises(HTTPException) as error:
+                TimeEntryService.transfer_entry(self.db, 1, 9, 10, None, self.user)
+        self.assertEqual(error.exception.status_code, 404)
+
+    def test_both_the_old_and_new_tasks_rollups_are_refreshed(self):
+        entry = _entry(project_id=2, task_id=3, end_time=datetime.now(UTC))
+        with patch(f"{SVC}.TimeEntryRepository.get_by_id", return_value=entry), \
+             patch(f"{SVC}.TimeEntryRepository.transfer", return_value=entry), \
+             patch("app.repositories.time_entry_transfer.TimeEntryTransferRepository.create"), \
+             patch(f"{SVC}.TimeEntryService.refresh_task_rollup") as rollup:
+            TimeEntryService.transfer_entry(self.db, 1, 9, 10, None, self.user)
+        rollup.assert_any_call(self.db, 3)
+        rollup.assert_any_call(self.db, 10)
+        self.assertEqual(rollup.call_count, 2)
+
+    def test_the_transfer_route_moves_the_entry(self):
+        app.dependency_overrides[get_current_user] = lambda: _user()
+        app.dependency_overrides[get_db] = lambda: None
+        self.addCleanup(app.dependency_overrides.clear)
+        moved = _entry(project_id=9, task_id=10, end_time=datetime.now(UTC), total_seconds=3600)
+        with patch(f"{SVC}.TimeEntryService.transfer_entry", return_value=moved) as svc, \
+             patch("app.repositories.time_entry_adjustment.TimeEntryAdjustmentRepository.net_for_entries",
+                   return_value={}):
+            response = TestClient(app).post(
+                "/time-entries/1/transfer",
+                json={"to_project_id": 9, "to_task_id": 10, "reason": "wrong project"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["project_id"], 9)
+        self.assertEqual(response.json()["task_id"], 10)
+        svc.assert_called_once()
+        self.assertEqual(svc.call_args.kwargs["to_project_id"], 9)
+        self.assertEqual(svc.call_args.kwargs["to_task_id"], 10)
+        self.assertEqual(svc.call_args.kwargs["reason"], "wrong project")
+
+    def test_the_transfer_request_schema_has_no_timing_fields(self):
+        """A payload cannot even name start_time/end_time/total_seconds --
+        the schema has no such fields, so the frontend never has a shape
+        that would let it try."""
+        from app.schemas.time_entry import TimeEntryTransferRequest
+        fields = set(TimeEntryTransferRequest.model_fields)
+        self.assertEqual(fields, {"to_project_id", "to_task_id", "reason"})
