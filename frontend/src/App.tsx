@@ -23,6 +23,7 @@ import { MemberReports } from './features/member/MemberReports'
 import { MemberProjects } from './features/member/MemberProjects'
 import { MemberTasks } from './features/member/MemberTasks'
 import { MemberTimeTracking } from './features/member/MemberTimeTracking'
+import { MemberTimeEntries } from './features/member/MemberTimeEntries'
 import { MemberScreenshots } from './features/member/MemberScreenshots'
 import { MemberTeam } from './features/member/MemberTeam'
 import type { UserRead } from './api/auth'
@@ -346,6 +347,14 @@ const AppRoutes: React.FC = () => {
         element={
           <MemberRoute>
             <MemberTimeTracking />
+          </MemberRoute>
+        }
+      />
+      <Route
+        path="/member/time-entries"
+        element={
+          <MemberRoute>
+            <MemberTimeEntries />
           </MemberRoute>
         }
       />
