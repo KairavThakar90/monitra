@@ -75,6 +75,21 @@ def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
 
 
+#: The same suffixes `tracking/app_identity.py` strips when it builds a
+#: process identity, so a catalogue entry entered *with* one (as admins are
+#: asked to, e.g. "chrome.exe") still matches the always-suffix-stripped name
+#: `get_active_window_details()` reports (e.g. "chrome").
+_KNOWN_PROCESS_SUFFIXES = (".exe", ".app", ".bat", ".cmd")
+
+
+def _strip_known_suffix(name: str) -> str:
+    lowered = name.lower()
+    for suffix in _KNOWN_PROCESS_SUFFIXES:
+        if lowered.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
 class ScreenshotService(BaseService):
     """
     Owns screenshot capture.
@@ -449,18 +464,23 @@ class ScreenshotService(BaseService):
                             if pattern.lower() in browser_info.url.lower():
                                 return False, None, None, f"url excluded by privacy config ({url_obj['domain']})"
                 
-                # Check Applications. `app_name` is the raw OS-reported
-                # process name (e.g. "chrome.exe"), exactly matching how
-                # `screenshot_applications.process_name` is seeded --
-                # `resolve_application()` is not used here on purpose: its
-                # `identity.process_name` strips the .exe/.app/.bat/.cmd
-                # suffix (for the human-readable app-usage display, a
-                # different feature), so comparing against it never matched
-                # anything and no application exclusion could ever take
+                # Check Applications. `app_name` comes from
+                # `get_active_window_details()`, which -- per
+                # `tracking/active_window.py` and the module docstring of
+                # `tracking/app_identity.py` -- always reports the
+                # executable's base name with any `.exe`/`.app`/`.bat`/`.cmd`
+                # suffix already stripped (e.g. "chrome", not "chrome.exe").
+                # `screenshot_applications.process_name` is seeded and
+                # entered by admins *with* that suffix (e.g. "chrome.exe" --
+                # see `scripts/seed_screenshot_privacy.py` and the admin
+                # form's own "e.g., slack.exe" placeholder), so both sides
+                # are normalised the same way before comparing. Comparing the
+                # raw strings (as this used to) never matched anything on
+                # Windows, for any application, and no exclusion ever took
                 # effect.
                 for excl in self._privacy_config.get("excluded_applications", []):
                     app_obj = apps_by_id.get(excl["application_id"])
-                    if app_obj and app_obj["process_name"].lower() == app_name.lower():
+                    if app_obj and _strip_known_suffix(app_obj["process_name"]).lower() == app_name.lower():
                         return False, None, None, f"application excluded by privacy config ({app_name})"
 
         return True, entry_id, client_op, None

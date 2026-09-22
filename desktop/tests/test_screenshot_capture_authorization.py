@@ -198,15 +198,21 @@ class TestOfflineStartStillWorks:
 
 
 class TestPrivacyExclusions:
-    """`screenshot_applications.process_name` is seeded with the raw
-    OS-reported name, extension included ("chrome.exe", "msedge.exe",
-    "ms-teams.exe") -- see backend/scripts/seed_screenshot_privacy.py. The
-    active-window process name must be compared against that exact spelling;
-    running it through `resolve_application()` first (which strips the
-    .exe/.app/.bat/.cmd suffix for the *human-readable* app-usage display,
-    a different feature) meant "chrome.exe" from the database was compared
-    against "chrome" from the live window and never matched -- no
-    application exclusion could ever take effect, for any application.
+    """`screenshot_applications.process_name` is entered by admins, and
+    seeded, *with* the executable suffix ("chrome.exe", "msedge.exe",
+    "ms-teams.exe" -- see backend/scripts/seed_screenshot_privacy.py and
+    the admin form's own "e.g., slack.exe" placeholder). But
+    `get_active_window_details()` -- see tracking/active_window.py and
+    tracking/app_identity.py's module docstring -- always reports that same
+    name with the suffix already stripped ("chrome", never "chrome.exe").
+    Comparing the two without normalising either one -- as this service
+    used to -- meant "chrome.exe" from the database was compared against
+    "chrome" from the live window and never matched -- no application
+    exclusion could ever take effect, for any application. These tests feed
+    `get_active_window_details()` the suffix-stripped spelling it actually
+    returns, exactly as `test_active_window_cross_platform.py`'s
+    `test_windows_dispatch_strips_the_exe_suffix_from_the_process_name`
+    pins against the real Windows code path.
     """
 
     def _excluding(self, service, process_name: str) -> None:
@@ -222,7 +228,7 @@ class TestPrivacyExclusions:
     ):
         monkeypatch.setattr(
             screenshot_service, "get_active_window_details",
-            lambda: ("chrome.exe", "GitHub - Google Chrome", None, None, None),
+            lambda: ("chrome", "GitHub - Google Chrome", None, None, None),
         )
         self._excluding(service, "chrome.exe")
         service.start_tracker(SESSION)
@@ -246,7 +252,7 @@ class TestPrivacyExclusions:
     ):
         monkeypatch.setattr(
             screenshot_service, "get_active_window_details",
-            lambda: ("Code.exe", "task_table.py - Visual Studio Code", None, None, None),
+            lambda: ("Code", "task_table.py - Visual Studio Code", None, None, None),
         )
         self._excluding(service, "chrome.exe")
         service.start_tracker(SESSION)
@@ -263,7 +269,7 @@ class TestPrivacyExclusions:
     ):
         """No refresh, no wait -- the very next authorization check reflects
         whatever application is now active."""
-        current = {"name": "chrome.exe"}
+        current = {"name": "chrome"}
         monkeypatch.setattr(
             screenshot_service, "get_active_window_details",
             lambda: (current["name"], "", None, None, None),
@@ -275,7 +281,7 @@ class TestPrivacyExclusions:
         )
         assert blocked is False
 
-        current["name"] = "Code.exe"
+        current["name"] = "Code"
 
         allowed, _entry, _client_op, _reason = service._check_authorized(
             service._current_generation()
