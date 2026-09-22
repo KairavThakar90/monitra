@@ -98,7 +98,7 @@ class ScreenshotService(BaseService):
     #: settings. Seeded immediately at login/session-verify (see
     #: `apply_user_profile`); this is the slow correction for a value an
     #: administrator changed mid-session.
-    CONFIG_REFRESH_SECONDS = 15 * 60
+    CONFIG_REFRESH_SECONDS = 3 * 60
 
     def __init__(self, runtime, cache, screenshot_api=None, parent=None) -> None:
         super().__init__(runtime, parent)
