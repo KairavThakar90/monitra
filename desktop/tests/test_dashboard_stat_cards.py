@@ -124,6 +124,28 @@ def test_todays_running_session_is_included_for_its_own_project(dashboard, monke
     assert dashboard._stat_cards.active_card._value.full_text() == "Write the report"
 
 
+def test_a_session_just_started_reads_as_tracking_even_at_zero_elapsed(dashboard, monkeypatch):
+    """A freshly started or switched-to session is genuinely tracking at 0
+    elapsed seconds. `bool(0)` is False, so gating the "Tracking now" label on
+    the truthiness of `elapsed` -- instead of on the session actually running
+    for this project -- read as "Not tracking" for the first second of every
+    new session, which is exactly the moment a user watches it start."""
+    monkeypatch.setattr(dashboard.api, "is_timer_running", lambda: True)
+    monkeypatch.setattr(dashboard.api, "timer_elapsed_seconds", lambda: 0)
+    monkeypatch.setattr(
+        dashboard.api, "active_session",
+        lambda: {"task_id": 12, "task_name": "Design review", "project_id": 2},
+    )
+
+    dashboard._today_time_entries = _entries()
+    dashboard._current_project = {"id": 2, "project_name": "Beta"}
+    dashboard._current_date = ist_today()
+    dashboard._update_stat_cards()
+
+    assert dashboard._stat_cards.total_card._value.full_text() == "00:15:00"
+    assert dashboard._stat_cards.total_card._sub.full_text() == "Tracking now"
+
+
 def test_a_running_session_on_another_project_does_not_inflate_this_ones_hours(dashboard, monkeypatch):
     """The timer is running against project 2 while project 1 is the one on
     screen: project 1's card must show its own banked time only, and must not

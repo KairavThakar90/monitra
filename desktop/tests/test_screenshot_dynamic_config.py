@@ -24,12 +24,21 @@ class FakeScreenshotApi:
         self.config = {"capture_frequency": 10}
         self.config_calls = 0
         self.config_error = None
+        self.privacy_config = {"applications": [], "urls": [], "excluded_applications": [], "excluded_urls": []}
+        self.privacy_config_calls = 0
+        self.privacy_config_error = None
 
     def get_config(self):
         self.config_calls += 1
         if self.config_error is not None:
             raise self.config_error
         return dict(self.config)
+
+    def get_privacy_config(self):
+        self.privacy_config_calls += 1
+        if self.privacy_config_error is not None:
+            raise self.privacy_config_error
+        return dict(self.privacy_config)
 
 
 def _submit(fn, on_success=None, on_error=None, key=None, **kwargs):
@@ -137,3 +146,44 @@ def test_the_refresh_timer_interval_matches_idles_own_cadence(service):
 
     assert module.ScreenshotService.CONFIG_REFRESH_SECONDS == IDLE_SECONDS
     assert service._config_refresh_timer.interval() == IDLE_SECONDS * 1000
+
+
+# ── Privacy exclusions ───────────────────────────────────────────────────────
+#
+# `capture_frequency` has a login-time seed straight from the `/auth/me`
+# payload -- no network round trip needed. Privacy exclusions have no such
+# field to seed from and are fetched from their own endpoint, so without an
+# explicit login-time fetch they stayed at `{}` -- and therefore unenforced,
+# since `_check_authorized` only applies the privacy check `if
+# self._privacy_config:` -- until the periodic timer first fired, up to
+# `CONFIG_REFRESH_SECONDS` after the app started. An admin's exclusion must
+# be in effect before the first capture can happen, not minutes later.
+
+def test_logging_in_fetches_privacy_config_immediately(service, api):
+    api.privacy_config = {
+        "applications": [{"id": 1, "process_name": "chrome.exe"}],
+        "urls": [], "excluded_applications": [{"application_id": 1}], "excluded_urls": [],
+    }
+    assert service._privacy_config == {}
+
+    service.apply_user_profile({"capture_frequency": 10})
+
+    assert api.privacy_config_calls == 1
+    assert service._privacy_config == api.privacy_config
+
+
+def test_a_failed_privacy_fetch_at_login_does_not_raise(service, api):
+    api.privacy_config_error = RuntimeError("network error")
+    service.apply_user_profile({"capture_frequency": 10})  # must not raise
+    assert service._privacy_config == {}
+
+
+def test_privacy_config_seeding_does_not_reapply_a_stale_capture_frequency(service, api):
+    """`_refresh_privacy_config` must not also re-fetch and apply
+    `get_config()` -- that would let a login's own explicit capture_frequency
+    be clobbered by whatever the config endpoint happens to answer at that
+    same moment."""
+    api.config = {"capture_frequency": 999}
+    service.apply_user_profile({"capture_frequency": 5})
+    assert service._window_seconds() == 5 * 60
+    assert api.config_calls == 0

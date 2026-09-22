@@ -196,6 +196,92 @@ class TestOfflineStartStillWorks:
         # None it was scheduled with.
         assert entry_id == 9001
 
+
+class TestPrivacyExclusions:
+    """`screenshot_applications.process_name` is seeded with the raw
+    OS-reported name, extension included ("chrome.exe", "msedge.exe",
+    "ms-teams.exe") -- see backend/scripts/seed_screenshot_privacy.py. The
+    active-window process name must be compared against that exact spelling;
+    running it through `resolve_application()` first (which strips the
+    .exe/.app/.bat/.cmd suffix for the *human-readable* app-usage display,
+    a different feature) meant "chrome.exe" from the database was compared
+    against "chrome" from the live window and never matched -- no
+    application exclusion could ever take effect, for any application.
+    """
+
+    def _excluding(self, service, process_name: str) -> None:
+        service._privacy_config = {
+            "applications": [{"id": 1, "process_name": process_name}],
+            "urls": [],
+            "excluded_applications": [{"application_id": 1}],
+            "excluded_urls": [],
+        }
+
+    def test_an_excluded_application_blocks_the_capture(
+        self, service, screen, monkeypatch
+    ):
+        monkeypatch.setattr(
+            screenshot_service, "get_active_window_details",
+            lambda: ("chrome.exe", "GitHub - Google Chrome", None, None, None),
+        )
+        self._excluding(service, "chrome.exe")
+        service.start_tracker(SESSION)
+
+        allowed, _entry, _client_op, reason = service._check_authorized(
+            service._current_generation()
+        )
+
+        assert allowed is False
+        assert "excluded by privacy config" in reason
+        # Skipped, not merely refused: `_capture_now` still returns a record
+        # (`{"excluded": True, ...}`, see its own docstring) so the schedule
+        # keeps advancing instead of stalling on an excluded app, but the
+        # screen itself must never have been read.
+        result = service._capture_now(0, service._current_generation())
+        assert result is not None and result.get("excluded") is True
+        assert screen.reads == 0
+
+    def test_a_non_excluded_application_still_captures(
+        self, service, monkeypatch
+    ):
+        monkeypatch.setattr(
+            screenshot_service, "get_active_window_details",
+            lambda: ("Code.exe", "task_table.py - Visual Studio Code", None, None, None),
+        )
+        self._excluding(service, "chrome.exe")
+        service.start_tracker(SESSION)
+
+        allowed, entry_id, _client_op, _reason = service._check_authorized(
+            service._current_generation()
+        )
+
+        assert allowed is True
+        assert entry_id == SESSION["entry_id"]
+
+    def test_switching_away_from_an_excluded_application_resumes_instantly(
+        self, service, monkeypatch
+    ):
+        """No refresh, no wait -- the very next authorization check reflects
+        whatever application is now active."""
+        current = {"name": "chrome.exe"}
+        monkeypatch.setattr(
+            screenshot_service, "get_active_window_details",
+            lambda: (current["name"], "", None, None, None),
+        )
+        self._excluding(service, "chrome.exe")
+        service.start_tracker(SESSION)
+        blocked, _entry, _client_op, _reason = service._check_authorized(
+            service._current_generation()
+        )
+        assert blocked is False
+
+        current["name"] = "Code.exe"
+
+        allowed, _entry, _client_op, _reason = service._check_authorized(
+            service._current_generation()
+        )
+        assert allowed is True
+
     def test_a_capture_is_authorized_before_any_backend_id_exists(self, service):
         service.start_tracker({"entry_id": None, "task_id": 1})
         allowed, entry_id, _client_op, _reason = service._check_authorized(service._current_generation())

@@ -5,15 +5,16 @@ import { LoginScreen } from './features/auth/LoginScreen'
 import { DownloadPage } from './features/download/DownloadPage'
 import { DashboardV2 } from './features/dashboard/v2/DashboardV2'
 import { ReportPage } from './features/dashboard/v2/ReportPage'
-import { AdminProjectManagement } from './features/admin/AdminProjectManagement'
-import { AdminTaskListing } from './features/admin/AdminTaskListing'
-import { AdminTeams } from './features/admin/AdminTeams'
-import { AdminMembers } from './features/admin/AdminMembers'
-import { AdminTimeTracking } from './features/admin/AdminTimeTracking'
-import { AdminScreenshots } from './features/admin/AdminScreenshots'
-import { AdminFeedback } from './features/admin/AdminFeedback'
-import { AdminSettings } from './features/admin/AdminSettings'
-import { AdminUserManagement } from './features/admin/AdminUserManagement'
+import { AdminProjectManagement } from './features/admin/AdminProjectManagement';
+import { AdminTaskListing } from './features/admin/AdminTaskListing';
+import { AdminMembers } from './features/admin/AdminMembers';
+import { AdminTimeTracking } from './features/admin/AdminTimeTracking';
+import { AdminScreenshots } from './features/admin/AdminScreenshots';
+import { AdminTeams } from './features/admin/AdminTeams';
+import { AdminFeedback } from './features/admin/AdminFeedback';
+import { AdminSettings } from './features/admin/AdminSettings';
+import { AdminUserManagement } from './features/admin/AdminUserManagement';
+import { AdminScreenshotPrivacy } from './features/admin/AdminScreenshotPrivacy';
 import { MaintenanceToast } from './components/MaintenanceToast'
 import { MemberFeedback } from './features/member/MemberFeedback'
 import { canManageSystem, canViewAllFeedback } from './features/auth/roles'
@@ -275,6 +276,14 @@ const AppRoutes: React.FC = () => {
         element={
           <SystemAdminRoute>
             <AdminUserManagement />
+          </SystemAdminRoute>
+        }
+      />
+      <Route
+        path="/admin/settings/screenshot-privacy"
+        element={
+          <SystemAdminRoute>
+            <AdminScreenshotPrivacy />
           </SystemAdminRoute>
         }
       />

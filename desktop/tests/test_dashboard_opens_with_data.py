@@ -116,6 +116,27 @@ def test_the_project_list_is_drawn_from_cache_too(dashboard, runtime):
     assert [p["id"] for p in dashboard._projects] == [10, 20]
 
 
+def test_a_broken_project_cache_still_starts_the_live_refresh(dashboard, runtime, monkeypatch):
+    """A local-cache read failing (a locked database file, a corrupt row)
+    must not abort the rest of `on_login()`. It used to: an uncaught
+    exception here ran out through `on_login` before `refresh_data()` and
+    the refresh timer's own `.start()`, so the live project load never even
+    fired -- the list stayed empty until something else happened to trigger
+    a reload, which read exactly like "projects take a while to appear"."""
+    _seed(runtime)
+    runner = _armed(dashboard)
+    monkeypatch.setattr(
+        dashboard.api.cache, "get_cached_projects",
+        lambda: (_ for _ in ()).throw(RuntimeError("database is locked")),
+    )
+
+    dashboard.on_login(USER)
+
+    assert dashboard._projects == []
+    assert "load-projects" in runner.keys
+    assert dashboard._refresh_timer.isActive()
+
+
 # ── Which project opens ──────────────────────────────────────────────────────
 
 def test_the_project_the_user_was_last_in_is_reopened(dashboard, runtime):

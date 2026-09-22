@@ -58,7 +58,7 @@ POLL_INTERVAL_MS = 2000
 #: How often the user's idle configuration is re-read from the backend. It is
 #: seeded from `/auth/me` at login, so this is a slow correction for a value
 #: an administrator changed mid-session — not a poll the feature depends on.
-CONFIG_REFRESH_SECONDS = 15 * 60
+CONFIG_REFRESH_SECONDS = 3 * 60
 
 #: Idle detection must not fire sooner than the user's own threshold, but the
 #: backend applies a few seconds of tolerance for poll scheduling. Reporting a

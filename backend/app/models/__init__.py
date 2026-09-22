@@ -23,6 +23,9 @@ from app.models.service_credential import ServiceCredential
 from app.models.system_setting import SystemSetting
 from app.models.activity_log import ActivityLog
 from app.models.daily_activity_summary import DailyActivitySummary
+from app.models.screenshot_application import ScreenshotApplication
+from app.models.screenshot_url import ScreenshotUrl
+from app.models.screenshot_exclusion import ScreenshotExclusion
 
 __all__ = [
     "Base",
@@ -50,4 +53,7 @@ __all__ = [
     "SystemSetting",
     "ActivityLog",
     "DailyActivitySummary",
+    "ScreenshotApplication",
+    "ScreenshotUrl",
+    "ScreenshotExclusion",
 ]
