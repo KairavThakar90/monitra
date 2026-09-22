@@ -59,9 +59,16 @@ class ScreenshotApiService:
             raise ApiError(f"Could not load the screenshot configuration: {exc}")
 
     def get_privacy_config(self) -> Dict[str, Any]:
-        """Fetch the screenshot privacy exclusions (apps and URLs)."""
+        """Fetch the screenshot privacy exclusions (apps and URLs).
+
+        Unlike `/screenshots/config` above, this router
+        (`backend/app/api/screenshot_privacy.py`) is registered only once,
+        at its own internal `/api/v1/screenshot` prefix -- there is no
+        duplicate bare-root registration to fall back on, so the leading
+        `/api/v1` here is required, not optional.
+        """
         try:
-            response = self.api_client.get("/screenshot/privacy-config", timeout=TIMEOUT_FAST)
+            response = self.api_client.get("/api/v1/screenshot/privacy-config", timeout=TIMEOUT_FAST)
             return response.json()
         except ApiHttpError as exc:
             raise _explain("Loading the screenshot privacy configuration", exc)

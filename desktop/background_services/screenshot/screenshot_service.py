@@ -113,8 +113,19 @@ class ScreenshotService(BaseService):
         #: `config.window_seconds()` -- today's hardcoded/env default --
         #: exactly like `IdleService._idle_minutes` defaults to 5 pre-seed.
         self._capture_frequency_minutes: Optional[int] = None
-        
+
         self._privacy_config: Dict[str, Any] = {}
+        #: Whether `_refresh_privacy_config` has resolved at least once
+        #: (success or failure) since this process started. `{}` alone
+        #: cannot distinguish "no exclusions" from "not fetched yet" --
+        #: without this, `_check_authorized`'s `if self._privacy_config:`
+        #: guard was skipped entirely for whatever captures fell inside the
+        #: real network round trip after login, which a short capture
+        #: frequency (a 1-minute interval, or a machine started right before
+        #: a scheduled window) could make the very *first* capture of a
+        #: session -- exactly the one an admin's exclusion most needs to
+        #: cover, uncovered.
+        self._privacy_config_loaded = False
 
         self._config_refresh_timer = QTimer(self)
         self._config_refresh_timer.setInterval(self.CONFIG_REFRESH_SECONDS * 1000)
@@ -329,13 +340,23 @@ class ScreenshotService(BaseService):
         def on_success(privacy_cfg: Any) -> None:
             if isinstance(privacy_cfg, dict):
                 self._privacy_config = privacy_cfg
+            self._privacy_config_loaded = True
+
+        def on_error(exc: BaseException) -> None:
+            self.log.warning("screenshot privacy config refresh failed: %s", exc)
+            # A genuinely unreachable backend must not block every future
+            # capture forever -- the same tolerance `_set_capture_frequency`
+            # already has for a network blip. This only ever un-blocks a
+            # capture that was waiting on the *first* attempt; a config that
+            # loaded successfully once is never reverted by a later failure
+            # (`on_success` above is the only place `_privacy_config` itself
+            # is written).
+            self._privacy_config_loaded = True
 
         tasks.submit(
             lambda: self._screenshot_api.get_privacy_config(),
             on_success=on_success,
-            on_error=lambda exc: self.log.warning(
-                "screenshot privacy config refresh failed: %s", exc
-            ),
+            on_error=on_error,
             key="screenshot-privacy-config",
         )
 
@@ -400,7 +421,15 @@ class ScreenshotService(BaseService):
             entry_id = self._entry_id
             client_op = self._client_op
 
-        # 3. Privacy configuration check
+        # 3. Privacy configuration check. A real API service that has not
+        # resolved its first fetch yet must hold captures rather than let
+        # them through unchecked -- see `_privacy_config_loaded`'s own
+        # docstring. `screenshot_api is None` (no backend configured at all,
+        # as in most of this file's own tests) is a different case and is
+        # not gated: there is no privacy config to ever arrive.
+        if self._screenshot_api is not None and not self._privacy_config_loaded:
+            return False, None, None, "privacy_config_pending"
+
         if self._privacy_config:
             app_name, window_title, _exe_path, _pid, hwnd = get_active_window_details()
             if app_name is not None:
@@ -608,7 +637,12 @@ class ScreenshotService(BaseService):
         allowed, entry_id, client_op, reason = self._check_authorized(generation)
         if not allowed:
             self.log.info("screenshot capture aborted: reason=%s", reason)
-            if reason and ("excluded by privacy config" in reason):
+            # Both retry soon rather than waiting out the full window: an
+            # exclusion the user just left, and a privacy config that has
+            # simply not finished its first load yet, are each transient --
+            # unlike "timer_stopped" or a stale generation, which mean this
+            # window's capture is not coming back at all.
+            if reason and ("excluded by privacy config" in reason or reason == "privacy_config_pending"):
                 return {"excluded": True, "reason": reason}
             return None
 
