@@ -102,7 +102,7 @@ export const screenshotPrivacyApi = baseApi.injectEndpoints({
 
     getUserExclusions: builder.query<ScreenshotExclusion[], number>({
       query: (userId) => `${API_BASE_URL}/screenshot/users/${userId}/screenshot-exclusions`,
-      providesTags: (result, error, arg) => [{ type: 'ScreenshotExclusion', id: arg }] as any,
+      providesTags: (_result, _error, arg) => [{ type: 'ScreenshotExclusion', id: arg }] as any,
     }),
     createUserExclusion: builder.mutation<ScreenshotExclusion, Partial<ScreenshotExclusion>>({
       query: ({ user_id, ...body }) => ({
@@ -110,7 +110,7 @@ export const screenshotPrivacyApi = baseApi.injectEndpoints({
         method: 'POST',
         body: { user_id, ...body },
       }),
-      invalidatesTags: (result, error, arg) => [{ type: 'ScreenshotExclusion', id: arg.user_id }] as any,
+      invalidatesTags: (_result, _error, arg) => [{ type: 'ScreenshotExclusion', id: arg.user_id }] as any,
     }),
     updateUserExclusion: builder.mutation<ScreenshotExclusion, Partial<ScreenshotExclusion> & { id: number, user_id: number }>({
       query: ({ id, user_id, ...body }) => ({
@@ -118,14 +118,14 @@ export const screenshotPrivacyApi = baseApi.injectEndpoints({
         method: 'PUT',
         body,
       }),
-      invalidatesTags: (result, error, arg) => [{ type: 'ScreenshotExclusion', id: arg.user_id }] as any,
+      invalidatesTags: (_result, _error, arg) => [{ type: 'ScreenshotExclusion', id: arg.user_id }] as any,
     }),
     deleteUserExclusion: builder.mutation<void, { id: number, user_id: number }>({
       query: ({ id, user_id }) => ({
         url: `${API_BASE_URL}/screenshot/users/${user_id}/screenshot-exclusions/${id}`,
         method: 'DELETE',
       }),
-      invalidatesTags: (result, error, arg) => [{ type: 'ScreenshotExclusion', id: arg.user_id }] as any,
+      invalidatesTags: (_result, _error, arg) => [{ type: 'ScreenshotExclusion', id: arg.user_id }] as any,
     }),
 
     getPrivacyConfig: builder.query<PrivacyConfig, void>({

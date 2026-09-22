@@ -4,7 +4,6 @@ import {
   useGetScreenshotUrlsQuery,
   useGetUserExclusionsQuery,
   useCreateUserExclusionMutation,
-  useUpdateUserExclusionMutation,
   useDeleteUserExclusionMutation,
   useCreateScreenshotApplicationMutation,
   useCreateScreenshotUrlMutation,
@@ -30,7 +29,6 @@ export const AdminScreenshotPrivacy: React.FC = () => {
   );
 
   const [createExclusion] = useCreateUserExclusionMutation();
-  const [updateExclusion] = useUpdateUserExclusionMutation();
   const [deleteExclusion] = useDeleteUserExclusionMutation();
 
   const isLoading = membersLoading || appsLoading || urlsLoading || exclusionsLoading;
