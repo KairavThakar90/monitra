@@ -253,6 +253,27 @@ def test_a_click_still_opens_the_link_late_in_the_display_window(service):
 # both correct and safe.
 
 
+def test_the_card_is_shown_even_when_no_system_tray_exists(qapp):
+    """A missing tray must degrade to the in-app card, not drop the
+    notification outright -- otherwise a failed action (e.g. a task that
+    could not be created) gives the user no feedback at all on a machine
+    or session (RDP, some Windows configs) where the tray is unavailable.
+    """
+    svc = NotificationService(MagicMock())
+    svc._available = False
+    svc._tray = None
+    try:
+        shown = svc.notify("Could not create task", NotificationLevel.ERROR, key="err")
+
+        assert shown is True
+        assert svc._popup is not None
+        assert svc._popup.isVisible()
+        assert svc._popup._message.text() == "Could not create task"
+    finally:
+        svc._dismiss_timer.stop()
+        svc.on_stop(1000)
+
+
 def test_a_notification_is_drawn_by_the_app_not_the_platform(popup_service):
     """The card is the surface, because it is the one that honours the minute."""
     popup_service.notify("Timer started", key="timer-started")

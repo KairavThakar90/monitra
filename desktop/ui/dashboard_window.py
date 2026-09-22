@@ -1133,7 +1133,17 @@ class DashboardWindow(QWidget):
     # ── Projects ──────────────────────────────────────────────────────────────
 
     def _render_cached_projects(self) -> None:
-        cached = self.api.cache.get_cached_projects()
+        # A local-cache read must never abort `on_login()`: this runs before
+        # `refresh_data()` below it, so an uncaught exception here (a locked
+        # database file, a corrupt row) used to skip straight past the live
+        # network load and the refresh timer's own `.start()` -- leaving the
+        # project list empty until something else happened to trigger a
+        # reload, which read exactly like "projects take a while to appear".
+        try:
+            cached = self.api.cache.get_cached_projects()
+        except Exception:  # noqa: BLE001
+            log.exception("could not read the cached project list")
+            cached = None
         if cached:
             self._projects = cached
             self._sidebar.set_projects(cached)

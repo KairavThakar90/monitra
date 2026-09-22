@@ -419,17 +419,15 @@ class NotificationService(BaseService):
             toast shows plain text, so a URL written into `message` is not
             clickable — pass it here as well for a notification whose whole
             purpose is to send the user somewhere.
-        :return: True if it was displayed, or handed to the GUI thread to
-            display. False if it was suppressed or no tray exists.
+        :return: True if it was displayed (in-app card or platform toast), or
+            handed to the GUI thread to display. False if it was suppressed,
+            or no display surface was available at all.
         """
         dedupe_key = key or f"{level}:{message}"
         if not self._admit(dedupe_key):
             return False
 
         self.log.info("notify [%s] %s", level, message)
-
-        if not self._available or self._tray is None:
-            return False
 
         if QThread.currentThread() is not self.thread():
             self.toast_requested.emit(message, level, title, link or "")
@@ -438,10 +436,14 @@ class NotificationService(BaseService):
         return self._deliver(message, level, title, link or "")
 
     def _deliver(self, message: str, level: str, title: str, link: str = "") -> bool:
-        """Show an admitted notification. Runs on this service's own thread."""
-        if not self._available or self._tray is None:
-            return False
+        """Show an admitted notification. Runs on this service's own thread.
 
+        The in-app card is a plain widget and needs no system tray, so it is
+        tried unconditionally; only the platform-toast fallback below needs
+        `_available`/`_tray`. A missing tray must degrade to logging, per this
+        module's docstring — not drop every notification, including a failed
+        task creation, with no feedback at all.
+        """
         # Set before showing: on a fast click the platform can deliver
         # `messageClicked` the instant the toast appears.
         self._pending_link = link or None
@@ -459,6 +461,9 @@ class NotificationService(BaseService):
                 shown = False
 
         if not shown:
+            if not self._available or self._tray is None:
+                self._pending_link = None
+                return False
             try:
                 # Use Monitra brand QIcon so Windows system toast displays Monitra logo
                 tray_icon = self._icon if self._icon and not self._icon.isNull() else _LEVEL_ICONS.get(level, QSystemTrayIcon.MessageIcon.Information)
