@@ -57,3 +57,15 @@ class ScreenshotApiService:
             raise ApiError("Could not load the screenshot configuration: network error.")
         except Exception as exc:  # noqa: BLE001
             raise ApiError(f"Could not load the screenshot configuration: {exc}")
+
+    def get_privacy_config(self) -> Dict[str, Any]:
+        """Fetch the screenshot privacy exclusions (apps and URLs)."""
+        try:
+            response = self.api_client.get("/screenshot/privacy-config", timeout=TIMEOUT_FAST)
+            return response.json()
+        except ApiHttpError as exc:
+            raise _explain("Loading the screenshot privacy configuration", exc)
+        except ApiConnectionError:
+            raise ApiError("Could not load the screenshot privacy configuration: network error.")
+        except Exception as exc:  # noqa: BLE001
+            raise ApiError(f"Could not load the screenshot privacy configuration: {exc}")

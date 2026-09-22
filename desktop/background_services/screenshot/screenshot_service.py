@@ -63,6 +63,8 @@ from PySide6.QtCore import QTimer, Signal
 
 from background_services.screenshot import capture, config, image_processor, scheduler, store
 from core.service import BaseService
+from tracking.active_window import get_active_window_details
+from tracking.browsers.manager import get_browser_manager
 
 #: Durable record of the window budget already spent, so a restart inside a
 #: window cannot exceed `SCREENSHOTS_PER_WINDOW`.
@@ -111,6 +113,8 @@ class ScreenshotService(BaseService):
         #: `config.window_seconds()` -- today's hardcoded/env default --
         #: exactly like `IdleService._idle_minutes` defaults to 5 pre-seed.
         self._capture_frequency_minutes: Optional[int] = None
+        
+        self._privacy_config: Dict[str, Any] = {}
 
         self._config_refresh_timer = QTimer(self)
         self._config_refresh_timer.setInterval(self.CONFIG_REFRESH_SECONDS * 1000)
@@ -227,12 +231,21 @@ class ScreenshotService(BaseService):
     # admin change. Nothing here computes or guesses the interval.
 
     def apply_user_profile(self, user_data: Optional[Dict[str, Any]]) -> None:
-        """Seed the capture interval from a `/auth/me` payload.
+        """Seed the capture interval from a `/auth/me` payload, and kick off
+        an immediate privacy-config fetch.
 
         Called on login and on session verification, both of which already
         hold the profile -- so the user's own interval is in effect before
         tracking can start, without an extra request.
+
+        Privacy exclusions are not part of `/auth/me` and have no equivalent
+        seed, so this is also the earliest point with a guaranteed-valid
+        access token to fetch them from -- `on_start()`'s own immediate
+        refresh can run before login (a fresh sign-in has no token yet), so
+        without this an admin's exclusion would not be enforced until the
+        first periodic refresh, up to `CONFIG_REFRESH_SECONDS` later.
         """
+        self._refresh_privacy_config()
         if not isinstance(user_data, dict):
             return
         user = user_data.get("user") if isinstance(user_data.get("user"), dict) else user_data
@@ -265,26 +278,65 @@ class ScreenshotService(BaseService):
         return config.window_seconds()
 
     def _refresh_config(self) -> None:
-        """Re-read the capture interval from the backend. Off the GUI
-        thread for the request; applied back on it via `on_success`."""
+        """Re-read the capture interval and privacy config from the backend."""
         if self._screenshot_api is None:
             return
         tasks = getattr(self.runtime, "tasks", None)
         if tasks is None:
             return
 
-        def on_success(cfg: Dict[str, Any]) -> None:
+        def _fetch_configs():
+            cfg = self._screenshot_api.get_config()
+            privacy_cfg = {}
+            try:
+                privacy_cfg = self._screenshot_api.get_privacy_config()
+            except Exception as e:
+                self.log.warning("screenshot privacy config refresh failed: %s", e)
+            return cfg, privacy_cfg
+
+        def on_success(results: Any) -> None:
+            cfg, privacy_cfg = results
             if isinstance(cfg, dict):
                 self._set_capture_frequency(cfg.get("capture_frequency"))
+            if isinstance(privacy_cfg, dict):
+                self._privacy_config = privacy_cfg
 
         tasks.submit(
-            self._screenshot_api.get_config,
+            _fetch_configs,
             on_success=on_success,
             # A failed refresh keeps the last known interval. Blanking a
             # valid local value because the network blipped is a
             # regression, not error handling.
             on_error=lambda exc: self.log.info("screenshot config refresh failed: %s", exc),
             key="screenshot-config",
+        )
+
+    def _refresh_privacy_config(self) -> None:
+        """Fetch just the privacy exclusions, independent of the capture
+        interval -- called from `apply_user_profile` at login, when the
+        access token is first guaranteed valid, so an admin's exclusion is
+        enforced from the first capture rather than only once the periodic
+        `_refresh_config` timer first fires. Kept separate from
+        `_refresh_config` so seeding privacy on login cannot also re-apply a
+        stale `capture_frequency` snapshot over the value login just seeded.
+        """
+        if self._screenshot_api is None:
+            return
+        tasks = getattr(self.runtime, "tasks", None)
+        if tasks is None:
+            return
+
+        def on_success(privacy_cfg: Any) -> None:
+            if isinstance(privacy_cfg, dict):
+                self._privacy_config = privacy_cfg
+
+        tasks.submit(
+            lambda: self._screenshot_api.get_privacy_config(),
+            on_success=on_success,
+            on_error=lambda exc: self.log.warning(
+                "screenshot privacy config refresh failed: %s", exc
+            ),
+            key="screenshot-privacy-config",
         )
 
     # ── Capture authorisation ─────────────────────────────────────────────────
@@ -332,36 +384,57 @@ class ScreenshotService(BaseService):
 
     def _check_authorized(
         self, generation: int
-    ) -> Tuple[bool, Optional[int], Optional[str], str]:
+    ) -> Tuple[bool, Optional[int], Optional[str], Optional[str]]:
         """
-        Whether a capture scheduled in `generation` may still take the screen.
+        Check whether a capture is permitted right now.
 
-        Called on a pool thread immediately before the capture, which is the
-        only check that means anything: the scheduler's check happened at an
-        earlier instant and cannot speak for this one.
-
-        The entry id is returned rather than compared, because within one
-        generation it legitimately changes exactly once — from None to the
-        backend's id, when an offline start is finally acknowledged. Comparing
-        it to the value captured at schedule time would abort a perfectly valid
-        screenshot. The generation is what identifies the session; the id
-        returned here is what the screenshot is recorded against, so a capture
-        can never be attributed to a task that is no longer the one running.
-
-        The session key is returned alongside it for the same reason: a capture
-        taken before the id arrives is stored against `client_op` so the
-        adoption can find it later, and reading both under one lock is what
-        guarantees the pair describes a single session rather than two halves
-        of a switch that happened in between.
-
-        :return: (allowed, current entry id, session key, reason when not allowed)
+        Returns (allowed, entry_id, client_op, reason). The capture must
+        be attributed to the returned session tokens rather than reading them
+        live again afterwards.
         """
         with self._auth_lock:
-            if not self._authorized:
-                return False, None, None, "timer_stopped"
             if generation != self._generation:
                 return False, None, None, "stale_scheduler_generation"
-            return True, self._entry_id, self._client_op, ""
+            if not self._authorized:
+                return False, None, None, "timer_stopped"
+            entry_id = self._entry_id
+            client_op = self._client_op
+
+        # 3. Privacy configuration check
+        if self._privacy_config:
+            app_name, window_title, _exe_path, _pid, hwnd = get_active_window_details()
+            if app_name is not None:
+                # Check if it's a browser
+                browser_info = get_browser_manager().extract_browser_info(app_name, window_title, hwnd or 0)
+                
+                # We need to map `excluded_applications` back to the app `process_name`.
+                apps_by_id = {app["id"]: app for app in self._privacy_config.get("applications", [])}
+                urls_by_id = {url["id"]: url for url in self._privacy_config.get("urls", [])}
+                
+                # Check URLs first if it's a browser
+                if browser_info and browser_info.url:
+                    for excl in self._privacy_config.get("excluded_urls", []):
+                        url_obj = urls_by_id.get(excl["url_id"])
+                        if url_obj:
+                            pattern = url_obj["url_pattern"].replace("*", "")
+                            if pattern.lower() in browser_info.url.lower():
+                                return False, None, None, f"url excluded by privacy config ({url_obj['domain']})"
+                
+                # Check Applications. `app_name` is the raw OS-reported
+                # process name (e.g. "chrome.exe"), exactly matching how
+                # `screenshot_applications.process_name` is seeded --
+                # `resolve_application()` is not used here on purpose: its
+                # `identity.process_name` strips the .exe/.app/.bat/.cmd
+                # suffix (for the human-readable app-usage display, a
+                # different feature), so comparing against it never matched
+                # anything and no application exclusion could ever take
+                # effect.
+                for excl in self._privacy_config.get("excluded_applications", []):
+                    app_obj = apps_by_id.get(excl["application_id"])
+                    if app_obj and app_obj["process_name"].lower() == app_name.lower():
+                        return False, None, None, f"application excluded by privacy config ({app_name})"
+
+        return True, entry_id, client_op, None
 
     # ── Window budget ─────────────────────────────────────────────────────────
 
@@ -483,6 +556,19 @@ class ScreenshotService(BaseService):
         """Publish a completed capture. Back on the GUI thread."""
         if not record:
             return
+        
+        # If the capture was skipped because of privacy controls, we want to
+        # resume instantly when they leave the excluded app. We do this by
+        # scheduling a retry 2 seconds from now.
+        if record.get("excluded"):
+            import time
+            retry_time = time.time() + 2.0
+            # Insert at the front so it's the very next thing
+            if not self._planned_times or self._planned_times[0] > retry_time:
+                self._planned_times.insert(0, retry_time)
+            self._arm()
+            return
+            
         self.screenshot_captured.emit(record)
         # Upload promptly rather than on the sync loop's idle cadence.
         sync = getattr(self.runtime, "sync", None)
@@ -522,6 +608,8 @@ class ScreenshotService(BaseService):
         allowed, entry_id, client_op, reason = self._check_authorized(generation)
         if not allowed:
             self.log.info("screenshot capture aborted: reason=%s", reason)
+            if reason and ("excluded by privacy config" in reason):
+                return {"excluded": True, "reason": reason}
             return None
 
         # One capture event reads every attached display and produces exactly
@@ -664,6 +752,18 @@ class ScreenshotService(BaseService):
         except Exception:  # noqa: BLE001
             self.log.exception("could not prune orphaned screenshot files")
         self._config_refresh_timer.start()
+        # Privacy exclusions have no login-time seed the way capture_frequency
+        # does (apply_user_profile only carries the interval): without this,
+        # `_privacy_config` stayed `{}` -- and therefore unenforced, see
+        # `_check_authorized` -- for the first CONFIG_REFRESH_SECONDS after
+        # every app start, since `QTimer.start()` does not fire immediately.
+        # An admin's exclusion must be in effect before the first capture can
+        # happen, not up to three minutes after. Only the privacy half, not
+        # the full config: a restored session already has a valid token here
+        # (unlike a fresh login, where apply_user_profile is what seeds it),
+        # but capture_frequency already has its own login-time seed and does
+        # not need a second, redundant fetch on top of it.
+        self._refresh_privacy_config()
         super().on_start()
 
     def on_stop(self, timeout_ms: int) -> bool:
