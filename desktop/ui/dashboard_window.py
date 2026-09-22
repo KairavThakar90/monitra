@@ -1583,7 +1583,15 @@ class DashboardWindow(QWidget):
         running = self.api.is_timer_running()
         live = self.api.timer_elapsed_seconds() if (running and viewing_today) else 0
         session = (self.api.active_session() or {}) if running else {}
-        tracking_this_project = bool(live) and project_id is not None and session.get("project_id") == project_id
+        # Not `bool(live)`: a session that has just started is genuinely
+        # tracking at 0 elapsed seconds, and `bool(0)` is False -- that made
+        # the card read "Not tracking" for the first second of every new
+        # session and every switch, even though the timer had already
+        # started.
+        tracking_this_project = (
+            running and viewing_today and project_id is not None
+            and session.get("project_id") == project_id
+        )
         hours = self._banked_seconds_by_project().get(project_id, 0) if project_id is not None else 0
         if tracking_this_project:
             hours += live
@@ -2518,7 +2526,7 @@ class DashboardWindow(QWidget):
                     "Back online. Syncing pending activity.",
                     NotificationLevel.SUCCESS, key="network-online",
                 )
-            if not self._projects:
+            if self._active and not self._projects:
                 self.load_projects()
             self.refresh_data()
         elif state == NetworkState.NO_NETWORK:
