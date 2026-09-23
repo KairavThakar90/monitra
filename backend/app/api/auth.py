@@ -2,6 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.schemas.user import UserRead, DevLoginRequest, LoginRequest, SsoTokenRequest
+from app.schemas.client import ClientLoginLinkRequest
 from app.schemas.token import LogoutRequest, RefreshRequest, SsoHandoffResponse, TokenPair
 from app.services.auth import AuthService
 from app.models.user import User
@@ -136,6 +137,26 @@ def logout(payload: LogoutRequest, db: Session = Depends(get_db)):
 @router.get("/me", response_model=UserRead)
 def get_me(current_user: User = Depends(get_current_user)):
     return current_user
+
+@router.post(
+    "/client/login-link",
+    status_code=204,
+    summary="Email an active client a fresh passwordless sign-in link",
+    description=(
+        "A client has no password: every sign-in after the initial invitation "
+        "approval goes through a single-use link emailed here. Always returns "
+        "204 regardless of whether the address matches an account, so this "
+        "endpoint cannot be used to discover which addresses have one."
+    ),
+)
+def request_client_login_link(
+    payload: ClientLoginLinkRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    AuthService.request_client_login_link(db, payload.email, background_tasks=background_tasks)
+    return Response(status_code=204)
+
 
 @router.post(
     "/dev-login",

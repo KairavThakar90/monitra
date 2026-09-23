@@ -838,9 +838,156 @@ def build_release_email(payload: dict[str, Any], recipients: list[str]) -> Outgo
     )
 
 
+# ----------------------------------------------------------------------
+# Workflow 6 — client invitation
+# ----------------------------------------------------------------------
+
+def client_invitation_subject() -> str:
+    return clean_subject("You're Invited to Monitra")
+
+
+def _client_invitation_urls(token: str) -> tuple[str, str]:
+    """The direct backend GET endpoints the two buttons point at.
+
+    Deliberately built from `API_BASE_URL`, not `MONITRA_APP_URL`: these links
+    are meant to be opened once, unauthenticated, and hit this service
+    directly -- the backend performs the approve/reject and redirects into the
+    web client itself. See `app/api/clients.py`.
+    """
+    base = (settings.API_BASE_URL or "").strip().rstrip("/")
+    return f"{base}/clients/invitations/{token}/approve", f"{base}/clients/invitations/{token}/reject"
+
+
+def build_client_invitation_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    """The invitation, with its Approve/Reject buttons, for one client."""
+    subject = client_invitation_subject()
+    project_names = [str(name) for name in (payload.get("project_names") or [])]
+
+    frame = _frame_context(
+        subject=subject,
+        preheader="You have been invited to view your project information in Monitra.",
+        footer_note=(
+            "You are receiving this because an administrator invited you to a "
+            "Monitra client account. It is sent once per invitation."
+        ),
+    )
+
+    project_rows = (
+        Markup("<ul style=\"margin:0;padding-left:18px;\">{}</ul>").format(
+            Markup("").join(
+                Markup(
+                    '<li style="font-family:Helvetica,Arial,sans-serif;font-size:14px;'
+                    'line-height:24px;color:#374151;">{}</li>'
+                ).format(name)
+                for name in project_names
+            )
+        )
+        if project_names
+        else Markup(
+            '<p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:14px;'
+            'color:#9AA3AF;">No projects have been shared yet.</p>'
+        )
+    )
+
+    approve_url, reject_url = _client_invitation_urls(str(payload.get("token") or ""))
+
+    html = render_page(
+        "client_invitation.html",
+        {**frame, "project_rows": project_rows, "approve_url": approve_url, "reject_url": reject_url},
+    )
+
+    text_lines = [
+        "YOU'RE INVITED TO MONITRA",
+        "",
+        "You have been invited to access your project information in Monitra.",
+        "",
+        "Projects shared with you:",
+    ]
+    text_lines += [f"  - {name}" for name in project_names] if project_names else ["  (none yet)"]
+    text_lines += [
+        "",
+        "Your login credential is your email address. There is no password to set.",
+        "",
+        f"Approve invitation: {approve_url}",
+        f"Not needed / reject: {reject_url}",
+        "",
+        "Monitra — Staff Management System",
+        "Store Transform",
+    ]
+
+    return OutgoingEmail(
+        to=recipients,
+        subject=subject,
+        html=html,
+        text="\n".join(text_lines),
+        reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
+        inline_images=frame["_inline_images"],
+    )
+
+
+# ----------------------------------------------------------------------
+# Workflow 7 — client passwordless login link
+# ----------------------------------------------------------------------
+
+def client_login_link_subject() -> str:
+    return clean_subject("Your Monitra sign-in link")
+
+
+def _client_login_url(handoff_token: str) -> str:
+    """Where the button sends the client -- the web client's `?token=`
+    handoff consumption, the same mechanism the desktop-to-web handoff and
+    the invitation Approve link both use."""
+    base = (settings.MONITRA_APP_URL or "").strip().rstrip("/")
+    return f"{base}/?token={handoff_token}"
+
+
+def build_client_login_link_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    subject = client_login_link_subject()
+    frame = _frame_context(
+        subject=subject,
+        preheader="Use this link to sign in to your Monitra client account.",
+        footer_note="You are receiving this because you requested a sign-in link for Monitra.",
+    )
+    login_url = _client_login_url(str(payload.get("handoff_token") or ""))
+
+    html = render_page("client_login_link.html", {**frame, "login_url": login_url})
+
+    text_lines = [
+        "YOUR MONITRA SIGN-IN LINK",
+        "",
+        "Use this link to sign in to your Monitra client account. It can only be "
+        "used once and expires shortly.",
+        "",
+        login_url,
+        "",
+        "If you did not request this, you can safely ignore this email.",
+        "",
+        "Monitra — Staff Management System",
+        "Store Transform",
+    ]
+
+    return OutgoingEmail(
+        to=recipients,
+        subject=subject,
+        html=html,
+        text="\n".join(text_lines),
+        reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
+        inline_images=frame["_inline_images"],
+    )
+
+
 #: Maps a notification type to the builder that renders it. The outbox is
 #: type-agnostic: adding a third email is a builder, an entry here and a
 #: `dedupe_key`, with nothing in the delivery machinery changing.
+#:
+#: `build_client_invitation_email` and `build_client_login_link_email` are
+#: deliberately **not** registered here. Both render a bearer secret into the
+#: message (an invitation token, a login handoff token), and the outbox's
+#: payload is a durable, plaintext row in `email_notifications` -- see the
+#: "never a token, a password or a session identifier" rule on that model.
+#: `workflows.queue_client_invitation_email`/`queue_client_login_link_email`
+#: call these builders directly and send immediately instead of going through
+#: `EmailOutboxService.enqueue`, so the secret is never persisted.
 BUILDERS = {
     "welcome": build_welcome_email,
     "feedback": build_feedback_email,

@@ -27,6 +27,9 @@ from app.models.daily_activity_summary import DailyActivitySummary
 from app.models.screenshot_application import ScreenshotApplication
 from app.models.screenshot_url import ScreenshotUrl
 from app.models.screenshot_exclusion import ScreenshotExclusion
+from app.models.client import Client
+from app.models.client_invitation import ClientInvitation
+from app.models.client_project import ClientProject
 
 __all__ = [
     "Base",
@@ -58,4 +61,7 @@ __all__ = [
     "ScreenshotApplication",
     "ScreenshotUrl",
     "ScreenshotExclusion",
+    "Client",
+    "ClientInvitation",
+    "ClientProject",
 ]

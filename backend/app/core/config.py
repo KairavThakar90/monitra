@@ -156,6 +156,15 @@ class Settings(BaseSettings):
     #: Shown as "need help? write to ..." in both templates. Omitted when empty.
     MONITRA_SUPPORT_EMAIL: str = ""
 
+    # ── Client invitations ────────────────────────────────────────────────
+    #: This backend's own publicly reachable base URL. The invitation email's
+    #: Approve/Reject buttons are direct backend GET links (not frontend
+    #: routes), so they need an absolute URL to this service rather than to
+    #: MONITRA_APP_URL, which points at the web client.
+    API_BASE_URL: str = ""
+    #: How long an invitation's Approve/Reject link stays valid.
+    CLIENT_INVITATION_EXPIRE_HOURS: int = 72
+
     # ── Release announcement ──────────────────────────────────────────────
     #: Whether publishing a desktop release emails every active user about it.
     #: One announcement per user per *version* — publishing the second artifact

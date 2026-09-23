@@ -30,6 +30,7 @@ from app.repositories.email_notification import EmailNotificationRepository
 from app.repositories.user import UserRepository
 from app.services.email import messages
 from app.services.email.outbox import EmailOutboxService
+from app.services.email.provider import get_email_provider
 from app.services.email.recipients import (
     resolve_feedback_recipients, resolve_user_recipient,
 )
@@ -520,3 +521,88 @@ def build_weekly_report_preview(db: Session, *, user_id: int, week_start=None) -
         period=period,
     )[user.id]
     return _weekly_report_payload(user=user, period=period, metrics=metrics)
+
+
+# ----------------------------------------------------------------------
+# Workflow 6 & 7 — client invitation and passwordless login link
+#
+# Both carry a bearer secret (an invitation token, a login handoff token) in
+# the message they render, so neither goes through `EmailOutboxService`: its
+# payload is a durable, plaintext row, and `EmailNotification`'s own contract
+# says a queued row holds "only what the email shows... never a token, a
+# password or a session identifier". These two are sent immediately instead —
+# still never raising into the caller, exactly like every workflow above, but
+# without a durable retry. A failed send is recovered by the caller offering
+# "resend invitation" / "send another sign-in link", each of which mints a
+# fresh secret rather than retrying the one that already went out.
+# ----------------------------------------------------------------------
+
+def _send_immediately(message) -> bool:
+    try:
+        get_email_provider().send(message)
+        return True
+    except Exception:  # noqa: BLE001 - never fail the caller over email
+        logger.warning("EMAIL_IMMEDIATE_SEND_FAILED: subject=%r", message.subject, exc_info=True)
+        return False
+
+
+def queue_client_invitation_email(
+    db: Session, *, invitation, client, token: str, project_names: list[str], background_tasks=None,
+) -> bool:
+    """Send one client invitation, with its Approve/Reject links.
+
+    Returns whether a send was attempted (queued to run, or sent). Does not
+    guarantee delivery -- there is no durable retry here, by design; see the
+    module note above.
+    """
+    try:
+        recipients = resolve_user_recipient(client.email or "")
+        if not recipients:
+            logger.warning(
+                "CLIENT_INVITATION_EMAIL_SKIPPED: client=%s reason=no_usable_email", client.id,
+            )
+            return False
+
+        payload = {"token": token, "project_names": project_names}
+        message = messages.build_client_invitation_email(payload, recipients)
+
+        if background_tasks is not None:
+            background_tasks.add_task(_send_immediately, message)
+        else:
+            _send_immediately(message)
+        logger.info(
+            "CLIENT_INVITATION_EMAIL_QUEUED: client=%s invitation=%s", client.id, invitation.id,
+        )
+        return True
+    except Exception:  # noqa: BLE001 - creating the invitation must not fail over email
+        logger.warning(
+            "CLIENT_INVITATION_EMAIL_QUEUE_FAILED: client=%s", getattr(client, "id", "?"), exc_info=True,
+        )
+        return False
+
+
+def queue_client_login_link_email(db: Session, user, handoff_token: str, background_tasks=None) -> bool:
+    """Send one passwordless sign-in link to an approved client."""
+    try:
+        recipients = resolve_user_recipient(getattr(user, "email", "") or "")
+        if not recipients:
+            logger.warning(
+                "CLIENT_LOGIN_LINK_EMAIL_SKIPPED: user=%s reason=no_usable_email",
+                getattr(user, "id", None),
+            )
+            return False
+
+        payload = {"handoff_token": handoff_token}
+        message = messages.build_client_login_link_email(payload, recipients)
+
+        if background_tasks is not None:
+            background_tasks.add_task(_send_immediately, message)
+        else:
+            _send_immediately(message)
+        logger.info("CLIENT_LOGIN_LINK_EMAIL_QUEUED: user=%s", getattr(user, "id", None))
+        return True
+    except Exception:  # noqa: BLE001 - requesting a link must not fail over email
+        logger.warning(
+            "CLIENT_LOGIN_LINK_EMAIL_QUEUE_FAILED: user=%s", getattr(user, "id", "?"), exc_info=True,
+        )
+        return False

@@ -21,6 +21,7 @@ from app.api.feedback import router as feedback_router
 from app.api.email_notifications import router as email_notifications_router
 from app.api.system import router as system_router
 from app.api.activity_rollup import router as activity_rollup_router
+from app.api.clients import router as clients_router, public_router as clients_public_router
 from app.react_apis.reports import router as reports_router
 from app.react_apis.manual_time_entry import router as react_manual_time_entry_router
 from app.react_apis.member_usage import router as member_usage_router
@@ -120,11 +121,13 @@ app.include_router(desktop_release_router)
 app.include_router(feedback_router)
 app.include_router(system_router)
 app.include_router(activity_rollup_router)
-# Registered once, without the /api/v1 prefix: its two routes are a scheduler
-# trigger and a public image URL, and both are referenced by absolute path —
+# Registered once, without the /api/v1 prefix: its routes are a scheduler
+# trigger, a public image URL, and (clients_public_router) an invitation's
+# Approve/Reject links, and all of these are referenced by absolute path —
 # from a cron configuration and from inside already-delivered email. A second
-# spelling of either would be a second URL to keep working forever.
+# spelling of any of them would be a second URL to keep working forever.
 app.include_router(email_notifications_router)
+app.include_router(clients_public_router)
 
 # 2. Registrations with the /api/v1 prefix (expected by React frontend and prefix-aware desktop calls)
 api_prefix = "/api/v1"
@@ -156,6 +159,7 @@ app.include_router(member_usage_router)
 app.include_router(reports_page_router)
 app.include_router(dashboard_router)
 app.include_router(screenshot_privacy_router)
+app.include_router(clients_router)
 
 @app.get("/")
 def read_root():

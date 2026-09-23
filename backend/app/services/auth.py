@@ -595,6 +595,31 @@ class AuthService:
         return AuthService._issue_token_pair(db, user)
 
     @staticmethod
+    def request_client_login_link(db: Session, email: str, background_tasks=None) -> None:
+        """Email an active client a fresh sign-in link, if that address has one.
+
+        Reuses `issue_handoff_token` -- a client has no password, so every
+        sign-in after the initial invitation approval goes through the same
+        single-use SSO handoff mechanism the desktop client uses, requested
+        here instead of minted from an existing session.
+
+        Never reveals whether the address exists: the caller always sees the
+        same generic outcome, and only a matching, active client account
+        actually receives mail.
+        """
+        normalized = (email or "").strip().lower()
+        if not normalized:
+            return
+        user = UserRepository.get_by_normalized_email(db, normalized)
+        if not user or user.role_name != "client" or not user.is_active or user.status != "active":
+            logger.info("CLIENT_LOGIN_LINK_SKIPPED: no active client account for the given address")
+            return
+
+        token, _expires_at = AuthService.issue_handoff_token(db, user)
+        from app.services.email.workflows import queue_client_login_link_email
+        queue_client_login_link_email(db, user, token, background_tasks=background_tasks)
+
+    @staticmethod
     async def sso_exchange(
         db: Session, provider_token: str, background_tasks=None
     ) -> TokenPair:

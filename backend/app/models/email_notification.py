@@ -72,6 +72,16 @@ TYPE_RELEASE = "release"
 #: Putting the run date in the key instead would make every retry a new event,
 #: which is precisely the duplicate this prevents.
 TYPE_WEEKLY_REPORT = "weekly_report"
+#: "You're invited to Monitra" -- one per invitation, carrying its own
+#: Approve/Reject links. Keyed on the invitation row, never the client: a
+#: resend creates a new invitation row (a new token) and must be a distinct,
+#: separately-deliverable email.
+TYPE_CLIENT_INVITATION = "client_invitation"
+#: A passwordless sign-in link, requested from the login screen. Keyed on the
+#: minted handoff token's hash rather than the user, so requesting a second
+#: link (the first was lost, or simply another day) always sends a new email
+#: rather than being swallowed as a duplicate of the last one.
+TYPE_CLIENT_LOGIN_LINK = "client_login_link"
 
 
 class EmailNotification(Base):

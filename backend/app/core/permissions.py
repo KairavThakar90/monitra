@@ -65,6 +65,7 @@ ROLE_PERMISSIONS = {
         "manage_employees",
         "screenshots:delete",
         "manage_desktop_releases",
+        "clients:manage",
     },
     "administrator": {  # Full organization administration permissions
         "projects:create",
@@ -85,6 +86,7 @@ ROLE_PERMISSIONS = {
         "manage_employees",
         "screenshots:delete",
         "manage_desktop_releases",
+        "clients:manage",
     },
     # Human resources. `hr` is one of the four roles this system offers --
     # MemberRole in app/schemas/member.py accepts it, and the
@@ -164,8 +166,17 @@ ROLE_PERMISSIONS = {
         "manage_employees",
         "screenshots:delete",
         "manage_desktop_releases",
+        "clients:manage",
         # TODO: Define super-admin specific system-wide settings permissions once verified.
-    }
+    },
+    # An external party an admin has invited to view a read-only slice of the
+    # organization's projects. Deliberately the smallest set this table can
+    # express beside `release_bot`: a client never sees the member directory,
+    # never creates or edits anything, and never reads a project it was not
+    # explicitly granted -- `clients:view_shared` gates the client-portal
+    # routes, which additionally check `ClientProjectRepository.exists` per
+    # project before returning anything.
+    "client": {"clients:view_shared"},
 }
 
 # `manage_desktop_releases` is deliberately held only by the three
