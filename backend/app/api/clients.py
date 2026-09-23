@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -9,7 +9,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user, require_permission
 from app.models.user import User
-from app.schemas.client import ClientInvitationCreate, ClientListResponse, ClientProjectsUpdate
+from app.schemas.client import ClientAccessUpdate, ClientInvitationCreate, ClientListResponse
 from app.services.client_invitation_service import ClientInvitationService
 from app.services.client_portal_service import ClientPortalService
 
@@ -40,7 +40,8 @@ def create_invitation(
     db: Session = Depends(get_db),
 ):
     client = ClientInvitationService.create_invitation(
-        db, current_user, payload.email, payload.project_ids or [], background_tasks=background_tasks,
+        db, current_user, payload.email, payload.project_ids or [],
+        permissions=payload.permissions.model_dump(), background_tasks=background_tasks,
     )
     return {"id": client.id, "email": client.email, "status": client.status}
 
@@ -61,18 +62,18 @@ def list_clients(
 
 
 @router.patch(
-    "/clients/{client_id}/projects",
+    "/clients/{client_id}/access",
     dependencies=[Depends(require_permission("clients:manage"))],
-    summary="Change which projects are shared with a client",
+    summary="Change which projects are shared with a client, and what they may see within them",
 )
-def update_client_projects(
+def update_client_access(
     client_id: int,
-    payload: ClientProjectsUpdate,
+    payload: ClientAccessUpdate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    client = ClientInvitationService.update_client_projects(
-        db, current_user, client_id, payload.project_ids or [],
+    client = ClientInvitationService.update_client_access(
+        db, current_user, client_id, payload.project_ids or [], payload.permissions.model_dump(),
     )
     return {"id": client.id, "status": client.status}
 
@@ -174,6 +175,11 @@ _PROJECT_IDS_Q = Query(None, description="Repeat to filter to specific shared pr
 _MEMBER_IDS_Q = Query(None, description="Repeat to filter to specific members")
 
 
+@router.get("/clients/me", summary="The signed-in client's name and sharing permissions")
+def get_my_profile(current_user: User = Depends(_require_client), db: Session = Depends(get_db)):
+    return ClientPortalService.get_my_profile(db, current_user)
+
+
 @router.get("/clients/me/projects", summary="Projects shared with the signed-in client, for a date range")
 def list_my_projects(
     start_date: Optional[str] = _START_DATE_Q,
@@ -232,4 +238,86 @@ def get_my_project(
     return ClientPortalService.get_project_detail(
         db, current_user, project_id,
         _parse_date(start_date, field_label="start_date"), _parse_date(end_date, field_label="end_date"),
+    )
+
+
+@router.get(
+    "/clients/me/projects/{project_id}/screenshots",
+    summary="Screenshots captured against one shared project, for a date range",
+)
+def list_my_project_screenshots(
+    project_id: int,
+    start_date: Optional[str] = _START_DATE_Q,
+    end_date: Optional[str] = _END_DATE_Q,
+    current_user: User = Depends(_require_client),
+    db: Session = Depends(get_db),
+):
+    return ClientPortalService.list_project_screenshots(
+        db, current_user, project_id,
+        _parse_date(start_date, field_label="start_date"), _parse_date(end_date, field_label="end_date"),
+    )
+
+
+@router.get(
+    "/clients/me/projects/{project_id}/screenshots/{screenshot_id}/view",
+    summary="Stream one screenshot's image",
+    response_class=Response,
+)
+def view_my_project_screenshot(
+    project_id: int,
+    screenshot_id: int,
+    current_user: User = Depends(_require_client),
+    db: Session = Depends(get_db),
+):
+    content, mime_type, file_name = ClientPortalService.get_project_screenshot_bytes(
+        db, current_user, project_id, screenshot_id,
+    )
+    return Response(
+        content=content,
+        media_type=mime_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{file_name}"',
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
+
+
+@router.get(
+    "/clients/me/screenshots",
+    summary="Every member's screenshots across shared projects, grouped member-then-day, for a date range",
+)
+def list_my_screenshots(
+    start_date: Optional[str] = _START_DATE_Q,
+    end_date: Optional[str] = _END_DATE_Q,
+    project_ids: Optional[list[int]] = _PROJECT_IDS_Q,
+    current_user: User = Depends(_require_client),
+    db: Session = Depends(get_db),
+):
+    return ClientPortalService.get_screenshots_grid(
+        db, current_user,
+        _parse_date(start_date, field_label="start_date"), _parse_date(end_date, field_label="end_date"),
+        project_ids,
+    )
+
+
+@router.get(
+    "/clients/me/screenshots/{screenshot_id}/view",
+    summary="Stream one screenshot's image (Screenshots page)",
+    response_class=Response,
+)
+def view_my_screenshot(
+    screenshot_id: int,
+    current_user: User = Depends(_require_client),
+    db: Session = Depends(get_db),
+):
+    content, mime_type, file_name = ClientPortalService.get_screenshot_bytes(
+        db, current_user, screenshot_id,
+    )
+    return Response(
+        content=content,
+        media_type=mime_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{file_name}"',
+            "Cache-Control": "private, max-age=3600",
+        },
     )

@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { DateRange } from '../dashboard/v2/filters';
 import { exportToCsv } from '../dashboard/v2/filters';
-import { formatHMS } from '../../utils/duration';
 import {
   useGetMyMemberHoursQuery,
   useGetMyProjectsQuery,
@@ -10,6 +9,12 @@ import {
   type MyProjectSummary,
   type MyTaskHours,
 } from '../../store/api/clientPortalApi';
+import { formatSharedHMS } from './clientRange';
+
+/** A percentage against a total that may itself be null (Timing withheld) —
+ * "Not shared" rather than a fabricated 0.00. */
+const shareOfTotal = (seconds: number | null, total: number | null): string | number =>
+  seconds === null || total === null ? 'Not shared' : total > 0 ? ((seconds / total) * 100).toFixed(2) : 0;
 
 /**
  * The client portal's export dialog.
@@ -33,7 +38,7 @@ const REPORT_META: Record<ClientReportId, { title: string; dimensionLabel: strin
 interface ColumnDef<T> {
   key: string;
   label: string;
-  value: (row: T, index: number, totalSeconds: number) => string | number;
+  value: (row: T, index: number, totalSeconds: number | null) => string | number;
   optional?: boolean;
 }
 
@@ -42,27 +47,19 @@ const PROJECT_COLUMNS: ColumnDef<MyProjectSummary>[] = [
   { key: 'name', label: 'Project', value: (row) => row.project_name },
   { key: 'id', label: 'Project ID', value: (row) => row.id, optional: true },
   { key: 'status', label: 'Status', value: (row) => row.status },
-  { key: 'time', label: 'Total Time (HH:MM:SS)', value: (row) => formatHMS(row.total_tracked_seconds) },
-  { key: 'hours', label: 'Total Hours', value: (row) => row.total_tracked_hours },
-  {
-    key: 'share',
-    label: '% of Total',
-    value: (row, _index, total) => (total > 0 ? ((row.total_tracked_seconds / total) * 100).toFixed(2) : 0),
-  },
-  { key: 'members', label: 'Members', value: (row) => row.member_count },
+  { key: 'time', label: 'Total Time (HH:MM:SS)', value: (row) => formatSharedHMS(row.total_tracked_seconds) },
+  { key: 'hours', label: 'Total Hours', value: (row) => row.total_tracked_hours ?? 'Not shared' },
+  { key: 'share', label: '% of Total', value: (row, _index, total) => shareOfTotal(row.total_tracked_seconds, total) },
+  { key: 'members', label: 'Members', value: (row) => row.member_count ?? 'Not shared' },
 ];
 
 const MEMBER_COLUMNS: ColumnDef<MyMemberHours>[] = [
   { key: 'rank', label: 'Sr. No.', value: (_row, index) => index + 1 },
   { key: 'name', label: 'Member', value: (row) => row.name },
   { key: 'id', label: 'Member ID', value: (row) => row.id, optional: true },
-  { key: 'time', label: 'Total Time (HH:MM:SS)', value: (row) => formatHMS(row.total_tracked_seconds) },
-  { key: 'hours', label: 'Total Hours', value: (row) => row.total_tracked_hours },
-  {
-    key: 'share',
-    label: '% of Total',
-    value: (row, _index, total) => (total > 0 ? ((row.total_tracked_seconds / total) * 100).toFixed(2) : 0),
-  },
+  { key: 'time', label: 'Total Time (HH:MM:SS)', value: (row) => formatSharedHMS(row.total_tracked_seconds) },
+  { key: 'hours', label: 'Total Hours', value: (row) => row.total_tracked_hours ?? 'Not shared' },
+  { key: 'share', label: '% of Total', value: (row, _index, total) => shareOfTotal(row.total_tracked_seconds, total) },
   { key: 'projects', label: 'Projects', value: (row) => row.project_count },
 ];
 
@@ -71,13 +68,9 @@ const TASK_COLUMNS: ColumnDef<MyTaskHours>[] = [
   { key: 'name', label: 'Task', value: (row) => row.task_name },
   { key: 'id', label: 'Task ID', value: (row) => row.id, optional: true },
   { key: 'project', label: 'Project', value: (row) => row.project_name ?? 'Unknown project' },
-  { key: 'time', label: 'Total Time (HH:MM:SS)', value: (row) => formatHMS(row.total_tracked_seconds) },
-  { key: 'hours', label: 'Total Hours', value: (row) => row.total_tracked_hours },
-  {
-    key: 'share',
-    label: '% of Total',
-    value: (row, _index, total) => (total > 0 ? ((row.total_tracked_seconds / total) * 100).toFixed(2) : 0),
-  },
+  { key: 'time', label: 'Total Time (HH:MM:SS)', value: (row) => formatSharedHMS(row.total_tracked_seconds) },
+  { key: 'hours', label: 'Total Hours', value: (row) => row.total_tracked_hours ?? 'Not shared' },
+  { key: 'share', label: '% of Total', value: (row, _index, total) => shareOfTotal(row.total_tracked_seconds, total) },
 ];
 
 export const ClientExportDialog: React.FC<{
@@ -161,7 +154,11 @@ export const ClientExportDialog: React.FC<{
       return;
     }
 
-    const totalSeconds = rows.reduce((sum, row) => sum + row.total_tracked_seconds, 0);
+    // Timing is either shared for every row this client sees or none of them
+    // -- a `null` on the first row means the whole column is withheld.
+    const totalSeconds = rows[0].total_tracked_seconds === null
+      ? null
+      : rows.reduce((sum, row) => sum + (row.total_tracked_seconds ?? 0), 0);
     const headers = activeColumns.map((c) => c.label);
     // Every column def is typed against its own row shape; the row list here
     // is exactly that shape because `columns` and `rows` are switched on the

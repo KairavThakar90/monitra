@@ -9,8 +9,7 @@ import { RankedBars } from '../dashboard/v2/charts';
 import { series } from '../dashboard/v2/theme';
 import { DateRangeFilter } from '../dashboard/v2/filters';
 import { useGetMyProjectsQuery } from '../../store/api/clientPortalApi';
-import { formatHMS } from '../../utils/duration';
-import { CLIENT_DEFAULT_RANGE, longDate } from './clientRange';
+import { CLIENT_DEFAULT_RANGE, formatSharedHMS, longDate } from './clientRange';
 
 /** Tracked hours per shared project, over a date range — the client-portal
  * equivalent of the member's Time Tracking / Project-Wise report. */
@@ -24,7 +23,8 @@ export const ClientTiming: React.FC = () => {
   const projects = selectedProjectIds.length === 0
     ? allProjects
     : allProjects.filter((p) => selectedProjectIds.includes(String(p.id)));
-  const totalSeconds = projects.reduce((sum, p) => sum + p.total_tracked_seconds, 0);
+  const timingShared = data?.permissions.share_timing ?? true;
+  const totalSeconds = timingShared ? projects.reduce((sum, p) => sum + (p.total_tracked_seconds ?? 0), 0) : null;
 
   return (
     <ClientShell
@@ -52,21 +52,23 @@ export const ClientTiming: React.FC = () => {
         {isError && <ErrorNote message="Timing could not be loaded. Please try again." />}
 
         <div className={`space-y-6 transition-opacity ${isFetching ? 'opacity-60' : ''}`}>
-          <ClientKpiCard title="Total Tracked" value={formatHMS(totalSeconds)} />
+          <ClientKpiCard title="Total Tracked" value={formatSharedHMS(totalSeconds)} />
 
           <Card title="Time by Project">
-            {projects.length === 0 ? (
+            {!timingShared ? (
+              <EmptyState message="Timing is not shared for your account." hint="Ask your admin to enable it if you need this." />
+            ) : projects.length === 0 ? (
               <EmptyState message="No tracked time for this range." hint="Try a different date range or filter." />
             ) : (
               <RankedBars
                 items={projects
                   .slice()
-                  .sort((a, b) => b.total_tracked_seconds - a.total_tracked_seconds)
+                  .sort((a, b) => (b.total_tracked_seconds ?? 0) - (a.total_tracked_seconds ?? 0))
                   .map((project) => ({
                     id: String(project.id),
                     name: project.project_name,
-                    value: project.total_tracked_hours,
-                    meta: `${project.member_count} member${project.member_count === 1 ? '' : 's'} active`,
+                    value: project.total_tracked_hours ?? 0,
+                    meta: project.member_count == null ? '' : `${project.member_count} member${project.member_count === 1 ? '' : 's'} active`,
                   }))}
                 color={series[0]}
                 formatValue={(n) => `${n}h`}

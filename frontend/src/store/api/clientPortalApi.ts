@@ -1,33 +1,45 @@
 import { baseApi } from './baseApi';
 import { ENDPOINTS } from '../../api/endpoints';
+import type { ClientPermissions } from './clientsApi';
+import type { ScreenshotMemberDays } from './screenshotsApi';
+
+export type { ClientPermissions };
+
+export interface MyProfile {
+  name: string;
+  email: string;
+  permissions: ClientPermissions;
+}
 
 export interface MyProjectSummary {
   id: number;
   project_name: string;
   description: string | null;
   status: string;
-  total_tracked_seconds: number;
-  total_tracked_hours: number;
-  member_count: number;
+  total_tracked_seconds: number | null;
+  total_tracked_hours: number | null;
+  member_count: number | null;
 }
 
 export interface MyProjectsResponse {
   start_date: string;
   end_date: string;
+  permissions: ClientPermissions;
   items: MyProjectSummary[];
 }
 
 export interface MyMemberHours {
   id: number;
   name: string;
-  total_tracked_seconds: number;
-  total_tracked_hours: number;
+  total_tracked_seconds: number | null;
+  total_tracked_hours: number | null;
   project_count: number;
 }
 
 export interface MyMemberHoursResponse {
   start_date: string;
   end_date: string;
+  permissions: ClientPermissions;
   items: MyMemberHours[];
 }
 
@@ -35,13 +47,14 @@ export interface MyTaskHours {
   id: number;
   task_name: string;
   project_name: string | null;
-  total_tracked_seconds: number;
-  total_tracked_hours: number;
+  total_tracked_seconds: number | null;
+  total_tracked_hours: number | null;
 }
 
 export interface MyTaskHoursResponse {
   start_date: string;
   end_date: string;
+  permissions: ClientPermissions;
   items: MyTaskHours[];
 }
 
@@ -49,16 +62,16 @@ export interface MyProjectTask {
   id: number;
   task_name: string;
   status: string;
-  total_tracked_seconds: number;
-  total_tracked_hours: number;
+  total_tracked_seconds: number | null;
+  total_tracked_hours: number | null;
 }
 
 export interface MyProjectMember {
   id: number;
   name: string;
   designation: string | null;
-  total_tracked_seconds: number;
-  total_tracked_hours: number;
+  total_tracked_seconds: number | null;
+  total_tracked_hours: number | null;
 }
 
 export interface MyProjectDetail {
@@ -70,11 +83,38 @@ export interface MyProjectDetail {
   project_start_date: string | null;
   start_date: string;
   end_date: string;
-  total_tracked_seconds: number;
-  total_tracked_hours: number;
+  permissions: ClientPermissions;
+  total_tracked_seconds: number | null;
+  total_tracked_hours: number | null;
   total_members: number;
   tasks: MyProjectTask[];
   members: MyProjectMember[];
+}
+
+export interface MyScreenshot {
+  id: number;
+  captured_at: string;
+  width: number | null;
+  height: number | null;
+}
+
+export interface MyScreenshotsResponse {
+  start_date: string;
+  end_date: string;
+  permissions: ClientPermissions;
+  items: MyScreenshot[];
+}
+
+/** The Screenshots page's own read: every shared project's captures across a
+ * span, grouped member-then-day-then-window -- the same shape
+ * `TIME_ENTRY_SCREENSHOTS.DAY` returns for staff, scoped to this client's
+ * projects instead of visible members. */
+export interface MyScreenshotsGridResponse {
+  start_date: string;
+  end_date: string;
+  permissions: ClientPermissions;
+  window_minutes: number;
+  members: ScreenshotMemberDays[];
 }
 
 /** The date range plus the Project/Member filters every list-shaped
@@ -103,6 +143,11 @@ const withQuery = (base: string, arg?: ClientQueryArg) => {
 
 export const clientPortalApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
+    getMyProfile: builder.query<MyProfile, void>({
+      query: () => ENDPOINTS.CLIENTS.MY_PROFILE,
+      providesTags: [{ type: 'ClientProject', id: 'PROFILE' }],
+    }),
+
     getMyProjects: builder.query<MyProjectsResponse, ClientQueryArg | void>({
       query: (arg) => withQuery(ENDPOINTS.CLIENTS.MY_PROJECTS, arg ?? undefined),
       providesTags: [{ type: 'ClientProject', id: 'LIST' }],
@@ -122,12 +167,25 @@ export const clientPortalApi = baseApi.injectEndpoints({
       query: ({ projectId, ...rest }) => withQuery(ENDPOINTS.CLIENTS.MY_PROJECT_BY_ID(projectId), rest),
       providesTags: (_result, _error, { projectId }) => [{ type: 'ClientProject', id: projectId }],
     }),
+
+    getMyProjectScreenshots: builder.query<MyScreenshotsResponse, { projectId: number } & ClientQueryArg>({
+      query: ({ projectId, ...rest }) => withQuery(ENDPOINTS.CLIENTS.MY_PROJECT_SCREENSHOTS(projectId), rest),
+      providesTags: (_result, _error, { projectId }) => [{ type: 'ClientProject', id: `screenshots-${projectId}` }],
+    }),
+
+    getMyScreenshotsGrid: builder.query<MyScreenshotsGridResponse, ClientQueryArg | void>({
+      query: (arg) => withQuery(ENDPOINTS.CLIENTS.MY_SCREENSHOTS, arg ?? undefined),
+      providesTags: [{ type: 'ClientProject', id: 'SCREENSHOTS_GRID' }],
+    }),
   }),
 });
 
 export const {
+  useGetMyProfileQuery,
   useGetMyProjectsQuery,
   useGetMyMemberHoursQuery,
   useGetMyTaskHoursQuery,
   useGetMyProjectDetailQuery,
+  useGetMyProjectScreenshotsQuery,
+  useGetMyScreenshotsGridQuery,
 } = clientPortalApi;

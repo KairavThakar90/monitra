@@ -24,7 +24,8 @@ const WindowCard: React.FC<{
   window: ScreenshotTimelineWindow;
   subjectName: string;
   onOpen: (shot: ScreenshotView) => void;
-}> = ({ window: captureWindow, subjectName, onOpen }) => {
+  viewUrl: (id: number) => string;
+}> = ({ window: captureWindow, subjectName, onOpen, viewUrl }) => {
   const cover = captureWindow.screenshots[0];
   const measured = captureWindow.activity_measured_seconds;
   const tracked = captureWindow.tracked_seconds ?? 0;
@@ -60,7 +61,7 @@ const WindowCard: React.FC<{
             title={`Captured at ${formatISTTime12(cover.captured_at)} IST`}
           >
             <AuthedImage
-              url={ENDPOINTS.TIME_ENTRY_SCREENSHOTS.VIEW(cover.id)}
+              url={viewUrl(cover.id)}
               alt={`Screen of ${subjectName} captured at ${formatISTTime12(cover.captured_at)}`}
               className={`aspect-video w-full bg-[#0F172A] ${
                 // A merged multi-display capture is far wider than this 16:9
@@ -126,7 +127,12 @@ export const HourRow: React.FC<{
   block: HourBlock;
   subjectName: string;
   onOpen: (shot: ScreenshotView) => void;
-}> = ({ block, subjectName, onOpen }) => (
+  /** Builds the authenticated image URL for a screenshot id. Defaults to the
+   * staff `/time-entry-screenshots/{id}/view` route; the client portal's
+   * Screenshots page passes its own project-scoped view route instead, since
+   * a client cannot call the staff one. */
+  viewUrl?: (id: number) => string;
+}> = ({ block, subjectName, onOpen, viewUrl = (id) => ENDPOINTS.TIME_ENTRY_SCREENSHOTS.VIEW(id) }) => (
   <div className="relative pl-8">
     <div className="absolute left-0 top-1.5 z-10 h-3 w-3 rounded-full border-2 border-[#CBD5E1] bg-white" />
     <div className="absolute bottom-[-32px] left-[5px] top-4 w-px bg-[#E2E8F0]" />
@@ -151,6 +157,7 @@ export const HourRow: React.FC<{
           window={window}
           subjectName={subjectName}
           onOpen={onOpen}
+          viewUrl={viewUrl}
         />
       ))}
     </div>

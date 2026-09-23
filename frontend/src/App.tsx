@@ -24,6 +24,7 @@ import { ClientProjectDetail } from './features/client/ClientProjectDetail'
 import { ClientTiming } from './features/client/ClientTiming'
 import { ClientMembers } from './features/client/ClientMembers'
 import { ClientTasks } from './features/client/ClientTasks'
+import { ClientScreenshots } from './features/client/ClientScreenshots'
 import { MemberDashboard } from './features/member/MemberDashboard'
 import { MemberReports } from './features/member/MemberReports'
 import { MemberProjects } from './features/member/MemberProjects'
@@ -382,6 +383,14 @@ const AppRoutes: React.FC = () => {
         element={
           <ClientPortalRoute>
             <ClientTasks />
+          </ClientPortalRoute>
+        }
+      />
+      <Route
+        path="/client/screenshots"
+        element={
+          <ClientPortalRoute>
+            <ClientScreenshots />
           </ClientPortalRoute>
         }
       />

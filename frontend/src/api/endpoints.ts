@@ -39,13 +39,22 @@ export const ENDPOINTS = {
   CLIENTS: {
     BASE: `${API_BASE_URL}/clients`,
     INVITATIONS: `${API_BASE_URL}/clients/invitations`,
-    PROJECTS: (id: string | number) => `${API_BASE_URL}/clients/${id}/projects`,
+    ACCESS: (id: string | number) => `${API_BASE_URL}/clients/${id}/access`,
     RESEND_INVITATION: (id: string | number) => `${API_BASE_URL}/clients/${id}/resend-invitation`,
     DEACTIVATE: (id: string | number) => `${API_BASE_URL}/clients/${id}/deactivate`,
+    MY_PROFILE: `${API_BASE_URL}/clients/me`,
     MY_PROJECTS: `${API_BASE_URL}/clients/me/projects`,
     MY_PROJECT_BY_ID: (id: string | number) => `${API_BASE_URL}/clients/me/projects/${id}`,
     MY_MEMBERS: `${API_BASE_URL}/clients/me/members`,
     MY_TASKS: `${API_BASE_URL}/clients/me/tasks`,
+    MY_PROJECT_SCREENSHOTS: (id: string | number) => `${API_BASE_URL}/clients/me/projects/${id}/screenshots`,
+    MY_PROJECT_SCREENSHOT_VIEW: (projectId: string | number, screenshotId: string | number) =>
+      `${API_BASE_URL}/clients/me/projects/${projectId}/screenshots/${screenshotId}/view`,
+    // The Screenshots page: every shared project's captures, grouped
+    // member-then-day-then-window, mirroring TIME_ENTRY_SCREENSHOTS.DAY.
+    MY_SCREENSHOTS: `${API_BASE_URL}/clients/me/screenshots`,
+    MY_SCREENSHOT_VIEW: (screenshotId: string | number) =>
+      `${API_BASE_URL}/clients/me/screenshots/${screenshotId}/view`,
   },
   MEMBERS: {
     GET_ALL: `${API_BASE_URL}/members`,

@@ -10,8 +10,7 @@ import { RankedBars } from '../dashboard/v2/charts';
 import { series } from '../dashboard/v2/theme';
 import { DateRangeFilter } from '../dashboard/v2/filters';
 import { useGetMyMemberHoursQuery, useGetMyProjectsQuery, useGetMyTaskHoursQuery } from '../../store/api/clientPortalApi';
-import { formatHMS } from '../../utils/duration';
-import { CLIENT_DEFAULT_RANGE, longDate } from './clientRange';
+import { CLIENT_DEFAULT_RANGE, formatSharedHMS, longDate } from './clientRange';
 
 export const ClientDashboard: React.FC = () => {
   const navigate = useNavigate();
@@ -31,7 +30,11 @@ export const ClientDashboard: React.FC = () => {
   const visibleProjects = selectedProjectIds.length === 0
     ? allProjects
     : allProjects.filter((p) => selectedProjectIds.includes(String(p.id)));
-  const totalSeconds = visibleProjects.reduce((sum, p) => sum + p.total_tracked_seconds, 0);
+  const timingShared = data?.permissions.share_timing ?? true;
+  const memberDetailsShared = data?.permissions.share_member_details ?? true;
+  const totalSeconds = timingShared
+    ? visibleProjects.reduce((sum, p) => sum + (p.total_tracked_seconds ?? 0), 0)
+    : null;
 
   return (
     <ClientShell
@@ -60,10 +63,10 @@ export const ClientDashboard: React.FC = () => {
 
         <div className={`space-y-6 transition-opacity ${isFetching ? 'opacity-60' : ''}`}>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <ClientKpiCard title="Total Hours" value={formatHMS(totalSeconds)} />
+            <ClientKpiCard title="Total Hours" value={formatSharedHMS(totalSeconds)} />
             <ClientKpiCard title="Projects Shown" value={visibleProjects.length} />
-            <ClientKpiCard title="Team Members" value={memberData?.items.length ?? 0} />
-            <ClientKpiCard title="Tasks Worked" value={taskData?.items.length ?? 0} />
+            <ClientKpiCard title="Team Members" value={memberDetailsShared ? memberData?.items.length ?? 0 : 'Not shared'} />
+            <ClientKpiCard title="Tasks Worked" value={taskData?.permissions.share_tasks === false ? 'Not shared' : taskData?.items.length ?? 0} />
           </div>
 
           <Card title="Project Activity">
@@ -80,20 +83,28 @@ export const ClientDashboard: React.FC = () => {
                     : 'Clear the project filter to see everything shared with you.'
                 }
               />
-            ) : (
+            ) : timingShared ? (
               <RankedBars
                 items={visibleProjects
                   .slice()
-                  .sort((a, b) => b.total_tracked_seconds - a.total_tracked_seconds)
+                  .sort((a, b) => (b.total_tracked_seconds ?? 0) - (a.total_tracked_seconds ?? 0))
                   .map((project) => ({
                     id: String(project.id),
                     name: project.project_name,
-                    value: project.total_tracked_hours,
-                    meta: `${project.member_count} member${project.member_count === 1 ? '' : 's'}`,
+                    value: project.total_tracked_hours ?? 0,
+                    meta: memberDetailsShared ? `${project.member_count} member${project.member_count === 1 ? '' : 's'}` : '',
                   }))}
                 color={series[2]}
                 formatValue={(n) => `${n}h`}
               />
+            ) : (
+              <ul className="divide-y divide-[#F1F5F9]">
+                {visibleProjects.map((project) => (
+                  <li key={project.id} className="py-2.5 text-sm font-medium text-[#0F172A]">
+                    {project.project_name}
+                  </li>
+                ))}
+              </ul>
             )}
           </Card>
 
@@ -110,8 +121,10 @@ export const ClientDashboard: React.FC = () => {
                     <p className="mt-1 line-clamp-2 text-sm text-[#64748B]">{project.description}</p>
                   )}
                   <div className="mt-4 flex items-center justify-between text-xs font-semibold text-[#94A3B8]">
-                    <span>{project.member_count} member{project.member_count === 1 ? '' : 's'}</span>
-                    <span>{formatHMS(project.total_tracked_seconds)}</span>
+                    {memberDetailsShared && (
+                      <span>{project.member_count} member{project.member_count === 1 ? '' : 's'}</span>
+                    )}
+                    <span>{formatSharedHMS(project.total_tracked_seconds)}</span>
                   </div>
                 </button>
               ))}

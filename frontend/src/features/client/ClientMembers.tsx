@@ -9,8 +9,7 @@ import { RankedBars } from '../dashboard/v2/charts';
 import { series } from '../dashboard/v2/theme';
 import { DateRangeFilter } from '../dashboard/v2/filters';
 import { useGetMyMemberHoursQuery, useGetMyProjectsQuery } from '../../store/api/clientPortalApi';
-import { formatHMS } from '../../utils/duration';
-import { CLIENT_DEFAULT_RANGE, longDate } from './clientRange';
+import { CLIENT_DEFAULT_RANGE, formatSharedHMS, longDate } from './clientRange';
 
 /** Tracked hours per team member, across every shared project (or a
  * filtered subset of projects/members), over a date range — the
@@ -34,7 +33,9 @@ export const ClientMembers: React.FC = () => {
   const members = selectedMemberIds.length === 0
     ? allMembers
     : allMembers.filter((m) => selectedMemberIds.includes(String(m.id)));
-  const totalSeconds = members.reduce((sum, m) => sum + m.total_tracked_seconds, 0);
+  const memberDetailsShared = data?.permissions.share_member_details ?? true;
+  const timingShared = data?.permissions.share_timing ?? true;
+  const totalSeconds = timingShared ? members.reduce((sum, m) => sum + (m.total_tracked_seconds ?? 0), 0) : null;
 
   return (
     <ClientShell
@@ -65,19 +66,21 @@ export const ClientMembers: React.FC = () => {
 
         <div className={`space-y-6 transition-opacity ${isFetching ? 'opacity-60' : ''}`}>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <ClientKpiCard title="Total Member Hours" value={formatHMS(totalSeconds)} />
+            <ClientKpiCard title="Total Member Hours" value={formatSharedHMS(totalSeconds)} />
             <ClientKpiCard title="Members Shown" value={members.length} />
           </div>
 
           <Card title="Time by Member">
-            {members.length === 0 ? (
+            {!memberDetailsShared ? (
+              <EmptyState message="Member details are not shared for your account." hint="Ask your admin to enable it if you need this." />
+            ) : members.length === 0 ? (
               <EmptyState message="No member activity for this range or filter." hint="Try a different date range, or clear the filters." />
             ) : (
               <RankedBars
                 items={members.map((member) => ({
                   id: String(member.id),
                   name: member.name,
-                  value: member.total_tracked_hours,
+                  value: member.total_tracked_hours ?? 0,
                   meta: `${member.project_count} project${member.project_count === 1 ? '' : 's'}`,
                 }))}
                 color={series[1]}

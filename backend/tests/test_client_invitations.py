@@ -7,6 +7,7 @@ behaviour here is a database-enforced single-use claim (`mark_approved`/
 (`ClientProjectRepository.exists`), neither of which a MagicMock can falsify.
 """
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -28,6 +29,7 @@ from app.models.sso_handoff_token import SsoHandoffToken
 from app.models.task import Task
 from app.models.time_entry import TimeEntry
 from app.models.time_entry_adjustment import TimeEntryAdjustment
+from app.models.time_entry_screenshot import TimeEntryScreenshot
 from app.models.user import User
 from app.services.auth import AuthService
 from app.services.client_invitation_service import ClientInvitationService
@@ -404,6 +406,146 @@ class ClientLoginLinkCase(unittest.TestCase):
     def test_direct_login_refuses_an_unknown_email(self):
         with self.assertRaises(HTTPException) as ctx:
             AuthService.client_direct_login(self.db, "nobody@example.com")
+        self.assertEqual(ctx.exception.status_code, 404)
+
+
+class ClientPortalPermissionsCase(unittest.TestCase):
+    """The four `share_*` flags: each gates exactly its own section, and
+    nothing else is inferred from them (e.g. disabling Timing still shows
+    task and member *names*, just no hours)."""
+
+    def setUp(self):
+        self.engine = create_engine("sqlite://")
+        _sqlite_schema(
+            self.engine, User, Project, ProjectMember, Task, TimeEntry,
+            ManualTimeEntry, TimeEntryAdjustment, Client, ClientProject,
+            TimeEntryScreenshot,
+        )
+        self.db = Session(self.engine)
+
+        self.project = Project(id=30, organization_id=ORG, project_name="Permissioned", created_by=1)
+        self.db.add(self.project)
+        self.member = User(
+            id=70, organization_id=ORG, username="member1", email="member1@example.com",
+            name="Member One", role_name="employee", permissions={},
+            is_active=True, status="active", capture_frequency=10,
+        )
+        self.db.add(self.member)
+        self.task = Task(id=40, organization_id=ORG, project_id=self.project.id, task_name="Do the thing", created_by=1)
+        self.db.add(self.task)
+        self.db.commit()
+
+        self.db.add(ProjectMember(organization_id=ORG, project_id=self.project.id, user_id=self.member.id, created_by=1))
+
+        self.client_user = User(
+            id=71, organization_id=ORG, username="client9", email="client9@example.com",
+            name="Client Nine", role_name="client", permissions={"clients:view_shared": True},
+            is_active=True, status="active", capture_frequency=10,
+        )
+        self.db.add(self.client_user)
+        # Every flag off except screenshots, so each test below turns on
+        # exactly the one it is testing rather than inheriting "everything".
+        self.client_row = Client(
+            id=9, organization_id=ORG, user_id=self.client_user.id, name="Client Nine",
+            email="client9@example.com", status="active", invited_by=1,
+            share_member_details=False, share_screenshots=True, share_tasks=False, share_timing=False,
+        )
+        self.db.add(self.client_row)
+        self.db.add(ClientProject(client_id=self.client_row.id, project_id=self.project.id))
+        self.db.commit()
+
+        entry = TimeEntry(
+            id=100, organization_id=ORG, user_id=self.member.id, project_id=self.project.id,
+            task_id=self.task.id, start_time=datetime.now(timezone.utc), end_time=datetime.now(timezone.utc),
+            total_seconds=60, status="completed",
+        )
+        self.db.add(entry)
+        self.db.commit()
+        self.screenshot = TimeEntryScreenshot(
+            id=1, organization_id=ORG, time_entry_id=entry.id, file_path="2026/x.webp",
+            monitor_number=1, google_drive_file_id="drive-file-123", file_name="s.webp", mime_type="image/webp",
+        )
+        self.db.add(self.screenshot)
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+        self.engine.dispose()
+
+    def test_member_details_disabled_hides_the_project_detail_roster(self):
+        detail = ClientPortalService.get_project_detail(self.db, self.client_user, self.project.id)
+        self.assertEqual(detail["members"], [])
+        self.assertFalse(detail["permissions"]["share_member_details"])
+
+    def test_member_hours_endpoint_is_empty_when_disabled(self):
+        result = ClientPortalService.list_member_hours(self.db, self.client_user)
+        self.assertEqual(result["items"], [])
+
+    def test_tasks_disabled_hides_the_project_detail_task_list(self):
+        detail = ClientPortalService.get_project_detail(self.db, self.client_user, self.project.id)
+        self.assertEqual(detail["tasks"], [])
+
+    def test_task_hours_endpoint_is_empty_when_disabled(self):
+        result = ClientPortalService.list_task_hours(self.db, self.client_user)
+        self.assertEqual(result["items"], [])
+
+    def test_timing_disabled_nulls_hours_not_the_whole_section(self):
+        self.client_row.share_tasks = True
+        self.client_row.share_member_details = True
+        self.db.commit()
+        detail = ClientPortalService.get_project_detail(self.db, self.client_user, self.project.id)
+        self.assertIsNone(detail["total_tracked_seconds"])
+        self.assertIsNone(detail["total_tracked_hours"])
+        # Task and member names still show -- Timing hides hours, not identity.
+        self.assertEqual(len(detail["tasks"]), 1)
+        self.assertIsNone(detail["tasks"][0]["total_tracked_hours"])
+        self.assertEqual(len(detail["members"]), 1)
+        self.assertIsNone(detail["members"][0]["total_tracked_hours"])
+
+    def test_screenshots_are_listed_when_enabled(self):
+        result = ClientPortalService.list_project_screenshots(self.db, self.client_user, self.project.id)
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(result["items"][0]["id"], self.screenshot.id)
+
+    def test_screenshots_are_empty_when_disabled(self):
+        self.client_row.share_screenshots = False
+        self.db.commit()
+        result = ClientPortalService.list_project_screenshots(self.db, self.client_user, self.project.id)
+        self.assertEqual(result["items"], [])
+
+    def test_screenshot_bytes_refused_when_disabled(self):
+        self.client_row.share_screenshots = False
+        self.db.commit()
+        with self.assertRaises(HTTPException) as ctx:
+            ClientPortalService.get_project_screenshot_bytes(
+                self.db, self.client_user, self.project.id, self.screenshot.id,
+            )
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_screenshot_bytes_stream_when_enabled(self):
+        with patch(
+            "app.services.client_portal_service.drive_service.download_file",
+            return_value=b"fake-image-bytes",
+        ):
+            content, mime_type, file_name = ClientPortalService.get_project_screenshot_bytes(
+                self.db, self.client_user, self.project.id, self.screenshot.id,
+            )
+        self.assertEqual(content, b"fake-image-bytes")
+        self.assertEqual(mime_type, "image/webp")
+        self.assertEqual(file_name, "s.webp")
+
+    def test_a_screenshot_from_a_different_project_is_refused(self):
+        """The screenshot belongs to a time entry tracked against a
+        *different* project than the one in the URL -- refused even though
+        the client has screenshot access and the id is real."""
+        other_project = Project(id=31, organization_id=ORG, project_name="Other", created_by=1)
+        self.db.add(other_project)
+        self.db.add(ClientProject(client_id=self.client_row.id, project_id=other_project.id))
+        self.db.commit()
+        with self.assertRaises(HTTPException) as ctx:
+            ClientPortalService.get_project_screenshot_bytes(
+                self.db, self.client_user, other_project.id, self.screenshot.id,
+            )
         self.assertEqual(ctx.exception.status_code, 404)
 
 

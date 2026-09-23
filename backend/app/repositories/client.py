@@ -27,15 +27,48 @@ class ClientRepository:
         return db.scalar(select(Client).where(Client.user_id == user_id))
 
     @staticmethod
-    def create(db: Session, *, organization_id: int, email: str, name: str, invited_by: int) -> Client:
+    def create(
+        db: Session,
+        *,
+        organization_id: int,
+        email: str,
+        name: str,
+        invited_by: int,
+        share_member_details: bool = True,
+        share_screenshots: bool = False,
+        share_tasks: bool = True,
+        share_timing: bool = True,
+    ) -> Client:
         client = Client(
             organization_id=organization_id,
             email=email,
             name=name,
             status="pending",
             invited_by=invited_by,
+            share_member_details=share_member_details,
+            share_screenshots=share_screenshots,
+            share_tasks=share_tasks,
+            share_timing=share_timing,
         )
         db.add(client)
+        db.commit()
+        db.refresh(client)
+        return client
+
+    @staticmethod
+    def update_permissions(
+        db: Session,
+        client: Client,
+        *,
+        share_member_details: bool,
+        share_screenshots: bool,
+        share_tasks: bool,
+        share_timing: bool,
+    ) -> Client:
+        client.share_member_details = share_member_details
+        client.share_screenshots = share_screenshots
+        client.share_tasks = share_tasks
+        client.share_timing = share_timing
         db.commit()
         db.refresh(client)
         return client

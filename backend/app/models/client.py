@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, String, TIMESTAMP, Identity, ForeignKeyConstraint, text, func
+from sqlalchemy import BigInteger, Boolean, String, TIMESTAMP, Identity, ForeignKeyConstraint, text, func
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
 from typing import Optional
@@ -24,6 +24,23 @@ class Client(Base):
     email: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'pending'"))
     invited_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    #: What this client may see, beyond the project names/descriptions
+    #: themselves (those are never gated -- a client always knows *which*
+    #: projects were shared with them). Each defaults to true so an
+    #: already-approved client's access does not silently shrink the moment
+    #: this column is added. `ClientPortalService` is the only place these
+    #: are read; nothing else in the app consults them.
+    share_member_details: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    #: Screenshots captured while a member was tracking time *against a
+    #: shared project* -- never the organization's full screenshot library,
+    #: and never a member's captures on unrelated work.
+    share_screenshots: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    share_tasks: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    #: Working hours: per-project, per-member and per-task tracked time. With
+    #: this off, the client still sees project names, tasks and members (per
+    #: the other three flags) but never a duration figure.
+    share_timing: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),

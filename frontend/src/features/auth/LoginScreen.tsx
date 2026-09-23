@@ -292,11 +292,6 @@ export const LoginScreen: React.FC = () => {
                 </div>
               </div>
               <FieldError id={loginForm.errorId("password")} message={loginForm.errors.password} />
-              <p className="mt-2 text-xs text-[#94A3B8]">
-                Signing in as a client? Leave this blank, or enter your email
-                address again here — your email is your whole credential, and
-                you'll be signed in right away.
-              </p>
             </div>
 
             <div>

@@ -1,5 +1,6 @@
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -16,6 +17,16 @@ from app.repositories.project import ProjectRepository
 from app.repositories.user import UserRepository
 from app.services.auth import AuthService
 from app.services.email.workflows import queue_client_invitation_email
+
+
+#: Mirrors `Client`'s own column defaults -- see that model for why
+#: screenshots alone default off.
+DEFAULT_CLIENT_PERMISSIONS = {
+    "share_member_details": True,
+    "share_screenshots": False,
+    "share_tasks": True,
+    "share_timing": True,
+}
 
 
 class ClientInvitationService:
@@ -36,20 +47,32 @@ class ClientInvitationService:
 
     @staticmethod
     def create_invitation(
-        db: Session, admin_user: User, email: str, project_ids: list[int], background_tasks=None
+        db: Session,
+        admin_user: User,
+        email: str,
+        project_ids: list[int],
+        permissions: Optional[dict] = None,
+        background_tasks=None,
     ) -> Client:
         email = validate_email(email, field_label="Client email")
         organization_id = admin_user.organization_id
         ClientInvitationService._validate_project_ids(db, organization_id, project_ids)
+        permissions = permissions or DEFAULT_CLIENT_PERMISSIONS
 
         client = ClientRepository.get_by_email(db, email, organization_id)
         if client is None:
             display_name = email.split("@")[0]
             client = ClientRepository.create(
                 db, organization_id=organization_id, email=email, name=display_name, invited_by=admin_user.id,
+                **permissions,
             )
         elif client.status == "active":
             raise HTTPException(status.HTTP_409_CONFLICT, "This client has already approved an invitation.")
+        else:
+            # A re-invitation (resend, or inviting the same still-pending
+            # email again) is also the admin's chance to change what this
+            # client will be able to see once they approve.
+            ClientRepository.update_permissions(db, client, **permissions)
 
         if client.user_id is None:
             # `users.email` is globally unique, so this address may already
@@ -117,8 +140,17 @@ class ClientInvitationService:
         if client.status == "active":
             raise HTTPException(status.HTTP_409_CONFLICT, "This client has already approved an invitation.")
         project_ids = ClientProjectRepository.list_project_ids_for_client(db, client.id)
+        # Keep whatever permissions are already on the row -- a resend is not
+        # meant to reset them to the defaults.
+        current_permissions = {
+            "share_member_details": client.share_member_details,
+            "share_screenshots": client.share_screenshots,
+            "share_tasks": client.share_tasks,
+            "share_timing": client.share_timing,
+        }
         return ClientInvitationService.create_invitation(
-            db, admin_user, client.email, project_ids, background_tasks=background_tasks,
+            db, admin_user, client.email, project_ids, permissions=current_permissions,
+            background_tasks=background_tasks,
         )
 
     @staticmethod
@@ -153,12 +185,18 @@ class ClientInvitationService:
         return client
 
     @staticmethod
-    def update_client_projects(db: Session, admin_user: User, client_id: int, project_ids: list[int]) -> Client:
+    def update_client_access(
+        db: Session, admin_user: User, client_id: int, project_ids: list[int], permissions: dict,
+    ) -> Client:
+        """Change which projects are shared with a client and what they may
+        see within them, in one call -- the two things "Edit Access" in the
+        admin panel lets an admin change about a client already invited."""
         client = ClientRepository.get_by_id(db, client_id, admin_user.organization_id)
         if client is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Client not found.")
         ClientInvitationService._validate_project_ids(db, admin_user.organization_id, project_ids)
         ClientProjectRepository.replace_for_client(db, client.id, project_ids)
+        ClientRepository.update_permissions(db, client, **permissions)
         return client
 
     @staticmethod
@@ -172,6 +210,12 @@ class ClientInvitationService:
                 "email": row.email,
                 "status": row.status,
                 "projects": projects_by_client.get(row.id, []),
+                "permissions": {
+                    "share_member_details": row.share_member_details,
+                    "share_screenshots": row.share_screenshots,
+                    "share_tasks": row.share_tasks,
+                    "share_timing": row.share_timing,
+                },
                 "created_at": row.created_at,
             }
             for row in rows

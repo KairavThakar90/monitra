@@ -71,7 +71,19 @@ export const ScreenshotLightbox: React.FC<{
   onDelete?: (shot: ScreenshotView) => void;
   /** True while a delete is in flight, so the button cannot be pressed twice. */
   deleting?: boolean;
-}> = ({ items, index, onIndexChange, onClose, onDelete, deleting = false }) => {
+  /** Builds the authenticated image URL for a screenshot id. Defaults to the
+   * staff `/time-entry-screenshots/{id}/view` route; the client portal's
+   * Screenshots page passes its own project-scoped view route instead. */
+  viewUrl?: (id: number) => string;
+}> = ({
+  items,
+  index,
+  onIndexChange,
+  onClose,
+  onDelete,
+  deleting = false,
+  viewUrl = (id) => ENDPOINTS.TIME_ENTRY_SCREENSHOTS.VIEW(id),
+}) => {
   const item = items[index];
 
   // Bound to the document rather than to the dialog: the viewer has not
@@ -143,7 +155,7 @@ export const ScreenshotLightbox: React.FC<{
             caption. */}
         <AuthedImage
           key={shot.id}
-          url={ENDPOINTS.TIME_ENTRY_SCREENSHOTS.VIEW(shot.id)}
+          url={viewUrl(shot.id)}
           alt={`Screen of ${subjectName} captured at ${formatISTTime12(shot.captured_at)}`}
           className="mx-auto max-h-[74vh] w-auto rounded-lg object-contain shadow-2xl"
           frameClassName="h-[60vh] w-full rounded-lg"

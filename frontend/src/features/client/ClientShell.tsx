@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/authContext';
 import { openPathInNewTab, opensInNewTab } from '../../utils/navigation';
 import { BrandLockup } from '../dashboard/v2/V2Shell';
+import { useGetMyProfileQuery } from '../../store/api/clientPortalApi';
 
 /**
  * The client portal's own chrome.
@@ -10,10 +11,11 @@ import { BrandLockup } from '../dashboard/v2/V2Shell';
  * A sibling of `V2Shell`/`MemberShell` rather than a mode of either — same
  * dark sidebar, same brand lockup, same active-item gradient, so a client
  * signing in sees the same Monitra design language everyone else does. It is
- * still its own component because its nav is a fixed, short list (Projects,
- * Timing, Members, Tasks) with nothing conditionally hidden: a client account
- * holds exactly one permission (`clients:view_shared`) and none of the staff
- * screens are ever reachable from here.
+ * still its own component because its nav is a fixed, short list with
+ * nothing staff-only ever reachable from here — but three of its four items
+ * (Timing, Members, Tasks) are further hidden per the admin's own `share_*`
+ * choices for this client (see `AdminClients`'s Permissions checklist),
+ * fetched once via `/clients/me` rather than duplicated per page.
  */
 
 const getInitials = (name: string) => {
@@ -25,10 +27,17 @@ const getInitials = (name: string) => {
 
 const brandGradient = 'linear-gradient(135deg, #0ea5e9 0%, #3b82f6 50%, #8b5cf6 100%)';
 
-type NavItem = { path: string; label: string; icon: React.ReactNode };
+type NavItem = {
+  path: string;
+  label: string;
+  icon: React.ReactNode;
+  permission?: 'share_timing' | 'share_member_details' | 'share_tasks' | 'share_screenshots';
+};
 
 const icon = (d: string) => <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={d} />;
 
+/** Projects has no `permission` -- it is always reachable; a client with
+ * every other section disabled still needs to see which projects exist. */
 const NAV: NavItem[] = [
   {
     path: '/client/dashboard',
@@ -40,11 +49,13 @@ const NAV: NavItem[] = [
   {
     path: '/client/timing',
     label: 'Timing',
+    permission: 'share_timing',
     icon: icon('M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z'),
   },
   {
     path: '/client/members',
     label: 'Members',
+    permission: 'share_member_details',
     icon: icon(
       'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z'
     ),
@@ -52,8 +63,17 @@ const NAV: NavItem[] = [
   {
     path: '/client/tasks',
     label: 'Tasks',
+    permission: 'share_tasks',
     icon: icon(
       'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2'
+    ),
+  },
+  {
+    path: '/client/screenshots',
+    label: 'Screenshots',
+    permission: 'share_screenshots',
+    icon: icon(
+      'M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z M15 13a3 3 0 11-6 0 3 3 0 016 0z'
     ),
   },
 ];
@@ -68,6 +88,8 @@ export const ClientShell: React.FC<{
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { data: profile } = useGetMyProfileQuery();
+  const visibleNav = NAV.filter((item) => !item.permission || profile?.permissions[item.permission] !== false);
 
   const handleLogout = () => {
     logout();
@@ -139,7 +161,7 @@ export const ClientShell: React.FC<{
           </div>
 
           <div className="custom-scrollbar min-h-0 flex-grow space-y-1 overflow-y-auto">
-            {NAV.map(navButton)}
+            {visibleNav.map(navButton)}
           </div>
         </div>
 

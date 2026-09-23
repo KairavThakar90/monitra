@@ -6,12 +6,29 @@ export interface ClientProjectRef {
   project_name: string;
 }
 
+/** What a client may see, beyond the shared projects' own name/description
+ * (never gated). Mirrors `share_*` on the backend's `Client` model. */
+export interface ClientPermissions {
+  share_member_details: boolean;
+  share_screenshots: boolean;
+  share_tasks: boolean;
+  share_timing: boolean;
+}
+
+export const DEFAULT_CLIENT_PERMISSIONS: ClientPermissions = {
+  share_member_details: true,
+  share_screenshots: false,
+  share_tasks: true,
+  share_timing: true,
+};
+
 export interface ClientListItem {
   id: number;
   name: string;
   email: string;
   status: 'pending' | 'active' | 'rejected' | 'deactivated';
   projects: ClientProjectRef[];
+  permissions: ClientPermissions;
   created_at: string;
 }
 
@@ -23,6 +40,7 @@ export interface ClientListResponse {
 export interface CreateClientInvitationPayload {
   email: string;
   project_ids: number[];
+  permissions: ClientPermissions;
 }
 
 export const clientsApi = baseApi.injectEndpoints({
@@ -43,11 +61,14 @@ export const clientsApi = baseApi.injectEndpoints({
       invalidatesTags: [{ type: 'Client', id: 'LIST' }],
     }),
 
-    updateClientProjects: builder.mutation<{ id: number; status: string }, { id: number; project_ids: number[] }>({
-      query: ({ id, project_ids }) => ({
-        url: ENDPOINTS.CLIENTS.PROJECTS(id),
+    updateClientAccess: builder.mutation<
+      { id: number; status: string },
+      { id: number; project_ids: number[]; permissions: ClientPermissions }
+    >({
+      query: ({ id, project_ids, permissions }) => ({
+        url: ENDPOINTS.CLIENTS.ACCESS(id),
         method: 'PATCH',
-        body: { project_ids },
+        body: { project_ids, permissions },
       }),
       invalidatesTags: (_result, _error, { id }) => [{ type: 'Client', id }, { type: 'Client', id: 'LIST' }],
     }),
@@ -67,7 +88,7 @@ export const clientsApi = baseApi.injectEndpoints({
 export const {
   useGetClientsQuery,
   useCreateClientInvitationMutation,
-  useUpdateClientProjectsMutation,
+  useUpdateClientAccessMutation,
   useResendClientInvitationMutation,
   useDeactivateClientMutation,
 } = clientsApi;

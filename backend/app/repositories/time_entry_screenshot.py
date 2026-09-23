@@ -373,6 +373,136 @@ class TimeEntryScreenshotRepository:
         ]
 
     @staticmethod
+    def list_screenshots_by_project(
+        db: Session,
+        organization_id: int,
+        project_id: int,
+        start: datetime,
+        end: datetime,
+        limit: int = 200,
+    ) -> List[TimeEntryScreenshot]:
+        """Screenshots captured while tracking time *against this project*,
+        in a date range -- the client portal's one read path. A screenshot
+        carries no project column of its own (see `TimeEntryScreenshot`), so
+        this joins through the time entry it was captured under, exactly as
+        `get_task_project_names_for_entries` does for the reverse lookup."""
+        from app.models.time_entry import TimeEntry
+
+        return (
+            db.query(TimeEntryScreenshot)
+            .join(TimeEntry, TimeEntry.id == TimeEntryScreenshot.time_entry_id)
+            .filter(
+                TimeEntryScreenshot.organization_id == organization_id,
+                TimeEntry.project_id == project_id,
+                TimeEntryScreenshot.captured_at >= start,
+                TimeEntryScreenshot.captured_at < end,
+            )
+            .order_by(TimeEntryScreenshot.captured_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+    @staticmethod
+    def list_screenshots_by_projects(
+        db: Session,
+        organization_id: int,
+        project_ids: List[int],
+        start: datetime,
+        end: datetime,
+    ) -> List[Tuple[int, TimeEntryScreenshot]]:
+        """Every capture tracked against these projects in a range, tagged
+        with whose it is -- the client portal's member-wise grid, the
+        project-scoped counterpart of `list_screenshots_by_user`.
+
+        :return: ``(user_id, screenshot)`` pairs, oldest first.
+        """
+        from app.models.time_entry import TimeEntry
+
+        if not project_ids:
+            return []
+        rows = (
+            db.query(TimeEntry.user_id, TimeEntryScreenshot)
+            .join(TimeEntry, TimeEntry.id == TimeEntryScreenshot.time_entry_id)
+            .filter(
+                TimeEntryScreenshot.organization_id == organization_id,
+                TimeEntry.project_id.in_(project_ids),
+                TimeEntryScreenshot.captured_at >= start,
+                TimeEntryScreenshot.captured_at < end,
+            )
+            .order_by(TimeEntryScreenshot.captured_at.asc())
+            .all()
+        )
+        return [(int(row[0]), row[1]) for row in rows]
+
+    @staticmethod
+    def get_activity_totals_by_projects(
+        db: Session,
+        organization_id: int,
+        project_ids: List[int],
+        start: datetime,
+        end: datetime,
+    ) -> List[Tuple[int, datetime, int, int]]:
+        """Raw activity windows for these projects, for grid grouping -- the
+        project-scoped counterpart of `get_activity_totals_by_user`.
+
+        :return: ``(user_id, recorded_at, activity_percentage, window_seconds)``.
+        """
+        from app.models.time_entry import TimeEntry
+
+        if not project_ids:
+            return []
+        query = (
+            select(
+                TimeEntry.user_id,
+                TimeEntryActivity.recorded_at,
+                TimeEntryActivity.activity_percentage,
+                TimeEntryActivity.window_seconds,
+            )
+            .join(TimeEntry, TimeEntry.id == TimeEntryActivity.time_entry_id)
+            .where(
+                TimeEntryActivity.organization_id == organization_id,
+                TimeEntry.project_id.in_(project_ids),
+                TimeEntryActivity.recorded_at >= start,
+                TimeEntryActivity.recorded_at < end,
+            )
+        )
+        return [
+            (int(r[0]), r[1], int(r[2] or 0), int(r[3] or 0))
+            for r in db.execute(query).all()
+        ]
+
+    @staticmethod
+    def list_tracked_intervals_by_projects(
+        db: Session,
+        organization_id: int,
+        project_ids: List[int],
+        start: datetime,
+        end: datetime,
+    ) -> List[Tuple[int, datetime, datetime]]:
+        """Every tracked span against these projects overlapping a range --
+        the project-scoped counterpart of `list_tracked_intervals_by_user`.
+        Deliberately narrower than a member's whole day: a client's view of
+        "time worked" must reflect only the shared project's work, not
+        everything else that member happened to track that day.
+
+        :return: ``(user_id, began, ended)``, unclipped.
+        """
+        from app.models.time_entry import TimeEntry
+
+        if not project_ids:
+            return []
+        now = datetime.now(timezone.utc)
+        rows = db.query(
+            TimeEntry.user_id, TimeEntry.start_time, TimeEntry.end_time
+        ).filter(
+            TimeEntry.organization_id == organization_id,
+            TimeEntry.project_id.in_(project_ids),
+            TimeEntry.start_time < end,
+            or_(TimeEntry.end_time.is_(None), TimeEntry.end_time > start),
+        ).all()
+        return [(int(row[0]), row[1], row[2] or now) for row in rows]
+
+    @staticmethod
     def count_for_organization(db: Session, organization_id: int) -> int:
         return db.scalar(
             select(func.count()).select_from(TimeEntryScreenshot).where(

@@ -9,8 +9,7 @@ import { RankedBars } from '../dashboard/v2/charts';
 import { series } from '../dashboard/v2/theme';
 import { DateRangeFilter } from '../dashboard/v2/filters';
 import { useGetMyMemberHoursQuery, useGetMyProjectsQuery, useGetMyTaskHoursQuery } from '../../store/api/clientPortalApi';
-import { formatHMS } from '../../utils/duration';
-import { CLIENT_DEFAULT_RANGE, longDate } from './clientRange';
+import { CLIENT_DEFAULT_RANGE, formatSharedHMS, longDate } from './clientRange';
 
 /** Tracked hours per task, across every shared project (or a filtered
  * subset of projects/members), over a date range — the client-portal
@@ -31,7 +30,9 @@ export const ClientTasks: React.FC = () => {
   const allProjects = projectData?.items ?? [];
   const allMembers = memberData?.items ?? [];
   const tasks = data?.items ?? [];
-  const totalSeconds = tasks.reduce((sum, t) => sum + t.total_tracked_seconds, 0);
+  const tasksShared = data?.permissions.share_tasks ?? true;
+  const timingShared = data?.permissions.share_timing ?? true;
+  const totalSeconds = timingShared ? tasks.reduce((sum, t) => sum + (t.total_tracked_seconds ?? 0), 0) : null;
 
   return (
     <ClientShell
@@ -62,19 +63,21 @@ export const ClientTasks: React.FC = () => {
 
         <div className={`space-y-6 transition-opacity ${isFetching ? 'opacity-60' : ''}`}>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <ClientKpiCard title="Total Task Hours" value={formatHMS(totalSeconds)} />
+            <ClientKpiCard title="Total Task Hours" value={formatSharedHMS(totalSeconds)} />
             <ClientKpiCard title="Tasks Worked" value={tasks.length} />
           </div>
 
           <Card title="Top Tasks">
-            {tasks.length === 0 ? (
+            {!tasksShared ? (
+              <EmptyState message="Tasks are not shared for your account." hint="Ask your admin to enable it if you need this." />
+            ) : tasks.length === 0 ? (
               <EmptyState message="No task activity for this range or filter." hint="Try a different date range, or clear the filters." />
             ) : (
               <RankedBars
                 items={tasks.map((task) => ({
                   id: String(task.id),
                   name: task.task_name,
-                  value: task.total_tracked_hours,
+                  value: task.total_tracked_hours ?? 0,
                   meta: task.project_name ?? 'Unknown project',
                 }))}
                 color={series[3]}
