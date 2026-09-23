@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../auth/authContext";
-import { canManageSystem, canViewAllFeedback } from "../../auth/roles";
+import { canManageClients, canManageSystem, canViewAllFeedback } from "../../auth/roles";
 import { openPathInNewTab, opensInNewTab } from "../../../utils/navigation";
 import { brandGradient } from "./theme";
 
@@ -84,6 +84,9 @@ export const V2Shell: React.FC<{
    * dashboard. Everything else here is read-only and stays visible.
    */
   const canManageProjects = !!currentUser?.permissions?.["projects:create"];
+
+  /** Client invitations: administrator/org_admin/super_admin only. */
+  const showClients = canManageClients(currentUser);
 
   const onReports = location.pathname.startsWith("/dashboard/reports");
   const onV2 = location.pathname === "/dashboard";
@@ -284,6 +287,29 @@ export const V2Shell: React.FC<{
                 <span className="flex-1">Task Listing</span>
               </button>
               </>
+            )}
+
+            {showClients && (
+              <button
+                onClick={(event) => go(event, "/admin/clients")}
+                className={
+                  "flex w-full cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3 text-left text-sm font-medium leading-snug transition duration-150 " +
+                  (location.pathname === "/admin/clients"
+                    ? "text-white shadow-sm"
+                    : "text-[#94A3B8] hover:bg-slate-800/40 hover:text-white")
+                }
+                style={location.pathname === "/admin/clients" ? { background: brandGradient } : undefined}
+              >
+                <svg
+                  className={"h-5 w-5 " + (location.pathname === "/admin/clients" ? "text-white" : "text-[#22D3EE]")}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-4a4 4 0 10-4-4 4 4 0 004 4zm6 0a4 4 0 10-4-4" />
+                </svg>
+                <span className="flex-1">Clients</span>
+              </button>
             )}
 
             <button

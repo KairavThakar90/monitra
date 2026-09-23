@@ -90,3 +90,21 @@ const SYSTEM_MANAGE_ROLES = new Set(["administrator", "org_admin", "super_admin"
 /** True for administrators — the only role shown the System settings page. */
 export const canManageSystem = (user: UserRead | null) =>
   SYSTEM_MANAGE_ROLES.has((user?.role_name || "").trim().toLowerCase());
+
+/**
+ * Who may invite clients and manage their project access.
+ *
+ * A permission, mirroring `clients:manage` in `app/core/permissions.py`
+ * (granted to administrator, org_admin and super_admin).
+ */
+export const canManageClients = (user: UserRead | null) =>
+  Boolean(user?.permissions?.["clients:manage"]);
+
+/**
+ * Whether this account is a client's — an external party reading a read-only
+ * slice of the organization's projects, never an org member. Mirrors
+ * `clients:view_shared`, the one permission `ROLE_PERMISSIONS["client"]`
+ * grants.
+ */
+export const isClientAccount = (user: UserRead | null) =>
+  Boolean(user?.permissions?.["clients:view_shared"]);

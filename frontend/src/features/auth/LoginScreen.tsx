@@ -1,12 +1,33 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "./authContext";
+import { requestClientLoginLinkAPI } from "../../api/auth";
 import {
   FieldError,
   PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_LENGTH,
   useFormValidation,
 } from "../../validation";
+
+/** Read once on mount: whether this load is a client invitation's Reject
+ * redirect (`/login?client_invite=rejected`), so the reason can be shown
+ * without it reappearing after the query string is cleaned up. */
+const consumeRejectedInviteFlag = (): boolean => {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("client_invite") !== "rejected") return false;
+    params.delete("client_invite");
+    const query = params.toString();
+    window.history.replaceState(
+      {},
+      document.title,
+      `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`
+    );
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 const EyeIcon = () => (
   <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -45,7 +66,15 @@ export const LoginScreen: React.FC = () => {
   // user on an empty form with no idea why they were not signed in.
   const [error, setError] = useState<string | null>(ssoError);
   const [isLoading, setIsLoading] = useState(false);
-  
+  const [rejectedInvite] = useState<boolean>(consumeRejectedInviteFlag);
+
+  // Client sign-in: a client has no password, so this is a separate mode that
+  // only ever emails a fresh single-use link -- it never calls `login()`.
+  const [isClientMode, setIsClientMode] = useState(false);
+  const [clientEmail, setClientEmail] = useState("");
+  const [clientLinkSent, setClientLinkSent] = useState(false);
+  const [clientLinkLoading, setClientLinkLoading] = useState(false);
+
   // Forgot password modal states
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -92,6 +121,20 @@ export const LoginScreen: React.FC = () => {
       setError(err.message || "Failed to sign in. Please verify your credentials or server status.");
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleClientLinkRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!clientEmail.trim()) return;
+    setClientLinkLoading(true);
+    try {
+      await requestClientLoginLinkAPI(clientEmail.trim());
+    } finally {
+      // Always the same outcome, whether or not the address has an account --
+      // see requestClientLoginLinkAPI.
+      setClientLinkLoading(false);
+      setClientLinkSent(true);
     }
   };
 
@@ -146,6 +189,70 @@ export const LoginScreen: React.FC = () => {
           </div>
 
           <div className="mt-8">
+          {rejectedInvite && (
+            <div className="mb-6 p-3 bg-slate-50 border border-[#E2E8F0] rounded-md text-sm text-[#475569]">
+              You have declined this client invitation. If this was a mistake, ask
+              the person who invited you to send a new one.
+            </div>
+          )}
+
+          {isClientMode ? (
+            <form className="space-y-6" onSubmit={handleClientLinkRequest}>
+              {clientLinkSent ? (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-md text-sm text-emerald-700">
+                  If that address has a Monitra client account, a sign-in link is on
+                  its way. It can be used once and expires shortly.
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label htmlFor="client-email" className="block text-xs font-semibold text-[#94A3B8] tracking-wider uppercase mb-1">
+                      Email Address
+                    </label>
+                    <div className="relative">
+                      <span className="pointer-events-none absolute left-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md bg-[#EFF6FF] text-[#2563EB]">
+                        <UserIcon />
+                      </span>
+                      <input
+                        id="client-email"
+                        name="client-email"
+                        type="email"
+                        required
+                        disabled={clientLinkLoading}
+                        value={clientEmail}
+                        onChange={(e) => setClientEmail(e.target.value)}
+                        placeholder="you@example.com"
+                        className="w-full rounded-xl border-2 border-[#E2E8F0] py-3 pl-14 pr-3 text-sm text-[#0F172A] shadow-sm outline-none placeholder-[#94A3B8] transition focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/15"
+                      />
+                    </div>
+                    <p className="mt-2 text-xs text-[#94A3B8]">
+                      Client accounts have no password. We will email you a
+                      one-time sign-in link.
+                    </p>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={clientLinkLoading}
+                    className="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-md shadow-sm text-sm font-semibold text-white bg-[#2563EB] hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#2563EB] disabled:opacity-50 disabled:cursor-not-allowed transition duration-150"
+                  >
+                    {clientLinkLoading ? "Sending..." : "Send sign-in link"}
+                  </button>
+                </>
+              )}
+              <p className="text-center text-sm text-[#64748B]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsClientMode(false);
+                    setClientLinkSent(false);
+                  }}
+                  className="font-semibold text-[#2563EB] hover:text-blue-700"
+                >
+                  Back to staff sign in
+                </button>
+              </p>
+            </form>
+          ) : (
           <form className="space-y-6" onSubmit={handleSubmit}>
             {error && (
               <div className="p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-600">
@@ -238,6 +345,20 @@ export const LoginScreen: React.FC = () => {
               </button>
             </div>
           </form>
+          )}
+
+          {!isClientMode && (
+            <p className="mt-6 text-center text-sm text-[#64748B]">
+              Signing in as a client?{' '}
+              <button
+                type="button"
+                onClick={() => setIsClientMode(true)}
+                className="font-semibold text-[#2563EB] hover:text-blue-700"
+              >
+                Use your email to sign in
+              </button>
+            </p>
+          )}
 
           {/* The only public route out of here. Without this the download page
               is reachable only by someone who already knows the URL, which is

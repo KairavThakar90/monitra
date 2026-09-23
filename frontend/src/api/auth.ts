@@ -142,6 +142,20 @@ export async function refreshSessionAPI(refreshToken: string): Promise<TokenPair
   return { ...data, user: normalizeUserProfile(data.user) };
 }
 
+/**
+ * Ask the backend to email a fresh passwordless sign-in link to a client
+ * account. Always resolves the same way whether or not the address matches
+ * an account -- the endpoint returns 204 either way -- so this cannot be used
+ * to discover which addresses have one.
+ */
+export async function requestClientLoginLinkAPI(email: string): Promise<void> {
+  await fetch(ENDPOINTS.AUTH.CLIENT_LOGIN_LINK, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+}
+
 export async function logoutAPI(refreshToken: string | null): Promise<void> {
   if (!refreshToken) return;
   await fetch(ENDPOINTS.AUTH.LOGOUT, {

@@ -17,7 +17,10 @@ import { AdminUserManagement } from './features/admin/AdminUserManagement';
 import { AdminScreenshotPrivacy } from './features/admin/AdminScreenshotPrivacy';
 import { MaintenanceToast } from './components/MaintenanceToast'
 import { MemberFeedback } from './features/member/MemberFeedback'
-import { canManageSystem, canViewAllFeedback } from './features/auth/roles'
+import { canManageClients, canManageSystem, canViewAllFeedback, isClientAccount } from './features/auth/roles'
+import { AdminClients } from './features/admin/AdminClients'
+import { ClientDashboard } from './features/client/ClientDashboard'
+import { ClientProjectDetail } from './features/client/ClientProjectDetail'
 import { MemberDashboard } from './features/member/MemberDashboard'
 import { MemberReports } from './features/member/MemberReports'
 import { MemberProjects } from './features/member/MemberProjects'
@@ -71,7 +74,8 @@ const canViewAllTime = (user: UserRead | null) => !!user?.permissions?.["time_en
  * `/dashboard`, which used to drop a member onto a page whose every request
  * they are forbidden to make.
  */
-const homeFor = (user: UserRead | null) => (canViewAllTime(user) ? "/dashboard" : "/member/dashboard");
+const homeFor = (user: UserRead | null) =>
+  isClientAccount(user) ? "/client/dashboard" : canViewAllTime(user) ? "/dashboard" : "/member/dashboard";
 
 const LoadingScreen: React.FC<{ label: string }> = ({ label }) => (
   <div className="min-h-screen flex items-center justify-center bg-[#F8FAFC]">
@@ -149,6 +153,30 @@ const FeedbackAdminRoute: React.FC<{ children: React.ReactNode }> = ({ children 
   if (!isAuthenticated) return <Navigate to="/login" replace />;
 
   return canViewAllFeedback(currentUser) ? <>{children}</> : <Navigate to={homeFor(currentUser)} replace />;
+};
+
+/** The admin Clients screen: inviting clients and managing their project access. */
+const ClientsAdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { isAuthenticated, currentUser, isLoading } = useAuth();
+
+  if (isLoading) return <LoadingScreen label="Loading session..." />;
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+
+  return canManageClients(currentUser) ? <>{children}</> : <Navigate to={homeFor(currentUser)} replace />;
+};
+
+/**
+ * The client portal: an external client's own read-only view of the projects
+ * shared with them. Gated on the account being a client, not on any staff
+ * permission — a client never belongs on any other route in this file.
+ */
+const ClientPortalRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { isAuthenticated, currentUser, isLoading } = useAuth();
+
+  if (isLoading) return <LoadingScreen label="Loading session..." />;
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+
+  return isClientAccount(currentUser) ? <>{children}</> : <Navigate to={homeFor(currentUser)} replace />;
 };
 
 /**
@@ -261,6 +289,14 @@ const AppRoutes: React.FC = () => {
         }
       />
       <Route
+        path="/admin/clients"
+        element={
+          <ClientsAdminRoute>
+            <AdminClients />
+          </ClientsAdminRoute>
+        }
+      />
+      <Route
         path="/admin/settings"
         element={<Navigate to="/admin/settings/maintenance" replace />}
       />
@@ -302,6 +338,24 @@ const AppRoutes: React.FC = () => {
           <OrgWideRoute>
             <ReportPage />
           </OrgWideRoute>
+        }
+      />
+
+      {/* ----------------------------------------------------- client */}
+      <Route
+        path="/client/dashboard"
+        element={
+          <ClientPortalRoute>
+            <ClientDashboard />
+          </ClientPortalRoute>
+        }
+      />
+      <Route
+        path="/client/projects/:projectId"
+        element={
+          <ClientPortalRoute>
+            <ClientProjectDetail />
+          </ClientPortalRoute>
         }
       />
 

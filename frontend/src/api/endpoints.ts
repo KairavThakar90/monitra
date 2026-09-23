@@ -30,6 +30,18 @@ export const ENDPOINTS = {
     REFRESH: `${API_BASE_URL}/auth/refresh`,
     LOGOUT: `${API_BASE_URL}/auth/logout`,
     ME: `${API_BASE_URL}/auth/me`,
+    // A client has no password: this emails a fresh single-use sign-in link
+    // to an approved client account, or does nothing silently if the address
+    // does not match one.
+    CLIENT_LOGIN_LINK: `${API_BASE_URL}/auth/client/login-link`,
+  },
+  CLIENTS: {
+    BASE: `${API_BASE_URL}/clients`,
+    INVITATIONS: `${API_BASE_URL}/clients/invitations`,
+    PROJECTS: (id: string | number) => `${API_BASE_URL}/clients/${id}/projects`,
+    RESEND_INVITATION: (id: string | number) => `${API_BASE_URL}/clients/${id}/resend-invitation`,
+    MY_PROJECTS: `${API_BASE_URL}/clients/me/projects`,
+    MY_PROJECT_BY_ID: (id: string | number) => `${API_BASE_URL}/clients/me/projects/${id}`,
   },
   MEMBERS: {
     GET_ALL: `${API_BASE_URL}/members`,
