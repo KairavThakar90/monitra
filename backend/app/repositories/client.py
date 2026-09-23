@@ -82,16 +82,18 @@ class ClientRepository:
         return rows, total or 0
 
     @staticmethod
-    def project_names_for_clients(db: Session, client_ids: list[int]) -> dict[int, list[str]]:
-        """Shared-project names for a set of clients, for the admin table."""
+    def projects_for_clients(db: Session, client_ids: list[int]) -> dict[int, list[dict]]:
+        """Shared projects (id + name) for a set of clients, for the admin
+        table -- the id is what "Edit Projects" needs to pre-select the
+        client's current checkboxes; the name is what the table displays."""
         if not client_ids:
             return {}
         rows = db.execute(
-            select(ClientProject.client_id, Project.project_name)
+            select(ClientProject.client_id, Project.id, Project.project_name)
             .join(Project, Project.id == ClientProject.project_id)
             .where(ClientProject.client_id.in_(client_ids))
         ).all()
-        result: dict[int, list[str]] = {cid: [] for cid in client_ids}
-        for client_id, project_name in rows:
-            result.setdefault(client_id, []).append(project_name)
+        result: dict[int, list[dict]] = {cid: [] for cid in client_ids}
+        for client_id, project_id, project_name in rows:
+            result.setdefault(client_id, []).append({"id": project_id, "project_name": project_name})
         return result

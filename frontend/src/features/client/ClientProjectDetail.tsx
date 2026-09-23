@@ -1,13 +1,31 @@
-import React from 'react';
-import { Link, useParams } from 'react-router-dom';
+import React, { useState } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ClientShell } from './ClientShell';
-import { Card, ErrorNote, Spinner } from '../member/MemberUi';
+import { ClientKpiCard } from './ClientKpiCard';
+import { Card, EmptyState, ErrorNote, Spinner } from '../member/MemberUi';
+import { RankedBars } from '../dashboard/v2/charts';
+import { series } from '../dashboard/v2/theme';
+import { DateRangeFilter, rangeForSpan } from '../dashboard/v2/filters';
 import { useGetMyProjectDetailQuery } from '../../store/api/clientPortalApi';
+import { formatHMS } from '../../utils/duration';
+import { CLIENT_DEFAULT_RANGE, longDate } from './clientRange';
 
 export const ClientProjectDetail: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
+  const [searchParams] = useSearchParams();
   const id = Number(projectId);
-  const { data, isLoading, isError } = useGetMyProjectDetailQuery(id, { skip: !Number.isFinite(id) });
+
+  const initialRange = (() => {
+    const start = searchParams.get('start');
+    const end = searchParams.get('end');
+    return start && end ? rangeForSpan(start, end) : CLIENT_DEFAULT_RANGE;
+  })();
+  const [range, setRange] = useState(initialRange);
+
+  const { data, isLoading, isFetching, isError } = useGetMyProjectDetailQuery(
+    { projectId: id, start_date: range.from, end_date: range.to },
+    { skip: !Number.isFinite(id) },
+  );
 
   const backLink = (
     <Link to="/client/dashboard" className="text-sm font-semibold text-[#2563EB] hover:text-blue-700">
@@ -34,60 +52,62 @@ export const ClientProjectDetail: React.FC = () => {
   return (
     <ClientShell title={data.project_name} subtitle={data.description ?? undefined} actions={backLink}>
       <div className="space-y-6 pb-16">
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <Card>
-            <div className="text-2xl font-bold text-[#0F172A]">{data.total_tracked_hours}h</div>
-            <div className="text-xs font-semibold uppercase tracking-wider text-[#94A3B8]">Total Hours</div>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E2E8F0] bg-white p-2 pl-4 shadow-sm">
+          <DateRangeFilter value={range} onChange={setRange} />
+          <button
+            onClick={() => setRange(CLIENT_DEFAULT_RANGE)}
+            className="rounded-lg border border-[#E2E8F0] px-4 py-2 text-[13px] font-bold text-[#64748B] transition hover:bg-[#F8FAFC] hover:text-[#0F172A]"
+          >
+            Reset
+          </button>
+        </div>
+        <p className="text-xs font-semibold text-[#94A3B8]">
+          {longDate(range.from)} – {longDate(range.to)}
+        </p>
+
+        <div className={`space-y-6 transition-opacity ${isFetching ? 'opacity-60' : ''}`}>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <ClientKpiCard title="Hours Tracked" value={formatHMS(data.total_tracked_seconds)} />
+            <ClientKpiCard title="Team Members" value={data.total_members} />
+            <ClientKpiCard title="Tasks" value={data.tasks.length} />
+            <ClientKpiCard title="Status" value={data.status} />
+          </div>
+
+          <Card title="Time by Member">
+            {data.members.length === 0 ? (
+              <EmptyState message="No members are staffed on this project yet." />
+            ) : (
+              <RankedBars
+                items={data.members.map((member) => ({
+                  id: String(member.id),
+                  name: member.name,
+                  value: member.total_tracked_hours,
+                  meta: member.designation ?? '',
+                }))}
+                color={series[1]}
+                formatValue={(n) => `${n}h`}
+                avatars
+              />
+            )}
           </Card>
-          <Card>
-            <div className="text-2xl font-bold text-[#0F172A]">{data.total_members}</div>
-            <div className="text-xs font-semibold uppercase tracking-wider text-[#94A3B8]">Team Members</div>
-          </Card>
-          <Card>
-            <div className="text-2xl font-bold text-[#0F172A]">{data.tasks.length}</div>
-            <div className="text-xs font-semibold uppercase tracking-wider text-[#94A3B8]">Tasks</div>
-          </Card>
-          <Card>
-            <div className="text-2xl font-bold capitalize text-[#0F172A]">{data.status}</div>
-            <div className="text-xs font-semibold uppercase tracking-wider text-[#94A3B8]">Status</div>
+
+          <Card title="Time by Task">
+            {data.tasks.length === 0 ? (
+              <EmptyState message="No active tasks on this project yet." />
+            ) : (
+              <RankedBars
+                items={data.tasks.map((task) => ({
+                  id: String(task.id),
+                  name: task.task_name,
+                  value: task.total_tracked_hours,
+                  meta: task.status,
+                }))}
+                color={series[3]}
+                formatValue={(n) => `${n}h`}
+              />
+            )}
           </Card>
         </div>
-
-        <Card title="Team Members">
-          {data.members.length === 0 ? (
-            <p className="text-sm text-[#94A3B8]">No members are staffed on this project yet.</p>
-          ) : (
-            <div className="divide-y divide-[#F1F5F9]">
-              {data.members.map((member) => (
-                <div key={member.id} className="flex items-center justify-between py-2.5 text-sm">
-                  <div>
-                    <div className="font-medium text-[#0F172A]">{member.name}</div>
-                    {member.designation && <div className="text-xs text-[#94A3B8]">{member.designation}</div>}
-                  </div>
-                  <div className="font-semibold text-[#475569]">{member.total_tracked_hours}h</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
-
-        <Card title="Tasks">
-          {data.tasks.length === 0 ? (
-            <p className="text-sm text-[#94A3B8]">No active tasks on this project yet.</p>
-          ) : (
-            <div className="divide-y divide-[#F1F5F9]">
-              {data.tasks.map((task) => (
-                <div key={task.id} className="flex items-center justify-between py-2.5 text-sm">
-                  <div className="font-medium text-[#0F172A]">{task.task_name}</div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs capitalize text-[#94A3B8]">{task.status}</span>
-                    <span className="font-semibold text-[#475569]">{task.total_tracked_hours}h</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
       </div>
     </ClientShell>
   );

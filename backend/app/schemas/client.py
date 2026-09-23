@@ -14,12 +14,17 @@ class ClientProjectsUpdate(BaseModel):
     project_ids: IdentifierList = Field(default=None)
 
 
+class ClientProjectRef(BaseModel):
+    id: int
+    project_name: str
+
+
 class ClientListItem(BaseModel):
     id: int
     name: str
     email: str
     status: str
-    projects: list[str]
+    projects: list[ClientProjectRef]
     created_at: datetime
 
 

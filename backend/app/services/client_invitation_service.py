@@ -52,7 +52,32 @@ class ClientInvitationService:
             raise HTTPException(status.HTTP_409_CONFLICT, "This client has already approved an invitation.")
 
         if client.user_id is None:
-            user = ClientRepository.create_client_user(
+            # `users.email` is globally unique, so this address may already
+            # belong to a user row. Two cases:
+            #
+            # * a **staff** account (an employee, a manager, an admin) --
+            #   reusing that row would either collide on the unique
+            #   constraint (an unhandled 500) or, worse, silently turn
+            #   someone's existing staff account into a client. Refused,
+            #   with a message an admin can act on rather than a crash.
+            # * an already-`client`-role user with no `Client` row pointing
+            #   at it -- e.g. its `Client`/`ClientInvitation` rows were
+            #   removed directly (test data cleanup, a manual fix) while the
+            #   account itself was left alone. Refusing this one the same
+            #   way would be a permanent dead end: the email can never be
+            #   invited again (this branch) and the account has no route
+            #   back to portal access either (`ClientPortalService` requires
+            #   a `Client` row). Relinking it is the correct repair, not a
+            #   security relaxation -- a client-role account already carries
+            #   the smallest permission set this table defines.
+            existing_user = UserRepository.get_by_normalized_email(db, email)
+            if existing_user is not None and existing_user.role_name != "client":
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "This email address already belongs to an existing Monitra account "
+                    "and cannot be invited as a client.",
+                )
+            user = existing_user or ClientRepository.create_client_user(
                 db, organization_id=organization_id, email=email, name=client.name,
             )
             client.user_id = user.id
@@ -97,6 +122,37 @@ class ClientInvitationService:
         )
 
     @staticmethod
+    def deactivate_client(db: Session, admin_user: User, client_id: int) -> Client:
+        """Revoke an active client's access.
+
+        The account is disabled outright (`User.is_active = False`), which is
+        what `get_current_user` and every session/handoff check already gate
+        on -- a deactivated client cannot sign in, refresh an existing
+        session, or redeem a fresh sign-in link. `Client.status` moves to
+        `deactivated`, a distinct state from `rejected` (the client never
+        approved) and `pending` (nobody has acted yet), so the admin table
+        can tell the three apart. From here the only way back in is a fresh
+        invitation -- `resend_invitation` -- which the admin table's Actions
+        column offers once a client is no longer active.
+        """
+        client = ClientRepository.get_by_id(db, client_id, admin_user.organization_id)
+        if client is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Client not found.")
+        if client.status != "active":
+            raise HTTPException(status.HTTP_409_CONFLICT, "This client is not currently active.")
+
+        client.status = "deactivated"
+        db.commit()
+
+        if client.user_id is not None:
+            user = UserRepository.get_by_id(db, client.user_id)
+            if user is not None:
+                user.is_active = False
+                db.commit()
+
+        return client
+
+    @staticmethod
     def update_client_projects(db: Session, admin_user: User, client_id: int, project_ids: list[int]) -> Client:
         client = ClientRepository.get_by_id(db, client_id, admin_user.organization_id)
         if client is None:
@@ -108,14 +164,14 @@ class ClientInvitationService:
     @staticmethod
     def list_clients(db: Session, admin_user: User, page: int, limit: int) -> dict:
         rows, total = ClientRepository.list_for_organization(db, admin_user.organization_id, page, limit)
-        project_names = ClientRepository.project_names_for_clients(db, [row.id for row in rows])
+        projects_by_client = ClientRepository.projects_for_clients(db, [row.id for row in rows])
         items = [
             {
                 "id": row.id,
                 "name": row.name,
                 "email": row.email,
                 "status": row.status,
-                "projects": project_names.get(row.id, []),
+                "projects": projects_by_client.get(row.id, []),
                 "created_at": row.created_at,
             }
             for row in rows

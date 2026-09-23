@@ -4,8 +4,10 @@ import { Card, EmptyState, ErrorNote, Spinner } from '../member/MemberUi';
 import { useGetAllProjectsQuery } from '../../store/api/projectsApi';
 import {
   useCreateClientInvitationMutation,
+  useDeactivateClientMutation,
   useGetClientsQuery,
   useResendClientInvitationMutation,
+  useUpdateClientProjectsMutation,
   type ClientListItem,
 } from '../../store/api/clientsApi';
 
@@ -13,6 +15,7 @@ const STATUS_STYLES: Record<ClientListItem['status'], string> = {
   pending: 'bg-amber-50 text-amber-700 border border-amber-200',
   active: 'bg-emerald-50 text-emerald-700 border border-emerald-200',
   rejected: 'bg-rose-50 text-rose-700 border border-rose-200',
+  deactivated: 'bg-slate-100 text-slate-600 border border-slate-200',
 };
 
 const StatusBadge: React.FC<{ status: ClientListItem['status'] }> = ({ status }) => (
@@ -21,15 +24,41 @@ const StatusBadge: React.FC<{ status: ClientListItem['status'] }> = ({ status })
   </span>
 );
 
-const AddClientModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const { data: projects, isLoading: projectsLoading } = useGetAllProjectsQuery();
-  const [createInvitation, { isLoading: isSending }] = useCreateClientInvitationMutation();
+/** The project checkbox list, shared by the Add Client and Edit Projects modals. */
+const ProjectChecklist: React.FC<{
+  selectedIds: Set<number>;
+  onToggle: (id: number) => void;
+}> = ({ selectedIds, onToggle }) => {
+  const { data: projects, isLoading } = useGetAllProjectsQuery();
 
-  const [email, setEmail] = useState('');
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [error, setError] = useState<string | null>(null);
+  if (isLoading) return <Spinner label="Loading projects…" />;
 
-  const toggleProject = (id: number) => {
+  return (
+    <div className="max-h-56 overflow-y-auto rounded-lg border border-[#E2E8F0] divide-y divide-[#F1F5F9]">
+      {(projects ?? []).map((project) => (
+        <label
+          key={project.id}
+          className="flex items-center gap-3 px-3 py-2.5 text-sm text-[#0F172A] cursor-pointer hover:bg-[#F8FAFC]"
+        >
+          <input
+            type="checkbox"
+            checked={selectedIds.has(project.id)}
+            onChange={() => onToggle(project.id)}
+            className="h-4 w-4 rounded border-[#CBD5E1] text-[#2563EB] focus:ring-[#2563EB]"
+          />
+          {project.project_name}
+        </label>
+      ))}
+      {(projects ?? []).length === 0 && (
+        <p className="px-3 py-4 text-sm text-[#94A3B8]">No projects available yet.</p>
+      )}
+    </div>
+  );
+};
+
+const useToggleSet = (initial: number[]) => {
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set(initial));
+  const toggle = (id: number) => {
     setSelectedIds((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id);
@@ -37,6 +66,15 @@ const AddClientModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       return next;
     });
   };
+  return { selectedIds, toggle };
+};
+
+const AddClientModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const [createInvitation, { isLoading: isSending }] = useCreateClientInvitationMutation();
+  const { selectedIds, toggle } = useToggleSet([]);
+
+  const [email, setEmail] = useState('');
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,29 +130,7 @@ const AddClientModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             <label className="block text-xs font-semibold text-[#94A3B8] tracking-wider uppercase mb-2">
               Select Projects
             </label>
-            {projectsLoading ? (
-              <Spinner label="Loading projects…" />
-            ) : (
-              <div className="max-h-56 overflow-y-auto rounded-lg border border-[#E2E8F0] divide-y divide-[#F1F5F9]">
-                {(projects ?? []).map((project) => (
-                  <label
-                    key={project.id}
-                    className="flex items-center gap-3 px-3 py-2.5 text-sm text-[#0F172A] cursor-pointer hover:bg-[#F8FAFC]"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.has(project.id)}
-                      onChange={() => toggleProject(project.id)}
-                      className="h-4 w-4 rounded border-[#CBD5E1] text-[#2563EB] focus:ring-[#2563EB]"
-                    />
-                    {project.project_name}
-                  </label>
-                ))}
-                {(projects ?? []).length === 0 && (
-                  <p className="px-3 py-4 text-sm text-[#94A3B8]">No projects available yet.</p>
-                )}
-              </div>
-            )}
+            <ProjectChecklist selectedIds={selectedIds} onToggle={toggle} />
           </div>
 
           <div className="pt-2 flex justify-end gap-3">
@@ -139,11 +155,79 @@ const AddClientModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   );
 };
 
+const EditProjectsModal: React.FC<{ client: ClientListItem; onClose: () => void }> = ({ client, onClose }) => {
+  const [updateProjects, { isLoading: isSaving }] = useUpdateClientProjectsMutation();
+  const { selectedIds, toggle } = useToggleSet(client.projects.map((p) => p.id));
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    if (selectedIds.size === 0) {
+      setError('Select at least one project to share.');
+      return;
+    }
+    try {
+      await updateProjects({ id: client.id, project_ids: Array.from(selectedIds) }).unwrap();
+      onClose();
+    } catch (err: any) {
+      setError(err?.data?.detail || 'Could not update projects. Please try again.');
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0f172a]/50 backdrop-blur-sm">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden border border-[#E2E8F0]">
+        <div className="px-6 py-4 border-b border-[#F1F5F9] flex justify-between items-center">
+          <h3 className="text-[15px] font-bold text-[#0F172A]">Edit Projects — {client.name}</h3>
+          <button type="button" onClick={onClose} className="text-[#94A3B8] hover:text-[#64748B] focus:outline-none">
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-600">{error}</div>
+          )}
+
+          <div>
+            <label className="block text-xs font-semibold text-[#94A3B8] tracking-wider uppercase mb-2">
+              Shared Projects
+            </label>
+            <ProjectChecklist selectedIds={selectedIds} onToggle={toggle} />
+          </div>
+
+          <div className="pt-2 flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg px-4 py-2 text-sm font-medium text-[#64748B] hover:bg-[#F1F5F9]"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isSaving}
+              className="rounded-lg bg-[#2563EB] px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {isSaving ? 'Saving…' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
 export const AdminClients: React.FC = () => {
   const [page, setPage] = useState(1);
   const { data, isLoading, isFetching, isError } = useGetClientsQuery({ page, limit: 20 });
   const [resendInvitation, { isLoading: isResending }] = useResendClientInvitationMutation();
+  const [deactivateClient, { isLoading: isDeactivating }] = useDeactivateClientMutation();
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingClient, setEditingClient] = useState<ClientListItem | null>(null);
 
   const items = data?.items ?? [];
   const pagination = data?.pagination;
@@ -192,22 +276,38 @@ export const AdminClients: React.FC = () => {
                     <td className="px-4 py-3 font-medium text-[#0F172A]">{client.name}</td>
                     <td className="px-4 py-3 text-[#475569]">{client.email}</td>
                     <td className="px-4 py-3 text-[#475569]">
-                      {client.projects.length ? client.projects.join(', ') : '—'}
+                      {client.projects.length ? client.projects.map((p) => p.project_name).join(', ') : '—'}
                     </td>
                     <td className="px-4 py-3"><StatusBadge status={client.status} /></td>
                     <td className="px-4 py-3 text-[#475569]">
                       {new Date(client.created_at).toLocaleDateString()}
                     </td>
                     <td className="px-4 py-3">
-                      {client.status !== 'active' && (
+                      <div className="flex items-center gap-3">
                         <button
-                          disabled={isResending}
-                          onClick={() => resendInvitation(client.id)}
-                          className="text-[#2563EB] font-semibold hover:text-blue-700 disabled:opacity-50"
+                          onClick={() => setEditingClient(client)}
+                          className="text-[#475569] font-semibold hover:text-[#0F172A]"
                         >
-                          Resend Invitation
+                          Edit Projects
                         </button>
-                      )}
+                        {client.status === 'active' ? (
+                          <button
+                            disabled={isDeactivating}
+                            onClick={() => deactivateClient(client.id)}
+                            className="text-rose-600 font-semibold hover:text-rose-700 disabled:opacity-50"
+                          >
+                            Deactivate
+                          </button>
+                        ) : (
+                          <button
+                            disabled={isResending}
+                            onClick={() => resendInvitation(client.id)}
+                            className="text-[#2563EB] font-semibold hover:text-blue-700 disabled:opacity-50"
+                          >
+                            Resend Invitation
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -242,6 +342,9 @@ export const AdminClients: React.FC = () => {
       </div>
 
       {modalOpen && <AddClientModal onClose={() => setModalOpen(false)} />}
+      {editingClient && (
+        <EditProjectsModal client={editingClient} onClose={() => setEditingClient(null)} />
+      )}
     </V2Shell>
   );
 };

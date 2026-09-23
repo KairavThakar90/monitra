@@ -40,8 +40,11 @@ export const ENDPOINTS = {
     INVITATIONS: `${API_BASE_URL}/clients/invitations`,
     PROJECTS: (id: string | number) => `${API_BASE_URL}/clients/${id}/projects`,
     RESEND_INVITATION: (id: string | number) => `${API_BASE_URL}/clients/${id}/resend-invitation`,
+    DEACTIVATE: (id: string | number) => `${API_BASE_URL}/clients/${id}/deactivate`,
     MY_PROJECTS: `${API_BASE_URL}/clients/me/projects`,
     MY_PROJECT_BY_ID: (id: string | number) => `${API_BASE_URL}/clients/me/projects/${id}`,
+    MY_MEMBERS: `${API_BASE_URL}/clients/me/members`,
+    MY_TASKS: `${API_BASE_URL}/clients/me/tasks`,
   },
   MEMBERS: {
     GET_ALL: `${API_BASE_URL}/members`,

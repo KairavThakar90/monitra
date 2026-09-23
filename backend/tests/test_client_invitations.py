@@ -130,6 +130,40 @@ class ClientInvitationCase(unittest.TestCase):
         self.assertTrue(ClientProjectRepository.exists(self.db, client.id, self.project_a.id))
         self.assertFalse(ClientProjectRepository.exists(self.db, client.id, self.project_b.id))
 
+    def test_inviting_an_email_that_belongs_to_a_staff_account_is_refused(self):
+        self.db.add(User(
+            id=900, organization_id=ORG, username="staffer", email="staffer@example.com",
+            name="Staffer", role_name="employee", permissions={}, is_active=True,
+            status="active", capture_frequency=10,
+        ))
+        self.db.commit()
+        with self.assertRaises(HTTPException) as ctx:
+            ClientInvitationService.create_invitation(
+                self.db, self.admin, "staffer@example.com", [self.project_a.id],
+            )
+        self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_inviting_an_email_whose_client_row_was_removed_relinks_the_existing_account(self):
+        """A `client`-role user can end up with no `Client` row pointing at it
+        -- its `Client`/`ClientInvitation` rows removed directly (test data
+        cleanup, a manual fix) while the account itself was untouched.
+        Re-inviting that email must repair the link, not refuse forever: a
+        client-role account is already the smallest permission set this
+        table defines, so reusing it is a repair, not a privilege escalation.
+        """
+        orphaned_user = User(
+            id=901, organization_id=ORG, username="orphan", email="orphan@example.com",
+            name="Orphan Client", role_name="client", permissions={"clients:view_shared": True},
+            is_active=True, status="active", capture_frequency=10,
+        )
+        self.db.add(orphaned_user)
+        self.db.commit()
+
+        client = ClientInvitationService.create_invitation(
+            self.db, self.admin, "orphan@example.com", [self.project_a.id],
+        )
+        self.assertEqual(client.user_id, orphaned_user.id)
+
     # -------------------------------------------------------- approve/reject
 
     def _invite(self):
@@ -172,6 +206,36 @@ class ClientInvitationCase(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             ClientInvitationService.approve_invitation(self.db, "not-a-real-token")
         self.assertEqual(ctx.exception.status_code, 401)
+
+    # ------------------------------------------------------------ deactivate
+
+    def test_deactivating_an_active_client_disables_the_account(self):
+        token = self._invite()
+        ClientInvitationService.approve_invitation(self.db, token)
+        client = self.db.query(Client).filter_by(email="client@example.com").one()
+
+        deactivated = ClientInvitationService.deactivate_client(self.db, self.admin, client.id)
+        self.assertEqual(deactivated.status, "deactivated")
+
+        user = self.db.get(User, client.user_id)
+        self.assertFalse(user.is_active)
+
+    def test_a_non_active_client_cannot_be_deactivated(self):
+        self._invite()
+        client = self.db.query(Client).filter_by(email="client@example.com").one()
+        with self.assertRaises(HTTPException) as ctx:
+            ClientInvitationService.deactivate_client(self.db, self.admin, client.id)
+        self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_a_deactivated_client_can_be_resent_an_invitation(self):
+        token = self._invite()
+        ClientInvitationService.approve_invitation(self.db, token)
+        client = self.db.query(Client).filter_by(email="client@example.com").one()
+        ClientInvitationService.deactivate_client(self.db, self.admin, client.id)
+
+        resent = ClientInvitationService.resend_invitation(self.db, self.admin, client.id)
+        self.assertEqual(resent.status, "deactivated")
+        self.assertEqual(self.mock_send.call_count, 2)
 
 
 class ClientPortalAccessCase(unittest.TestCase):
@@ -221,8 +285,14 @@ class ClientPortalAccessCase(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 404)
 
     def test_list_my_projects_returns_only_shared_projects(self):
-        items = ClientPortalService.list_my_projects(self.db, self.client_user)
-        self.assertEqual([item["id"] for item in items], [self.project_shared.id])
+        result = ClientPortalService.list_my_projects(self.db, self.client_user)
+        self.assertEqual([item["id"] for item in result["items"]], [self.project_shared.id])
+
+    def test_member_and_task_hours_are_scoped_to_shared_projects(self):
+        members = ClientPortalService.list_member_hours(self.db, self.client_user)
+        tasks = ClientPortalService.list_task_hours(self.db, self.client_user)
+        self.assertEqual(members["items"], [])
+        self.assertEqual(tasks["items"], [])
 
     def test_a_pending_client_has_no_portal_access(self):
         self.client_row.status = "pending"

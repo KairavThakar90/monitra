@@ -1,12 +1,17 @@
 import { baseApi } from './baseApi';
 import { ENDPOINTS } from '../../api/endpoints';
 
+export interface ClientProjectRef {
+  id: number;
+  project_name: string;
+}
+
 export interface ClientListItem {
   id: number;
   name: string;
   email: string;
-  status: 'pending' | 'active' | 'rejected';
-  projects: string[];
+  status: 'pending' | 'active' | 'rejected' | 'deactivated';
+  projects: ClientProjectRef[];
   created_at: string;
 }
 
@@ -51,6 +56,11 @@ export const clientsApi = baseApi.injectEndpoints({
       query: (id) => ({ url: ENDPOINTS.CLIENTS.RESEND_INVITATION(id), method: 'POST' }),
       invalidatesTags: (_result, _error, id) => [{ type: 'Client', id }, { type: 'Client', id: 'LIST' }],
     }),
+
+    deactivateClient: builder.mutation<{ id: number; status: string }, number>({
+      query: (id) => ({ url: ENDPOINTS.CLIENTS.DEACTIVATE(id), method: 'POST' }),
+      invalidatesTags: (_result, _error, id) => [{ type: 'Client', id }, { type: 'Client', id: 'LIST' }],
+    }),
   }),
 });
 
@@ -59,4 +69,5 @@ export const {
   useCreateClientInvitationMutation,
   useUpdateClientProjectsMutation,
   useResendClientInvitationMutation,
+  useDeactivateClientMutation,
 } = clientsApi;

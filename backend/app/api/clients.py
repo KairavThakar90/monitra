@@ -1,3 +1,6 @@
+from datetime import date
+from typing import Optional
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
@@ -75,6 +78,20 @@ def update_client_projects(
 
 
 @router.post(
+    "/clients/{client_id}/deactivate",
+    dependencies=[Depends(require_permission("clients:manage"))],
+    summary="Revoke an active client's access",
+)
+def deactivate_client(
+    client_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    client = ClientInvitationService.deactivate_client(db, current_user, client_id)
+    return {"id": client.id, "status": client.status}
+
+
+@router.post(
     "/clients/{client_id}/resend-invitation",
     dependencies=[Depends(require_permission("clients:manage"))],
     summary="Send a new invitation link to a client that has not yet approved",
@@ -126,13 +143,76 @@ def _require_client(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 
 
-@router.get("/clients/me/projects", summary="Projects shared with the signed-in client")
-def list_my_projects(current_user: User = Depends(_require_client), db: Session = Depends(get_db)):
-    return {"items": ClientPortalService.list_my_projects(db, current_user)}
+def _parse_date(value: Optional[str], *, field_label: str) -> Optional[date]:
+    """A `?start_date=`/`?end_date=` query parameter, or None for "today"
+    (the caller's default).
+
+    Rejected rather than silently ignored: a malformed date silently falling
+    back to today would look like the filter was applied when it was not.
+    """
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{field_label} must be in YYYY-MM-DD format.")
 
 
-@router.get("/clients/me/projects/{project_id}", summary="One shared project's detail")
-def get_my_project(
-    project_id: int, current_user: User = Depends(_require_client), db: Session = Depends(get_db),
+#: Shared query parameters every client-portal read takes -- the same range
+#: shape (each end defaulting to today) the staff/member `DateRangeFilter`
+#: sends, so the frontend is one component rather than a bespoke picker here.
+_START_DATE_Q = Query(None, description="YYYY-MM-DD; defaults to today")
+_END_DATE_Q = Query(None, description="YYYY-MM-DD; defaults to today")
+
+
+@router.get("/clients/me/projects", summary="Projects shared with the signed-in client, for a date range")
+def list_my_projects(
+    start_date: Optional[str] = _START_DATE_Q,
+    end_date: Optional[str] = _END_DATE_Q,
+    current_user: User = Depends(_require_client),
+    db: Session = Depends(get_db),
 ):
-    return ClientPortalService.get_project_detail(db, current_user, project_id)
+    return ClientPortalService.list_my_projects(
+        db, current_user,
+        _parse_date(start_date, field_label="start_date"), _parse_date(end_date, field_label="end_date"),
+    )
+
+
+@router.get("/clients/me/members", summary="Hours by member across shared projects, for a date range")
+def list_my_members(
+    start_date: Optional[str] = _START_DATE_Q,
+    end_date: Optional[str] = _END_DATE_Q,
+    current_user: User = Depends(_require_client),
+    db: Session = Depends(get_db),
+):
+    return ClientPortalService.list_member_hours(
+        db, current_user,
+        _parse_date(start_date, field_label="start_date"), _parse_date(end_date, field_label="end_date"),
+    )
+
+
+@router.get("/clients/me/tasks", summary="Hours by task across shared projects, for a date range")
+def list_my_tasks(
+    start_date: Optional[str] = _START_DATE_Q,
+    end_date: Optional[str] = _END_DATE_Q,
+    current_user: User = Depends(_require_client),
+    db: Session = Depends(get_db),
+):
+    return ClientPortalService.list_task_hours(
+        db, current_user,
+        _parse_date(start_date, field_label="start_date"), _parse_date(end_date, field_label="end_date"),
+    )
+
+
+@router.get("/clients/me/projects/{project_id}", summary="One shared project's detail, for a date range")
+def get_my_project(
+    project_id: int,
+    start_date: Optional[str] = _START_DATE_Q,
+    end_date: Optional[str] = _END_DATE_Q,
+    current_user: User = Depends(_require_client),
+    db: Session = Depends(get_db),
+):
+    return ClientPortalService.get_project_detail(
+        db, current_user, project_id,
+        _parse_date(start_date, field_label="start_date"), _parse_date(end_date, field_label="end_date"),
+    )

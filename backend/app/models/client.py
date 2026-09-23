@@ -10,9 +10,9 @@ class Client(Base):
 
     Distinct from `User`: this row is the client's profile and invitation
     lifecycle state, while `user_id` (set at invite time) is the account that
-    actually signs in. Kept separate so a client's status (pending/active/
-    rejected) is not overloaded onto `users.status`, which every other role
-    already uses for its own meaning.
+    actually signs in. Kept separate so a client's status
+    (pending/active/rejected/deactivated) is not overloaded onto
+    `users.status`, which every other role already uses for its own meaning.
     """
 
     __tablename__ = 'clients'

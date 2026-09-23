@@ -21,6 +21,9 @@ import { canManageClients, canManageSystem, canViewAllFeedback, isClientAccount 
 import { AdminClients } from './features/admin/AdminClients'
 import { ClientDashboard } from './features/client/ClientDashboard'
 import { ClientProjectDetail } from './features/client/ClientProjectDetail'
+import { ClientTiming } from './features/client/ClientTiming'
+import { ClientMembers } from './features/client/ClientMembers'
+import { ClientTasks } from './features/client/ClientTasks'
 import { MemberDashboard } from './features/member/MemberDashboard'
 import { MemberReports } from './features/member/MemberReports'
 import { MemberProjects } from './features/member/MemberProjects'
@@ -355,6 +358,30 @@ const AppRoutes: React.FC = () => {
         element={
           <ClientPortalRoute>
             <ClientProjectDetail />
+          </ClientPortalRoute>
+        }
+      />
+      <Route
+        path="/client/timing"
+        element={
+          <ClientPortalRoute>
+            <ClientTiming />
+          </ClientPortalRoute>
+        }
+      />
+      <Route
+        path="/client/members"
+        element={
+          <ClientPortalRoute>
+            <ClientMembers />
+          </ClientPortalRoute>
+        }
+      />
+      <Route
+        path="/client/tasks"
+        element={
+          <ClientPortalRoute>
+            <ClientTasks />
           </ClientPortalRoute>
         }
       />
