@@ -23,11 +23,13 @@ from app.models.client_project import ClientProject
 from app.models.manual_time_entry import ManualTimeEntry
 from app.models.project import Project
 from app.models.project_member import ProjectMember
+from app.models.refresh_token import RefreshToken
 from app.models.sso_handoff_token import SsoHandoffToken
 from app.models.task import Task
 from app.models.time_entry import TimeEntry
 from app.models.time_entry_adjustment import TimeEntryAdjustment
 from app.models.user import User
+from app.services.auth import AuthService
 from app.services.client_invitation_service import ClientInvitationService
 from app.services.client_portal_service import ClientPortalService
 
@@ -315,6 +317,94 @@ class ClientPortalAccessCase(unittest.TestCase):
             self.db, self.client_user, project_ids=[self.project_shared.id],
         )
         self.assertEqual([item["id"] for item in result["items"]], [self.project_shared.id])
+
+
+class ClientLoginLinkCase(unittest.TestCase):
+    """The client login screen's single email-only path: a real client gets a
+    link, anyone else gets a plain "you are not a client" refusal rather than
+    a generic non-committal response."""
+
+    def setUp(self):
+        self.engine = create_engine("sqlite://")
+        _sqlite_schema(self.engine, User, SsoHandoffToken, RefreshToken)
+        self.db = Session(self.engine)
+
+        self.active_client = User(
+            id=60, organization_id=ORG, username="client2", email="client2@example.com",
+            name="Client Two", role_name="client",
+            permissions={p: True for p in ROLE_PERMISSIONS["client"]},
+            is_active=True, status="active", capture_frequency=10,
+        )
+        self.pending_client = User(
+            id=61, organization_id=ORG, username="client3", email="client3@example.com",
+            name="Client Three", role_name="client",
+            permissions={p: True for p in ROLE_PERMISSIONS["client"]},
+            is_active=False, status="pending", capture_frequency=10,
+        )
+        self.staff_user = User(
+            id=62, organization_id=ORG, username="staffer2", email="staffer2@example.com",
+            name="Staffer Two", role_name="employee", permissions={},
+            is_active=True, status="active", capture_frequency=10,
+        )
+        self.db.add_all([self.active_client, self.pending_client, self.staff_user])
+        self.db.commit()
+
+        patcher = patch("app.services.email.workflows._send_immediately", return_value=True)
+        self.mock_send = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tearDown(self):
+        self.db.close()
+        self.engine.dispose()
+
+    def test_an_active_client_receives_a_link(self):
+        AuthService.request_client_login_link(self.db, "client2@example.com")
+        self.mock_send.assert_called_once()
+
+    def test_an_unknown_email_is_refused_explicitly(self):
+        with self.assertRaises(HTTPException) as ctx:
+            AuthService.request_client_login_link(self.db, "nobody@example.com")
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.mock_send.assert_not_called()
+
+    def test_a_pending_not_yet_approved_client_is_refused(self):
+        with self.assertRaises(HTTPException) as ctx:
+            AuthService.request_client_login_link(self.db, "client3@example.com")
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.mock_send.assert_not_called()
+
+    def test_a_staff_email_is_refused_not_treated_as_a_client(self):
+        """The email field doubles as a client's whole credential, so it must
+        never be accepted for an account that is not a client -- confirming
+        someone's staff email exists here would be an odd kind of leak, and
+        it would be wrong to email them a client sign-in link regardless."""
+        with self.assertRaises(HTTPException) as ctx:
+            AuthService.request_client_login_link(self.db, "staffer2@example.com")
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.mock_send.assert_not_called()
+
+    # ---------------------------------------------------- direct login
+
+    def test_an_active_client_is_signed_in_immediately(self):
+        pair = AuthService.client_direct_login(self.db, "client2@example.com")
+        self.assertEqual(pair.user.id, self.active_client.id)
+        self.assertTrue(pair.access_token)
+        self.assertTrue(pair.refresh_token)
+
+    def test_direct_login_refuses_a_pending_client(self):
+        with self.assertRaises(HTTPException) as ctx:
+            AuthService.client_direct_login(self.db, "client3@example.com")
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_direct_login_refuses_a_staff_email(self):
+        with self.assertRaises(HTTPException) as ctx:
+            AuthService.client_direct_login(self.db, "staffer2@example.com")
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_direct_login_refuses_an_unknown_email(self):
+        with self.assertRaises(HTTPException) as ctx:
+            AuthService.client_direct_login(self.db, "nobody@example.com")
+        self.assertEqual(ctx.exception.status_code, 404)
 
 
 if __name__ == "__main__":

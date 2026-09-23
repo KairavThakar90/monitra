@@ -1,7 +1,6 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "./authContext";
-import { requestClientLoginLinkAPI } from "../../api/auth";
 import {
   FieldError,
   PASSWORD_MAX_LENGTH,
@@ -55,9 +54,9 @@ const LockIcon = () => (
 );
 
 export const LoginScreen: React.FC = () => {
-  const { login, ssoError } = useAuth();
+  const { login, loginAsClient, ssoError } = useAuth();
   const navigate = useNavigate();
-  
+
   // Login states
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -67,13 +66,6 @@ export const LoginScreen: React.FC = () => {
   const [error, setError] = useState<string | null>(ssoError);
   const [isLoading, setIsLoading] = useState(false);
   const [rejectedInvite] = useState<boolean>(consumeRejectedInviteFlag);
-
-  // Client sign-in: a client has no password, so this is a separate mode that
-  // only ever emails a fresh single-use link -- it never calls `login()`.
-  const [isClientMode, setIsClientMode] = useState(false);
-  const [clientEmail, setClientEmail] = useState("");
-  const [clientLinkSent, setClientLinkSent] = useState(false);
-  const [clientLinkLoading, setClientLinkLoading] = useState(false);
 
   // Forgot password modal states
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -100,16 +92,43 @@ export const LoginScreen: React.FC = () => {
     newPassword: { rule: "password", label: "New password" },
   });
 
+  // A client, signing in with just their email: either the Password field is
+  // blank, or it holds the same address as Email. The second case is
+  // deliberate, not a coincidence to guard against -- a browser that
+  // autofills a saved credential routinely fills an identical value into
+  // both fields (exactly what happened when this was tested), and typing the
+  // email into Password is also the simplest thing for a client with no
+  // password to reach for. Either way, only the email needs to be a
+  // well-formed address -- the password rule never applies to this path, and
+  // there is no link to click: `loginAsClient` signs them in immediately.
+  const isClientAttempt =
+    !password.trim() || password.trim().toLowerCase() === email.trim().toLowerCase();
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError(null);
 
-    const check = loginForm.validateAll({ email, password });
-    if (!check.ok) {
-      setError(null);
+    if (isClientAttempt) {
+      const emailCheck = loginForm.validateField("email", email);
+      if (!emailCheck.ok) return;
+
+      setIsLoading(true);
+      try {
+        await loginAsClient(emailCheck.value as string);
+        navigate("/client/dashboard");
+      } catch (err: any) {
+        setError(err.message || "Sorry, you are not registered as a client. Please contact your admin.");
+      } finally {
+        setIsLoading(false);
+      }
       return;
     }
 
-    setError(null);
+    const check = loginForm.validateAll({ email, password });
+    if (!check.ok) {
+      return;
+    }
+
     setIsLoading(true);
 
     try {
@@ -121,20 +140,6 @@ export const LoginScreen: React.FC = () => {
       setError(err.message || "Failed to sign in. Please verify your credentials or server status.");
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const handleClientLinkRequest = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!clientEmail.trim()) return;
-    setClientLinkLoading(true);
-    try {
-      await requestClientLoginLinkAPI(clientEmail.trim());
-    } finally {
-      // Always the same outcome, whether or not the address has an account --
-      // see requestClientLoginLinkAPI.
-      setClientLinkLoading(false);
-      setClientLinkSent(true);
     }
   };
 
@@ -196,63 +201,6 @@ export const LoginScreen: React.FC = () => {
             </div>
           )}
 
-          {isClientMode ? (
-            <form className="space-y-6" onSubmit={handleClientLinkRequest}>
-              {clientLinkSent ? (
-                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-md text-sm text-emerald-700">
-                  If that address has a Monitra client account, a sign-in link is on
-                  its way. It can be used once and expires shortly.
-                </div>
-              ) : (
-                <>
-                  <div>
-                    <label htmlFor="client-email" className="block text-xs font-semibold text-[#94A3B8] tracking-wider uppercase mb-1">
-                      Email Address
-                    </label>
-                    <div className="relative">
-                      <span className="pointer-events-none absolute left-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md bg-[#EFF6FF] text-[#2563EB]">
-                        <UserIcon />
-                      </span>
-                      <input
-                        id="client-email"
-                        name="client-email"
-                        type="email"
-                        required
-                        disabled={clientLinkLoading}
-                        value={clientEmail}
-                        onChange={(e) => setClientEmail(e.target.value)}
-                        placeholder="you@example.com"
-                        className="w-full rounded-xl border-2 border-[#E2E8F0] py-3 pl-14 pr-3 text-sm text-[#0F172A] shadow-sm outline-none placeholder-[#94A3B8] transition focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/15"
-                      />
-                    </div>
-                    <p className="mt-2 text-xs text-[#94A3B8]">
-                      Client accounts have no password. We will email you a
-                      one-time sign-in link.
-                    </p>
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={clientLinkLoading}
-                    className="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-md shadow-sm text-sm font-semibold text-white bg-[#2563EB] hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#2563EB] disabled:opacity-50 disabled:cursor-not-allowed transition duration-150"
-                  >
-                    {clientLinkLoading ? "Sending..." : "Send sign-in link"}
-                  </button>
-                </>
-              )}
-              <p className="text-center text-sm text-[#64748B]">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsClientMode(false);
-                    setClientLinkSent(false);
-                  }}
-                  className="font-semibold text-[#2563EB] hover:text-blue-700"
-                >
-                  Back to staff sign in
-                </button>
-              </p>
-            </form>
-          ) : (
           <form className="space-y-6" onSubmit={handleSubmit}>
             {error && (
               <div className="p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-600">
@@ -272,6 +220,7 @@ export const LoginScreen: React.FC = () => {
                   id="email"
                   name="email"
                   type="email"
+                  autoComplete="username"
                   required
                   disabled={isLoading}
                   value={email}
@@ -306,23 +255,48 @@ export const LoginScreen: React.FC = () => {
                   id="password"
                   name="password"
                   type={showPassword ? "text" : "password"}
-                  required
+                  autoComplete="current-password"
                   disabled={isLoading}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
                   {...loginForm.fieldProps("password")}
-                  className="w-full rounded-xl border-2 border-[#E2E8F0] py-3 pl-14 pr-10 text-sm text-[#0F172A] shadow-sm outline-none placeholder-[#94A3B8] transition focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/15"
+                  className="w-full rounded-xl border-2 border-[#E2E8F0] py-3 pl-14 pr-16 text-sm text-[#0F172A] shadow-sm outline-none placeholder-[#94A3B8] transition focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/15"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-[#94A3B8] hover:text-[#64748B] focus:outline-none"
-                >
-                  {showPassword ? <EyeOffIcon /> : <EyeIcon />}
-                </button>
+                <div className="absolute inset-y-0 right-0 flex items-center gap-1 pr-3">
+                  {/* Browsers routinely autofill a saved credential into this
+                      field even when the person never typed anything — which
+                      silently defeats "leave this blank to sign in as a
+                      client". A one-click clear is the honest fix: it does not
+                      guess that autofill happened, it just makes emptying the
+                      field require no retyping. */}
+                  {password && (
+                    <button
+                      type="button"
+                      onClick={() => setPassword("")}
+                      title="Clear password (sign in as a client instead)"
+                      className="flex items-center text-[#94A3B8] hover:text-[#64748B] focus:outline-none"
+                    >
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="flex items-center text-[#94A3B8] hover:text-[#64748B] focus:outline-none"
+                  >
+                    {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+                  </button>
+                </div>
               </div>
               <FieldError id={loginForm.errorId("password")} message={loginForm.errors.password} />
+              <p className="mt-2 text-xs text-[#94A3B8]">
+                Signing in as a client? Leave this blank, or enter your email
+                address again here — your email is your whole credential, and
+                you'll be signed in right away.
+              </p>
             </div>
 
             <div>
@@ -345,20 +319,6 @@ export const LoginScreen: React.FC = () => {
               </button>
             </div>
           </form>
-          )}
-
-          {!isClientMode && (
-            <p className="mt-6 text-center text-sm text-[#64748B]">
-              Signing in as a client?{' '}
-              <button
-                type="button"
-                onClick={() => setIsClientMode(true)}
-                className="font-semibold text-[#2563EB] hover:text-blue-700"
-              >
-                Use your email to sign in
-              </button>
-            </p>
-          )}
 
           {/* The only public route out of here. Without this the download page
               is reachable only by someone who already knows the URL, which is
@@ -372,7 +332,7 @@ export const LoginScreen: React.FC = () => {
           </div>
         </div>
       </div>
-      
+
       {/* Right Slider/Hero Side */}
       <div className="hidden lg:flex flex-1 relative bg-[#F8FAFC] items-center justify-center p-12">
         <div className="absolute inset-0 bg-gradient-to-br from-blue-50/50 to-purple-50/50" />
@@ -405,14 +365,14 @@ export const LoginScreen: React.FC = () => {
                 </svg>
               </button>
             </div>
-            
+
             <form onSubmit={handleUpdatePassword} className="p-6 space-y-5">
               {modalSuccess && (
                 <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-md text-sm text-emerald-700">
                   Password updated successfully!
                 </div>
               )}
-              
+
               <div>
                 <label className="block text-xs font-semibold text-[#94A3B8] tracking-wider uppercase mb-1">
                   Current Password

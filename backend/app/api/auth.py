@@ -144,10 +144,12 @@ def get_me(current_user: User = Depends(get_current_user)):
     summary="Email an active client a fresh passwordless sign-in link",
     description=(
         "A client has no password: every sign-in after the initial invitation "
-        "approval goes through a single-use link emailed here. Always returns "
-        "204 regardless of whether the address matches an account, so this "
-        "endpoint cannot be used to discover which addresses have one."
+        "approval goes through a single-use link emailed here. Returns 404 "
+        "when the address is not an active client account, so the sign-in "
+        "screen can tell the visitor plainly rather than pretending to have "
+        "sent something."
     ),
+    responses={404: {"description": "No active client account matches this email"}},
 )
 def request_client_login_link(
     payload: ClientLoginLinkRequest,
@@ -156,6 +158,24 @@ def request_client_login_link(
 ):
     AuthService.request_client_login_link(db, payload.email, background_tasks=background_tasks)
     return Response(status_code=204)
+
+
+@router.post(
+    "/client/login",
+    response_model=TokenPair,
+    summary="Sign a client in immediately from their email address alone",
+    description=(
+        "A client has no password. This issues a real session directly from "
+        "the email address, with no link to click and no second factor -- "
+        "deliberately weaker than every other credential in this system, at "
+        "the product's explicit request. Scoped to `client`-role accounts "
+        "only, which hold nothing beyond read-only access to the specific "
+        "projects an admin chose to share."
+    ),
+    responses={404: {"description": "No active client account matches this email"}},
+)
+def client_direct_login(payload: ClientLoginLinkRequest, db: Session = Depends(get_db)):
+    return AuthService.client_direct_login(db, payload.email)
 
 
 @router.post(

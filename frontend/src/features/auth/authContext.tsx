@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import type { ReactNode } from "react";
-import { loginAPI, getMeAPI, logoutAPI, refreshSessionAPI, ssoLoginAPI } from "../../api/auth";
+import { clientDirectLoginAPI, loginAPI, getMeAPI, logoutAPI, refreshSessionAPI, ssoLoginAPI } from "../../api/auth";
 import { clearSessionStorage, ensureSessionExpiry, getSessionExpiresAt, storeSessionTokens } from "../../auth/session";
 import { store } from "../../store";
 import { baseApi } from "../../store/api/baseApi";
@@ -16,6 +16,7 @@ interface AuthContextType {
   /** Set when a `?token=...` handoff was present but could not be exchanged. */
   ssoError: string | null;
   login: (email: string, password: string) => Promise<void>;
+  loginAsClient: (email: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -199,6 +200,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     applySession(response);
   };
 
+  const loginAsClient = async (email: string) => {
+    const response = await clientDirectLoginAPI(email);
+    applySession(response);
+  };
+
   const logout = () => {
     const storedRefresh = localStorage.getItem("refreshToken");
     void logoutAPI(storedRefresh).catch(() => undefined);
@@ -226,6 +232,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         isLoading,
         ssoError,
         login,
+        loginAsClient,
         logout,
       }}
     >

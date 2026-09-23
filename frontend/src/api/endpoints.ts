@@ -34,6 +34,7 @@ export const ENDPOINTS = {
     // to an approved client account, or does nothing silently if the address
     // does not match one.
     CLIENT_LOGIN_LINK: `${API_BASE_URL}/auth/client/login-link`,
+    CLIENT_LOGIN: `${API_BASE_URL}/auth/client/login`,
   },
   CLIENTS: {
     BASE: `${API_BASE_URL}/clients`,

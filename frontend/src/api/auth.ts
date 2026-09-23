@@ -143,17 +143,63 @@ export async function refreshSessionAPI(refreshToken: string): Promise<TokenPair
 }
 
 /**
- * Ask the backend to email a fresh passwordless sign-in link to a client
- * account. Always resolves the same way whether or not the address matches
- * an account -- the endpoint returns 204 either way -- so this cannot be used
- * to discover which addresses have one.
+ * Sign a client in immediately from their email address alone -- no link to
+ * click, no second factor. Deliberately the weakest credential in this
+ * system, scoped to `client`-role accounts only; see `AuthService.client_direct_login`
+ * on the backend for the reasoning.
+ *
+ * Throws with the backend's own explanation when the address does not match
+ * an active client account ("you are not registered as a client...").
  */
-export async function requestClientLoginLinkAPI(email: string): Promise<void> {
-  await fetch(ENDPOINTS.AUTH.CLIENT_LOGIN_LINK, {
+export async function clientDirectLoginAPI(email: string): Promise<TokenPair> {
+  const response = await fetch(ENDPOINTS.AUTH.CLIENT_LOGIN, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email }),
   });
+
+  if (!response.ok) {
+    let message = "Sorry, you are not registered as a client. Please contact your admin.";
+    try {
+      const data = await response.json();
+      if (typeof data?.detail === "string") message = data.detail;
+    } catch {
+      // The default message already explains what to do.
+    }
+    throw new Error(message);
+  }
+
+  const data = (await response.json()) as TokenPair;
+  return { ...data, user: normalizeUserProfile(data.user) };
+}
+
+/**
+ * Ask the backend to email a fresh passwordless sign-in link to a client
+ * account. A client has no password, so this is the whole of a returning
+ * client's sign-in: enter the email, nothing else.
+ *
+ * Throws when the address does not match an active client account, with the
+ * backend's own explanation ("you are not registered as a client...") as the
+ * message -- a deliberate product choice to tell the visitor plainly rather
+ * than pretending a link was sent either way.
+ */
+export async function requestClientLoginLinkAPI(email: string): Promise<void> {
+  const response = await fetch(ENDPOINTS.AUTH.CLIENT_LOGIN_LINK, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+
+  if (!response.ok) {
+    let message = "Sorry, you are not registered as a client. Please contact your admin.";
+    try {
+      const data = await response.json();
+      if (typeof data?.detail === "string") message = data.detail;
+    } catch {
+      // The default message already explains what to do.
+    }
+    throw new Error(message);
+  }
 }
 
 export async function logoutAPI(refreshToken: string | null): Promise<void> {

@@ -16,7 +16,7 @@ from app.models.user import User
 from app.models.refresh_token import RefreshToken
 from app.models.sso_handoff_token import SsoHandoffToken
 from app.core.permissions import ROLE_PERMISSIONS, resolve_role_alias
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from app.services.external_auth_service import ExternalAuthService
 from app.services.email import deliver_in_background, queue_welcome_email
 
@@ -594,30 +594,72 @@ class AuthService:
         logger.info("AUTH_SSO_HANDOFF_SUCCESS: desktop handoff signed in user %s", user.id)
         return AuthService._issue_token_pair(db, user)
 
+    #: Shown whenever an email does not name an active client account -- for
+    #: the emailed-link path and the direct-login path alike, so the two
+    #: never describe the same failure differently.
+    NOT_A_CLIENT_DETAIL = "Sorry, you are not registered as a client. Please contact your admin for an invitation."
+
+    @staticmethod
+    def _active_client_by_email(db: Session, email: str) -> User:
+        """The active `client`-role user this address names, or a 404.
+
+        Shared by both ways a client account is reached without a password:
+        the emailed single-use link and the direct instant sign-in below.
+        Neither is available to a pending, rejected or deactivated client,
+        or to any non-client account -- this is the one place that gate is
+        enforced, so the two paths cannot drift apart on who they let in.
+        """
+        normalized = (email or "").strip().lower()
+        if not normalized:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Enter your email address.")
+        user = UserRepository.get_by_normalized_email(db, normalized)
+        if not user or user.role_name != "client" or not user.is_active or user.status != "active":
+            logger.info("CLIENT_LOGIN_REFUSED: no active client account for the given address")
+            raise HTTPException(status.HTTP_404_NOT_FOUND, AuthService.NOT_A_CLIENT_DETAIL)
+        return user
+
     @staticmethod
     def request_client_login_link(db: Session, email: str, background_tasks=None) -> None:
-        """Email an active client a fresh sign-in link, if that address has one.
+        """Email an active client a fresh sign-in link.
 
         Reuses `issue_handoff_token` -- a client has no password, so every
         sign-in after the initial invitation approval goes through the same
         single-use SSO handoff mechanism the desktop client uses, requested
         here instead of minted from an existing session.
 
-        Never reveals whether the address exists: the caller always sees the
-        same generic outcome, and only a matching, active client account
-        actually receives mail.
+        Raises a 404 when the address is not an active client account. This
+        is a deliberate product choice, not an oversight: the login screen
+        shows the visitor an explicit "you are not a registered client"
+        rather than a generic "check your email either way" message, at the
+        cost of letting a caller learn whether a given address has a client
+        account here (the same trade-off an ordinary "no account with that
+        email" login error makes everywhere else in this app).
         """
-        normalized = (email or "").strip().lower()
-        if not normalized:
-            return
-        user = UserRepository.get_by_normalized_email(db, normalized)
-        if not user or user.role_name != "client" or not user.is_active or user.status != "active":
-            logger.info("CLIENT_LOGIN_LINK_SKIPPED: no active client account for the given address")
-            return
-
+        user = AuthService._active_client_by_email(db, email)
         token, _expires_at = AuthService.issue_handoff_token(db, user)
         from app.services.email.workflows import queue_client_login_link_email
         queue_client_login_link_email(db, user, token, background_tasks=background_tasks)
+
+    @staticmethod
+    def client_direct_login(db: Session, email: str) -> TokenPair:
+        """Sign a client in immediately from their email address alone.
+
+        **Deliberately weaker than every other credential in this system**: a
+        client's email is its entire secret here, with no second factor and
+        no confirmation step, at the caller's explicit request (they wanted
+        the client login form's "email in both fields" submission to sign
+        in on the spot, not require clicking a link first). Anyone who knows
+        or guesses a client's email address can sign in as that client.
+
+        This is why it is scoped as narrowly as it is: only a `client`-role
+        account reaches this method (the same `_active_client_by_email` gate
+        the emailed-link path uses), and a client holds nothing beyond
+        `clients:view_shared` -- read-only access to the specific projects an
+        admin chose to share. It must never be reused for any other role.
+        """
+        user = AuthService._active_client_by_email(db, email)
+        logger.info("CLIENT_DIRECT_LOGIN: user %s signed in from email alone", user.id)
+        return AuthService._issue_token_pair(db, user)
 
     @staticmethod
     async def sso_exchange(
