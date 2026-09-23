@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { ClientShell } from './ClientShell';
 import { ClientKpiCard } from './ClientKpiCard';
 import { ClientMemberFilter, ClientProjectFilter } from './ClientFilters';
+import { ClientExportButton } from './ClientExportButton';
+import { ClientExportDialog } from './ClientExportDialog';
 import { Card, EmptyState, ErrorNote } from '../member/MemberUi';
 import { RankedBars } from '../dashboard/v2/charts';
 import { series } from '../dashboard/v2/theme';
@@ -18,6 +20,7 @@ export const ClientMembers: React.FC = () => {
   const [range, setRange] = useState(CLIENT_DEFAULT_RANGE);
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
+  const [exportOpen, setExportOpen] = useState(false);
   const dateArgs = { start_date: range.from, end_date: range.to };
   const projectIds = selectedProjectIds.map(Number);
 
@@ -37,6 +40,7 @@ export const ClientMembers: React.FC = () => {
     <ClientShell
       title="Members"
       subtitle={`Team members working on your shared projects, ${longDate(range.from)} – ${longDate(range.to)}`}
+      actions={<ClientExportButton onClick={() => setExportOpen(true)} />}
     >
       <div className="w-full space-y-6 pb-20">
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E2E8F0] bg-white p-2 pl-4 shadow-sm">
@@ -84,6 +88,17 @@ export const ClientMembers: React.FC = () => {
           </Card>
         </div>
       </div>
+
+      <ClientExportDialog
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        defaultReport="members"
+        range={range}
+        selectedProjectIds={selectedProjectIds}
+        selectedMemberIds={selectedMemberIds}
+        allProjects={allProjects}
+        allMembers={allMembers}
+      />
     </ClientShell>
   );
 };
