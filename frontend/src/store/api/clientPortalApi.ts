@@ -77,36 +77,49 @@ export interface MyProjectDetail {
   members: MyProjectMember[];
 }
 
-export interface DateRangeArg {
+/** The date range plus the Project/Member filters every list-shaped
+ * client-portal read accepts. `project_ids`/`member_ids` narrow the result;
+ * omitted (or empty) means "no filter" — every shared project / every
+ * member, the same as the staff `ProjectMultiSelect`/`MemberMultiSelect`. */
+export interface ClientQueryArg {
   start_date?: string;
   end_date?: string;
+  project_ids?: number[];
+  member_ids?: number[];
 }
 
-const withRange = (base: string, range?: DateRangeArg) => {
-  if (!range?.start_date || !range?.end_date) return base;
-  const params = new URLSearchParams({ start_date: range.start_date, end_date: range.end_date });
-  return `${base}?${params.toString()}`;
+const withQuery = (base: string, arg?: ClientQueryArg) => {
+  if (!arg) return base;
+  const params = new URLSearchParams();
+  if (arg.start_date && arg.end_date) {
+    params.set('start_date', arg.start_date);
+    params.set('end_date', arg.end_date);
+  }
+  for (const id of arg.project_ids ?? []) params.append('project_ids', String(id));
+  for (const id of arg.member_ids ?? []) params.append('member_ids', String(id));
+  const query = params.toString();
+  return query ? `${base}?${query}` : base;
 };
 
 export const clientPortalApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
-    getMyProjects: builder.query<MyProjectsResponse, DateRangeArg | void>({
-      query: (arg) => withRange(ENDPOINTS.CLIENTS.MY_PROJECTS, arg ?? undefined),
+    getMyProjects: builder.query<MyProjectsResponse, ClientQueryArg | void>({
+      query: (arg) => withQuery(ENDPOINTS.CLIENTS.MY_PROJECTS, arg ?? undefined),
       providesTags: [{ type: 'ClientProject', id: 'LIST' }],
     }),
 
-    getMyMemberHours: builder.query<MyMemberHoursResponse, DateRangeArg | void>({
-      query: (arg) => withRange(ENDPOINTS.CLIENTS.MY_MEMBERS, arg ?? undefined),
+    getMyMemberHours: builder.query<MyMemberHoursResponse, ClientQueryArg | void>({
+      query: (arg) => withQuery(ENDPOINTS.CLIENTS.MY_MEMBERS, arg ?? undefined),
       providesTags: [{ type: 'ClientProject', id: 'MEMBERS' }],
     }),
 
-    getMyTaskHours: builder.query<MyTaskHoursResponse, DateRangeArg | void>({
-      query: (arg) => withRange(ENDPOINTS.CLIENTS.MY_TASKS, arg ?? undefined),
+    getMyTaskHours: builder.query<MyTaskHoursResponse, ClientQueryArg | void>({
+      query: (arg) => withQuery(ENDPOINTS.CLIENTS.MY_TASKS, arg ?? undefined),
       providesTags: [{ type: 'ClientProject', id: 'TASKS' }],
     }),
 
-    getMyProjectDetail: builder.query<MyProjectDetail, { projectId: number } & DateRangeArg>({
-      query: ({ projectId, ...range }) => withRange(ENDPOINTS.CLIENTS.MY_PROJECT_BY_ID(projectId), range),
+    getMyProjectDetail: builder.query<MyProjectDetail, { projectId: number } & ClientQueryArg>({
+      query: ({ projectId, ...rest }) => withQuery(ENDPOINTS.CLIENTS.MY_PROJECT_BY_ID(projectId), rest),
       providesTags: (_result, _error, { projectId }) => [{ type: 'ClientProject', id: projectId }],
     }),
   }),

@@ -301,6 +301,21 @@ class ClientPortalAccessCase(unittest.TestCase):
             ClientPortalService.get_project_detail(self.db, self.client_user, self.project_shared.id)
         self.assertEqual(ctx.exception.status_code, 403)
 
+    def test_a_project_filter_cannot_smuggle_in_an_unshared_project(self):
+        """The project filter narrows the client's own shared set; it must
+        never widen it. Asking for the hidden project (in the same org, but
+        never shared with this client) returns nothing, not that project."""
+        result = ClientPortalService.list_my_projects(
+            self.db, self.client_user, project_ids=[self.project_hidden.id],
+        )
+        self.assertEqual(result["items"], [])
+
+    def test_a_project_filter_matching_a_shared_project_narrows_to_it(self):
+        result = ClientPortalService.list_my_projects(
+            self.db, self.client_user, project_ids=[self.project_shared.id],
+        )
+        self.assertEqual([item["id"] for item in result["items"]], [self.project_shared.id])
+
 
 if __name__ == "__main__":
     unittest.main()

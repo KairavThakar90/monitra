@@ -64,12 +64,32 @@ class ClientPortalService:
         return ClientProjectRepository.list_project_ids_for_client(db, client.id)
 
     @staticmethod
+    def _scope_project_ids(requested: Optional[list[int]], allowed: list[int]) -> list[int]:
+        """`requested`, narrowed to what this client may actually see.
+
+        `None` (no filter picked) means every shared project. A `requested`
+        list is intersected with `allowed`, never unioned with it -- a
+        project id that is not this client's cannot be smuggled in through
+        the filter, and a request that matches nothing returns nothing
+        rather than silently falling back to "everything"."""
+        if requested is None:
+            return allowed
+        return sorted(set(requested) & set(allowed))
+
+    @staticmethod
     def list_my_projects(
-        db: Session, user: User, start_date: Optional[date] = None, end_date: Optional[date] = None,
+        db: Session,
+        user: User,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        project_ids: Optional[list[int]] = None,
     ) -> dict:
         client = ClientPortalService._client_for(db, user)
         start, end = _resolve_range(start_date, end_date)
-        projects = ClientProjectRepository.list_projects_for_client(db, client.id)
+        all_projects = ClientProjectRepository.list_projects_for_client(db, client.id)
+        allowed_ids = {project.id for project in all_projects}
+        scoped_ids = set(ClientPortalService._scope_project_ids(project_ids, sorted(allowed_ids)))
+        projects = [project for project in all_projects if project.id in scoped_ids]
         if not projects:
             return {"start_date": start.isoformat(), "end_date": end.isoformat(), "items": []}
 
@@ -101,24 +121,32 @@ class ClientPortalService:
 
     @staticmethod
     def list_member_hours(
-        db: Session, user: User, start_date: Optional[date] = None, end_date: Optional[date] = None,
+        db: Session,
+        user: User,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        project_ids: Optional[list[int]] = None,
+        member_ids: Optional[list[int]] = None,
     ) -> dict:
         """Every member's tracked time across every project shared with this
-        client. Nobody outside those projects' rosters appears here -- a
-        client never sees the organization's member directory, only the
+        client (or a subset of them, and/or a subset of members, when the
+        caller filters). Nobody outside those projects' rosters appears here
+        -- a client never sees the organization's member directory, only the
         people staffed on the work it was shown."""
         client = ClientPortalService._client_for(db, user)
         start, end = _resolve_range(start_date, end_date)
-        project_ids = ClientPortalService._shared_project_ids(db, client)
-        if not project_ids:
+        scoped_project_ids = ClientPortalService._scope_project_ids(
+            project_ids, ClientPortalService._shared_project_ids(db, client),
+        )
+        if not scoped_project_ids:
             return {"start_date": start.isoformat(), "end_date": end.isoformat(), "items": []}
 
         start_time, end_time = _utc_start(start), _utc_end(end)
         seconds_by_member = ReportsRepository.session_seconds_by(
-            db, client.organization_id, project_ids, None, start_time, end_time, start, end, "user_id",
+            db, client.organization_id, scoped_project_ids, member_ids, start_time, end_time, start, end, "user_id",
         )
         triples = ReportsRepository.session_triples(
-            db, client.organization_id, project_ids, None, start_time, end_time, start, end,
+            db, client.organization_id, scoped_project_ids, member_ids, start_time, end_time, start, end,
         )
         projects_by_member: dict[int, set[int]] = defaultdict(set)
         for pid, uid, _tid in triples:
@@ -143,19 +171,27 @@ class ClientPortalService:
 
     @staticmethod
     def list_task_hours(
-        db: Session, user: User, start_date: Optional[date] = None, end_date: Optional[date] = None,
+        db: Session,
+        user: User,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        project_ids: Optional[list[int]] = None,
+        member_ids: Optional[list[int]] = None,
     ) -> dict:
         """Every task's tracked time across every project shared with this
-        client."""
+        client (or a subset of them, and/or a subset of members, when the
+        caller filters)."""
         client = ClientPortalService._client_for(db, user)
         start, end = _resolve_range(start_date, end_date)
-        project_ids = ClientPortalService._shared_project_ids(db, client)
-        if not project_ids:
+        scoped_project_ids = ClientPortalService._scope_project_ids(
+            project_ids, ClientPortalService._shared_project_ids(db, client),
+        )
+        if not scoped_project_ids:
             return {"start_date": start.isoformat(), "end_date": end.isoformat(), "items": []}
 
         start_time, end_time = _utc_start(start), _utc_end(end)
         seconds_by_task = ReportsRepository.session_seconds_by(
-            db, client.organization_id, project_ids, None, start_time, end_time, start, end, "task_id",
+            db, client.organization_id, scoped_project_ids, member_ids, start_time, end_time, start, end, "task_id",
         )
         task_ids = [tid for tid, secs in seconds_by_task.items() if secs > 0]
         tasks = ReportsRepository.tasks_lookup(db, client.organization_id, task_ids)

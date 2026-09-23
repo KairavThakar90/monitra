@@ -165,16 +165,27 @@ _START_DATE_Q = Query(None, description="YYYY-MM-DD; defaults to today")
 _END_DATE_Q = Query(None, description="YYYY-MM-DD; defaults to today")
 
 
+#: The Project and Member filters every list-shaped client-portal read
+#: accepts, mirroring the staff `ProjectMultiSelect`/`MemberMultiSelect`
+#: filters. `None` (omitted entirely) means "no filter"; the service layer
+#: intersects whatever is supplied with what this client may actually see,
+#: so a filter can only narrow the result, never widen it.
+_PROJECT_IDS_Q = Query(None, description="Repeat to filter to specific shared projects")
+_MEMBER_IDS_Q = Query(None, description="Repeat to filter to specific members")
+
+
 @router.get("/clients/me/projects", summary="Projects shared with the signed-in client, for a date range")
 def list_my_projects(
     start_date: Optional[str] = _START_DATE_Q,
     end_date: Optional[str] = _END_DATE_Q,
+    project_ids: Optional[list[int]] = _PROJECT_IDS_Q,
     current_user: User = Depends(_require_client),
     db: Session = Depends(get_db),
 ):
     return ClientPortalService.list_my_projects(
         db, current_user,
         _parse_date(start_date, field_label="start_date"), _parse_date(end_date, field_label="end_date"),
+        project_ids,
     )
 
 
@@ -182,12 +193,15 @@ def list_my_projects(
 def list_my_members(
     start_date: Optional[str] = _START_DATE_Q,
     end_date: Optional[str] = _END_DATE_Q,
+    project_ids: Optional[list[int]] = _PROJECT_IDS_Q,
+    member_ids: Optional[list[int]] = _MEMBER_IDS_Q,
     current_user: User = Depends(_require_client),
     db: Session = Depends(get_db),
 ):
     return ClientPortalService.list_member_hours(
         db, current_user,
         _parse_date(start_date, field_label="start_date"), _parse_date(end_date, field_label="end_date"),
+        project_ids, member_ids,
     )
 
 
@@ -195,12 +209,15 @@ def list_my_members(
 def list_my_tasks(
     start_date: Optional[str] = _START_DATE_Q,
     end_date: Optional[str] = _END_DATE_Q,
+    project_ids: Optional[list[int]] = _PROJECT_IDS_Q,
+    member_ids: Optional[list[int]] = _MEMBER_IDS_Q,
     current_user: User = Depends(_require_client),
     db: Session = Depends(get_db),
 ):
     return ClientPortalService.list_task_hours(
         db, current_user,
         _parse_date(start_date, field_label="start_date"), _parse_date(end_date, field_label="end_date"),
+        project_ids, member_ids,
     )
 
 

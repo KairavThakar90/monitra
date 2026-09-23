@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ClientShell } from './ClientShell';
 import { ClientKpiCard } from './ClientKpiCard';
+import { ClientProjectFilter } from './ClientFilters';
 import { Card, EmptyState, ErrorNote } from '../member/MemberUi';
 import { RankedBars } from '../dashboard/v2/charts';
 import { series } from '../dashboard/v2/theme';
@@ -13,17 +14,28 @@ import { CLIENT_DEFAULT_RANGE, longDate } from './clientRange';
  * equivalent of the member's Time Tracking / Project-Wise report. */
 export const ClientTiming: React.FC = () => {
   const [range, setRange] = useState(CLIENT_DEFAULT_RANGE);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const { data, isFetching, isError } = useGetMyProjectsQuery({ start_date: range.from, end_date: range.to });
-  const projects = data?.items ?? [];
+
+  const allProjects = data?.items ?? [];
+  const projects = selectedProjectIds.length === 0
+    ? allProjects
+    : allProjects.filter((p) => selectedProjectIds.includes(String(p.id)));
   const totalSeconds = projects.reduce((sum, p) => sum + p.total_tracked_seconds, 0);
 
   return (
     <ClientShell title="Timing" subtitle={`Tracked time by project, ${longDate(range.from)} – ${longDate(range.to)}`}>
       <div className="w-full space-y-6 pb-20">
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E2E8F0] bg-white p-2 pl-4 shadow-sm">
-          <DateRangeFilter value={range} onChange={setRange} />
+          <div className="flex flex-wrap items-center gap-2">
+            <DateRangeFilter value={range} onChange={setRange} />
+            <ClientProjectFilter projects={allProjects} selected={selectedProjectIds} onChange={setSelectedProjectIds} />
+          </div>
           <button
-            onClick={() => setRange(CLIENT_DEFAULT_RANGE)}
+            onClick={() => {
+              setRange(CLIENT_DEFAULT_RANGE);
+              setSelectedProjectIds([]);
+            }}
             className="rounded-lg border border-[#E2E8F0] px-4 py-2 text-[13px] font-bold text-[#64748B] transition hover:bg-[#F8FAFC] hover:text-[#0F172A]"
           >
             Reset
@@ -33,11 +45,11 @@ export const ClientTiming: React.FC = () => {
         {isError && <ErrorNote message="Timing could not be loaded. Please try again." />}
 
         <div className={`space-y-6 transition-opacity ${isFetching ? 'opacity-60' : ''}`}>
-          <ClientKpiCard title="Total Tracked, All Shared Projects" value={formatHMS(totalSeconds)} />
+          <ClientKpiCard title="Total Tracked" value={formatHMS(totalSeconds)} />
 
           <Card title="Time by Project">
             {projects.length === 0 ? (
-              <EmptyState message="No tracked time for this range." hint="Try a different date range." />
+              <EmptyState message="No tracked time for this range." hint="Try a different date range or filter." />
             ) : (
               <RankedBars
                 items={projects
