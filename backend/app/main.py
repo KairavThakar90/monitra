@@ -10,6 +10,7 @@ from app.api.employees import router as employees_router
 from app.api.time_entry_screenshot import router as time_entry_screenshot_router
 from app.api.members import router as members_router
 from app.api.project_management import router as project_management_router
+from app.api.wfpm import router as wfpm_router
 from app.api.time_entry_app_usage import router as time_entry_app_usage_router
 from app.api.time_entry_activity import router as time_entry_activity_router
 from app.api.url_usage import router as url_usage_router
@@ -151,6 +152,7 @@ app.include_router(activity_rollup_router, prefix=api_prefix)
 from app.api.screenshot_privacy import router as screenshot_privacy_router
 
 app.include_router(project_management_router)
+app.include_router(wfpm_router)
 app.include_router(teams_router)
 app.include_router(time_tracking_router)
 app.include_router(reports_router)

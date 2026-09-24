@@ -299,10 +299,9 @@ export const AdminTimeTracking: React.FC = () => {
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | null>(null);
   /**
    * The Time Entries table's own member filter, distinct from
-   * `selectedEmployeeId` above -- that one opens the details dialog for one
-   * employee (and separately narrows the Manual Requests tab, which the
-   * backend only accepts a single `user_id` for). Empty means everyone, the
-   * same convention every other filter in the app uses.
+   * `selectedEmployeeId` above -- that one only opens the details dialog for
+   * one employee and affects nothing else. Empty means everyone, the same
+   * convention every other filter in the app uses.
    */
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   const { data: allMembers = [] } = useGetAllMembersQuery();
@@ -359,11 +358,17 @@ export const AdminTimeTracking: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<'entries' | 'requests'>('entries');
   const [requestsPage, setRequestsPage] = useState(1);
+  // Deliberately independent of `search` and `selectedEmployeeId`: those
+  // belong to the Time Entries table and its per-employee details dialog.
+  // This tab had no filter control of its own and was reusing that leftover
+  // state instead -- so opening any employee's details, or typing into the
+  // employee-name search box, silently narrowed the approval queue to one
+  // person (or hid every request whose description didn't match a name
+  // search) with no visible indication why. An admin reviewing requests must
+  // always see every pending request in the organization by default.
   const { data: requestsData, isLoading: isLoadingRequests } = useGetManualTimeEntryRequestsQuery({
     page: requestsPage,
     limit: PAGE_SIZE,
-    search: search || undefined,
-    user_id: selectedEmployeeId || undefined,
   });
   
   const [createManualTimeEntry, { isLoading: isSaving }] = useCreateManualTimeEntryRequestMutation();

@@ -154,6 +154,27 @@ class ProjectManagementService:
         return project_status, leader, employees
 
     @staticmethod
+    def default_project_status(db: Session):
+        """The org's "Active" project status row -- for a caller that creates
+        a project without naming one (see app/api/wfpm.py). Matched on the
+        normalised name, like the Todo lookup below, so a deployment seeded
+        with different ids still finds its own Active row."""
+        item = next((row for row in StatusCatalog.project_statuses(db).values() if ProjectManagementService._status_key(row.name) == "active"), None)
+        if not item:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Active project status is not configured.")
+        return item
+
+    @staticmethod
+    def default_task_status(db: Session):
+        """The org's "Todo" task status row -- for a caller that creates a
+        task without naming one (see app/api/wfpm.py and `create`, which
+        seeds a new project's default tasks against the same row)."""
+        item = next((row for row in StatusCatalog.task_statuses(db).values() if ProjectManagementService._status_key(row.name) == "todo"), None)
+        if not item:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Todo task status is not configured.")
+        return item
+
+    @staticmethod
     def _person(item: Optional[User]):
         if not item:
             return None
@@ -282,13 +303,7 @@ class ProjectManagementService:
                     continue
                 db.add(ProjectMember(project_id=project.id, organization_id=user.organization_id, user_id=employee.id, created_by=user.id))
                 existing_member_ids.add(employee.id)
-            # Matched on the normalised name, not on `name == "Todo"` and not on
-            # a hardcoded id: a deployment seeded with "To Do" or with different
-            # ids still finds its own Todo row instead of failing project
-            # creation outright.
-            todo_status = next((item for item in StatusCatalog.task_statuses(db).values() if ProjectManagementService._status_key(item.name) == "todo"), None)
-            if not todo_status:
-                raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Todo task status is not configured.")
+            todo_status = ProjectManagementService.default_task_status(db)
             todo_legacy = ProjectManagementService._legacy_status(todo_status, TASK_STATUS_NAMES, "task")
             for task_name in DEFAULT_PROJECT_TASKS:
                 db.add(Task(organization_id=user.organization_id, project_id=project.id, task_name=task_name, status=todo_legacy, status_id=todo_status.id, created_by=user.id))

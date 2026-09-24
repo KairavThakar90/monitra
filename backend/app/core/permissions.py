@@ -26,6 +26,12 @@ ROLE_PERMISSIONS = {
         "time_entries:manage_own",
         "tasks:create",
         "tasks:update",
+        # Deliberately narrower than `projects:create`: an employee may create
+        # a project only through the WFPM Tools integration (see app/api/wfpm.py),
+        # never through /api/v1/projects, which `projects:create` also gates.
+        # A single shared permission would hand employees the Monitra frontend's
+        # own project-create/update/delete screen along with it.
+        "wfpm:projects:create",
         # TODO: Confirm with senior if employee role should also get granular permissions
         # for creating/updating tasks they are assigned to, once task assignee checking is unified.
     },
@@ -45,6 +51,7 @@ ROLE_PERMISSIONS = {
         "manual_time_entries:approve",
         "manual_time_entries:create_for_others",
         "view_employees",
+        "wfpm:projects:create",
     },
     "org_admin": {
         "projects:create",
@@ -66,6 +73,7 @@ ROLE_PERMISSIONS = {
         "screenshots:delete",
         "manage_desktop_releases",
         "clients:manage",
+        "wfpm:projects:create",
     },
     "administrator": {  # Full organization administration permissions
         "projects:create",
@@ -87,6 +95,7 @@ ROLE_PERMISSIONS = {
         "screenshots:delete",
         "manage_desktop_releases",
         "clients:manage",
+        "wfpm:projects:create",
     },
     # Human resources. `hr` is one of the four roles this system offers --
     # MemberRole in app/schemas/member.py accepts it, and the
@@ -119,6 +128,7 @@ ROLE_PERMISSIONS = {
         "manual_time_entries:approve",
         "manual_time_entries:create_for_others",
         "view_employees",
+        "wfpm:projects:create",
     },
     # A team / project leader. `leader` is a role the rest of the application
     # already recognises -- TeamsService.leaders(), TeamsService.summary() and
@@ -146,6 +156,7 @@ ROLE_PERMISSIONS = {
         "time_entries:view_all",
         "manual_time_entries:approve",
         "view_employees",
+        "wfpm:projects:create",
     },
     "super_admin": {
         "projects:create",
@@ -167,6 +178,7 @@ ROLE_PERMISSIONS = {
         "screenshots:delete",
         "manage_desktop_releases",
         "clients:manage",
+        "wfpm:projects:create",
         # TODO: Define super-admin specific system-wide settings permissions once verified.
     },
     # An external party an admin has invited to view a read-only slice of the
