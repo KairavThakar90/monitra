@@ -184,26 +184,6 @@ class MaintenanceService(LoopService):
         self.log.info("maintenance notice %s", "on" if active else "off")
         self.maintenance_changed.emit(active)
 
-        notifications = getattr(self.runtime, "notifications", None)
-        if notifications is None:
-            return
-        # One tray message per edge, so someone whose window is hidden to the
-        # tray still hears about it. `notify` is safe from any thread.
-        if active:
-            notifications.notify(
-                f"{MAINTENANCE_BODY} Status: {MAINTENANCE_STATUS_LABEL}.",
-                NotificationLevel.INFO,
-                title=MAINTENANCE_TITLE,
-                key=NOTIFY_KEY_ON,
-            )
-        else:
-            notifications.notify(
-                MAINTENANCE_CLEARED_MESSAGE,
-                NotificationLevel.INFO,
-                title="Monitra",
-                key=NOTIFY_KEY_OFF,
-            )
-
     @staticmethod
     def _jittered(interval_ms: int) -> int:
         """Spread a fleet's checks out so they do not arrive in lockstep."""
