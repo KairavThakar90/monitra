@@ -73,7 +73,7 @@ REANCHOR_TOLERANCE_SECONDS = 5
 #: replayable. Applied only at the moment the app is reopened: there is no
 #: background or real-time enforcement while the app stays closed, since
 #: nothing runs to enforce it.
-RECOVERY_CAP_SECONDS = 60 * 60
+RECOVERY_CAP_SECONDS = 15 * 60
 
 
 class TimerStatus:
