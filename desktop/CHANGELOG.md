@@ -20,6 +20,45 @@ re-grant a permission.
 
 ## [Unreleased]
 
+## [1.2.3]
+
+The installer and the macOS bundles are still unsigned: Windows SmartScreen
+will warn on first run ("More info" → "Run anyway"), and macOS will refuse
+the app until you allow it under System Settings → Privacy & Security.
+
+### Added
+
+- **Screenshot privacy controls.** An admin can now exclude specific
+  applications, websites, or individual users from screenshot capture.
+  Your desktop picks up the current rules at sign-in and keeps them
+  refreshed while you work, so a change an admin makes reaches you without
+  a restart.
+- **A redesigned sign-out confirmation dialog**, matching Monitra's current
+  look, with a clear Yes/No choice before your dashboard state is reset.
+
+### Fixed
+
+- **The dashboard no longer shows "Not tracking" for the first moment of a
+  new session.** A just-started session is now detected by its running
+  state rather than by elapsed time, so today's project time updates the
+  instant tracking begins.
+- **Screenshot exclusions now match Windows applications correctly.**
+  Process names are normalized before matching, so an app excluded by an
+  admin is actually skipped.
+- **Screenshot capture no longer starts before your privacy settings have
+  loaded.** The client waits for the initial privacy configuration to
+  resolve (and still captures normally if that request fails), instead of
+  capturing before it knows what to exclude.
+- Idle and screenshot configuration changes made by an admin now reach a
+  running desktop within minutes instead of up to fifteen.
+- The maintenance notice ("Monitra is under maintenance") no longer shows
+  itself more than once for the same event.
+- Session recovery after an unexpected exit is capped at 15 minutes,
+  narrowing the window in which recovered time could overstate what was
+  actually tracked.
+- Minor layout fixes: toast notification positioning, stat card column
+  widths, and project loading performance.
+
 ## [1.2.2]
 
 The installer and the macOS bundles are still unsigned: Windows SmartScreen
