@@ -62,8 +62,13 @@ class ToastPopup(QWidget):
     dismissed = Signal()
 
     #: Card width, and the gap kept from the screen's working-area edges.
-    WIDTH = 360
-    SCREEN_MARGIN = 18
+    # Increased WIDTH to accommodate larger shadow margins without shrinking the card.
+    WIDTH = 392
+    
+    # Target distance from the card's right/bottom edge to the screen edge
+    # (Previously 18px SCREEN_MARGIN + 16px layout margin = 34px)
+    CARD_SCREEN_MARGIN = 34
+    
     #: The brand badge tile drawn beside the title -- the same tile size
     #: `MaintenanceToast` uses, so the two floating cards this application
     #: ever shows read as one notification system rather than two.
@@ -94,8 +99,9 @@ class ToastPopup(QWidget):
         # paints outside the widget it is attached to, and this window is
         # sized to its content, so without room here the shadow would be
         # clipped at the window's own edge instead of softening into it.
+        # Margins are sized to fully contain a 32px blur radius and 10px Y offset.
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 16, 16, 16)
+        outer.setContentsMargins(32, 24, 32, 42)
 
         self._card = QFrame(self)
         self._card.setObjectName("toastCard")
@@ -277,10 +283,16 @@ class ToastPopup(QWidget):
 
         area = screen.availableGeometry()
         size = self.size()
-        # Exclusive edges (x + width), not QRect.right()/bottom(), which are
-        # inclusive and would leave the card one pixel short of the margin.
-        x = area.x() + area.width() - size.width() - self.SCREEN_MARGIN
-        y = area.y() + area.height() - size.height() - self.SCREEN_MARGIN
+        
+        # The window's margins pad the card for the drop shadow. We want the
+        # card itself, not the window's invisible edge, to sit CARD_SCREEN_MARGIN
+        # away from the corner of the screen.
+        margins = self.layout().contentsMargins()
+        offset_x = self.CARD_SCREEN_MARGIN - margins.right()
+        offset_y = self.CARD_SCREEN_MARGIN - margins.bottom()
+
+        x = area.x() + area.width() - size.width() - offset_x
+        y = area.y() + area.height() - size.height() - offset_y
         self.move(max(area.x(), x), max(area.y(), y))
         return True
 

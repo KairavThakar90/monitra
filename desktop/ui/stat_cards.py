@@ -335,6 +335,11 @@ class StatCardsRow(QWidget):
             self._grid.removeWidget(card)
         for index, card in enumerate(self._cards):
             self._grid.addWidget(card, index // columns, index % columns)
+        # Clear old stretch factors for all possible columns before applying new ones,
+        # otherwise shrinking from 4 columns to 2 leaves columns 2 and 3 holding space.
+        for column in range(len(self._cards)):
+            self._grid.setColumnStretch(column, 0)
+
         # Columns share the leftover width in proportion to what they need,
         # not equally: the ACTIVE TASK card carries a button beside its
         # text, and an equal share left its task name with less room than
