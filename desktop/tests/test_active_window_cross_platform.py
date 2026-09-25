@@ -90,7 +90,12 @@ def test_windows_dispatch_strips_the_exe_suffix_from_the_process_name():
     fake_windll.kernel32.OpenProcess.return_value = 99
     fake_windll.kernel32.QueryFullProcessImageNameW.side_effect = fake_query_full_process_image_name
 
-    with patch.object(ctypes, "windll", fake_windll):
+    # create=True: `ctypes.windll` does not exist as a real attribute off
+    # Windows (it's conditionally defined in the stdlib), so this module
+    # also runs on the macOS release runners that build the .dmg -- without
+    # create=True, patch.object refuses to patch an attribute that isn't
+    # already there and raises AttributeError before the test body runs.
+    with patch.object(ctypes, "windll", fake_windll, create=True):
         app_name, returned_title, returned_exe_path, pid, hwnd = active_window._windows_active_window_details()
 
     assert app_name == "chrome"
