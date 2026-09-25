@@ -230,6 +230,29 @@ class StatCard(QFrame):
 
     # ── Public API ────────────────────────────────────────────────────────────
 
+    def set_theme(self, tile: str) -> None:
+        if self._tile_key == tile:
+            return
+        self._tile_key = tile
+        start, end, self._accent = STAT_TILE_GRADIENTS[tile]
+        self._tile.setStyleSheet(f"""
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                        stop:0 {start}, stop:1 {end});
+            border-radius: 14px;
+            border: none;
+        """)
+        self._progress.setStyleSheet(f"""
+            QProgressBar {{
+                background: #EEF1F7;
+                border: none;
+                border-radius: 3px;
+            }}
+            QProgressBar::chunk {{
+                background: {self._accent};
+                border-radius: 3px;
+            }}
+        """)
+
     def set_value(self, text: str, *, mono: bool = False) -> None:
         self._value.setFont(
             QFont("Consolas" if mono else "Segoe UI", 17 if mono else 18, QFont.Weight.Black)
@@ -442,10 +465,20 @@ class StatCardsRow(QWidget):
             self.activity_card.set_value("—")
             self.activity_card.set_sub("Not tracking yet")
             self.activity_card.set_progress(None)
+            self.activity_card.set_theme("amber")
             return
-        self.activity_card.set_value(f"{max(0, min(100, percent))}%")
+        
+        percent = max(0, min(100, percent))
+        self.activity_card.set_value(f"{percent}%")
         self.activity_card.set_sub(
             "Tracking now" if is_tracking else "Based on today's activity",
             SUCCESS if is_tracking else None,
         )
         self.activity_card.set_progress(percent)
+        
+        if percent >= 80:
+            self.activity_card.set_theme("green")
+        elif percent >= 40:
+            self.activity_card.set_theme("amber")
+        else:
+            self.activity_card.set_theme("red")

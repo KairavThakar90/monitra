@@ -30,21 +30,14 @@ PRIMARY           = "#4F6BFF"
 PRIMARY_HOVER     = "#3B57E8"
 PRIMARY_LIGHT     = "#EEF2FF"
 
-# Shared button gradient (brand blue -> brand violet, left to right), the
-# logo's own gradient translated to Qt's QSS gradient syntax. Used on every
+# Shared button solid color (brand blue). Used on every
 # primary action button: Start/Stop, Add Task, Save/Save Entry.
-# BUTTON_GRADIENT_HOVER is the same pair of stops darkened ~15% -- QSS
-# buttons have no working `opacity` property, so darkening the stops is how
-# hover feedback is done here.
-BUTTON_GRADIENT       = "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2F7CF6, stop:1 #7C3AED)"
-BUTTON_GRADIENT_HOVER = "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1F63D6, stop:1 #6926D9)"
+BUTTON_GRADIENT       = PRIMARY
+BUTTON_GRADIENT_HOVER = PRIMARY_HOVER
 
-# Same two colors, direction mirrored (violet -> blue) -- used only on the
-# Start/Stop button while a timer is running, so the button reads as
-# visually distinct from its own idle "Start" state without resorting to a
-# different color, shadow, or border.
-BUTTON_GRADIENT_REVERSED       = "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #7C3AED, stop:1 #2F7CF6)"
-BUTTON_GRADIENT_REVERSED_HOVER = "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6926D9, stop:1 #1F63D6)"
+# Used for distinct states, now mapped to the same solid blue (or a variant if preferred, but keeping it simple for solid blue).
+BUTTON_GRADIENT_REVERSED       = PRIMARY
+BUTTON_GRADIENT_REVERSED_HOVER = PRIMARY_HOVER
 
 # The actively tracked task row's outline: brand violet, the stop the
 # running "Stop" button leads with (BUTTON_GRADIENT_REVERSED starts here).
@@ -73,6 +66,7 @@ STAT_TILE_GRADIENTS = {
     "blue":   ("#4F8BFF", "#2F63E8", "#2F7CF6"),
     "green":  ("#34D399", "#10B981", "#10B981"),
     "amber":  ("#FBBF24", "#F59E0B", "#F59E0B"),
+    "red":    ("#F87171", "#EF4444", "#EF4444"),
 }
 
 # States

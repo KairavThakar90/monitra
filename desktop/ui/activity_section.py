@@ -113,7 +113,7 @@ def _flatten_timeline(payload: Any) -> List[Dict[str, Any]]:
 def _activity_color(percent: int) -> str:
     if percent >= 80:
         return SUCCESS
-    if percent >= 50:
+    if percent >= 40:
         return WARNING
     return ERROR
 
@@ -1702,21 +1702,12 @@ class ActivitySection(QWidget):
     SEARCH_UNAVAILABLE = "Search is available on the Apps and URLs tabs"
 
     def _update_search_visibility(self) -> None:
-        """Keep the box on screen everywhere, enabled only where it can filter.
-
-        It was hidden on Screenshots at first, which is tidier but made the
-        feature impossible to find: the Activity section opens on Screenshots,
-        so the search box did not exist until you happened to click one of the
-        other two tabs. A control that explains why it is inert beats one that
-        disappears.
-        """
         searchable = self._active_tab in ("apps", "urls")
-        self.search_input.setEnabled(searchable)
-        self.search_input.setPlaceholderText(
-            self.SEARCH_PLACEHOLDER if searchable else self.SEARCH_UNAVAILABLE
-        )
+        self._search_bar.setVisible(searchable)
+        
         if not searchable:
             self._search_error.hide()
+            self.search_input.clear()
 
     def switch_tab(self, tab_name: str) -> None:
         self._active_tab = tab_name
