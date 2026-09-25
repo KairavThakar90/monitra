@@ -161,8 +161,7 @@ class StatCard(QFrame):
         self._tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._tile.setPixmap(icons.pixmap(icon_name, "#FFFFFF", 24))
         self._tile.setStyleSheet(f"""
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                                        stop:0 {start}, stop:1 {end});
+            background: {self._accent};
             border-radius: 14px;
             border: none;
         """)
@@ -236,8 +235,7 @@ class StatCard(QFrame):
         self._tile_key = tile
         start, end, self._accent = STAT_TILE_GRADIENTS[tile]
         self._tile.setStyleSheet(f"""
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                                        stop:0 {start}, stop:1 {end});
+            background: {self._accent};
             border-radius: 14px;
             border: none;
         """)

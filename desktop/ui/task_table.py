@@ -1298,7 +1298,6 @@ class TaskRow(QFrame):
             # running row keeps its full green outline, unchanged.
             border = (
                 f"border: 2px solid transparent; "
-                f"border-left: 3px solid {PRIMARY}; "
                 f"border-bottom: 1px solid {BORDER_LIGHT};"
             )
         # The selected task -- the one the sidebar's Play would start -- and
@@ -1704,8 +1703,8 @@ class TaskSection(QWidget):
         card.setStyleSheet(f"""
             QFrame#TaskCard {{
                 background: {CARD_BG};
-                border-radius: 12px;
-                border: 1px solid {BORDER_LIGHT};
+                border: none;
+                border-radius: 0px;
             }}
         """)
         card_layout = QVBoxLayout(card)
@@ -1729,7 +1728,7 @@ class TaskSection(QWidget):
 
         col_header = QWidget(card)
         col_header.setFixedHeight(38)
-        col_header.setStyleSheet(f"background: #F8FAFC; border-bottom: 1px solid {BORDER_LIGHT};")
+        col_header.setStyleSheet(f"background: transparent; border-bottom: 1px solid {BORDER_LIGHT};")
         col_layout = QHBoxLayout(col_header)
         col_layout.setContentsMargins(16, 0, 12, 0)
         col_layout.setSpacing(0)
