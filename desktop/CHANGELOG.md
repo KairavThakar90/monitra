@@ -20,10 +20,10 @@ re-grant a permission.
 
 ## [Unreleased]
 
-## [1.2.4]
+## [1.2.5]
 
-1.2.3's build never shipped — the macOS release build failed a test that
-only breaks on a real Mac runner, so the artifacts were never published.
+1.2.3 and 1.2.4 never shipped — both macOS release builds failed a test
+that only breaks off Windows, so no artifacts were published for either.
 This is the same set of changes under the version that actually built.
 
 The installer and the macOS bundles are still unsigned: Windows SmartScreen
