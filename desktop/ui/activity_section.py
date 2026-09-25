@@ -1521,8 +1521,9 @@ class ActivitySection(QWidget):
         card_layout.addWidget(div)
 
         # Search bar. It filters the Apps and URLs lists that are already in
-        # memory -- no request, no query -- so it is hidden on Screenshots,
-        # which has nothing text-shaped to match against.
+        # memory -- no request, no query -- so on Screenshots, which has
+        # nothing text-shaped to match against, it stays on screen but
+        # disabled (see `_update_search_visibility`) rather than hidden.
         self._search_bar = QWidget(self.card)
         search_layout = QHBoxLayout(self._search_bar)
         search_layout.setContentsMargins(20, 12, 20, 0)
@@ -1702,9 +1703,17 @@ class ActivitySection(QWidget):
     SEARCH_UNAVAILABLE = "Search is available on the Apps and URLs tabs"
 
     def _update_search_visibility(self) -> None:
+        # Always visible -- the Activity section opens on Screenshots, so a
+        # box that only existed on the other two tabs was a box nobody ever
+        # discovered. On Screenshots it stays on screen but inert, and says
+        # why through its own placeholder rather than vanishing.
+        self._search_bar.setVisible(True)
         searchable = self._active_tab in ("apps", "urls")
-        self._search_bar.setVisible(searchable)
-        
+        self.search_input.setEnabled(searchable)
+        self.search_input.setPlaceholderText(
+            self.SEARCH_PLACEHOLDER if searchable else self.SEARCH_UNAVAILABLE
+        )
+
         if not searchable:
             self._search_error.hide()
             self.search_input.clear()
