@@ -110,14 +110,15 @@ def _recover(runtime, last_beat):
 # ── 1. Power interruption -> recovery -> idle reconciliation ─────────────────
 
 def test_1_the_outage_is_reported_as_one_idle_period_from_the_last_heartbeat(qapp, cache, clock):
-    """1 PM start, 5 PM power cut, 6 PM recovery: one idle period 5 PM -> 6 PM,
-    on the same entry, with the session preserved and the popup raised."""
+    """1 PM start, 5 PM power cut, 5:10 PM recovery (under the 15-minute
+    recovery cap): one idle period 5 PM -> 5:10 PM, on the same entry, with
+    the session preserved and the popup raised."""
     backend = FakeTimeEntryService(entry_id=42)
     first = _process(cache, backend)
     first.timer.start_tracking(1, 7, "Task")
     last_beat = clock.advance(hours=4)               # 5 PM: the last heartbeat
     _die(first)
-    clock.advance(hours=1)                           # 6 PM: power is back
+    clock.advance(minutes=10)                        # power is back, under the recovery cap
 
     second = _process(cache, backend)
     opened = []
@@ -135,7 +136,7 @@ def test_1_the_outage_is_reported_as_one_idle_period_from_the_last_heartbeat(qap
         assert len(opened) == 1, "the existing popup is what asks the user"
         # The session is preserved: same entry, same anchor, still running.
         assert second.timer.is_running() and second.timer.entry_id == 42
-        assert second.timer.elapsed_seconds() == 5 * 3600
+        assert second.timer.elapsed_seconds() == 4 * 3600 + 10 * 60
         assert len(backend.started) == 1, "no second time entry"
     finally:
         _finish(second)
@@ -232,7 +233,7 @@ def test_interruption_pending_fires_instantly_on_recovery(qapp, cache, clock):
     first.timer.start_tracking(1, 7, "Task")
     last_beat = clock.advance(hours=4)
     _die(first)
-    clock.advance(hours=1)
+    clock.advance(minutes=10)          # under the recovery cap
 
     second = _process(cache, backend)
     pending = []
@@ -244,7 +245,7 @@ def test_interruption_pending_fires_instantly_on_recovery(qapp, cache, clock):
         assert recovered is not None
         assert len(pending) == 1, "fired synchronously from recovery, before any tick"
         assert opened == [], "not yet confirmed by the backend"
-        assert pending[0]["gap_seconds"] == pytest.approx(3600.0)
+        assert pending[0]["gap_seconds"] == pytest.approx(600.0)
         assert pending[0]["client_op"] == recovered["client_op"]
 
         second.idle.tick()                                # now reports and confirms
@@ -277,7 +278,7 @@ def test_a_definitive_refusal_withdraws_the_provisional_popup(qapp, cache, clock
     first.timer.start_tracking(1, 7, "Task")
     last_beat = clock.advance(hours=4)
     _die(first)
-    clock.advance(hours=1)
+    clock.advance(minutes=10)          # under the recovery cap
 
     second = _process(cache, backend)
     second.idle_api.report_error = ApiError(
@@ -303,7 +304,7 @@ def test_2_recovering_the_same_interruption_again_opens_no_second_period(qapp, c
     first.timer.start_tracking(1, 7, "Task")
     last_beat = clock.advance(hours=4)
     _die(first)
-    clock.advance(hours=1)
+    clock.advance(minutes=10)          # under the recovery cap
 
     second = _process(cache, backend)
     _recover(second, last_beat)
@@ -338,7 +339,7 @@ def test_a_report_that_lands_twice_is_answered_with_the_same_period(qapp, cache,
     first.timer.start_tracking(1, 7, "Task")
     last_beat = clock.advance(hours=4)
     _die(first)
-    clock.advance(hours=1)
+    clock.advance(minutes=10)          # under the recovery cap
 
     second = _process(cache, backend)
     opened = []
@@ -349,7 +350,7 @@ def test_a_report_that_lands_twice_is_answered_with_the_same_period(qapp, cache,
         # Force the interruption back and tick again, as a retry would.
         second.idle._interruption = {
             "client_op": second.timer.active_session()["client_op"],
-            "gap_seconds": 3600.0,
+            "gap_seconds": 600.0,
             "idle_started_at": last_beat.isoformat(),
             "idle_detected_at": clock.now.isoformat(),
             "client_event_id": first_id,
@@ -371,7 +372,7 @@ def recovered_with_popup(qapp, cache, clock):
     first.timer.start_tracking(1, 7, "Task")
     last_beat = clock.advance(hours=4)
     _die(first)
-    clock.advance(hours=1)
+    clock.advance(minutes=10)          # under the recovery cap
     second = _process(cache, backend)
     _recover(second, last_beat)
     assert second.idle.idle_state == IdleState.PENDING
@@ -394,13 +395,13 @@ def test_3_keep_and_resume_counts_the_gap_and_keeps_the_timer_running(recovered_
 
 def test_4_discard_and_resume_deducts_the_gap_and_keeps_the_timer_running(recovered_with_popup):
     runtime, backend = recovered_with_popup
-    runtime.idle_api.entry_adjustment = -3600            # the backend's own figure
+    runtime.idle_api.entry_adjustment = -600              # the backend's own figure
     runtime.idle.resolve(keep_idle_time=False, action="resume")
     assert runtime.idle_api.resolves[0]["keep_idle_time"] is False
     assert runtime.timer.is_running()
     # The deduction shown is the backend's, never computed here.
-    assert runtime.timer.active_session().get("adjustment_seconds") == -3600
-    assert runtime.timer.measured_seconds() == 5 * 3600
+    assert runtime.timer.active_session().get("adjustment_seconds") == -600
+    assert runtime.timer.measured_seconds() == 4 * 3600 + 10 * 60
     assert runtime.timer.elapsed_seconds() == 4 * 3600, "shown net of the backend's deduction"
 
 
@@ -445,7 +446,7 @@ def test_7_the_gap_is_kept_and_reported_when_the_network_returns(qapp, cache, cl
     first.timer.start_tracking(1, 7, "Task")
     last_beat = clock.advance(hours=4)
     _die(first)
-    clock.advance(hours=1)
+    clock.advance(minutes=10)          # under the recovery cap
 
     network = FakeNetwork("BACKEND_UNREACHABLE")
     second = _process(cache, backend, network=network)
@@ -482,7 +483,7 @@ def test_a_definitive_refusal_drops_the_gap(qapp, cache, clock):
     first.timer.start_tracking(1, 7, "Task")
     last_beat = clock.advance(hours=4)
     _die(first)
-    clock.advance(hours=1)
+    clock.advance(minutes=10)          # under the recovery cap
 
     second = _process(cache, backend)
     second.idle_api.report_error = ApiError("Idle time can only be reported against a running timer.",
@@ -504,7 +505,7 @@ def test_a_session_started_offline_reports_the_gap_once_its_entry_id_arrives(qap
     assert first.timer.entry_id is None
     last_beat = clock.advance(hours=4)
     _die(first)
-    clock.advance(hours=1)
+    clock.advance(minutes=10)          # under the recovery cap
 
     backend.fail = False
     second = _process(cache, backend)
@@ -532,7 +533,7 @@ def test_8_9_nothing_is_recorded_for_the_gap(qapp, cache, clock):
     first.timer.start_tracking(1, 7, "Task")
     last_beat = clock.advance(hours=4)
     _die(first)
-    clock.advance(hours=1)
+    clock.advance(minutes=10)          # under the recovery cap
 
     second = _process(cache, backend)
     tracker_2 = FakeTracker()

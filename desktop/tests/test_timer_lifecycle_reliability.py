@@ -600,9 +600,10 @@ def test_6_a_crashed_process_leaves_a_session_the_next_one_recovers(qapp, cache,
 def test_7_power_loss_at_five_is_recovered_at_six_as_one_continuous_session(
     qapp, cache, clock
 ):
-    """1 PM start, 5 PM power cut, 6 PM recovery: the session continues from
-    1 PM, the gap is reported, no entry is created, and nothing is captured
-    for the hour the machine was off."""
+    """1 PM start, 5 PM power cut, 5:10 PM recovery (under the 15-minute
+    recovery cap): the session continues from 1 PM, the gap is reported, no
+    entry is created, and nothing is captured for the ten minutes the machine
+    was off."""
     backend = FakeTimeEntryService(entry_id=42)
     first = _new_timer(cache, backend)
     tracker_1 = FakeTracker()
@@ -614,7 +615,7 @@ def test_7_power_loss_at_five_is_recovered_at_six_as_one_continuous_session(
     last_heartbeat = clock.advance(hours=4)               # 5 PM: power goes off
     first._tick_timer.stop()                              # nothing else runs
 
-    clock.advance(hours=1)                                # 6 PM: power is back
+    clock.advance(minutes=10)                             # 5:10 PM: power is back
     second = _new_timer(cache, backend)
     tracker_2 = FakeTracker()
     second.register_tracker(tracker_2)
@@ -623,24 +624,24 @@ def test_7_power_loss_at_five_is_recovered_at_six_as_one_continuous_session(
                                                  "clean_shutdown": False})
         assert recovered is not None and second.is_running()
         assert second.active_session()["started_at_utc"] == started_at, "the anchor moved"
-        assert second.elapsed_seconds() == 5 * 3600, "the outage was discarded from the session"
+        assert second.elapsed_seconds() == 4 * 3600 + 10 * 60, "the outage was discarded from the session"
         assert second.entry_id == 42
         assert len(backend.started) == 1, "a duplicate entry was created"
         assert parse_utc(recovered["interrupted_at_utc"]) == datetime(2026, 9, 16, 17, 0, tzinfo=UTC)
-        assert parse_utc(recovered["recovered_at_utc"]) == datetime(2026, 9, 16, 18, 0, tzinfo=UTC)
+        assert parse_utc(recovered["recovered_at_utc"]) == datetime(2026, 9, 16, 17, 10, tzinfo=UTC)
         # No activity evidence for the outage: capture only restarts now.
         assert [instant for _, instant in tracker_2.started] == [
-            datetime(2026, 9, 16, 18, 0, tzinfo=UTC)
+            datetime(2026, 9, 16, 17, 10, tzinfo=UTC)
         ]
         assert tracker_1.stopped == [], "the dead process could not have flushed anything"
         assert cache.get_pending_count() == 0
 
-        # Stopping at 6:30 PM records 1:00 -> 6:30 against the same entry.
+        # Stopping at 5:40 PM records 1:00 -> 5:40 against the same entry.
         clock.advance(minutes=30)
         second.stop_tracking()
         stops = _queued(second.runtime, "stop_timer")
         assert len(stops) == 1 and stops[0]["entry_id"] == 42
-        assert parse_utc(stops[0]["stopped_at"]) == datetime(2026, 9, 16, 18, 30, tzinfo=UTC)
+        assert parse_utc(stops[0]["stopped_at"]) == datetime(2026, 9, 16, 17, 40, tzinfo=UTC)
     finally:
         second.stop(timeout_ms=500)
 

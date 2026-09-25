@@ -188,16 +188,17 @@ def test_a_frozen_machine_leaves_a_stale_heartbeat_and_is_recovered_like_a_crash
     backend = FakeTimeEntryService(entry_id=42)
     first = _new_timer(cache, backend)
     first.start_tracking(1, 7, "Task")
-    # The heartbeat wrote once, then the machine hung for thirty minutes and
-    # was reset: no clean-shutdown flag, a heartbeat under the 1-hour
+    # The heartbeat wrote once, then the machine hung for a stretch that
+    # was reset: no clean-shutdown flag, a heartbeat comfortably under the
     # recovery cap so this pins the hang-recovery behaviour, not the cap.
-    frozen_at = clock.advance(minutes=20)
+    quarter_cap = timer_module.RECOVERY_CAP_SECONDS // 4
+    frozen_at = clock.advance(seconds=quarter_cap)
     cache.save_app_state(RUNTIME_STATE_KEY, {
         "pid": 1, "last_heartbeat": frozen_at.timestamp(), "clean_shutdown": False,
         "session_generation": 1,
     })
     first._tick_timer.stop()
-    clock.advance(minutes=30)
+    clock.advance(seconds=quarter_cap)
 
     second = _new_timer(cache, backend)
     recovery = RecoveryService(second.runtime, cache)
@@ -206,7 +207,7 @@ def test_a_frozen_machine_leaves_a_stale_heartbeat_and_is_recovered_like_a_crash
         summary = recovery.recover()
         assert summary["timer_recovered"] is True
         assert second.is_running() and second.entry_id == 42
-        assert second.elapsed_seconds() == 50 * 60
+        assert second.elapsed_seconds() == 2 * quarter_cap
         assert parse_utc(second.active_session()["interrupted_at_utc"]) == frozen_at
         assert len(backend.started) == 1
     finally:
@@ -239,7 +240,10 @@ def test_a_start_after_recovery_switches_rather_than_doubling(qapp, cache, clock
 
 # ── power loss, short and long ───────────────────────────────────────────────
 
-@pytest.mark.parametrize("off_for", [timedelta(seconds=40), timedelta(minutes=59)])
+@pytest.mark.parametrize("off_for", [
+    timedelta(seconds=40),
+    timedelta(seconds=timer_module.RECOVERY_CAP_SECONDS - 1),
+])
 def test_power_loss_under_the_cap_is_recovered_as_the_same_session(qapp, cache, clock, off_for):
     backend = FakeTimeEntryService(entry_id=42)
     first = _new_timer(cache, backend)

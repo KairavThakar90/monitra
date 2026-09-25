@@ -77,9 +77,10 @@ def test_a_session_recovered_into_a_new_ist_day_rolls_over_immediately(qapp, cac
     last_beat = fake.now
     first._tick_timer.stop()
 
-    # Reopen 20 minutes later, after IST midnight -- under the 1-hour cap,
-    # so the session is recovered, and it now spans a day boundary.
-    fake.advance(minutes=20)
+    # Reopen 11 minutes later, after IST midnight -- under the 15-minute
+    # recovery cap, so the session is recovered, and it now spans a day
+    # boundary.
+    fake.advance(minutes=11)
 
     second = _new_timer(cache, backend)
     started_signals = []
