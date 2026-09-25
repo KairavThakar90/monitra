@@ -65,9 +65,14 @@ class ToastPopup(QWidget):
     # Increased WIDTH to accommodate larger shadow margins without shrinking the card.
     WIDTH = 392
     
-    # Target distance from the card's right/bottom edge to the screen edge
-    # (Previously 18px SCREEN_MARGIN + 16px layout margin = 34px)
-    CARD_SCREEN_MARGIN = 34
+    # Target distance from the card's right/bottom edge to the screen edge.
+    # (Previously 18px SCREEN_MARGIN + 16px uniform layout margin = 34px.)
+    # Must be at least as large as the biggest outer margin below (42, on the
+    # bottom, for the shadow's downward offset) -- `_move_to_corner` derives
+    # the window's own offset as CARD_SCREEN_MARGIN minus that margin, so a
+    # smaller value here goes negative and pushes the window's invisible
+    # shadow padding past the working area's edge, off the physical screen.
+    CARD_SCREEN_MARGIN = 42
     
     #: The brand badge tile drawn beside the title -- the same tile size
     #: `MaintenanceToast` uses, so the two floating cards this application
@@ -250,6 +255,15 @@ class ToastPopup(QWidget):
         self._message.setText(message)
         self._apply_style(_LEVEL_ACCENTS.get(level, _DEFAULT_ACCENT))
 
+        # Called twice, deliberately. The card is reused for every
+        # notification (never a fresh window), and a wrapped QLabel's
+        # heightForWidth on an already-visible window is only correct on the
+        # second layout pass after a text change -- the first overshoots
+        # (measured: a message that lays out to 246px tall computed as 533px
+        # immediately after a shorter one was showing). A window that has
+        # never been shown does not have this problem, and a second pass on
+        # an already-correct size is a no-op, so this is safe unconditionally.
+        self.adjustSize()
         self.adjustSize()
         if not self._move_to_corner():
             return False
@@ -293,7 +307,16 @@ class ToastPopup(QWidget):
 
         x = area.x() + area.width() - size.width() - offset_x
         y = area.y() + area.height() - size.height() - offset_y
-        self.move(max(area.x(), x), max(area.y(), y))
+        # Clamp both edges, not just the near one: CARD_SCREEN_MARGIN is the
+        # gap the *card* keeps once its own margin (bigger on the bottom, for
+        # the drop shadow's downward offset) is subtracted back out, and that
+        # margin can exceed CARD_SCREEN_MARGIN -- which would otherwise place
+        # this window's far edge past the working area entirely, off the
+        # physical screen, rather than merely closer to the corner than the
+        # card's usual margin.
+        x = max(area.x(), min(x, area.x() + area.width() - size.width()))
+        y = max(area.y(), min(y, area.y() + area.height() - size.height()))
+        self.move(x, y)
         return True
 
     # ── Interaction ──────────────────────────────────────────────────────────

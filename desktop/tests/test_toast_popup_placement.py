@@ -10,6 +10,7 @@ fit and its right third, close button included, hung off the screen. Users
 saw "the notification shows half". These tests pin every edge of the drawn
 card inside the screen's working area, at the intended margin.
 """
+from PySide6.QtCore import QPoint, QRect
 from PySide6.QtGui import QGuiApplication
 
 from background_services.notifications.toast_popup import ToastPopup
@@ -26,13 +27,30 @@ def _present(qapp, popup, message):
     return popup.frameGeometry(), QGuiApplication.primaryScreen().availableGeometry()
 
 
+def _visible_card_rect(popup) -> QRect:
+    """The drawn white card's own rectangle, in global coordinates.
+
+    `popup.frameGeometry()` is the whole (frameless) window, which includes
+    the transparent margin reserved for the drop shadow -- wider on the
+    bottom than the sides, to fit the shadow's downward offset. The margin
+    that must sit CARD_SCREEN_MARGIN from the screen edge is the *drawn*
+    card's, not the invisible window edge around it.
+    """
+    top_left = popup.mapToGlobal(popup._card.pos())
+    return QRect(top_left, popup._card.size())
+
+
 def test_a_short_message_sits_at_the_corner_margin(qapp):
     popup = ToastPopup()
-    card, area = _present(qapp, popup, SHORT)
-    assert card.width() == ToastPopup.WIDTH
-    assert card.x() + card.width() == area.x() + area.width() - ToastPopup.SCREEN_MARGIN
-    assert card.y() + card.height() == area.y() + area.height() - ToastPopup.SCREEN_MARGIN
-    assert area.contains(card), (card, area)
+    frame, area = _present(qapp, popup, SHORT)
+    card = _visible_card_rect(popup)
+    assert frame.width() == ToastPopup.WIDTH
+    assert card.x() + card.width() == area.x() + area.width() - ToastPopup.CARD_SCREEN_MARGIN
+    assert card.y() + card.height() == area.y() + area.height() - ToastPopup.CARD_SCREEN_MARGIN
+    # The whole window -- shadow margin included -- must never hang off the
+    # screen, which is the "notification shows half" defect this file exists
+    # to pin.
+    assert area.contains(frame), (frame, area)
     popup.hide()
     popup.deleteLater()
 
@@ -40,22 +58,23 @@ def test_a_short_message_sits_at_the_corner_margin(qapp):
 def test_the_close_button_is_on_screen(qapp):
     """The part that was cut off: the header's right end."""
     popup = ToastPopup()
-    card, area = _present(qapp, popup, SHORT)
+    _frame, area = _present(qapp, popup, SHORT)
     close_right = popup._close.mapToGlobal(popup._close.rect().topRight()).x()
-    assert close_right <= area.x() + area.width() - ToastPopup.SCREEN_MARGIN
+    assert close_right <= area.x() + area.width() - ToastPopup.CARD_SCREEN_MARGIN
     popup.hide()
     popup.deleteLater()
 
 
 def test_a_wrapped_message_grows_downward_and_stays_on_screen(qapp):
     popup = ToastPopup()
-    short_card, _ = _present(qapp, popup, SHORT)
-    long_card, area = _present(qapp, popup, LONG)
-    assert long_card.height() > short_card.height(), "the long text must wrap onto more lines"
-    assert long_card.width() == ToastPopup.WIDTH
-    assert area.contains(long_card), (long_card, area)
-    assert long_card.x() + long_card.width() == area.x() + area.width() - ToastPopup.SCREEN_MARGIN
-    assert long_card.y() + long_card.height() == area.y() + area.height() - ToastPopup.SCREEN_MARGIN
+    short_frame, _ = _present(qapp, popup, SHORT)
+    long_frame, area = _present(qapp, popup, LONG)
+    assert long_frame.height() > short_frame.height(), "the long text must wrap onto more lines"
+    assert long_frame.width() == ToastPopup.WIDTH
+    assert area.contains(long_frame), (long_frame, area)
+    long_card = _visible_card_rect(popup)
+    assert long_card.x() + long_card.width() == area.x() + area.width() - ToastPopup.CARD_SCREEN_MARGIN
+    assert long_card.y() + long_card.height() == area.y() + area.height() - ToastPopup.CARD_SCREEN_MARGIN
     popup.hide()
     popup.deleteLater()
 
@@ -64,9 +83,10 @@ def test_replacing_a_long_message_with_a_short_one_repositions(qapp):
     """One card is reused for every notification; each must be re-placed."""
     popup = ToastPopup()
     _present(qapp, popup, LONG)
-    card, area = _present(qapp, popup, MEDIUM)
-    assert area.contains(card), (card, area)
-    assert card.y() + card.height() == area.y() + area.height() - ToastPopup.SCREEN_MARGIN
+    frame, area = _present(qapp, popup, MEDIUM)
+    assert area.contains(frame), (frame, area)
+    card = _visible_card_rect(popup)
+    assert card.y() + card.height() == area.y() + area.height() - ToastPopup.CARD_SCREEN_MARGIN
     popup.hide()
     popup.deleteLater()
 
