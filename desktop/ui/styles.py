@@ -35,9 +35,13 @@ PRIMARY_LIGHT     = "#EEF2FF"
 BUTTON_GRADIENT       = PRIMARY
 BUTTON_GRADIENT_HOVER = PRIMARY_HOVER
 
-# Used for distinct states, now mapped to the same solid blue (or a variant if preferred, but keeping it simple for solid blue).
-BUTTON_GRADIENT_REVERSED       = PRIMARY
-BUTTON_GRADIENT_REVERSED_HOVER = PRIMARY_HOVER
+# The running Play/Pause disc and the row it belongs to must still read
+# differently from their own idle state (tests/test_timer_controls.py,
+# tests/test_button_gradient.py), so this cannot collapse to the same solid
+# as BUTTON_GRADIENT above -- brand violet, the old reversed gradient's
+# leading stop, now as a flat colour instead.
+BUTTON_GRADIENT_REVERSED       = BRAND_VIOLET
+BUTTON_GRADIENT_REVERSED_HOVER = "#6926D9"
 
 # The actively tracked task row's outline: brand violet, the stop the
 # running "Stop" button leads with (BUTTON_GRADIENT_REVERSED starts here).
