@@ -26,10 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.api.exceptions import ApiConnectionError, ApiError, ApiHttpError
 from app.maintenance.service import MaintenanceApiService
-from background_services.maintenance import (
-    MAINTENANCE_BODY, MAINTENANCE_STATUS_LABEL, MAINTENANCE_TITLE, MaintenanceService,
-)
-from background_services.maintenance.maintenance_service import NOTIFY_KEY_OFF, NOTIFY_KEY_ON
+from background_services.maintenance import MaintenanceService
 from background_services.network import NetworkState
 
 DESKTOP_ROOT = Path(__file__).resolve().parent.parent
@@ -140,12 +137,11 @@ def test_off_to_on_is_announced_once_and_then_held_silently():
     assert api.calls == 4, "the poll itself still runs every tick"
     assert changes == [True]
     assert service.maintenance_mode is True
-    assert len(notifications.messages) == 1
-    message, title, key = notifications.messages[0]
-    assert title == MAINTENANCE_TITLE
-    assert MAINTENANCE_BODY in message
-    assert MAINTENANCE_STATUS_LABEL in message
-    assert key == NOTIFY_KEY_ON
+    # The service itself no longer notifies through the tray: the in-app
+    # MaintenanceToast (wired to this same maintenance_changed signal, see
+    # tests/test_maintenance_toast.py) is the notice now, and a tray toast
+    # here would be a second announcement of the same edge.
+    assert notifications.messages == []
 
 
 def test_an_initial_on_answer_is_announced_once():
@@ -155,7 +151,8 @@ def test_an_initial_on_answer_is_announced_once():
     service.tick()
     service.tick()
     assert changes == [True]
-    assert [key for _m, _t, key in notifications.messages] == [NOTIFY_KEY_ON]
+    # No tray notify from the service -- the toast owns the announcement.
+    assert notifications.messages == []
 
 
 def test_on_to_off_clears_once_and_then_stays_quiet():
@@ -167,7 +164,8 @@ def test_on_to_off_clears_once_and_then_stays_quiet():
 
     assert changes == [True, False]
     assert service.maintenance_mode is False
-    assert [key for _m, _t, key in notifications.messages] == [NOTIFY_KEY_ON, NOTIFY_KEY_OFF]
+    # No tray notify from the service on either edge -- the toast owns both.
+    assert notifications.messages == []
 
 
 def test_a_second_maintenance_window_is_announced_again():
@@ -192,7 +190,7 @@ def test_a_failed_poll_neither_clears_nor_raises_the_notice():
 
     assert changes == [True], "the notice stays exactly where it was"
     assert service.maintenance_mode is True
-    assert len(notifications.messages) == 1
+    assert notifications.messages == []
     assert delay >= int(MaintenanceService.HOLD_INTERVAL_MS * 0.85)
 
     api.error = None
@@ -239,7 +237,8 @@ def test_the_next_session_is_told_again_once():
     service.tick()
     service.tick()
     assert changes == [True, False, True]
-    assert [key for _m, _t, key in notifications.messages] == [NOTIFY_KEY_ON, NOTIFY_KEY_ON]
+    # No tray notify from the service across either session's edges.
+    assert notifications.messages == []
 
 
 def test_check_now_before_the_loop_started_is_harmless():
