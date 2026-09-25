@@ -25,7 +25,7 @@ from typing import Any, Callable, Dict, List, Optional
 from PySide6.QtCore import QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QSplitter, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QMessageBox, QSplitter, QVBoxLayout, QWidget,
 )
 
 import version
@@ -47,6 +47,7 @@ from ui.action_banner import ActionBanner
 from ui.activity_section import ActivitySection
 from ui.feedback_dialog import SUBMIT_KEY, FeedbackDialog
 from ui.idle_alert_dialog import IdleAlertDialog
+from ui.logout_confirm_dialog import LogoutConfirmDialog
 from ui.sidebar import SidebarWidget
 from ui.update_dialog import UpdateDialog
 from ui.styles import (
@@ -1127,6 +1128,10 @@ class DashboardWindow(QWidget):
         self._status_bar.set_timer_info("")
 
     def _handle_logout(self) -> None:
+        dialog = LogoutConfirmDialog(self)
+        if not dialog.exec():
+            return
+
         self.reset_state()
         self.logout_requested.emit()
 
