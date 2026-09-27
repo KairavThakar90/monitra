@@ -52,7 +52,13 @@ from dotenv import load_dotenv
 #: Note there is no /api/v1 suffix: backend/app/main.py registers the routers
 #: the desktop uses at the bare paths as well as under the prefix, and the
 #: desktop calls /auth/me, /projects, /time-entries directly.
-LIVE_API_BASE_URL = "https://monitra-lvzq.vercel.app"
+#:
+#: api.peakworkos.com is the GCP-hosted backend's own domain (nginx on that
+#: VM proxies bare paths straight to uvicorn on 127.0.0.1:8000 -- no /api/
+#: prefix stripping involved, unlike staff.peakworkos.com's reverse proxy).
+#: The previous default, monitra-lvzq.vercel.app, was a separate deployment
+#: with its own database; it is retired and must not be reintroduced here.
+LIVE_API_BASE_URL = "https://api.peakworkos.com"
 
 #: The deployed web client. "Profile" opens this in the user's browser, handing
 #: it a single-use sign-in token so they land on the dashboard as themselves.

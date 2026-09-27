@@ -20,6 +20,17 @@ re-grant a permission.
 
 ## [Unreleased]
 
+## [1.2.7]
+
+### Fixed
+
+- **Default backend URL corrected.** The production default pointed at
+  `monitra-lvzq.vercel.app`, a retired deployment with its own separate
+  database. A fresh install or an update with no local override now reaches
+  the current backend at `api.peakworkos.com` instead. If you installed a
+  previous build and configured `SMS_API_BASE_URL` yourself to work around
+  this, that override still takes precedence and needs no change.
+
 ## [1.2.6]
 
 1.2.3, 1.2.4 and 1.2.5 never shipped — each macOS release build failed a
