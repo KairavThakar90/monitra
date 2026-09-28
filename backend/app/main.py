@@ -62,6 +62,12 @@ try:
             "Screenshot storage: Google Drive root %s (credentials from %s)",
             _drive_config["root_folder_id"], _drive_config["credential_source"],
         )
+        # Configured is not reachable. The probe actually opens the root
+        # folder with the configured credential and logs
+        # SCREENSHOT_STORAGE_PROBE with the outcome; on a background thread so
+        # a slow or failing Drive never delays the process from serving. Its
+        # result is what /health reports as `screenshot_storage.probe`.
+        _drive_service._refresh_probe_in_background()
     else:
         logger.warning(
             "Screenshot storage is DISABLED: %s. Desktop clients will queue "
@@ -186,6 +192,12 @@ def health_check():
         storage = drive_service.describe_configuration()
         if not storage["configured"]:
             storage["reason"] = drive_service.unconfigured_reason()
+        else:
+            # Whether the configured credential can actually open the root
+            # folder, from the cached probe (see GoogleDriveService.probe):
+            # never a Drive round trip on this request, and never more than a
+            # coarse reason code, since this endpoint is public.
+            storage["probe"] = drive_service.probe()
         payload["screenshot_storage"] = storage
     except Exception:  # noqa: BLE001
         # Health must stay answerable even if storage cannot be introspected.

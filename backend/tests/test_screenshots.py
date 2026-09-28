@@ -83,7 +83,7 @@ class ValidationTests(unittest.TestCase):
              patch(f"{SVC}.drive_service") as drive:
             drive.configured = True
             drive.ensure_screenshot_folder.return_value = ("folder-1", "2026/September/User_1")
-            drive.upload_file.return_value = "drive-file-1"
+            drive.upload_file_idempotent.return_value = ("drive-file-1", False)
             create.side_effect = lambda **kwargs: TimeEntryScreenshot(
                 id=1, organization_id=10, time_entry_id=100,
                 captured_at=T0, file_path="p", monitor_number=1,
@@ -138,22 +138,22 @@ class ValidationTests(unittest.TestCase):
 
     def test_the_single_display_square_is_still_accepted(self):
         self._upload_expecting_success(_webp(1000, 1000))
-        self.drive.upload_file.assert_called_once()
+        self.drive.upload_file_idempotent.assert_called_once()
 
     def test_a_merged_two_display_capture_is_accepted(self):
         # The geometry a two-monitor desk actually produces. Under the old
         # exact-square rule every one of these was refused with a 422 and the
         # desktop parked it as permanently failed.
         self._upload_expecting_success(_webp(2000, 562))
-        self.drive.upload_file.assert_called_once()
+        self.drive.upload_file_idempotent.assert_called_once()
 
     def test_a_merged_three_display_capture_is_accepted(self):
         self._upload_expecting_success(_webp(3000, 562))
-        self.drive.upload_file.assert_called_once()
+        self.drive.upload_file_idempotent.assert_called_once()
 
     def test_a_portrait_secondary_monitors_geometry_is_accepted(self):
         self._upload_expecting_success(_webp(1562, 1000))
-        self.drive.upload_file.assert_called_once()
+        self.drive.upload_file_idempotent.assert_called_once()
 
     def test_an_oversized_body_is_rejected(self):
         with patch(f"{SVC}.settings") as settings:
@@ -289,7 +289,7 @@ class IdempotencyTests(unittest.TestCase):
              patch(f"{SVC}.drive_service") as drive:
             drive.configured = True
             drive.ensure_screenshot_folder.return_value = ("folder-1", "2026/September/User_1/2026-09-07")
-            drive.upload_file.return_value = "orphan-file"
+            drive.upload_file_idempotent.return_value = ("orphan-file", False)
             record, duplicate = TimeEntryScreenshotService.upload_screenshot(
                 db=db, time_entry_id=100, content=_webp(),
                 content_type="image/webp", client_screenshot_id="abc",
@@ -335,7 +335,7 @@ class StorageTests(unittest.TestCase):
             drive.ensure_screenshot_folder.return_value = (
                 "folder-1", "2026/September/User_1/2026-09-07"
             )
-            drive.upload_file.return_value = "file-1"
+            drive.upload_file_idempotent.return_value = ("file-1", False)
             _, duplicate = TimeEntryScreenshotService.upload_screenshot(
                 db=db, time_entry_id=100, content=_webp(),
                 content_type="image/webp", client_screenshot_id="abc",
@@ -447,10 +447,15 @@ class HealthReportsStorageTests(unittest.TestCase):
             drive.describe_configuration.return_value = {
                 "configured": True, "root_folder_id": "root123", "credential_source": "inline",
             }
+            drive.probe.return_value = {
+                "ok": True, "reason": None, "checked_at": "2026-09-28T10:00:00+00:00",
+            }
             body = self.client.get("/health").json()
         self.assertEqual(body["status"], "healthy")
         self.assertTrue(body["screenshot_storage"]["configured"])
         self.assertEqual(body["screenshot_storage"]["root_folder_id"], "root123")
+        # Configured is not reachable: the probe's verdict travels alongside.
+        self.assertTrue(body["screenshot_storage"]["probe"]["ok"])
 
     def test_health_says_why_storage_is_unconfigured(self):
         with patch("app.services.google_drive_service.drive_service") as drive:
@@ -1104,7 +1109,7 @@ class ImageCacheTests(unittest.TestCase):
             def __init__(self, buffer, request):
                 self._buffer = buffer
 
-            def next_chunk(self):
+            def next_chunk(self, num_retries=0):
                 downloads["count"] += 1
                 self._buffer.write(b"RIFF0000WEBPbytes")
                 return None, True

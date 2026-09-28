@@ -37,8 +37,9 @@ import io
 import json
 import logging
 import threading
+import time
 from collections import OrderedDict
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
@@ -150,6 +151,22 @@ class GoogleDriveFileNotFound(GoogleDriveError):
 #: endpoint, so one wedged Drive read otherwise takes the whole API with it.
 DRIVE_TIMEOUT_SECONDS = 20
 
+#: How many times a *read-only or idempotent* Drive call is re-sent by the
+#: client library on a 5xx, a 429 or a dropped socket, with its own
+#: exponential backoff. Folder lookups and folder creation are safe to repeat
+#: (creation re-queries and keeps the oldest, see the module docstring). The
+#: media upload is deliberately **not** retried by the library: a re-sent
+#: upload after a response lost in transit would store the image twice, and
+#: the desktop's own retry -- which goes through `find_file` first -- is the
+#: idempotent path for that case.
+DRIVE_READ_RETRIES = 3
+
+#: How long a successful reachability probe is trusted before `/health`
+#: re-runs it in the background. A failed probe is re-run sooner, so an
+#: operator fixing a share sees the result without waiting.
+PROBE_TTL_SECONDS = 600
+PROBE_FAILURE_TTL_SECONDS = 60
+
 #: Longest display name allowed in a folder name. Drive permits far more, but
 #: the logical path built from it is stored on every screenshot row and shown
 #: in support tooling, so an unbounded name would push real detail off-screen.
@@ -217,6 +234,26 @@ class GoogleDriveService:
         self._folder_cache: Dict[Tuple[str, str], str] = {}
         #: Drive file id -> stored bytes. See _ImageCache.
         self.image_cache = _ImageCache()
+        #: Last reachability probe, see `probe()`. Guarded by `_probe_lock`;
+        #: `_probe_running` stops `/health` from stacking refreshes.
+        self._probe_lock = threading.Lock()
+        self._probe_result: Optional[dict] = None
+        self._probe_running = False
+
+    def invalidate_folder_cache(self) -> None:
+        """Forget every cached folder id.
+
+        Folder ids never change, but a folder can stop being the right target:
+        an administrator tidying Drive can trash or move a day or user folder
+        while a long-lived backend process still holds its id. Drive then
+        accepts uploads into the trashed parent without complaint -- the file
+        exists, the row references it, the timeline serves it, and nobody
+        browsing Drive can find it. The upload path calls this on any Drive
+        failure so the next attempt re-resolves the tree from the root; the
+        cost is four lookups, once.
+        """
+        with self._lock:
+            self._folder_cache.clear()
 
     # ── Configuration ─────────────────────────────────────────────────────────
 
@@ -395,9 +432,11 @@ class GoogleDriveService:
         """
         root = self.root_folder_id
         try:
-            self._client().files().get(
-                fileId=root, fields="id, name, driveId", supportsAllDrives=True
-            ).execute()
+            info = self._client().files().get(
+                fileId=root,
+                fields="id, name, driveId, trashed, capabilities(canAddChildren)",
+                supportsAllDrives=True,
+            ).execute(num_retries=DRIVE_READ_RETRIES)
         except GoogleDriveError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -410,6 +449,123 @@ class GoogleDriveService:
                     f"GOOGLE_DRIVE_ROOT_FOLDER_ID names that folder"
                 ) from exc
             raise GoogleDriveError(f"could not read the root folder: {exc}") from exc
+        # Visible is not the same as usable. A viewer-only share, or a root
+        # that was trashed, both answer the lookup and then fail every upload
+        # with an error that reads like a transient one.
+        if info.get("trashed"):
+            raise GoogleDriveNotAccessible(
+                f"the configured root folder '{root}' is in the trash"
+            )
+        if info.get("capabilities", {}).get("canAddChildren") is False:
+            raise GoogleDriveNotAccessible(
+                f"the service account {self._service_account_email()} can see the "
+                f"root folder '{root}' but cannot create files in it; it needs "
+                f"Editor (or Content manager) access, not Viewer"
+            )
+
+    # ── Reachability probe ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _classify_failure(exc: BaseException) -> str:
+        """A coarse, non-sensitive reason code for a failed probe.
+
+        Returned by `/health`, which is public, so it names the *class* of
+        problem and never the message: the message can carry the key path or
+        the service-account address, which describe this deployment to
+        whoever asked.
+        """
+        if isinstance(exc, GoogleDriveNotAccessible):
+            return "root_folder_not_accessible"
+        text = str(exc)
+        if "not valid JSON" in text or "key file was not found" in text:
+            return "credentials_unreadable"
+        if "invalid_grant" in text or "Invalid JWT" in text or "invalid_client" in text:
+            return "credentials_rejected"
+        if "not installed" in text:
+            return "client_library_missing"
+        if "timed out" in text or "Timeout" in text or "timeout" in text:
+            return "drive_api_timeout"
+        return "drive_api_error"
+
+    def probe(self, force: bool = False) -> dict:
+        """Actually talk to Drive, and say whether screenshots can be stored.
+
+        `configured` only says two settings are non-empty. It was true on a
+        deployment whose key file did not exist, on one whose service account
+        was not a member of the shared drive, and on one whose share was
+        viewer-only -- each of which refused every upload with a 5xx while
+        `/health` reported storage as configured. This is the check that
+        distinguishes them, and it is cached so that a health poll never costs
+        a Drive round trip on the request path.
+
+        With `force`, runs synchronously on the caller's thread and returns
+        the fresh result -- for the diagnostic script and for tests. Otherwise
+        never blocks: it returns the cached result, refreshing a stale one on
+        a background thread, and answers ``ok: None, reason: "pending"`` until
+        the first probe after boot has finished. Never raises.
+
+        :return: ``{"ok": bool|None, "checked_at": iso8601|None, "reason": code|None}``.
+        """
+        if force:
+            return self._public_probe(self._run_probe())
+        with self._probe_lock:
+            cached = self._probe_result
+        if cached is None:
+            self._refresh_probe_in_background()
+            return {"ok": None, "reason": "pending", "checked_at": None}
+        age = time.time() - cached["_checked_epoch"]
+        ttl = PROBE_TTL_SECONDS if cached["ok"] else PROBE_FAILURE_TTL_SECONDS
+        if age > ttl:
+            self._refresh_probe_in_background()
+        return self._public_probe(cached)
+
+    def _refresh_probe_in_background(self) -> None:
+        with self._probe_lock:
+            if self._probe_running:
+                return
+            self._probe_running = True
+        thread = threading.Thread(
+            target=self._run_probe, name="drive-probe", daemon=True
+        )
+        thread.start()
+
+    def _run_probe(self) -> dict:
+        started = time.time()
+        result: dict
+        try:
+            if not self.configured:
+                raise GoogleDriveError(self.unconfigured_reason() or "not configured")
+            self.verify_root_access()
+            result = {"ok": True, "reason": None}
+            logger.info(
+                "SCREENSHOT_STORAGE_PROBE ok=true root=%s elapsed_ms=%d",
+                self.root_folder_id, int((time.time() - started) * 1000),
+            )
+        except Exception as exc:  # noqa: BLE001
+            reason = self._classify_failure(exc)
+            result = {"ok": False, "reason": reason}
+            # The detail is for the log: it may name the key path or the
+            # service account, which is exactly what an operator needs and
+            # exactly what a public endpoint must not return.
+            logger.error(
+                "SCREENSHOT_STORAGE_PROBE ok=false reason=%s root=%s detail=%s",
+                reason, self.root_folder_id, exc,
+            )
+        result["_checked_epoch"] = time.time()
+        with self._probe_lock:
+            self._probe_result = result
+            self._probe_running = False
+        return result
+
+    @staticmethod
+    def _public_probe(result: dict) -> dict:
+        return {
+            "ok": bool(result["ok"]),
+            "reason": result.get("reason"),
+            "checked_at": datetime.fromtimestamp(
+                result["_checked_epoch"], tz=timezone.utc
+            ).isoformat(timespec="seconds"),
+        }
 
     def _find_folder(self, parent_id: str, name: str) -> Optional[str]:
         """The oldest folder with this name under `parent_id`, or None.
@@ -429,7 +585,37 @@ class GoogleDriveService:
             pageSize=10,
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
-        ).execute()
+        ).execute(num_retries=DRIVE_READ_RETRIES)
+        files = response.get("files", [])
+        return files[0]["id"] if files else None
+
+    def find_file(self, folder_id: str, file_name: str) -> Optional[str]:
+        """The id of a non-folder object called `file_name` in `folder_id`.
+
+        This is what makes an upload idempotent at the Drive level, not only
+        at the database level. The row's unique `client_screenshot_id` stops
+        a retry from storing a second *record*; it cannot stop a second
+        *object* when the first attempt stored the bytes and then failed
+        before the row was written -- a database blip, a process killed
+        mid-request. The retry then finds no row, and without this lookup
+        uploads the same image again next to the orphan. Screenshot file
+        names carry the client id, so the name is the key.
+
+        Oldest first, for the same reason as `_find_folder`: if two objects
+        ever exist, every caller must settle on the same one.
+        """
+        query = (
+            f"name = '{self._escape(file_name)}' and mimeType != '{FOLDER_MIME}' "
+            f"and '{folder_id}' in parents and trashed = false"
+        )
+        response = self._client().files().list(
+            q=query,
+            fields="files(id, name, createdTime)",
+            orderBy="createdTime",
+            pageSize=5,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute(num_retries=DRIVE_READ_RETRIES)
         files = response.get("files", [])
         return files[0]["id"] if files else None
 
@@ -446,11 +632,15 @@ class GoogleDriveService:
             return existing
 
         try:
+            # Safe to let the library retry: a create that went through before
+            # the response was lost is reconciled by the re-query below, which
+            # keeps the oldest of any duplicates.
             self._client().files().create(
                 body={"name": name, "mimeType": FOLDER_MIME, "parents": [parent_id]},
                 fields="id",
                 supportsAllDrives=True,
-            ).execute()
+            ).execute(num_retries=DRIVE_READ_RETRIES)
+            logger.info("SCREENSHOT_FOLDER_CREATED name=%s parent=%s", name, parent_id)
         except Exception as exc:  # noqa: BLE001
             # Drive reports an unreachable parent as a plain 404 on the parent
             # id, which reads like "the file you asked for is missing" and sends
@@ -542,7 +732,7 @@ class GoogleDriveService:
                     self._client().files().update(
                         fileId=legacy, body={"name": wanted_name}, fields="id",
                         supportsAllDrives=True,
-                    ).execute()
+                    ).execute(num_retries=DRIVE_READ_RETRIES)
                     logger.info(
                         "renamed screenshot folder %s to %s", legacy_name, wanted_name
                     )
@@ -579,6 +769,7 @@ class GoogleDriveService:
         media = MediaIoBaseUpload(
             io.BytesIO(content), mimetype=mime_type, resumable=False
         )
+        # No library-level retry on the media upload: see DRIVE_READ_RETRIES.
         created = self._client().files().create(
             body={"name": file_name, "parents": [folder_id]},
             media_body=media,
@@ -589,6 +780,23 @@ class GoogleDriveService:
         if not file_id:
             raise GoogleDriveError("Drive accepted the upload but returned no file id")
         return file_id
+
+    def upload_file_idempotent(
+        self,
+        folder_id: str,
+        file_name: str,
+        content: bytes,
+        mime_type: str = "image/webp",
+    ) -> Tuple[str, bool]:
+        """Store `content` as `file_name` in `folder_id` unless it is already there.
+
+        :return: ``(file_id, reused)``. `reused` is True when an object of that
+            name already existed in the folder and nothing was uploaded.
+        """
+        existing = self.find_file(folder_id, file_name)
+        if existing:
+            return existing, True
+        return self.upload_file(folder_id, file_name, content, mime_type), False
 
     def download_file(self, file_id: str) -> bytes:
         """Read an object back, for the authenticated view endpoint.
@@ -618,7 +826,7 @@ class GoogleDriveService:
         downloader = MediaIoBaseDownload(buffer, request)
         done = False
         while not done:
-            _, done = downloader.next_chunk()
+            _, done = downloader.next_chunk(num_retries=DRIVE_READ_RETRIES)
         data = buffer.getvalue()
         self.image_cache.put(file_id, data)
         return data
