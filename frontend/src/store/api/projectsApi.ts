@@ -71,6 +71,18 @@ export interface ProjectListResponse {
   };
 }
 
+/** All-time tracked hours for one project — a separate call from `getProjects`
+ * so that response (also read verbatim by the desktop client) never has to
+ * change shape to carry it. See `ProjectManagementService.hours_summary`. */
+export interface ProjectHoursSummary {
+  project_id: number;
+  total_used_seconds: number;
+  total_used_hours: number;
+  /** Earliest tracked session against the project -- distinct from its
+   * `created_at`. `null` when nothing has ever been tracked against it. */
+  started_at: string | null;
+}
+
 export interface CreateProjectPayload {
   project_name: string;
   description: string;
@@ -233,6 +245,19 @@ export const projectsApi = baseApi.injectEndpoints({
     getProjectById: builder.query<Project, number>({
       query: (id) => ENDPOINTS.PROJECTS.GET_BY_ID(id),
       providesTags: (_result, _error, id) => [{ type: 'Project', id }],
+    }),
+
+    getProjectHoursSummary: builder.query<ProjectHoursSummary[], number[]>({
+      query: (projectIds) => {
+        const query = new URLSearchParams();
+        projectIds.forEach((id) => query.append('project_id', String(id)));
+        return `${ENDPOINTS.PROJECTS.HOURS_SUMMARY}?${query.toString()}`;
+      },
+      transformResponse: (response: { items: ProjectHoursSummary[] }) => response.items,
+      providesTags: (result) =>
+        result
+          ? [...result.map(({ project_id }) => ({ type: 'Project' as const, id: `hours-${project_id}` })), { type: 'Project' as const, id: 'HOURS' }]
+          : [{ type: 'Project' as const, id: 'HOURS' }],
     }),
 
     getAssignableLeaders: builder.query<ProjectUser[], void>({
@@ -423,6 +448,7 @@ export const {
   useGetProjectMetadataQuery,
   useGetProjectsQuery,
   useLazyGetProjectsQuery,
+  useGetProjectHoursSummaryQuery,
   useGetAllProjectsQuery,
   useGetProjectByIdQuery,
   useGetAssignableLeadersQuery,

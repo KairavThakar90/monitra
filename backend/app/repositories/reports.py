@@ -275,6 +275,49 @@ class ReportsRepository:
         return dict(combined)
 
     @staticmethod
+    def first_tracked_at_by(
+        db: Session,
+        organization_id: int,
+        project_ids: list[int],
+        group_attr: str,
+    ) -> dict:
+        """Earliest tracked instant (auto time_entries + approved manual_time_entries),
+        grouped by one of 'project_id', 'user_id', or 'task_id'.
+
+        All-time and unwindowed -- unlike `session_seconds_by`, this is not a
+        sum over a period but "when did tracking against this key first
+        happen", so there is no start/end to bound it by.
+        """
+        if not project_ids:
+            return {}
+        auto_col = getattr(TimeEntry, group_attr)
+        auto_rows = db.execute(
+            select(auto_col, func.min(TimeEntry.start_time).label("first_at"))
+            .where(TimeEntry.organization_id == organization_id, TimeEntry.project_id.in_(project_ids))
+            .group_by(auto_col)
+        ).all()
+        manual_col = getattr(ManualTimeEntry, group_attr)
+        manual_rows = db.execute(
+            select(manual_col, func.min(ManualTimeEntry.start_time).label("first_at"))
+            .where(
+                ManualTimeEntry.organization_id == organization_id,
+                ManualTimeEntry.project_id.in_(project_ids),
+                ManualTimeEntry.approval_status == "approved",
+                # Once approved, an entry mirrors into time_entries, so its
+                # start_time is already counted through `auto_rows` above;
+                # only an unmirrored legacy row would otherwise be missed.
+                ManualTimeEntry.mirrored_time_entry_id.is_(None),
+            )
+            .group_by(manual_col)
+        ).all()
+
+        result: dict = {}
+        for key, first_at in (*auto_rows, *manual_rows):
+            if first_at is not None and (key not in result or first_at < result[key]):
+                result[key] = first_at
+        return result
+
+    @staticmethod
     def session_activity_by(
         db: Session,
         organization_id: int,

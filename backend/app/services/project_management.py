@@ -14,6 +14,7 @@ from app.models.project_status import ProjectStatus, TaskStatus
 from app.models.task import Task
 from app.models.task_assignee import TaskAssignee
 from app.models.user import User
+from app.repositories.reports import ReportsRepository
 from app.repositories.status_catalog import StatusCatalog
 from app.schemas.project_management import (
     BillingType, ProjectCreate, ProjectUpdate, TaskCreate, TaskUpdate,
@@ -24,7 +25,15 @@ from app.services.task_scope import (
     is_task_scoped, may_view_task, scoped_task_query, visible_task_condition,
 )
 from app.core.permissions import LEADER_ROLE_NAMES
+from app.core.time_format import ist_day_end_utc, ist_day_start_utc
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
+
+# Stand-in bounds for "every entry there has ever been" -- the same sentinel
+# span `DashboardRepository.billing_progress` measures a fixed-hour budget
+# against, so a project's Used Hours here always agrees with its Dashboard
+# billing card.
+_EPOCH_DATE = date(1970, 1, 1)
+_FAR_FUTURE_DATE = date(2999, 12, 31)
 
 # `projects.status` / `tasks.status` are the legacy string columns; `status_id`
 # is the real one. These map a status *row* onto its legacy string, keyed on the
@@ -378,6 +387,46 @@ class ProjectManagementService:
             total = 0
         items = ProjectManagementService._detail_payloads(db, projects, user, include_tasks)
         return {"items": items, "pagination": {"page": page, "limit": limit, "total": total, "total_pages": ceil(total / limit) if total else 0}}
+
+    @staticmethod
+    def hours_summary(db: Session, user: User, project_ids: Optional[list[int]] = None) -> list[dict]:
+        """All-time tracked hours per project, scoped the same way `.list` is.
+
+        Deliberately a separate call rather than a field on `.list`'s response:
+        that response is `ProjectListResponse`, which the desktop client also
+        reads verbatim (`desktop/app/projects/service.py`), so changing its
+        shape would need a matching desktop change in the same commit. This
+        stays additive -- a new endpoint the web admin page alone calls.
+        """
+        filters = [Project.organization_id == user.organization_id, Project.status != "archived"]
+        if user.role_name == "employee":
+            filters.append(Project.id.in_(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)))
+        else:
+            allowed = visible_project_ids(db, user)
+            if allowed is not None:
+                filters.append(Project.id.in_(allowed))
+        if project_ids:
+            filters.append(Project.id.in_(project_ids))
+
+        ids = list(db.scalars(select(Project.id).where(*filters)).all())
+        if not ids:
+            return []
+
+        seconds_by_project = ReportsRepository.session_seconds_by(
+            db, user.organization_id, ids, None,
+            ist_day_start_utc(_EPOCH_DATE), ist_day_end_utc(_FAR_FUTURE_DATE),
+            _EPOCH_DATE, _FAR_FUTURE_DATE, "project_id",
+        )
+        started_by_project = ReportsRepository.first_tracked_at_by(db, user.organization_id, ids, "project_id")
+        return [
+            {
+                "project_id": project_id,
+                "total_used_seconds": int(seconds_by_project.get(project_id, 0)),
+                "total_used_hours": round(seconds_by_project.get(project_id, 0) / 3600, 2),
+                "started_at": started_by_project.get(project_id),
+            }
+            for project_id in ids
+        ]
 
     @staticmethod
     def get(db: Session, user: User, project_id: int):
