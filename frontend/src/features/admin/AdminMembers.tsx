@@ -38,6 +38,59 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   return <span className="inline-flex items-center rounded-md bg-slate-50 px-2.5 py-1 text-[11px] font-bold tracking-wider text-slate-500 border border-slate-200">Inactive</span>;
 };
 
+/**
+ * The Members directory's Allow / Not allow switch for adding tasks.
+ *
+ * Every member may add tasks by default. Switching one off withdraws task
+ * creation from that person everywhere -- the desktop's Add Task, this
+ * client's task listing and the WFPM integration -- because the backend
+ * enforces it on every task-create route (`users.can_add_tasks`, read by
+ * `require_permission`). The role is untouched: their `tasks:create` stays
+ * in the permission map, and turning the switch back on restores creation
+ * without any other change.
+ *
+ * Read-only for a directory-only user (HR): the backend refuses the write
+ * without `manage_employees`, so they see the state rather than a button
+ * that 403s.
+ */
+const AddTaskSwitch: React.FC<{
+  allowed: boolean;
+  editable: boolean;
+  busy: boolean;
+  onChange: (allowed: boolean) => void;
+}> = ({ allowed, editable, busy, onChange }) => {
+  if (!editable) {
+    return allowed
+      ? <span className="inline-flex items-center rounded-md bg-emerald-50 px-2.5 py-1 text-[11px] font-bold tracking-wider text-emerald-600 border border-emerald-200">Allowed</span>
+      : <span className="inline-flex items-center rounded-md bg-rose-50 px-2.5 py-1 text-[11px] font-bold tracking-wider text-rose-500 border border-rose-200">Not allowed</span>;
+  }
+  const base = 'px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider transition disabled:cursor-not-allowed disabled:opacity-60';
+  return (
+    <div role="group" aria-label="Add task permission" className="inline-flex overflow-hidden rounded border border-slate-200">
+      <button
+        type="button"
+        disabled={busy}
+        aria-pressed={allowed}
+        title="This member can add tasks"
+        onClick={() => onChange(true)}
+        className={`${base} ${allowed ? 'bg-emerald-500 text-white' : 'bg-white text-slate-500 hover:bg-emerald-50 hover:text-emerald-600'}`}
+      >
+        Allow
+      </button>
+      <button
+        type="button"
+        disabled={busy}
+        aria-pressed={!allowed}
+        title="This member cannot add tasks until allowed again"
+        onClick={() => onChange(false)}
+        className={`${base} border-l border-slate-200 ${!allowed ? 'bg-rose-500 text-white' : 'bg-white text-slate-500 hover:bg-rose-50 hover:text-rose-500'}`}
+      >
+        Not allow
+      </button>
+    </div>
+  );
+};
+
 const formatDate = (dateStr: string | null) => {
   if (!dateStr) return '-';
   const parts = dateStr.split('-');
@@ -671,6 +724,26 @@ export const AdminMembers: React.FC = () => {
     }
   };
 
+  // The row flips at once (`updateMember` patches every cached list
+  // optimistically) and is rolled back with a toast if the server refuses.
+  const [pendingAddTaskId, setPendingAddTaskId] = useState<number | null>(null);
+  const handleSetAddTask = async (member: Member, allowed: boolean) => {
+    if ((member.can_add_tasks !== false) === allowed) return;
+    setPendingAddTaskId(member.id);
+    try {
+      await updateMember({ id: member.id, body: { can_add_tasks: allowed } }).unwrap();
+      showToast(
+        allowed ? `${member.name} can add tasks again.` : `${member.name} can no longer add tasks.`,
+        'success',
+      );
+    } catch (err) {
+      console.error('Failed to update the add-task permission', err);
+      showToast('Unable to update the add-task permission. Please try again.', 'error');
+    } finally {
+      setPendingAddTaskId(null);
+    }
+  };
+
   const handleDeleteMember = async (id: number) => {
     if (await confirmAction('Delete member?', 'This member will be permanently removed from the directory.')) {
       try {
@@ -801,6 +874,7 @@ export const AdminMembers: React.FC = () => {
                   <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Designation</th>
                   <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Date of Joining</th>
                   <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Date of Birth</th>
+                  <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Add Task</th>
                   {canManageMembers && (
                     <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px] text-right">Action</th>
                   )}
@@ -809,13 +883,13 @@ export const AdminMembers: React.FC = () => {
               <tbody className="divide-y divide-slate-100">
                 {showFirstLoad ? (
                   <tr>
-                    <td colSpan={canManageMembers ? 7 : 6} className="px-6 py-8">
+                    <td colSpan={canManageMembers ? 8 : 7} className="px-6 py-8">
                       <LoadingSpinner />
                     </td>
                   </tr>
                 ) : isError ? (
                   <tr>
-                    <td colSpan={canManageMembers ? 7 : 6} className="px-6 py-12 text-center text-red-500">
+                    <td colSpan={canManageMembers ? 8 : 7} className="px-6 py-12 text-center text-red-500">
                       Failed to fetch members. Please try again.
                     </td>
                   </tr>
@@ -848,6 +922,14 @@ export const AdminMembers: React.FC = () => {
                       <td className="px-6 py-4 font-medium text-slate-600">{member.designation || '-'}</td>
                       <td className="px-6 py-4 font-medium text-slate-600">{formatDate(member.date_of_joining)}</td>
                       <td className="px-6 py-4 font-medium text-slate-600">{formatDate(member.date_of_birth)}</td>
+                      <td className="px-6 py-4">
+                        <AddTaskSwitch
+                          allowed={member.can_add_tasks !== false}
+                          editable={canManageMembers}
+                          busy={pendingAddTaskId === member.id}
+                          onChange={(allowed) => handleSetAddTask(member, allowed)}
+                        />
+                      </td>
                       {canManageMembers && (
                         <td className="px-6 py-4 text-right">
                           <div className="flex items-center justify-end gap-2">
@@ -870,7 +952,7 @@ export const AdminMembers: React.FC = () => {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={canManageMembers ? 7 : 6} className="px-6 py-12 text-center text-slate-500">
+                    <td colSpan={canManageMembers ? 8 : 7} className="px-6 py-12 text-center text-slate-500">
                       No members found matching your criteria.
                     </td>
                   </tr>

@@ -13,6 +13,7 @@ import { formatHMS } from "../../utils/duration";
 import { PaginationArrow } from '../../components/PaginationArrow';
 import { ProjectMultiSelect } from '../dashboard/v2/filters';
 import { FieldError, useFormValidation } from '../../validation';
+import { useAuth } from '../auth/authContext';
 
 const formatDate = (dateStr: string | null) => {
   if (!dateStr) return "-";
@@ -205,6 +206,11 @@ export const AdminTaskListing: React.FC = () => {
   const { data: employeesData } = useGetAssignableEmployeesQuery();
   const [createTask, { isLoading: isCreatingTask }] = useCreateTaskMutation();
   const { showToast } = useFeedback();
+  // The Members directory's Allow / Not allow switch applies to this
+  // account too: the backend refuses the create, so the button is not
+  // offered rather than shown and bounced.
+  const { currentUser } = useAuth();
+  const canAddTasks = currentUser?.can_add_tasks !== false;
 
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [formProjectId, setFormProjectId] = useState<number | "">("");
@@ -333,19 +339,21 @@ export const AdminTaskListing: React.FC = () => {
       actions={
         <div className="flex items-center gap-3">
           <InlineRefreshIndicator active={isFetching && !showFirstLoad} />
-          <button
-            onClick={() => {
-              setFormProjectId("");
-              setFormTaskName("");
-              setFormError(null);
-              setFormAssigneeId("");
-              setFormStatusId(metadata?.task_statuses?.[0]?.id || 1);
-              setIsDrawerOpen(true);
-            }}
-            className="rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90"
-          >
-            + Add Task
-          </button>
+          {canAddTasks && (
+            <button
+              onClick={() => {
+                setFormProjectId("");
+                setFormTaskName("");
+                setFormError(null);
+                setFormAssigneeId("");
+                setFormStatusId(metadata?.task_statuses?.[0]?.id || 1);
+                setIsDrawerOpen(true);
+              }}
+              className="rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90"
+            >
+              + Add Task
+            </button>
+          )}
         </div>
       }
     >

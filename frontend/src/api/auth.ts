@@ -220,6 +220,8 @@ export interface UserRead {
   designation?: string | null;
   role_name: string;
   permissions: Record<string, boolean>;
+  /** False when an administrator switched Add Task off for this account (Members page). */
+  can_add_tasks?: boolean;
   is_active: boolean;
 }
 
