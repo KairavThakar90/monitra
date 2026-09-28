@@ -522,6 +522,7 @@ class DashboardWindow(QWidget):
         self._topbar.add_task_clicked.connect(self._task_section.open_add_task_dialog)
         self._topbar.search_changed.connect(self._task_section.apply_search)
         self._task_section.add_task_available.connect(self._topbar.set_add_task_enabled)
+        self._task_section.task_creation_blocked.connect(self._topbar.set_add_task_blocked_reason)
         self._task_section.setMinimumHeight(220)
         self._content_splitter.addWidget(self._task_section)
 
@@ -1023,10 +1024,7 @@ class DashboardWindow(QWidget):
         never made to wait on the network to reach a usable screen.
         """
         self._active = True
-        self._sidebar.set_user(user_data)
-        self._task_section.set_user_role(user_data.get("role_name"))
-        self._user_id = user_data.get("id")
-        self._task_section.set_user_id(user_data.get("id"))
+        self._apply_profile(user_data)
         self._activity_section.set_enabled(True)
         # The profile already carries idle_enabled/idle_minutes, so the user's
         # own threshold is in effect before tracking can start -- without the
@@ -1059,10 +1057,51 @@ class DashboardWindow(QWidget):
         """The restored token was confirmed by the backend."""
         self.api.apply_idle_profile(user_data)
         self.api.apply_screenshot_profile(user_data)
+        self._apply_profile(user_data)
+
+    def _apply_profile(self, user_data: dict) -> None:
+        """Render the signed-in user's profile: who they are, their role, and
+        the per-member switches an administrator controls from the Members
+        directory. Called with the `/auth/me` payload at login, at session
+        verification and on every refresh round, so a switch flipped on the
+        web reaches this window without a restart.
+        """
+        if not isinstance(user_data, dict):
+            return
         self._sidebar.set_user(user_data)
         self._task_section.set_user_role(user_data.get("role_name"))
         self._user_id = user_data.get("id")
         self._task_section.set_user_id(user_data.get("id"))
+        self._task_section.set_task_creation_allowed(user_data.get("can_add_tasks", True))
+
+    def _load_profile(self, on_done: Optional[Callable[[bool], None]] = None) -> bool:
+        """Re-read `/auth/me` as part of a refresh round.
+
+        The profile carries the per-member switches (`can_add_tasks`) that an
+        administrator flips from the web while this window is open. It is
+        part of the sync fingerprint the probe watches, so an admin change
+        triggers a round within SYNC_PROBE_INTERVAL_MS; the periodic round
+        covers a backend without the probe. The profile is persisted with the
+        session so an offline restart shows the last known state.
+        """
+        def call():
+            return self.api_client.get("/auth/me").json()
+
+        return self._run_load(
+            call,
+            self._on_profile_loaded,
+            lambda exc: log.info("could not refresh the profile: %s", exc),
+            key="load-profile",
+            on_done=on_done,
+        )
+
+    def _on_profile_loaded(self, user_data: Any) -> None:
+        if not self._active or not isinstance(user_data, dict):
+            return
+        token = self.session_manager.access_token
+        if token:
+            self.session_manager.start_session(token, user_data)
+        self._apply_profile(user_data)
 
     def reset_state(self) -> None:
         """Clear everything session-scoped on logout."""
@@ -1101,6 +1140,8 @@ class DashboardWindow(QWidget):
         self._projects = []
         self._current_project = None
         self._user_id = None
+        # The next user starts allowed until their own profile says otherwise.
+        self._task_section.set_task_creation_allowed(True)
         self._today_time_entries = []
         self._today_activity = TodaySnapshot()
         self._pending_active_timer = None
@@ -1883,8 +1924,9 @@ class DashboardWindow(QWidget):
 
     def refresh_data(self) -> None:
         """
-        Re-fetch everything the dashboard displays: projects, task statuses,
-        the selected project's tasks, and the viewed day's time entries. Each
+        Re-fetch everything the dashboard displays: projects, the user's own
+        profile, task statuses, the selected project's tasks, and the viewed
+        day's time entries. Each
         fetch caches its result and re-renders its own widgets, so the screen
         shows the backend's current data rather than the previous snapshot.
 
@@ -1931,6 +1973,7 @@ class DashboardWindow(QWidget):
         # first step can decrement it.
         started = sum((
             self.load_projects(on_done=self._on_refresh_step),
+            self._load_profile(on_done=self._on_refresh_step),
             self._load_task_statuses(on_done=self._on_refresh_step),
             self._load_today_time(self._current_date, on_done=self._on_refresh_step),
             self._load_today_activity(on_done=self._on_refresh_step),

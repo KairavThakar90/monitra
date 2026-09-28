@@ -436,6 +436,16 @@ class TopBar(QFrame):
         """Add Task is only meaningful once a project is selected."""
         self._add_task_btn.setEnabled(enabled)
 
+    def set_add_task_blocked_reason(self, reason: str) -> None:
+        """Why Add Task is off for this user regardless of the project (an
+        administrator switched it off in the Members directory), or "" to
+        restore the ordinary hint. The enabled state itself still arrives
+        through `set_add_task_enabled`; this only explains it."""
+        self._add_task_btn.setToolTip(reason or "Add a task to the selected project")
+
+    def add_task_tooltip(self) -> str:
+        return self._add_task_btn.toolTip()
+
     def search_text(self) -> str:
         return self._search.text()
 
