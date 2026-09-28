@@ -1,0 +1,22 @@
+# Pyrefly (type checker / IDE language server) configuration for the desktop
+# client. The desktop is its own Python project: modules import as
+# `core.…`, `background_services.…`, `tracking.…`, so this directory is the
+# import root.
+#
+# `basic` is the preset Pyrefly applies when it finds no config at all, so
+# this file changes nothing about which checks run; it exists only to make
+# the macOS-only imports below resolvable. Raising the preset is a separate,
+# deliberate decision: at the time of writing `default` reports ~570
+# pre-existing errors across the tree.
+preset = "basic"
+
+# The macOS-only pyobjc frameworks. They are installed solely on Darwin (see
+# the `sys_platform == "darwin"` markers in requirements.txt) and are imported
+# lazily inside functions that only run there, so on Windows and Linux they
+# are legitimately absent from the environment. `ignore-missing-imports`
+# treats them as `Any` *only* when they cannot be found -- on a Mac with
+# pyobjc installed they are still checked.
+#
+# `tests/test_pyrefly_platform_imports.py` fails if a macOS-only framework is
+# imported anywhere in the tree without being listed here.
+ignore-missing-imports = ["AppKit", "Quartz"]
