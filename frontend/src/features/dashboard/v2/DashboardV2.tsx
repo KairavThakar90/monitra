@@ -452,7 +452,11 @@ export const DashboardV2: React.FC = () => {
                 billableProjects.length === 0 ? (
                   emptyBillingNote("billable projects")
                 ) : (
-                  <ul className="flex max-h-80 flex-col gap-1 overflow-y-auto">
+                  // No overflow-y-auto here: each row's hover card escapes
+                  // upward via absolute + -translate-y-full, and a scroll
+                  // container clips that -- the card is left to grow, same
+                  // as Top Projects/Top Apps already do.
+                  <ul className="flex flex-col gap-1">
                     {billableProjects.map((project) => (
                       <BillableProjectRow key={project.project_id} project={project} />
                     ))}
@@ -464,7 +468,7 @@ export const DashboardV2: React.FC = () => {
                 internalProjects.length === 0 ? (
                   emptyBillingNote("internal projects")
                 ) : (
-                  <ul className="flex max-h-80 flex-col gap-1 overflow-y-auto">
+                  <ul className="flex flex-col gap-1">
                     {internalProjects.map((project) => (
                       <InternalProjectRow key={project.project_id} project={project} />
                     ))}
