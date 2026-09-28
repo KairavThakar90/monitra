@@ -60,12 +60,7 @@ sys.exit(code or 0)
 def run_cycle(index: int, uptime: float, timeout: float) -> dict:
     """Run one launch/quit cycle in a subprocess."""
     script = CHILD.format(root=str(DESKTOP_ROOT), uptime=uptime)
-    # Inherit the caller's QT_QPA_PLATFORM (the CHILD script's own
-    # os.environ.setdefault still falls back to "offscreen" if the caller
-    # left it unset). A hardcoded "offscreen" here silently ignored a
-    # deliberately chosen platform -- e.g. CI running under Xvfb with "xcb"
-    # to avoid a known offscreen-backend Qt segfault on Ubuntu.
-    env = dict(os.environ, MONITRA_LOG_LEVEL="INFO")
+    env = dict(os.environ, MONITRA_LOG_LEVEL="INFO", QT_QPA_PLATFORM="offscreen")
 
     started = time.monotonic()
     try:
