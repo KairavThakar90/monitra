@@ -30,7 +30,18 @@ re-grant a permission.
   the Activity panel takes the rest, kept at least one row of screenshots
   tall while the window has the room. Maximise, restore and dragging the
   window edge all land on the same layout for the same size, and a divider
-  you have dragged yourself keeps the height you gave it.
+  you have dragged yourself keeps the height you gave it. When the window is
+  too short for both, the task list is shortened by whole rows -- never cut
+  through one -- and the Activity panel gives up the few pixels left over.
+- **The four summary cards fit on one line in a maximised window.** Each
+  card claimed 190px for its value on the strength of a measurement taken
+  on a platform with no real fonts; on Windows the clock is 104px wide. The
+  cards therefore wrapped to two rows on any content area narrower than
+  1226px -- including a maximised window on a 1920x1080 display at 125%
+  scaling -- and took 206px from the sections below. Each card's floor is
+  now measured from the display's own fonts, for its value and its caption,
+  so the cards go to one line wherever the window has the width for it. The
+  1280x800 default window is unchanged.
 
 ## [1.2.7]
 

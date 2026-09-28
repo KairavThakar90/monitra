@@ -15,11 +15,18 @@ minimums and there was no surplus to misplace.
 `ContentSplitter` keeps the drag handle and replaces the *default* rule:
 
 * Until the user moves the handle, the top pane is given the height its
-  content asks for (`top_need`) and the bottom pane takes the rest, except
-  that the bottom pane is never squeezed below the height at which it stops
-  being usable (`bottom_floor`) while the window has room for both. When the
-  window does not have room, the top pane scrolls -- that is what its own
-  scroll area is for.
+  content asks for (`top_fits`, whose last entry is the whole content) and
+  the bottom pane takes the rest, except that the bottom pane is never
+  squeezed below the height at which it stops being usable (`bottom_floor`)
+  while the window has room for both.
+* When the window does not have room for both, the top pane scrolls -- that
+  is what its own scroll area is for -- but it is cut only *between* rows:
+  it takes the smallest of its whole-row heights that covers what is left
+  above the bottom pane's floor, and the bottom pane yields the sub-row
+  difference. A task list clipped mid-row looks broken; a panel of
+  screenshot cards whose last row runs past the edge looks like something
+  to scroll. The bottom pane therefore never loses more than one row's
+  height of its floor to this.
 * Once the user has moved the handle, the top pane keeps the height they
   gave it across every later resize, and the bottom pane takes the rest.
   Their choice is a height, not a proportion: maximising the window then
@@ -31,7 +38,7 @@ only on the height the splitter has now, never on how it got there.
 """
 from __future__ import annotations
 
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QSplitter, QWidget
@@ -45,6 +52,7 @@ def split_heights(
     bottom_min: int,
     bottom_floor: int,
     top_user: Optional[int] = None,
+    top_fits: Optional[Sequence[int]] = None,
 ) -> Tuple[int, int]:
     """Divide `available` pixels between the two panes.
 
@@ -57,6 +65,11 @@ def split_heights(
         usable. Honoured while there is room; a preference, not a minimum.
     :param top_user: The height the user gave the top pane by dragging the
         handle, or None if they have not.
+    :param top_fits: Ascending heights at which the top pane's content is
+        cut between rows rather than through one (the last is `top_need`).
+        When the content does not fit above the floor, the top pane takes
+        the smallest of these that covers its share, so no row is clipped.
+        None means the pane may be cut anywhere.
 
     Returns `(top, bottom)`. The pair always sums to `available` when the
     minimums fit; when they do not, the top pane gets its minimum and the
@@ -64,11 +77,23 @@ def split_heights(
     takes it from there.
     """
     if top_user is not None:
-        wanted, reserve = top_user, bottom_min
+        top = min(top_user, available - bottom_min)
     else:
-        wanted, reserve = top_need, max(bottom_min, bottom_floor)
-
-    top = min(wanted, available - reserve)
+        budget = available - max(bottom_min, bottom_floor)
+        if top_need <= budget or not top_fits:
+            top = min(top_need, budget)
+        else:
+            # Cut between rows: the smallest whole-row height that covers
+            # the budget -- and the pane's own minimum, or the clamp below
+            # would land it mid-row -- without pushing the bottom pane under
+            # its minimum. The bottom pane yields the difference, which is
+            # less than one row by construction. A window too short for
+            # even that falls back to the plain budget, and the minimums
+            # decide.
+            threshold = max(budget, top_min)
+            cap = max(top_min, available - bottom_min)
+            covering = [fit for fit in top_fits if threshold <= fit <= cap]
+            top = covering[0] if covering else min(top_need, budget)
     top = max(top, top_min)
     # Never push the bottom pane under its minimum while there is room to
     # avoid it -- a floor may be asked for by content, a minimum may not be
@@ -86,7 +111,7 @@ class ContentSplitter(QSplitter):
         # A section collapsed to 0 height would look like it vanished --
         # each side keeps a usable minimum instead.
         self.setChildrenCollapsible(False)
-        self._top_need: Optional[Callable[[], int]] = None
+        self._top_fits: Optional[Callable[[], Sequence[int]]] = None
         self._bottom_floor: Optional[Callable[[], int]] = None
         #: The top pane's height as the user last dragged it; None until they
         #: do. From then on the content no longer decides the split.
@@ -97,12 +122,16 @@ class ContentSplitter(QSplitter):
         self.splitterMoved.connect(self._on_user_moved)
 
     def set_content_sizing(
-        self, top_need: Callable[[], int], bottom_floor: Callable[[], int]
+        self,
+        top_fits: Callable[[], Sequence[int]],
+        bottom_floor: Callable[[], int],
     ) -> None:
         """Install the two measurements the split is computed from. Both are
         callables, read at every resize, so they always describe the content
-        as it is now."""
-        self._top_need = top_need
+        as it is now. `top_fits` returns the ascending heights at which the
+        top pane's content is cut between rows, ending with the height at
+        which all of it shows."""
+        self._top_fits = top_fits
         self._bottom_floor = bottom_floor
         self.relayout()
 
@@ -148,18 +177,20 @@ class ContentSplitter(QSplitter):
     def target_sizes(self, available_with_handle: int) -> Optional[List[int]]:
         """The sizes this splitter would apply at the given total height, or
         None while it has fewer than two panes or no measurements yet."""
-        if self.count() < 2 or self._top_need is None or self._bottom_floor is None:
+        if self.count() < 2 or self._top_fits is None or self._bottom_floor is None:
             return None
         available = available_with_handle - self.handle_height()
         if available <= 0:
             return None
+        fits = list(self._top_fits())
         top, bottom = split_heights(
             available,
-            top_need=self._top_need(),
+            top_need=fits[-1] if fits else 0,
             top_min=self._minimum_height(self.widget(0)),
             bottom_min=self._minimum_height(self.widget(1)),
             bottom_floor=self._bottom_floor(),
             top_user=self._user_top_height,
+            top_fits=fits,
         )
         return [top, bottom]
 

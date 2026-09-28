@@ -1890,16 +1890,29 @@ class TaskSection(QWidget):
         the container's hint leaves it out -- so the figure announced at
         the end of a rebuild would have been that of an empty list.
         """
-        height = self._column_header.height()
-        if self._task_rows:
-            spacing = max(0, self._rows_layout.spacing())
-            height += sum(row.sizeHint().height() for row in self._task_rows)
-            height += spacing * (len(self._task_rows) - 1)
-        elif not self._status_label.isHidden():
-            height += self._status_label.sizeHint().height()
+        return self.content_heights()[-1]
+
+    def content_heights(self) -> List[int]:
+        """Ascending heights at which this section is cut *between* rows:
+        the chrome alone, then the chrome with one row, two rows, and so on
+        up to the whole page (`content_height()`).
+
+        The splitter uses these when the page does not fit above the
+        Activity panel's floor, so the list is shortened by whole rows and
+        never shows a row sliced through the middle.
+        """
+        chrome = self._column_header.height()
         if not self._pagination_widget.isHidden():
-            height += self._pagination_widget.height()
-        return height
+            chrome += self._pagination_widget.height()
+        if not self._task_rows:
+            if not self._status_label.isHidden():
+                chrome += self._status_label.sizeHint().height()
+            return [chrome]
+        spacing = max(0, self._rows_layout.spacing())
+        heights = [chrome]
+        for index, row in enumerate(self._task_rows):
+            heights.append(heights[-1] + row.sizeHint().height() + (spacing if index else 0))
+        return heights
 
     def set_tasks(
         self,
