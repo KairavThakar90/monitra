@@ -1335,8 +1335,6 @@ class ActivitySection(QWidget):
         self._selected_date = ist_today()
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        #: See `usable_height`. Measured once, on first use.
-        self._screenshot_row_height: Optional[int] = None
         self._build_ui()
 
         # A UI-only refresh timer. It schedules work through the bounded pool
@@ -1440,38 +1438,6 @@ class ActivitySection(QWidget):
         if hasattr(self, "view_act") and hasattr(self.view_act, "set_tracking_active"):
             self.view_act.set_tracking_active(active)
 
-    def usable_height(self) -> int:
-        """The height below which this panel stops being usable: its header,
-        the divider, the search bar and one full row of screenshot cards
-        with the scroll area's margins around it.
-
-        Read by the dashboard's content splitter, which keeps the panel at
-        least this tall while the window has the room, so that giving the
-        task list the height its rows need never leaves the first row of
-        screenshots cut off underneath. It is a preference, not a minimum:
-        in a window too short for both sections the panel shrinks to its
-        minimum like anything else.
-
-        The card height is measured from a real `ScreenshotCard`, not
-        written down: the card sizes itself from the font metrics of the
-        display it is on (see its constructor), and a constant that fitted
-        one platform's fonts was already 6px short on another.
-        """
-        if self._screenshot_row_height is None:
-            template = ScreenshotCard({}, None)
-            self._screenshot_row_height = template.height()
-            template.deleteLater()
-        margins = self.scroll_layout.contentsMargins()
-        card_margins = self.card.contentsMargins()
-        return (
-            card_margins.top() + card_margins.bottom()
-            + self._header.sizeHint().height()
-            + self._divider.height()
-            + self._search_bar.sizeHint().height()
-            + margins.top() + margins.bottom()
-            + self._screenshot_row_height
-        )
-
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1498,7 +1464,6 @@ class ActivitySection(QWidget):
         # drove real data (refresh() sets each tab's mode from actual API
         # results) and is gone entirely rather than relocated.
         header = QWidget(self.card)
-        self._header = header
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(20, 14, 16, 14)
         header_layout.setSpacing(12)
@@ -1557,7 +1522,6 @@ class ActivitySection(QWidget):
         div.setFrameShape(QFrame.Shape.HLine)
         div.setStyleSheet(f"background: {BORDER_LIGHT}; border: none;")
         div.setFixedHeight(1)
-        self._divider = div
         card_layout.addWidget(div)
 
         # Search bar. It filters the Apps and URLs lists that are already in

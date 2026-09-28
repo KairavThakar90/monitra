@@ -20,18 +20,6 @@ re-grant a permission.
 
 ## [Unreleased]
 
-### Fixed
-
-- **A maximised window now uses its height.** The divider between the task
-  list and the Activity panel split the content area in a fixed 40/60
-  proportion whatever was on screen, so maximising showed three rows of a
-  ten-row task page behind a scrollbar while the Activity panel below was
-  mostly empty. The task list is now given the height its page needs and
-  the Activity panel takes the rest, kept at least one row of screenshots
-  tall while the window has the room. Maximise, restore and dragging the
-  window edge all land on the same layout for the same size, and a divider
-  you have dragged yourself keeps the height you gave it.
-
 ## [1.2.7]
 
 ### Fixed
