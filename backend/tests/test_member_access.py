@@ -63,6 +63,8 @@ DASHBOARD_PAYLOAD = {
                     "total_seconds": 0, "total_hours": 0.0},
     "top_apps": {"items": [], "page": 1, "limit": 10, "total": 0, "pages": 0,
                  "total_seconds": 0, "total_hours": 0.0, "total_app_hours": 0.0},
+    "billable_projects": [],
+    "internal_projects": [],
 }
 
 SUMMARY_PAYLOAD = {"total_seconds": 0, "total_hours": 0.0, "avg_activity": None,

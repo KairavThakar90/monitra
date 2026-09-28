@@ -133,6 +133,46 @@ class TopAppItem(BaseModel):
     )
 
 
+class ProjectBillingProgress(BaseModel):
+    project_id: int
+    project_name: str
+    billing_type: str = Field(..., description="'fixed' or 'free', from Project.billing_type.")
+    fixed_hours: Optional[float] = Field(
+        None,
+        description="The project's fixed-hour budget. Null for every 'free'-billing project "
+                    "(the backend refuses to let one have fixed_hours set) and for a 'fixed' one "
+                    "still missing its budget.",
+        examples=[1200.0],
+    )
+    completed_seconds: int = Field(
+        ...,
+        description="All-time tracked seconds (timer + approved manual), not scoped to the "
+                    "dashboard's selected date range -- what a fixed-hour budget is measured "
+                    "against over the project's whole life, not a viewing window.",
+        examples=[3888000],
+    )
+    completed_hours: float = Field(..., description="completed_seconds as hours, 2dp.", examples=[1080.0])
+    usage_percentage: Optional[float] = Field(
+        None,
+        description="completed_hours / fixed_hours * 100, 2dp. Null when fixed_hours is null -- "
+                    "there is nothing to take a percentage of.",
+        examples=[90.0],
+    )
+    tracked_seconds: int = Field(
+        ...,
+        description="Tracked seconds within the dashboard's selected date range -- the same "
+                    "figure Top Projects ranks by, so 'Time Tracked' here agrees with it.",
+        examples=[28800],
+    )
+    tracked_hours: float = Field(..., description="tracked_seconds as hours, 2dp.", examples=[8.0])
+    avg_activity: Optional[float] = Field(
+        None,
+        description="Average activity_percentage within the selected date range, weighted by "
+                    "sample count. Null when nothing in range was activity-sampled.",
+        examples=[73.4],
+    )
+
+
 TopProjectPage = Page[TopProjectItem]
 TopMemberPage = Page[TopMemberItem]
 
@@ -153,3 +193,14 @@ class DashboardResponse(BaseModel):
     top_projects: TopProjectPage
     top_members: TopMemberPage
     top_apps: TopAppPage
+    billable_projects: list[ProjectBillingProgress] = Field(
+        ...,
+        description="Non-archived 'fixed'-billing projects -- the Top Projects card's Billable "
+                    "filter tab.",
+    )
+    internal_projects: list[ProjectBillingProgress] = Field(
+        ...,
+        description="Non-archived 'free'-billing projects -- the Top Projects card's Free Time / "
+                    "Internal filter tab. usage_percentage is always null here: a free project "
+                    "has no fixed_hours to measure against.",
+    )

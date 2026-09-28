@@ -21,13 +21,22 @@ from typing import Optional
 from sqlalchemy import Date, Float, case, cast, distinct, func, select
 from sqlalchemy.orm import Session
 
+from app.core.time_format import ist_day_end_utc, ist_day_start_utc
 from app.models.project import Project
 from app.react_apis.reports_page.repository import ReportFilters, ReportsPageRepository
+from app.repositories.reports import ReportsRepository
 
 #: Projects in this status are excluded from the "active projects" card. The
 #: projects table already carries active/todo/pending/completed/archived --
 #: no new status is introduced for the dashboard.
 ARCHIVED_PROJECT_STATUS = "archived"
+
+#: Stand-ins for "every entry there has ever been", the same sentinel shape
+#: ReportsService uses for project-task-summary's all-time mode. A fixed-hour
+#: budget is a lifetime figure, so billing_progress's completed_hours always
+#: sums this whole span regardless of the dashboard's selected date range.
+_EPOCH_DATE = date(1970, 1, 1)
+_FAR_FUTURE_DATE = date(2999, 12, 31)
 
 
 class DashboardRepository:
@@ -110,3 +119,59 @@ class DashboardRepository:
         """Denominator for the donut chart's percentages: app usage seconds
         across the whole filtered scope, not just the page being shown."""
         return ReportsPageRepository.usage_total_seconds(db, filters, "app", search)
+
+    @staticmethod
+    def billing_progress(db: Session, filters: ReportFilters) -> list[dict]:
+        """Every non-archived project (scoped to `filters.project_ids`, same
+        as every other dashboard section) paired with both:
+
+        * all-time completed seconds -- what a fixed-hour budget is measured
+          against, independent of the selected date range;
+        * this range's tracked seconds and average activity -- the same
+          entry-grain definition Top Projects ranks by, so a project's "Time
+          Tracked" here always agrees with it.
+
+        Grouped directly rather than through `ReportsPageRepository.projects`,
+        whose inner join to Project would silently omit a project with
+        nothing tracked in the selected range -- exactly the "zero tracked
+        hours" case the Billable / Internal tabs have to handle correctly.
+        """
+        organization_id = filters.organization_id
+        project_filters = [Project.organization_id == organization_id, Project.status != ARCHIVED_PROJECT_STATUS]
+        if filters.project_ids:
+            project_filters.append(Project.id.in_(filters.project_ids))
+        projects = list(
+            db.scalars(
+                select(Project).where(*project_filters).order_by(Project.created_at.desc(), Project.id.desc())
+            ).all()
+        )
+        page_ids = [project.id for project in projects]
+
+        completed_seconds = ReportsRepository.session_seconds_by(
+            db, organization_id, page_ids, None,
+            ist_day_start_utc(_EPOCH_DATE), ist_day_end_utc(_FAR_FUTURE_DATE),
+            _EPOCH_DATE, _FAR_FUTURE_DATE, "project_id",
+        )
+
+        entries = ReportsPageRepository.entry_grain_subquery(filters)
+        range_query = (
+            select(entries.c.project_id, *ReportsPageRepository._metric_columns(entries))
+            .select_from(entries)
+            .group_by(entries.c.project_id)
+        )
+        range_by_project = {row.project_id: row for row in db.execute(range_query).all()}
+
+        result = []
+        for project in projects:
+            range_row = range_by_project.get(project.id)
+            result.append({
+                "project": project,
+                "completed_seconds": completed_seconds.get(project.id, 0),
+                "tracked_seconds": float(range_row.total_seconds) if range_row else 0.0,
+                "avg_activity": (
+                    float(range_row.avg_activity)
+                    if range_row is not None and range_row.avg_activity is not None
+                    else None
+                ),
+            })
+        return result

@@ -7,6 +7,7 @@ import { DateRangeFilter, DEFAULT_RANGE } from "./filters";
 import type { DateRange } from "./filters";
 import { brand, series } from "./theme";
 import { useGetReactDashboardQuery } from "../../../store/api/dashboardApi";
+import type { ReactDashboardProjectBilling } from "../../../store/api/dashboardApi";
 import { formatHMS, formatHoursAsHMS, secondsOf } from "../../../utils/duration";
 import { DashboardSkeleton } from "./skeletons";
 
@@ -41,9 +42,102 @@ const previousRange = (range: DateRange): { start_date: string; end_date: string
 const longDate = (iso: string) =>
   parseIso(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 
+/** The Top Projects card's filter tabs. */
+type ProjectFilterTab = "top" | "billable" | "internal";
+
+/**
+ * Budget-usage color for a Billable project's progress bar, against the
+ * project's own fixed_hours -- not a generic 0-100 gauge. Under 80% is still
+ * early days, 80-99% is closing in, 100-109% landed on target, 110%+ is
+ * meaningfully over budget. Bands, not a gradient: a project is either in one
+ * state or another, never "a bit of both".
+ */
+const usageColor = (pct: number): string => {
+  if (pct >= 110) return "#F43F5E"; // rose-500 -- over budget
+  if (pct >= 100) return "#10B981"; // emerald-500 -- on target
+  if (pct >= 80) return "#F97316"; // orange-500 -- closing in
+  return "#EAB308"; // yellow-500 -- just started
+};
+
+const HoverStat: React.FC<{ label: string; value: string }> = ({ label, value }) => (
+  <div className="flex items-center justify-between gap-4 py-0.5">
+    <span className="text-[11px] text-slate-500">{label}</span>
+    <span className="text-[11px] font-semibold text-slate-800">{value}</span>
+  </div>
+);
+
+/** One Billable row: name, usage %, a color-banded progress bar, and a hover
+ * card with the hour/activity breakdown behind that percentage. */
+const BillableProjectRow: React.FC<{ project: ReactDashboardProjectBilling }> = ({ project }) => {
+  const fixedHours = project.fixed_hours ?? 0;
+  const fixedSeconds = Math.round(fixedHours * 3600);
+  const remainingSeconds = fixedSeconds - project.completed_seconds;
+  const pct = project.usage_percentage ?? 0;
+  const color = usageColor(pct);
+  const barWidth = Math.min(Math.max(pct, 0), 100);
+
+  return (
+    <li className="group relative rounded-lg px-3 py-2.5 transition hover:bg-slate-50/60">
+      <div className="flex items-center justify-between gap-3">
+        <span className="truncate text-[13px] font-medium text-slate-700">{project.project_name}</span>
+        <span className="shrink-0 text-[12px] font-bold" style={{ color }}>
+          {pct.toFixed(0)}%
+        </span>
+      </div>
+      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#F1F5F9]">
+        <div
+          className="h-full rounded-full transition-all duration-500 ease-out"
+          style={{ width: `${barWidth}%`, backgroundColor: color }}
+        />
+      </div>
+
+      {/* Hover detail card -- the rich-card language the trend chart's own
+          tooltip uses, not the compact one-liner RankedBars uses, since this
+          one carries several figures rather than one. */}
+      <div className="pointer-events-none absolute left-1/2 top-0 z-20 hidden w-60 -translate-x-1/2 -translate-y-full rounded-xl border border-[#E2E8F0] bg-white px-3 py-2.5 shadow-lg group-hover:block">
+        <div className="mb-1.5 truncate text-[12px] font-bold text-slate-800">{project.project_name}</div>
+        <HoverStat label="Completed Hours" value={formatHMS(project.completed_seconds)} />
+        <HoverStat
+          label={remainingSeconds >= 0 ? "Remaining Hours" : "Over Budget By"}
+          value={formatHMS(Math.abs(remainingSeconds))}
+        />
+        <HoverStat label="Fixed Hours" value={formatHoursAsHMS(fixedHours)} />
+        <HoverStat label="Usage" value={`${pct.toFixed(1)}%`} />
+        {project.avg_activity !== null && (
+          <HoverStat label="Activity" value={`${project.avg_activity.toFixed(0)}%`} />
+        )}
+      </div>
+    </li>
+  );
+};
+
+/** One Free Time / Internal row: name and this range's tracked hours -- a
+ * free project has no fixed_hours budget, so there is no percentage to color. */
+const InternalProjectRow: React.FC<{ project: ReactDashboardProjectBilling }> = ({ project }) => (
+  <li className="group relative flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 transition hover:bg-slate-50/60">
+    <div className="flex flex-col truncate pr-4">
+      <span className="truncate text-[13px] font-medium text-slate-700">{project.project_name}</span>
+      <span className="truncate text-[11px] text-slate-500">
+        {project.avg_activity === null ? "No activity samples" : `${project.avg_activity.toFixed(0)}% active`}
+      </span>
+    </div>
+    <span className="shrink-0 text-[13px] font-semibold text-slate-800">{formatHMS(project.tracked_seconds)}</span>
+
+    <div className="pointer-events-none absolute left-1/2 top-0 z-20 hidden w-56 -translate-x-1/2 -translate-y-full rounded-xl border border-[#E2E8F0] bg-white px-3 py-2.5 shadow-lg group-hover:block">
+      <div className="mb-1.5 truncate text-[12px] font-bold text-slate-800">{project.project_name}</div>
+      <HoverStat label="Completed Hours" value={formatHMS(project.completed_seconds)} />
+      <HoverStat label="Time Tracked" value={formatHMS(project.tracked_seconds)} />
+      {project.avg_activity !== null && (
+        <HoverStat label="Activity" value={`${project.avg_activity.toFixed(0)}%`} />
+      )}
+    </div>
+  </li>
+);
+
 export const DashboardV2: React.FC = () => {
   const navigate = useNavigate();
   const [range, setRange] = useState<DateRange>(DEFAULT_RANGE);
+  const [projectTab, setProjectTab] = useState<ProjectFilterTab>("top");
 
   const { data, isFetching, isError } = useGetReactDashboardQuery({
     start_date: range.from,
@@ -140,8 +234,20 @@ export const DashboardV2: React.FC = () => {
   );
 
   const topProjects = data?.top_projects.items ?? [];
-  const topMembers = data?.top_members.items ?? [];
   const topApps = useMemo(() => data?.top_apps.items ?? [], [data]);
+  // Most-at-risk first: a project already over budget, or closing in on it,
+  // is what the Billable tab exists to surface -- not whichever project
+  // happens to be newest, which is the list's underlying server order.
+  const billableProjects = useMemo(
+    () => [...(data?.billable_projects ?? [])].sort(
+      (a, b) => (b.usage_percentage ?? 0) - (a.usage_percentage ?? 0)
+    ),
+    [data]
+  );
+  const internalProjects = useMemo(
+    () => [...(data?.internal_projects ?? [])].sort((a, b) => b.tracked_hours - a.tracked_hours),
+    [data]
+  );
   const totalAppHours = data?.top_apps.total_app_hours ?? 0;
 
   /**
@@ -177,6 +283,15 @@ export const DashboardV2: React.FC = () => {
       {isFetching
         ? "Loading…"
         : `No ${label} tracked between ${longDate(range.from)} and ${longDate(range.to)}.`}
+    </p>
+  );
+
+  // Billable / Internal list every non-archived project of that billing type
+  // unconditionally (zero tracked hours included), so an empty list means
+  // "none configured", never "none tracked in this range".
+  const emptyBillingNote = (label: string) => (
+    <p className="py-10 text-center text-[13px] text-[#94A3B8]">
+      {isFetching ? "Loading…" : `No ${label} yet.`}
     </p>
   );
 
@@ -275,58 +390,86 @@ export const DashboardV2: React.FC = () => {
             </div>
           </div>
 
-          {/* Top 3 Lists */}
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-            {/* Top Projects */}
+          {/* Top Lists */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            {/* Top Projects, with Billable / Free Time-Internal filter tabs */}
             <div className="flex flex-col rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-sm">
-              <div className="mb-4 flex items-center justify-between">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-[13px] font-bold uppercase tracking-wider text-[#64748B]">Top Projects</h3>
-                <button
-                  onClick={() => navigate(reportLink("projects"))}
-                  className="text-[11px] font-bold text-[#2563EB] hover:underline"
-                >
-                  View All
-                </button>
+                {projectTab === "top" && (
+                  <button
+                    onClick={() => navigate(reportLink("projects"))}
+                    className="text-[11px] font-bold text-[#2563EB] hover:underline"
+                  >
+                    View All
+                  </button>
+                )}
               </div>
-              {topProjects.length === 0 ? (
-                emptyNote("project time")
-              ) : (
-                <RankedBars
-                  items={topProjects.map((p) => ({
-                    id: String(p.project_id),
-                    name: p.project_name,
-                    value: p.total_hours,
-                    meta:
-                      p.avg_activity === null ? "No activity samples" : `${p.avg_activity.toFixed(0)}% avg`,
-                    secondary: p.avg_activity ?? undefined,
-                  }))}
-                  color={series[2]}
-                  formatValue={(n) => formatHoursAsHMS(n)}
-                />
-              )}
-            </div>
 
-            {/* Top Members */}
-            <div className="flex flex-col rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-sm">
-              <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-[13px] font-bold uppercase tracking-wider text-[#64748B]">Top Members</h3>
+              {/* Filter tabs */}
+              <div className="mb-3 flex gap-1 rounded-lg bg-slate-100 p-1">
+                {(
+                  [
+                    { key: "top", label: "Top Projects" },
+                    { key: "billable", label: "Billable" },
+                    { key: "internal", label: "Free Time / Internal" },
+                  ] as { key: ProjectFilterTab; label: string }[]
+                ).map((tab) => (
+                  <button
+                    key={tab.key}
+                    onClick={() => setProjectTab(tab.key)}
+                    className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-bold transition ${
+                      projectTab === tab.key
+                        ? "bg-white text-[#0F172A] shadow-sm"
+                        : "text-slate-500 hover:text-slate-700"
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
               </div>
-              {topMembers.length === 0 ? (
-                emptyNote("member time")
-              ) : (
-                <RankedBars
-                  avatars
-                  items={topMembers.map((m) => ({
-                    id: String(m.member_id),
-                    name: m.member_name,
-                    value: m.total_hours,
-                    meta:
-                      m.avg_activity === null ? "No activity samples" : `${m.avg_activity.toFixed(0)}% active`,
-                    secondary: m.avg_activity ?? undefined,
-                  }))}
-                  color={series[4]}
-                  formatValue={(n) => formatHoursAsHMS(n)}
-                />
+
+              {projectTab === "top" && (
+                topProjects.length === 0 ? (
+                  emptyNote("project time")
+                ) : (
+                  <RankedBars
+                    items={topProjects.map((p) => ({
+                      id: String(p.project_id),
+                      name: p.project_name,
+                      value: p.total_hours,
+                      meta:
+                        p.avg_activity === null ? "No activity samples" : `${p.avg_activity.toFixed(0)}% avg`,
+                      secondary: p.avg_activity ?? undefined,
+                    }))}
+                    color={series[2]}
+                    formatValue={(n) => formatHoursAsHMS(n)}
+                  />
+                )
+              )}
+
+              {projectTab === "billable" && (
+                billableProjects.length === 0 ? (
+                  emptyBillingNote("billable projects")
+                ) : (
+                  <ul className="flex max-h-80 flex-col gap-1 overflow-y-auto">
+                    {billableProjects.map((project) => (
+                      <BillableProjectRow key={project.project_id} project={project} />
+                    ))}
+                  </ul>
+                )
+              )}
+
+              {projectTab === "internal" && (
+                internalProjects.length === 0 ? (
+                  emptyBillingNote("internal projects")
+                ) : (
+                  <ul className="flex max-h-80 flex-col gap-1 overflow-y-auto">
+                    {internalProjects.map((project) => (
+                      <InternalProjectRow key={project.project_id} project={project} />
+                    ))}
+                  </ul>
+                )
               )}
             </div>
 

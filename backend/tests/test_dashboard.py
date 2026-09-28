@@ -50,6 +50,10 @@ class RecordingSession:
         self.statements.append(statement)
         return SimpleNamespace(all=lambda: self._rows, one=lambda: self._one)
 
+    def scalars(self, statement):
+        self.statements.append(statement)
+        return SimpleNamespace(all=lambda: self._rows)
+
     def scalar(self, statement):
         self.statements.append(statement)
         return self._scalar
@@ -237,15 +241,23 @@ class FilterPropagationTests(unittest.TestCase):
                 return {} if name == "summary" else {"items": []}
             return inner
 
+        def record_billing(name):
+            def inner(db, f, *args, **kwargs):
+                seen.append((name, f))
+                return {"billable_projects": [], "internal_projects": []}
+            return inner
+
         with patch.object(DashboardService, "summary", record("summary")), \
              patch.object(DashboardService, "time_tracked", record("time_tracked")), \
              patch.object(DashboardService, "top_projects", record("top_projects")), \
              patch.object(DashboardService, "top_members", record("top_members")), \
-             patch.object(DashboardService, "top_apps", record("top_apps")):
+             patch.object(DashboardService, "top_apps", record("top_apps")), \
+             patch.object(DashboardService, "billing_progress", record_billing("billing_progress")):
             response = DashboardService.dashboard(None, filters)
 
         self.assertEqual({name for name, _ in seen},
-                         {"summary", "time_tracked", "top_projects", "top_members", "top_apps"})
+                         {"summary", "time_tracked", "top_projects", "top_members", "top_apps",
+                          "billing_progress"})
         for _, used in seen:
             self.assertIs(used, filters)
         # Echoed back as lists: the filters are multi-select on both pages.
@@ -266,12 +278,95 @@ class FilterPropagationTests(unittest.TestCase):
              patch.object(DashboardService, "time_tracked", lambda db, f: {}), \
              patch.object(DashboardService, "top_projects", capture("projects")), \
              patch.object(DashboardService, "top_members", capture("members")), \
-             patch.object(DashboardService, "top_apps", capture("apps")):
+             patch.object(DashboardService, "top_apps", capture("apps")), \
+             patch.object(DashboardService, "billing_progress",
+                          lambda db, f: {"billable_projects": [], "internal_projects": []}):
             DashboardService.dashboard(None, _filters())
 
         self.assertEqual(DEFAULT_TOP_N, 10)
         for name in ("projects", "members", "apps"):
             self.assertEqual(calls[name], (None, "total_hours", "desc", 1, 10))
+
+
+class BillingProgressTests(unittest.TestCase):
+    def _project(self, id_, name, billing_type, fixed_hours):
+        return SimpleNamespace(id=id_, project_name=name, billing_type=billing_type, fixed_hours=fixed_hours)
+
+    def _row(self, project, completed_seconds, tracked_seconds=0, avg_activity=None):
+        return {
+            "project": project, "completed_seconds": completed_seconds,
+            "tracked_seconds": tracked_seconds, "avg_activity": avg_activity,
+        }
+
+    def test_fixed_projects_land_in_billable_and_free_in_internal(self):
+        rows = [
+            self._row(self._project(1, "Alpha", "fixed", 1200), 3600),
+            self._row(self._project(2, "Beta", "free", None), 7200),
+        ]
+        with patch.object(DashboardRepository, "billing_progress", return_value=rows):
+            result = DashboardService.billing_progress(None, _filters())
+        self.assertEqual([p["project_id"] for p in result["billable_projects"]], [1])
+        self.assertEqual([p["project_id"] for p in result["internal_projects"]], [2])
+
+    def test_usage_percentage_is_completed_hours_over_fixed_hours(self):
+        # 1200 fixed hours, 1080 completed (3,888,000s) -- 90%.
+        rows = [self._row(self._project(1, "Alpha", "fixed", 1200), 3_888_000)]
+        with patch.object(DashboardRepository, "billing_progress", return_value=rows):
+            result = DashboardService.billing_progress(None, _filters())
+        item = result["billable_projects"][0]
+        self.assertEqual(item["completed_hours"], 1080.0)
+        self.assertEqual(item["fixed_hours"], 1200.0)
+        self.assertEqual(item["usage_percentage"], 90.0)
+
+    def test_a_project_over_its_budget_reports_over_100_percent(self):
+        rows = [self._row(self._project(1, "Alpha", "fixed", 1200), 1300 * 3600)]
+        with patch.object(DashboardRepository, "billing_progress", return_value=rows):
+            result = DashboardService.billing_progress(None, _filters())
+        self.assertEqual(result["billable_projects"][0]["usage_percentage"], round(1300 / 1200 * 100, 2))
+
+    def test_no_hours_completed_yet_is_zero_percent_not_null_or_an_error(self):
+        rows = [self._row(self._project(1, "Alpha", "fixed", 1200), 0)]
+        with patch.object(DashboardRepository, "billing_progress", return_value=rows):
+            result = DashboardService.billing_progress(None, _filters())
+        item = result["billable_projects"][0]
+        self.assertEqual(item["completed_hours"], 0.0)
+        self.assertEqual(item["usage_percentage"], 0.0)
+
+    def test_a_free_project_has_no_usage_percentage_but_keeps_its_hours_and_activity(self):
+        rows = [self._row(self._project(2, "Beta", "free", None), 7200, tracked_seconds=3600, avg_activity=81.234)]
+        with patch.object(DashboardRepository, "billing_progress", return_value=rows):
+            result = DashboardService.billing_progress(None, _filters())
+        item = result["internal_projects"][0]
+        self.assertEqual(item["completed_hours"], 2.0)
+        self.assertIsNone(item["fixed_hours"])
+        self.assertIsNone(item["usage_percentage"])
+        self.assertEqual(item["tracked_hours"], 1.0)
+        self.assertEqual(item["avg_activity"], 81.23)
+
+    def test_no_activity_in_range_is_null_not_zero(self):
+        rows = [self._row(self._project(1, "Alpha", "fixed", 1200), 3600, tracked_seconds=0, avg_activity=None)]
+        with patch.object(DashboardRepository, "billing_progress", return_value=rows):
+            result = DashboardService.billing_progress(None, _filters())
+        self.assertIsNone(result["billable_projects"][0]["avg_activity"])
+        self.assertEqual(result["billable_projects"][0]["tracked_hours"], 0.0)
+
+    def test_repository_query_excludes_archived_and_respects_project_filter(self):
+        db = RecordingSession()
+        DashboardRepository.billing_progress(db, _filters(project_ids=(11, 12)))
+        sql = _sql(db.statements[0])
+        self.assertIn("projects.status !=", sql)
+        self.assertIn("projects.id IN", sql)
+
+    def test_repository_completed_seconds_query_ignores_the_dashboard_date_range(self):
+        # session_seconds_by is called with the epoch/far-future sentinel for
+        # completed_seconds, never anything derived from the caller's range.
+        db = RecordingSession()
+        with patch("app.react_apis.dashboard.repository.ReportsRepository.session_seconds_by",
+                   return_value={}) as seconds:
+            DashboardRepository.billing_progress(db, _filters())
+        called_start_date, called_end_date = seconds.call_args.args[6], seconds.call_args.args[7]
+        self.assertEqual(called_start_date.year, 1970)
+        self.assertEqual(called_end_date.year, 2999)
 
 
 class RouterTests(unittest.TestCase):
