@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.time_format import format_hms
+from app.core.time_format import format_hms, ist_today
 from app.models.user import User
 from app.repositories.reports import ReportsRepository
 from app.schemas.reports import BillableFilter, ReportDimension, UsageType
@@ -401,9 +401,19 @@ class ReportsService:
         status_ids = {project.status_id for project in projects if project.status_id}
         statuses = ReportsRepository.project_statuses_lookup(db, status_ids)
 
+        # The Task Listing screen shows only what's actively being worked on
+        # today, not every task a project has ever had -- resolved against
+        # today's own boundary regardless of `effective_start`/`effective_end`
+        # above, which stays the range the displayed hours are totalled over.
+        today = ist_today()
+        today_start, today_end = _utc_start(today), _utc_end(today)
+        touched_today = ReportsRepository.tasks_touched_today(
+            db, organization_id, page_ids, today_start, today_end, today, today
+        )
+
         project_items = []
         for project in projects:
-            tasks = tasks_by_project.get(project.id, [])
+            tasks = [task for task in tasks_by_project.get(project.id, []) if task.id in touched_today]
             task_items = [
                 {
                     "id": task.id,

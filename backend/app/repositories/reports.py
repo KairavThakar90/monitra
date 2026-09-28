@@ -96,9 +96,12 @@ class ReportsRepository:
 
     @staticmethod
     def active_tasks_by_project(db: Session, organization_id: int, project_ids: list[int]) -> dict[int, list[Task]]:
-        """Non-archived tasks for the given projects, grouped by project_id -- every
-        active task is included regardless of whether it has tracked time in range,
-        per the project-task-summary endpoint's 'no silently missing tasks' design."""
+        """Every non-archived task for the given projects, grouped by project_id.
+
+        This is the full candidate set, not what the Task Listing screen
+        actually shows: the service narrows it further to whatever
+        `tasks_touched_today` returns, so a task can be non-archived and still
+        absent from the response if nobody has worked on it today."""
         if not project_ids:
             return {}
         rows = list(
@@ -114,6 +117,50 @@ class ReportsRepository:
         for task in rows:
             by_project[task.project_id].append(task)
         return dict(by_project)
+
+    @staticmethod
+    def tasks_touched_today(
+        db: Session,
+        organization_id: int,
+        project_ids: list[int],
+        start_time: datetime,
+        end_time: datetime,
+        start_date: date,
+        end_date: date,
+    ) -> set[int]:
+        """Task ids with at least one auto or approved-manual entry landing in
+        [start_time, end_time) / [start_date, end_date] -- the Task Listing
+        screen's "only what's active today" filter.
+
+        Deliberately independent of whatever range the caller is reporting
+        totals over: pass today's own boundary here regardless of the
+        requested report range, so a Task Listing view narrowed to today's
+        work does not also change what "total hours this month" means.
+        Counts every user's activity, not just the caller's -- two people each
+        active on a different task in the same project both keep their task
+        listed.
+        """
+        if not project_ids:
+            return set()
+        auto_filters = [
+            TimeEntry.organization_id == organization_id,
+            TimeEntry.project_id.in_(project_ids),
+            TimeEntry.start_time >= start_time,
+            TimeEntry.start_time < end_time,
+        ]
+        manual_filters = [
+            ManualTimeEntry.organization_id == organization_id,
+            ManualTimeEntry.project_id.in_(project_ids),
+            ManualTimeEntry.approval_status == "approved",
+            # As in session_seconds_by: a mirrored manual entry also exists as
+            # a time_entries row, already counted on the auto side.
+            ManualTimeEntry.mirrored_time_entry_id.is_(None),
+            ManualTimeEntry.work_date >= start_date,
+            ManualTimeEntry.work_date <= end_date,
+        ]
+        auto_ids = set(db.scalars(select(TimeEntry.task_id).distinct().where(*auto_filters)).all())
+        manual_ids = set(db.scalars(select(ManualTimeEntry.task_id).distinct().where(*manual_filters)).all())
+        return auto_ids | manual_ids
 
     @staticmethod
     def project_statuses_lookup(db: Session, status_ids: set[int]) -> dict[int, StatusRow]:
@@ -226,6 +273,49 @@ class ReportsRepository:
         for key, adj in adjustment_rows:
             combined[key] = max(0, combined[key] + int(adj or 0))
         return dict(combined)
+
+    @staticmethod
+    def first_tracked_at_by(
+        db: Session,
+        organization_id: int,
+        project_ids: list[int],
+        group_attr: str,
+    ) -> dict:
+        """Earliest tracked instant (auto time_entries + approved manual_time_entries),
+        grouped by one of 'project_id', 'user_id', or 'task_id'.
+
+        All-time and unwindowed -- unlike `session_seconds_by`, this is not a
+        sum over a period but "when did tracking against this key first
+        happen", so there is no start/end to bound it by.
+        """
+        if not project_ids:
+            return {}
+        auto_col = getattr(TimeEntry, group_attr)
+        auto_rows = db.execute(
+            select(auto_col, func.min(TimeEntry.start_time).label("first_at"))
+            .where(TimeEntry.organization_id == organization_id, TimeEntry.project_id.in_(project_ids))
+            .group_by(auto_col)
+        ).all()
+        manual_col = getattr(ManualTimeEntry, group_attr)
+        manual_rows = db.execute(
+            select(manual_col, func.min(ManualTimeEntry.start_time).label("first_at"))
+            .where(
+                ManualTimeEntry.organization_id == organization_id,
+                ManualTimeEntry.project_id.in_(project_ids),
+                ManualTimeEntry.approval_status == "approved",
+                # Once approved, an entry mirrors into time_entries, so its
+                # start_time is already counted through `auto_rows` above;
+                # only an unmirrored legacy row would otherwise be missed.
+                ManualTimeEntry.mirrored_time_entry_id.is_(None),
+            )
+            .group_by(manual_col)
+        ).all()
+
+        result: dict = {}
+        for key, first_at in (*auto_rows, *manual_rows):
+            if first_at is not None and (key not in result or first_at < result[key]):
+                result[key] = first_at
+        return result
 
     @staticmethod
     def session_activity_by(

@@ -254,41 +254,230 @@ class ProjectTaskSummaryTests(unittest.TestCase):
         with patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([self.project], 1)), \
              patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}) as seconds, \
              patch("app.services.reports.ReportsRepository.active_tasks_by_project", return_value={}), \
+             patch("app.services.reports.ReportsRepository.tasks_touched_today", return_value=set()), \
              patch("app.services.reports.ReportsRepository.project_statuses_lookup", return_value={}):
             ReportsService.build_project_task_summary(None, self.user, 1, 5, None, None, None, None)
         start_date, end_date = seconds.call_args_list[0].args[6], seconds.call_args_list[0].args[7]
         self.assertEqual(start_date, ReportsService._EPOCH_DATE)
         self.assertEqual(end_date, ReportsService._FAR_FUTURE_DATE)
 
-    def test_project_with_tasks_including_zero_hour_task(self):
+    def test_only_tasks_touched_today_appear(self):
+        # Task Listing shows what's actively being worked on today, not every
+        # task the project has ever had -- the untracked task never appears
+        # because tasks_touched_today never names it, regardless of what
+        # total_tracked_hours it would otherwise show.
         with patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([self.project], 1)), \
              patch("app.services.reports.ReportsRepository.session_seconds_by",
                    side_effect=[{1: 7200}, {100: 7200}]), \
              patch("app.services.reports.ReportsRepository.active_tasks_by_project",
                    return_value={1: [self.tracked_task, self.untracked_task]}), \
+             patch("app.services.reports.ReportsRepository.tasks_touched_today", return_value={100}), \
              patch("app.services.reports.ReportsRepository.project_statuses_lookup", return_value={}):
             response = ReportsService.build_project_task_summary(
                 None, self.user, 1, 5, None, date(2026, 8, 1), None, None,
             )
 
         project_item = response["projects"][0]
-        self.assertEqual(project_item["total_task_hours"], 2.0)
-        self.assertEqual(project_item["total_task_count"], 2)
-        self.assertEqual(len(project_item["tasks"]), 2)
-        tracked, untracked = project_item["tasks"]
-        self.assertEqual(tracked["total_tracked_hours"], 2.0)
-        # Untracked task still appears -- 0 hours, not silently dropped.
-        self.assertEqual(untracked["total_tracked_hours"], 0.0)
+        self.assertEqual(project_item["total_task_count"], 1)
+        self.assertEqual(len(project_item["tasks"]), 1)
+        self.assertEqual(project_item["tasks"][0]["id"], 100)
         self.assertEqual(response["pagination"], {"page": 1, "limit": 5, "total_projects": 1, "total_pages": 1})
+
+    def test_a_task_touched_today_appears_even_with_zero_hours_in_the_selected_range(self):
+        # "Touched today" and "the selected date range" are independent: a
+        # task worked on today can still show 0 hours if the admin is viewing
+        # a different range (e.g. last month), and it must not be dropped for
+        # that -- the range only affects the displayed total, never inclusion.
+        with patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([self.project], 1)), \
+             patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}), \
+             patch("app.services.reports.ReportsRepository.active_tasks_by_project",
+                   return_value={1: [self.tracked_task, self.untracked_task]}), \
+             patch("app.services.reports.ReportsRepository.tasks_touched_today", return_value={100}), \
+             patch("app.services.reports.ReportsRepository.project_statuses_lookup", return_value={}):
+            response = ReportsService.build_project_task_summary(
+                None, self.user, 1, 5, None, date(2020, 1, 1), None, None,
+            )
+
+        tasks = response["projects"][0]["tasks"]
+        self.assertEqual([task["id"] for task in tasks], [100])
+        self.assertEqual(tasks[0]["total_tracked_hours"], 0.0)
+
+    def test_no_task_touched_today_leaves_the_project_with_an_empty_list(self):
+        # The project itself is not hidden -- only its task list narrows to
+        # nothing, distinct from a project genuinely having no tasks at all.
+        with patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([self.project], 1)), \
+             patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}), \
+             patch("app.services.reports.ReportsRepository.active_tasks_by_project",
+                   return_value={1: [self.tracked_task, self.untracked_task]}), \
+             patch("app.services.reports.ReportsRepository.tasks_touched_today", return_value=set()), \
+             patch("app.services.reports.ReportsRepository.project_statuses_lookup", return_value={}):
+            response = ReportsService.build_project_task_summary(None, self.user, 1, 5, None, None, None, None)
+
+        project_item = response["projects"][0]
+        self.assertEqual(project_item["tasks"], [])
+        self.assertEqual(project_item["total_task_count"], 0)
+
+    def test_tasks_touched_today_is_asked_for_todays_boundary_not_the_requested_range(self):
+        # The admin can be viewing any range (or all-time); which tasks show
+        # must still be resolved against today, never the requested range.
+        with patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([self.project], 1)), \
+             patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}), \
+             patch("app.services.reports.ReportsRepository.active_tasks_by_project", return_value={}), \
+             patch("app.services.reports.ReportsRepository.tasks_touched_today",
+                   return_value=set()) as touched, \
+             patch("app.services.reports.ReportsRepository.project_statuses_lookup", return_value={}), \
+             patch("app.services.reports.ist_today", return_value=date(2026, 9, 28)):
+            ReportsService.build_project_task_summary(
+                None, self.user, 1, 5, None, None, date(2020, 1, 1), date(2020, 1, 31),
+            )
+        _db, _org, _page_ids, start_time, end_time, start_date, end_date = touched.call_args.args
+        self.assertEqual(start_date, date(2026, 9, 28))
+        self.assertEqual(end_date, date(2026, 9, 28))
 
     def test_no_projects_on_page_returns_empty_list_not_error(self):
         with patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([], 0)), \
              patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}), \
              patch("app.services.reports.ReportsRepository.active_tasks_by_project", return_value={}), \
+             patch("app.services.reports.ReportsRepository.tasks_touched_today", return_value=set()), \
              patch("app.services.reports.ReportsRepository.project_statuses_lookup", return_value={}):
             response = ReportsService.build_project_task_summary(None, self.user, 1, 5, None, None, None, None)
         self.assertEqual(response["projects"], [])
         self.assertEqual(response["pagination"]["total_pages"], 0)
+
+
+# ---------------------------------------------------------------------------
+# ReportsRepository.tasks_touched_today, against a real SQLite database.
+#
+# The day-boundary conversion (IST midnight -> UTC instants) is exactly the
+# kind of thing a mock cannot catch a mistake in: a mock returns whatever the
+# test tells it to, whichever instant the real WHERE clause actually used.
+# ---------------------------------------------------------------------------
+
+from datetime import timedelta  # noqa: E402
+
+from sqlalchemy import BigInteger as _BigInteger, create_engine, select  # noqa: E402
+from sqlalchemy.ext.compiler import compiles  # noqa: E402
+from sqlalchemy.orm import Session  # noqa: E402
+
+from app.core.database import Base  # noqa: E402
+from app.core.time_format import ist_day_end_utc, ist_day_start_utc  # noqa: E402
+from app.models.manual_time_entry import ManualTimeEntry  # noqa: E402
+from app.models.project import Project  # noqa: E402
+from app.models.task import Task  # noqa: E402
+from app.models.time_entry import TimeEntry  # noqa: E402
+from app.repositories.reports import ReportsRepository  # noqa: E402
+
+
+@compiles(_BigInteger, "sqlite")
+def _bigint_is_integer_on_sqlite(type_, compiler, **kw):
+    """INTEGER PRIMARY KEY is SQLite's autoincrementing rowid alias; Postgres's
+    Identity(always=True) has no SQLite equivalent, and BIGINT stays a 64-bit
+    integer in both engines regardless of which one assigns the id."""
+    return "INTEGER"
+
+
+class TasksTouchedTodayTests(unittest.TestCase):
+    ORG = 1
+    PROJECT = 1
+
+    def setUp(self):
+        self.engine = create_engine("sqlite://")
+        Base.metadata.create_all(self.engine, tables=[
+            Project.__table__, Task.__table__, TimeEntry.__table__, ManualTimeEntry.__table__,
+        ])
+        self.db = Session(self.engine)
+        self.db.add(Project(id=self.PROJECT, organization_id=self.ORG, project_name="Alpha", created_by=1))
+        self.today = date(2026, 9, 28)
+        self.task_ids = {}
+        for offset, label in enumerate((
+            "touched", "untouched", "yesterday_only", "manual_pending", "manual_approved",
+        )):
+            task_id = 100 + offset
+            self.db.add(Task(id=task_id, organization_id=self.ORG, project_id=self.PROJECT,
+                              task_name=label, created_by=1))
+            self.task_ids[label] = task_id
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+        self.engine.dispose()
+
+    def _entry(self, task_label, start_time, user_id=10, end_time=None):
+        self.db.add(TimeEntry(
+            organization_id=self.ORG, user_id=user_id, project_id=self.PROJECT,
+            task_id=self.task_ids[task_label], start_time=start_time,
+            end_time=end_time, status="running" if end_time is None else "completed",
+        ))
+        self.db.commit()
+
+    def _touched(self):
+        start_time = ist_day_start_utc(self.today)
+        end_time = ist_day_end_utc(self.today)
+        return ReportsRepository.tasks_touched_today(
+            self.db, self.ORG, [self.PROJECT], start_time, end_time, self.today, self.today,
+        )
+
+    def test_a_task_with_a_running_entry_today_is_touched(self):
+        self._entry("touched", ist_day_start_utc(self.today) + timedelta(hours=9), end_time=None)
+        self.assertIn(self.task_ids["touched"], self._touched())
+
+    def test_a_task_with_no_entry_at_all_is_not_touched(self):
+        self.assertNotIn(self.task_ids["untouched"], self._touched())
+
+    def test_a_task_only_worked_on_yesterday_is_not_touched(self):
+        yesterday_start = ist_day_start_utc(self.today - timedelta(days=1))
+        self._entry("yesterday_only", yesterday_start + timedelta(hours=10),
+                    end_time=yesterday_start + timedelta(hours=11))
+        self.assertNotIn(self.task_ids["yesterday_only"], self._touched())
+
+    def test_the_instant_ist_midnight_rolls_into_today_counts(self):
+        # The first instant of today's IST calendar day, not a moment before it.
+        self._entry("touched", ist_day_start_utc(self.today))
+        self.assertIn(self.task_ids["touched"], self._touched())
+
+    def test_one_second_before_ist_midnight_does_not_count(self):
+        self._entry("touched", ist_day_start_utc(self.today) - timedelta(seconds=1))
+        self.assertNotIn(self.task_ids["touched"], self._touched())
+
+    def test_the_end_boundary_is_exclusive(self):
+        # ist_day_end_utc(today) is the first instant of *tomorrow*.
+        self._entry("touched", ist_day_end_utc(self.today))
+        self.assertNotIn(self.task_ids["touched"], self._touched())
+
+    def test_two_different_users_each_active_on_a_different_task_both_count(self):
+        self._entry("touched", ist_day_start_utc(self.today) + timedelta(hours=9), user_id=10)
+        self._entry("untouched", ist_day_start_utc(self.today) + timedelta(hours=9), user_id=11)
+        touched = self._touched()
+        self.assertIn(self.task_ids["touched"], touched)
+        self.assertIn(self.task_ids["untouched"], touched)
+
+    def test_a_pending_manual_entry_does_not_count(self):
+        self.db.add(ManualTimeEntry(
+            organization_id=self.ORG, user_id=10, project_id=self.PROJECT,
+            task_id=self.task_ids["manual_pending"], work_date=self.today,
+            start_time=ist_day_start_utc(self.today) + timedelta(hours=9),
+            end_time=ist_day_start_utc(self.today) + timedelta(hours=10),
+            total_seconds=3600, approval_status="pending",
+        ))
+        self.db.commit()
+        self.assertNotIn(self.task_ids["manual_pending"], self._touched())
+
+    def test_an_approved_manual_entry_for_today_counts(self):
+        self.db.add(ManualTimeEntry(
+            organization_id=self.ORG, user_id=10, project_id=self.PROJECT,
+            task_id=self.task_ids["manual_approved"], work_date=self.today,
+            start_time=ist_day_start_utc(self.today) + timedelta(hours=9),
+            end_time=ist_day_start_utc(self.today) + timedelta(hours=10),
+            total_seconds=3600, approval_status="approved",
+        ))
+        self.db.commit()
+        self.assertIn(self.task_ids["manual_approved"], self._touched())
+
+    def test_no_project_ids_short_circuits_to_an_empty_set(self):
+        self.assertEqual(ReportsRepository.tasks_touched_today(
+            self.db, self.ORG, [], ist_day_start_utc(self.today), ist_day_end_utc(self.today),
+            self.today, self.today,
+        ), set())
 
 
 if __name__ == "__main__":

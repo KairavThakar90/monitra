@@ -145,6 +145,35 @@ class DashboardService:
         metrics = ReportsPageService._metrics(row)
         return {"total_hours": metrics["total_hours"], "avg_activity": metrics["avg_activity"]}
 
+    @staticmethod
+    def billing_progress(db: Session, filters: ReportFilters) -> dict:
+        """Billable (fixed-hour projects, with usage against that budget) and
+        Internal / Free Hours projects (tracked hours + activity only -- there
+        is no budget to measure a 'free' project against). Backs the Top
+        Projects card's Billable / Free Time / Internal filter tabs."""
+        rows = DashboardRepository.billing_progress(db, filters)
+        billable, internal = [], []
+        for row in rows:
+            project = row["project"]
+            completed_hours = _hours(row["completed_seconds"])
+            tracked_hours = _hours(row["tracked_seconds"])
+            fixed_hours = float(project.fixed_hours) if project.fixed_hours is not None else None
+            avg_activity = row["avg_activity"]
+            item = {
+                "project_id": project.id,
+                "project_name": project.project_name,
+                "billing_type": project.billing_type,
+                "fixed_hours": fixed_hours,
+                "completed_seconds": int(row["completed_seconds"]),
+                "completed_hours": completed_hours,
+                "usage_percentage": round(completed_hours / fixed_hours * 100, 2) if fixed_hours else None,
+                "tracked_seconds": int(row["tracked_seconds"]),
+                "tracked_hours": tracked_hours,
+                "avg_activity": round(avg_activity, 2) if avg_activity is not None else None,
+            }
+            (billable if project.billing_type == "fixed" else internal).append(item)
+        return {"billable_projects": billable, "internal_projects": internal}
+
     # ------------------------------------------------------------ full page
 
     @staticmethod
@@ -174,6 +203,7 @@ class DashboardService:
             "top_apps": DashboardService.top_apps(
                 db, filters, None, "total_hours", "desc", 1, top_n
             ),
+            **DashboardService.billing_progress(db, filters),
         }
 
     # Re-exported so the router has a single import for filter resolution.

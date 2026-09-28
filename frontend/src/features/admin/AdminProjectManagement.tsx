@@ -1,14 +1,15 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { V2Shell } from '../dashboard/v2/V2Shell';
-import { 
-  useGetProjectMetadataQuery, 
-  useGetProjectsQuery, 
+import {
+  useGetProjectMetadataQuery,
+  useGetProjectsQuery,
   useLazyGetProjectsQuery,
-  useGetAssignableLeadersQuery, 
-  useGetAssignableEmployeesQuery, 
-  useCreateProjectMutation, 
-  useUpdateProjectMutation, 
+  useGetProjectHoursSummaryQuery,
+  useGetAssignableLeadersQuery,
+  useGetAssignableEmployeesQuery,
+  useCreateProjectMutation,
+  useUpdateProjectMutation,
   useDeleteProjectMutation,
   type Project
 } from '../../store/api/projectsApi';
@@ -34,6 +35,37 @@ const formatDate = (dateStr: string | null) => {
   const month = date.toLocaleString('en-US', { month: 'short' });
   const year = date.getFullYear();
   return `${day} ${month} ${year}`;
+};
+
+/** `1.5` -> "1.5h", `2` -> "2h" -- hours only, never HH:MM:SS. */
+const formatHoursValue = (hours: number): string => {
+  const rounded = Math.round(Math.max(0, hours) * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}h`;
+};
+
+/**
+ * The Remaining Hours column's cell.
+ *
+ * Fixed-billing projects get `fixed_hours - used`, clearly flagged when the
+ * project has run over its budget rather than shown as a bare negative
+ * number. Free/internal projects have no budget to be "remaining" from, so
+ * the same used-hours figure the Used Hours column shows is restated here
+ * instead — never a negative or a fabricated limit.
+ */
+const RemainingHoursCell: React.FC<{ project: Project; usedSeconds: number }> = ({ project, usedSeconds }) => {
+  if (project.billing_type !== 'fixed' || !project.fixed_hours) {
+    return <span className="text-xs font-semibold text-slate-400">{formatHoursValue(usedSeconds / 3600)} used · no fixed limit</span>;
+  }
+  const fixedSeconds = Math.round(Number(project.fixed_hours) * 3600);
+  const remainingSeconds = fixedSeconds - usedSeconds;
+  if (remainingSeconds < 0) {
+    return (
+      <span className="inline-flex items-center rounded-md bg-rose-50 px-2.5 py-1 text-[11px] font-bold tracking-wider text-rose-600 border border-rose-200">
+        Over by {formatHoursValue(-remainingSeconds / 3600)}
+      </span>
+    );
+  }
+  return <span className="font-semibold text-slate-700">{formatHoursValue(remainingSeconds / 3600)} left</span>;
 };
 
 const Pagination: React.FC<{
@@ -414,7 +446,7 @@ const StatusPillDropdown = ({
   );
 };
 
-type ColumnKey = 'project' | 'status' | 'leader' | 'team' | 'tasks' | 'billing' | 'deadline' | 'manage';
+type ColumnKey = 'project' | 'status' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'remainingHours' | 'started' | 'manage';
 const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'project', label: 'Project' },
   { key: 'status', label: 'Status' },
@@ -422,7 +454,9 @@ const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'team', label: 'Team' },
   { key: 'tasks', label: 'Tasks' },
   { key: 'billing', label: 'Billing' },
-  { key: 'deadline', label: 'Deadline' },
+  { key: 'usedHours', label: 'Used Hours' },
+  { key: 'remainingHours', label: 'Remaining Hours' },
+  { key: 'started', label: 'Started' },
   { key: 'manage', label: 'Manage' },
 ];
 
@@ -475,7 +509,8 @@ export const AdminProjectManagement: React.FC = () => {
   );
 
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>({
-    project: true, status: true, leader: true, team: true, tasks: true, billing: true, deadline: true, manage: true
+    project: true, status: true, leader: true, team: true, tasks: true, billing: true,
+    usedHours: true, remainingHours: true, started: true, manage: true
   });
   const [showColumnDropdown, setShowColumnDropdown] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
@@ -806,6 +841,20 @@ export const AdminProjectManagement: React.FC = () => {
   const projects = projectsData?.items || [];
   const totalPages = projectsData?.pagination?.total_pages || 1;
 
+  // Used/Remaining/Started are all all-time tracked-time facts -- a separate,
+  // additive endpoint from `getProjects` (see projectsApi.ts) rather than a
+  // new field on that response, which the desktop client also reads
+  // verbatim. Fetched only for the ids on the current page.
+  const currentPageProjectIds = useMemo(() => projects.map((p) => p.id), [projects]);
+  const { data: hoursSummary } = useGetProjectHoursSummaryQuery(currentPageProjectIds, {
+    skip: currentPageProjectIds.length === 0,
+  });
+  const hoursByProject = useMemo(() => {
+    const map = new Map<number, { total_used_seconds: number; started_at: string | null }>();
+    (hoursSummary || []).forEach((row) => map.set(row.project_id, row));
+    return map;
+  }, [hoursSummary]);
+
   // Block only until the table has something in it. After that, refetches run
   // behind the rows and edits are applied to the cache optimistically.
   const showFirstLoad = isLoading && !projectsData;
@@ -933,7 +982,9 @@ export const AdminProjectManagement: React.FC = () => {
                   {visibleColumns.team && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Team</th>}
                   {visibleColumns.tasks && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Tasks</th>}
                   {visibleColumns.billing && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Billing</th>}
-                  {visibleColumns.deadline && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Deadline</th>}
+                  {visibleColumns.usedHours && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Used Hours</th>}
+                  {visibleColumns.remainingHours && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Remaining Hours</th>}
+                  {visibleColumns.started && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Started</th>}
                   {visibleColumns.manage && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Manage</th>}
                 </tr>
               </thead>
@@ -983,8 +1034,16 @@ export const AdminProjectManagement: React.FC = () => {
                         </span>
                       )}
                     </td>}
-                    {visibleColumns.deadline && <td className="px-6 py-4 font-medium text-slate-600">
-                      {formatDate(proj.deadline)}
+                    {visibleColumns.usedHours && <td className="px-6 py-4 font-semibold text-slate-700">
+                      {formatHoursValue((hoursByProject.get(proj.id)?.total_used_seconds ?? 0) / 3600)}
+                    </td>}
+                    {visibleColumns.remainingHours && <td className="px-6 py-4">
+                      <RemainingHoursCell project={proj} usedSeconds={hoursByProject.get(proj.id)?.total_used_seconds ?? 0} />
+                    </td>}
+                    {visibleColumns.started && <td className="px-6 py-4 font-medium text-slate-600">
+                      {hoursByProject.get(proj.id)?.started_at
+                        ? formatDate(hoursByProject.get(proj.id)!.started_at)
+                        : <span className="text-slate-400">Not Started Yet</span>}
                     </td>}
                     {visibleColumns.manage && <td className="relative px-6 py-4">
                       <button onClick={(event) => toggleManageMenu(proj.id, event)} className="flex items-center gap-2 rounded bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-200">
@@ -1129,6 +1188,10 @@ export const AdminProjectManagement: React.FC = () => {
                 <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Deadline</div>
                   <div className="mt-2 text-sm font-bold text-slate-800">{formatDate(viewingProject.deadline)}</div>
+                </div>
+                <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Created</div>
+                  <div className="mt-2 text-sm font-bold text-slate-800">{formatDate(viewingProject.created_at)}</div>
                 </div>
               </div>
 

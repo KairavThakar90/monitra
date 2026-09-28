@@ -215,6 +215,24 @@ class ProjectListResponse(BaseModel):
     pagination: Pagination
 
 
+class ProjectHoursSummaryItem(BaseModel):
+    """All-time tracked hours for one project -- independent of `ProjectRead`,
+    which the desktop also consumes; see `ProjectManagementService.hours_summary`
+    for why this stays a separate response rather than a field added there."""
+    project_id: int
+    total_used_seconds: int
+    total_used_hours: float
+    #: When tracking against this project first happened (earliest time entry
+    #: across all its tasks) -- distinct from `Project.created_at`, which is
+    #: only when the project record itself was made. `None` when nothing has
+    #: ever been tracked against it.
+    started_at: Optional[datetime] = None
+
+
+class ProjectHoursSummaryResponse(BaseModel):
+    items: list[ProjectHoursSummaryItem]
+
+
 class SyncRevisionRead(BaseModel):
     """A fingerprint of everything the desktop renders for this caller.
 

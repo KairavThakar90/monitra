@@ -62,6 +62,25 @@ export interface ReactDashboardTopApp {
   percentage: number | null;
 }
 
+export interface ReactDashboardProjectBilling {
+  project_id: number;
+  project_name: string;
+  /** 'fixed' or 'free', from Project.billing_type. */
+  billing_type: string;
+  /** The project's fixed-hour budget. Null for every 'free'-billing project. */
+  fixed_hours: number | null;
+  /** All-time tracked seconds -- not scoped to the dashboard's selected date range. */
+  completed_seconds: number;
+  completed_hours: number;
+  /** completed_hours / fixed_hours * 100. Null when fixed_hours is null. */
+  usage_percentage: number | null;
+  /** Tracked seconds within the dashboard's selected date range. */
+  tracked_seconds: number;
+  tracked_hours: number;
+  /** Average activity % within the selected date range. Null when unsampled. */
+  avg_activity: number | null;
+}
+
 interface Page<T> {
   items: T[];
   page: number;
@@ -87,6 +106,10 @@ export interface ReactDashboardResponse {
   top_projects: Page<ReactDashboardTopProject>;
   top_members: Page<ReactDashboardTopMember>;
   top_apps: Page<ReactDashboardTopApp> & { total_app_hours: number };
+  /** Non-archived 'fixed'-billing projects -- the Billable filter tab. */
+  billable_projects: ReactDashboardProjectBilling[];
+  /** Non-archived 'free'-billing projects -- the Free Time / Internal filter tab. */
+  internal_projects: ReactDashboardProjectBilling[];
 }
 
 const buildQueryParams = (params: object) => {

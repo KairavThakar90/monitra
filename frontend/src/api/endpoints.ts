@@ -71,6 +71,7 @@ export const ENDPOINTS = {
     CREATE: `${API_BASE_URL}/projects`,
     UPDATE: (id: string | number) => `${API_BASE_URL}/projects/${id}`,
     DELETE: (id: string | number) => `${API_BASE_URL}/projects/${id}`,
+    HOURS_SUMMARY: `${API_BASE_URL}/projects/hours-summary`,
     ASSIGNABLE_LEADERS: `${API_BASE_URL}/projects/assignable-leaders`,
     ASSIGNABLE_EMPLOYEES: `${API_BASE_URL}/projects/assignable-employees`,
     TASKS: (projectId: string | number) => `${API_BASE_URL}/projects/${projectId}/tasks`,
