@@ -43,11 +43,6 @@ IMAGE_RETRY_BASE_MS = 700
 #: captured that day.
 SCREENSHOT_COLUMNS = 4
 SCREENSHOT_THUMB_HEIGHT = 120
-#: 184px of thumbnail + time/count (the original card), plus 26px for a new
-#: block above the thumbnail naming the project and task the screenshot was
-#: captured under -- two single lines and the layout's own spacing to the
-#: thumbnail below.
-SCREENSHOT_CARD_HEIGHT = 184 + 26
 #: Rows revealed at a time, matching the "Load more" behaviour of the Apps and
 #: URLs tabs. A multiple of the column count, so a page never leaves a ragged
 #: half-row above the button.
@@ -427,11 +422,6 @@ class ScreenshotCard(QFrame):
         super().__init__(parent)
         self.screenshot = screenshot
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        # Fixed height, never derived from the space available: a grid row
-        # stretches to fill what it is given, so the identical card rendered
-        # compactly on a busy day and as a tall box with an empty area beneath
-        # the thumbnail on a quiet one.
-        self.setFixedHeight(SCREENSHOT_CARD_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         # A 2px border: at 1px the cards read as one continuous field rather
         # than as separate screenshots.
@@ -446,6 +436,20 @@ class ScreenshotCard(QFrame):
             }
         """ % (BORDER_MID, PRIMARY))
         self._build_ui()
+        # Fixed height, never derived from the space available: a grid row
+        # stretches to fill what it is given, so the identical card rendered
+        # compactly on a busy day and as a tall box with an empty area beneath
+        # the thumbnail on a quiet one.
+        #
+        # The height is the card's own size hint, not a constant. Every card
+        # has the same parts -- two context lines, the thumbnail, the window
+        # range and screen count -- so they all come out equal, and the
+        # figure follows the real font metrics of the display. A hardcoded
+        # 210px fitted the offscreen test platform's fonts with room to
+        # spare, and was 6px short with the Windows font engine: the layout
+        # squeezed the labels to their minimums, and the window range was
+        # drawn into the thumbnail underneath its capture-time badge.
+        self.setFixedHeight(self.sizeHint().height())
 
     @property
     def screenshot_id(self) -> Optional[int]:

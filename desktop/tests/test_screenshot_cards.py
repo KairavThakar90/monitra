@@ -308,25 +308,68 @@ class TestGridLayout:
         return host, view
 
     def test_a_card_is_the_same_height_however_many_there_are(self, qapp):
-        from ui.activity_section import SCREENSHOT_CARD_HEIGHT
-
         seen = set()
         for count in (1, 2, 4, 7, 8):
             host, view = self._view(count)
             qapp.processEvents()
             seen.update(card.height() for card in view._cards.values())
             host.close()
-        assert seen == {SCREENSHOT_CARD_HEIGHT}
+        assert len(seen) == 1, f"cards came out at different heights: {sorted(seen)}"
 
     def test_a_single_screenshot_does_not_stretch_to_fill_the_panel(self, qapp):
-        from ui.activity_section import SCREENSHOT_CARD_HEIGHT
-
         # The reported symptom, pinned: one result in a tall panel.
         host, view = self._view(1, height=900)
         qapp.processEvents()
         card = view._cards[1]
-        assert card.height() == SCREENSHOT_CARD_HEIGHT
+        assert card.height() == card.sizeHint().height()
         assert card.height() < 300, "the card must not absorb the spare height"
+        host.close()
+
+    def _parts(self, card):
+        """The card's stacked parts, top to bottom, as laid out."""
+        from PySide6.QtWidgets import QLabel
+
+        info_row = card.layout().itemAt(2).widget()
+        window_lbl, count_lbl = info_row.findChildren(QLabel)[:2]
+        return card.thumbnail, info_row, window_lbl, count_lbl
+
+    def test_the_time_range_sits_below_the_thumbnail_not_inside_it(self, qapp):
+        # The card is exactly as tall as its parts. It used to be a hardcoded
+        # 210px, which fitted the offscreen platform's fonts with room to
+        # spare and was 6px short with the Windows font engine: the layout
+        # squeezed the labels to their minimums, the window range was drawn
+        # into the thumbnail underneath its capture-time badge, and the
+        # screen count sat on the card's bottom border.
+        host, view = self._view(1)
+        qapp.processEvents()
+        card = view._cards[1]
+        thumbnail, info_row, window_lbl, count_lbl = self._parts(card)
+
+        assert card.height() >= card.layout().sizeHint().height()
+        assert info_row.geometry().top() > thumbnail.geometry().bottom()
+        for lbl in (window_lbl, count_lbl):
+            assert lbl.height() >= lbl.sizeHint().height(), lbl.text()
+        info_bottom = info_row.mapTo(card, info_row.rect().bottomLeft()).y()
+        assert info_bottom < card.height() - card.layout().contentsMargins().bottom()
+        host.close()
+
+    def test_the_card_grows_with_its_content(self, qapp, monkeypatch):
+        # The failure the real display produced, reproduced offscreen: make the
+        # content taller than 210px and the card must follow it, never squeeze
+        # it. (The offscreen fonts are shorter than the Windows ones, so the
+        # thumbnail stands in for the 6px the real font metrics added.)
+        import ui.activity_section as module
+
+        monkeypatch.setattr(module, "SCREENSHOT_THUMB_HEIGHT", 140)
+        host, view = self._view(1)
+        qapp.processEvents()
+        card = view._cards[1]
+        thumbnail, info_row, window_lbl, count_lbl = self._parts(card)
+
+        assert thumbnail.height() == 140
+        assert card.height() >= card.layout().sizeHint().height()
+        assert info_row.geometry().top() > thumbnail.geometry().bottom()
+        assert count_lbl.height() >= count_lbl.sizeHint().height()
         host.close()
 
     def test_cards_are_laid_out_four_to_a_row(self, qapp):
