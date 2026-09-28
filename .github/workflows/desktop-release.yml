@@ -13,7 +13,7 @@ name: Desktop release
 # macOS is built on a macOS runner because it cannot be built anywhere else: a
 # .app contains Mach-O binaries and Qt frameworks produced by the host
 # toolchain, and codesign/hdiutil exist only on macOS.
-
+ 
 on:
   push:
     tags:
