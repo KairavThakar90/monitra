@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Literal, Optional, Dict, Any
 from datetime import datetime
 from app.core.validation import (
@@ -30,8 +30,20 @@ class UserBase(BaseModel):
     idle_enabled: bool = True
     idle_minutes: int = 5
     capture_frequency: int
+    #: Read by the desktop from `GET /auth/me` to decide whether to offer
+    #: Add Task at all. The backend refuses the create regardless; this only
+    #: lets the client explain the refusal before the user types a name.
+    can_add_tasks: bool = True
     status: str = "active"
     is_active: bool = True
+
+    @field_validator("can_add_tasks", mode="before")
+    @classmethod
+    def unset_means_allowed(cls, value):
+        # Only an explicit False withdraws (see PER_MEMBER_PERMISSION_OVERRIDES).
+        # A row or in-memory user that never had the column set reads None,
+        # and must serialise as the default rather than fail validation.
+        return True if value is None else value
 
 class UserCreate(UserBase):
     #: Re-declared with validated types. These are the fields an administrator

@@ -191,6 +191,34 @@ ROLE_PERMISSIONS = {
     "client": {"clients:view_shared"},
 }
 
+# Permissions an administrator may withdraw from *one member* without
+# changing that member's role.
+#
+# `users.permissions` cannot carry such an override: it is a cache of the
+# table above and every login path rebuilds it from the role (see
+# AuthService), so a key removed from it by hand comes back at the next
+# sign-in. Each override is therefore a boolean column of its own on `users`,
+# named here against the permission it withdraws. `require_permission` reads
+# this map after the role check: the role must grant the permission *and* the
+# member's column must not have been switched off.
+#
+# Only an explicit False withdraws. A row that has never been through the
+# migration, or an in-memory user a test built without the attribute, holds
+# None and is treated as allowed -- the switch has to be flipped, never
+# assumed.
+PER_MEMBER_PERMISSION_OVERRIDES = {
+    "tasks:create": "can_add_tasks",
+}
+
+#: What the refused request is told, by permission. Distinct from the generic
+#: "Insufficient permissions" so the desktop can show the user *why* Add Task
+#: stopped working: their role still allows it; an administrator switched it
+#: off for them.
+PER_MEMBER_OVERRIDE_MESSAGES = {
+    "tasks:create": "Adding tasks has been turned off for your account by an administrator.",
+}
+
+
 # `manage_desktop_releases` is deliberately held only by the three
 # administrator roles above -- not by `manager`, and not by `hr`, which holds
 # `screenshots:delete` beside it. Registering and publishing a desktop release
