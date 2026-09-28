@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: "3.12"
       # The boundary check is pure AST analysis — no Qt, no dependencies.
       - name: Check ownership boundaries
         run: python tools/check_architecture.py
@@ -52,7 +52,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: "3.12"
           cache: pip
 
       - name: Install system libraries for headless Qt
@@ -82,7 +82,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: "3.12"
           cache: pip
 
       - name: Install system libraries for headless Qt
@@ -116,7 +116,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: "3.12"
           cache: pip
 
       - name: Install system libraries for headless Qt
