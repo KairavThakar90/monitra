@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.email_notification import (
     TYPE_FEEDBACK, TYPE_FEEDBACK_STATUS, TYPE_RELEASE, TYPE_WELCOME,
-    TYPE_WEEKLY_REPORT,
+    TYPE_MONTHLY_REPORT, TYPE_WEEKLY_REPORT,
 )
 from app.repositories.email_notification import EmailNotificationRepository
 from app.repositories.user import UserRepository
@@ -521,6 +521,129 @@ def build_weekly_report_preview(db: Session, *, user_id: int, week_start=None) -
         period=period,
     )[user.id]
     return _weekly_report_payload(user=user, period=period, metrics=metrics)
+
+
+# ----------------------------------------------------------------------
+# Workflow 8 — monthly productivity report
+# ----------------------------------------------------------------------
+
+def monthly_report_dedupe_key(month_start, user_id: int) -> str:
+    """The monthly report's identity: one person, one calendar month.
+
+    The *month* is in the key, never the day the job ran — the same
+    duplicate-protection story as the weekly key, one level up.
+    """
+    month = month_start.isoformat() if hasattr(month_start, "isoformat") else str(month_start)
+    return f"month:{month}:user:{user_id}"
+
+
+def _month_day_payload(day) -> Optional[dict[str, Any]]:
+    if day is None:
+        return None
+    return {"label": day.label, "total_seconds": day.total_seconds}
+
+
+def _monthly_report_payload(*, user, period, metrics) -> dict[str, Any]:
+    """Everything the monthly email shows, and nothing else.
+
+    The figures are checked to belong to `user`, exactly as the weekly payload
+    is: a mismatched pair is refused rather than rendered.
+    """
+    if getattr(metrics, "user_id", None) != getattr(user, "id", None):
+        raise ValueError(
+            "Monthly report metrics do not belong to the recipient "
+            f"(metrics user {getattr(metrics, 'user_id', None)!r}, "
+            f"recipient {getattr(user, 'id', None)!r})."
+        )
+
+    return {
+        "user_id": user.id,
+        "name": getattr(user, "name", None),
+        "month_start": period.start_date.isoformat(),
+        "month_end": period.end_date.isoformat(),
+        "period_label": period.label,
+        "period_short": period.short_label,
+        "timezone": period.timezone_name,
+        "total_seconds": metrics.total_seconds,
+        "average_activity": metrics.average_activity,
+        "project_count": metrics.project_count,
+        "working_days": metrics.working_days,
+        "average_seconds_per_working_day": metrics.average_seconds_per_working_day,
+        "most_productive_day": _month_day_payload(metrics.most_productive_day),
+        "has_activity": metrics.has_activity,
+        "can_view_all_time": bool(
+            (getattr(user, "permissions", None) or {}).get("time_entries:view_all")
+        ),
+    }
+
+
+def queue_monthly_report(db: Session, *, user, period, metrics) -> tuple[Optional[int], bool]:
+    """Queue one user's monthly report. Returns ``(notification_id, created)``.
+
+    One notification per user, addressed to that user alone, keyed on the
+    month — see `queue_weekly_report` for why each of those holds.
+    """
+    payload = _monthly_report_payload(user=user, period=period, metrics=metrics)
+
+    recipients = resolve_user_recipient(getattr(user, "email", "") or "")
+    if not recipients:
+        logger.warning(
+            "MONTHLY_REPORT_SKIPPED: user=%s reason=no_usable_email", getattr(user, "id", None),
+        )
+        return None, False
+
+    dedupe_key = monthly_report_dedupe_key(period.start_date, user.id)
+    existing = EmailNotificationRepository.get_by_event(
+        db, notification_type=TYPE_MONTHLY_REPORT, dedupe_key=dedupe_key,
+    )
+
+    row = EmailOutboxService.enqueue(
+        db,
+        notification_type=TYPE_MONTHLY_REPORT,
+        dedupe_key=dedupe_key,
+        recipients=recipients,
+        subject=messages.monthly_report_subject(payload),
+        payload=payload,
+        organization_id=getattr(user, "organization_id", None),
+        user_id=user.id,
+    )
+    if row is None:
+        return None, False
+
+    if existing is not None:
+        logger.info(
+            "MONTHLY_REPORT_ALREADY_QUEUED: user=%s month=%s notification=%s status=%s",
+            user.id, period.start_date, row.id, existing.status,
+        )
+        return row.id, False
+
+    logger.info(
+        "MONTHLY_REPORT_QUEUED: user=%s month=%s→%s notification=%s status=%s",
+        user.id, period.start_date, period.end_date, row.id, row.status,
+    )
+    return row.id, True
+
+
+def build_monthly_report_preview(db: Session, *, user_id: int, month_start=None) -> Optional[dict[str, Any]]:
+    """The payload one user's monthly report *would* carry, without queueing it."""
+    from app.services.monthly_report import (
+        MonthlyReportService, build_month_metrics, month_containing, previous_month,
+    )
+
+    users = MonthlyReportService.eligible_users(db, user_id=user_id)
+    if not users:
+        return None
+    user = users[0]
+
+    organization_id = getattr(user, "organization_id", None)
+    if organization_id is None:
+        return None
+
+    period = month_containing(month_start) if month_start else previous_month()
+    metrics = build_month_metrics(
+        db, organization_id=organization_id, user_ids=[user.id], period=period,
+    )[user.id]
+    return _monthly_report_payload(user=user, period=period, metrics=metrics)
 
 
 # ----------------------------------------------------------------------

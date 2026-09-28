@@ -47,3 +47,22 @@ class WeeklyReportRunResult(BaseModel):
     disabled: bool = Field(
         False, description="WEEKLY_REPORT_ENABLED is false, so nothing was queued.",
     )
+
+
+class MonthlyReportRunResult(BaseModel):
+    """What one monthly-report run queued. Counts and a period only."""
+
+    month_start: str = Field(..., description="First day of the reported month.")
+    month_end: str = Field(..., description="Last day of the reported month.")
+    timezone: str = Field(..., description="Calendar the period was cut on.")
+    eligible_users: int = Field(0, description="Active accounts with a usable address.")
+    queued: int = Field(0, description="Reports newly queued by this run.")
+    already_queued: int = Field(
+        0, description="Reports this month already had — a retry or a re-run, and not an error.",
+    )
+    skipped: int = Field(0, description="No usable address, or no organization to report on.")
+    failed: int = Field(0, description="Could not be queued. Logged, and retryable by re-running.")
+    dry_run: bool = Field(False, description="Whether the run computed without queueing anything.")
+    disabled: bool = Field(
+        False, description="MONTHLY_REPORT_ENABLED is false, so nothing was queued.",
+    )

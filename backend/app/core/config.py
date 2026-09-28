@@ -196,6 +196,18 @@ class Settings(BaseSettings):
     WEEKLY_REPORT_HOUR: int = 9
     WEEKLY_REPORT_MINUTE: int = 0
 
+    # ── Monthly productivity report ──────────────────────────────────────
+    #: Queue "Your Monitra Monthly Report" for every eligible user on the 1st
+    #: of each month, covering the month just completed. Same kill-switch
+    #: semantics as WEEKLY_REPORT_ENABLED; the once-per-user-per-month
+    #: guarantee is the outbox unique key, not this flag.
+    MONTHLY_REPORT_ENABLED: bool = True
+    #: Local send time on the 1st, in WEEKLY_REPORT_TIMEZONE (both reports
+    #: are cut on the one reporting calendar). `monthly_cron_expression()`
+    #: derives the vercel.json entry from these and a test asserts it matches.
+    MONTHLY_REPORT_HOUR: int = 9
+    MONTHLY_REPORT_MINUTE: int = 0
+
     # ── Email delivery mechanics ──────────────────────────────────────────
     #: How many times one notification may be attempted before it is parked as
     #: `failed`. With the backoff below, six attempts span roughly six hours.
