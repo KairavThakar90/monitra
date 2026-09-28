@@ -82,6 +82,7 @@ def test_refresh_refetches_every_view_the_dashboard_shows(ready):
 
     assert set(runner.calls) == {
         "load-projects",
+        "load-profile",
         "load-statuses",
         "load-tasks:7",
         f"load-today:{dashboard._current_date.isoformat()}",
@@ -112,6 +113,7 @@ def test_last_sync_only_moves_once_every_fetch_has_returned(ready, runtime):
     assert runtime.sync.last_synced_at is None
 
     runner.succeed("load-statuses")
+    runner.succeed("load-profile")
     runner.succeed(f"load-today:{dashboard._current_date.isoformat()}")
     assert runtime.sync.last_synced_at is None, "load-today-activity has not reported back yet"
 
@@ -130,6 +132,7 @@ def test_a_failed_fetch_leaves_the_previous_sync_time_untouched(ready, runtime):
     runner.calls.clear()
     dashboard.refresh_data()
     runner.succeed("load-projects")
+    runner.succeed("load-profile")
     runner.fail("load-statuses")
     runner.succeed(f"load-today:{dashboard._current_date.isoformat()}")
     runner.succeed("load-today-activity")

@@ -733,6 +733,38 @@ That bypassed every invariant the service maintained.
 Exponential backoff alone means every client that lost the backend at the same
 moment retries at the same moment. Backoff is jittered 50–150%.
 
+### ❌ Do not give a screenshot upload a retry budget
+
+`MAX_UPLOAD_RETRIES = 12` was documented as "spans several hours, covers an
+overnight outage". Doubling from one second and capped at five minutes,
+twelve attempts are spent in about twenty-five minutes. After that every
+capture was parked as `failed` until the next launch — and a tray application
+is not relaunched for days. A half-hour backend or Drive outage therefore
+became "the desktop said it captured, Drive has nothing, and nothing is
+retrying", which is the one state the pipeline exists to prevent.
+
+A *transient* failure (network, timeout, 5xx, 503 from an unconfigured
+backend) is retried for as long as the process lives, at a capped, jittered
+interval (`fail_screenshot` with no `max_retries`). Only a *refusal* the
+server answered (401, 403, 404, 413, 422) parks the row, with its file, and
+parked rows are revived at launch, when a hold ends, on re-authentication and
+hourly. See docs/SCREENSHOT_PERSISTENCE.md.
+
+### ❌ Do not treat a 2xx as proof that a screenshot is in Drive
+
+```python
+upload(...)                      # returned 200 with {"success": true}
+store.delete_screenshot(path)    # only copy gone
+```
+
+The upload endpoint's contract is "201 with the stored record carrying
+`google_drive_file_id`". A proxy's placeholder page, or a backend built before
+the Drive pipeline, answers 2xx with nothing of the kind, and deleting the
+local file on that answer destroys the only copy. `SyncService` deletes the
+file only when the response names the Drive file id; anything else is
+retried, which is safe because the endpoint is idempotent on
+`client_screenshot_id`.
+
 ### ❌ Do not queue an operation that references an id the backend has not issued
 
 ```python

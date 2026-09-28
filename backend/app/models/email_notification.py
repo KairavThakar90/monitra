@@ -72,6 +72,11 @@ TYPE_RELEASE = "release"
 #: Putting the run date in the key instead would make every retry a new event,
 #: which is precisely the duplicate this prevents.
 TYPE_WEEKLY_REPORT = "weekly_report"
+#: "Your Monitra Monthly Report", one per user per calendar month, queued on
+#: the 1st for the month just completed. Keyed on the *month start* for the
+#: same reason the weekly key is the week start: every retry and re-run of
+#: the same month computes `month:2026-08-01:user:42` and collapses onto it.
+TYPE_MONTHLY_REPORT = "monthly_report"
 #: "You're invited to Monitra" -- one per invitation, carrying its own
 #: Approve/Reject links. Keyed on the invitation row, never the client: a
 #: resend creates a new invitation row (a new token) and must be a distinct,

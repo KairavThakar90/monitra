@@ -22,6 +22,7 @@ its own retry loop.
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -33,7 +34,8 @@ from app.time_entries.service import TimeEntryService
 from background_services.network import NetworkState
 from background_services.screenshot import store
 from background_services.screenshot.config import (
-    MAX_UPLOAD_RETRIES as SCREENSHOT_MAX_RETRIES,
+    PARKED_RETRY_INTERVAL_SECONDS as SCREENSHOT_PARKED_RETRY_INTERVAL,
+    UPLOAD_RETRY_MAX_DELAY_SECONDS as SCREENSHOT_RETRY_MAX_DELAY,
     UPLOAD_TIMEOUT_SECONDS as SCREENSHOT_UPLOAD_TIMEOUT,
 )
 from core.logging_setup import session_generation
@@ -178,6 +180,15 @@ class SyncService(LoopService):
     def resume_after_auth(self) -> None:
         """Release the hold placed by a 401 once the user has re-authenticated."""
         self._awaiting_auth = False
+        # A screenshot parked on the 401 is retried at once with the new
+        # session, rather than at the next launch or the next hourly revival.
+        try:
+            revived = self._cache.revive_parked_screenshots()
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not revive parked screenshots after re-authentication")
+        else:
+            if revived:
+                self.log.info("SCREENSHOT_REVIVED count=%d reason=re_authenticated", revived)
         self.wake()
 
     @property
@@ -249,6 +260,20 @@ class SyncService(LoopService):
             else:
                 if brought_forward:
                     self.log.info("hold ended; %d timer action(s) retried now", brought_forward)
+            # The same for screenshots: a backoff earned against a dead
+            # network is over, and a capture the backend refused before the
+            # outage gets a fresh attempt now that it is reachable again.
+            try:
+                ready = self._cache.make_screenshots_ready()
+                revived = self._cache.revive_parked_screenshots()
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not bring screenshots forward")
+            else:
+                if ready or revived:
+                    self.log.info(
+                        "SCREENSHOT_REVIVED count=%d reason=hold_ended brought_forward=%d",
+                        revived, ready,
+                    )
 
         # Walk past rows that only defer (their prerequisite has not landed)
         # to the first one that can be attempted. See MAX_DEFERRALS_PER_TICK
@@ -861,6 +886,22 @@ class SyncService(LoopService):
             self.log.exception("could not read pending screenshots")
             return
         if not pending:
+            # Nothing due. A capture the backend refused an hour or more ago
+            # is offered again now: a long-lived tray process has no launch
+            # to revive it at, and the server may well have been fixed since.
+            try:
+                revived = self._cache.revive_parked_screenshots(
+                    older_than_seconds=SCREENSHOT_PARKED_RETRY_INTERVAL
+                )
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not revive parked screenshots")
+                revived = 0
+            if revived:
+                self.log.info(
+                    "SCREENSHOT_REVIVED count=%d reason=parked_interval_elapsed", revived
+                )
+                self.wake()
+                return
             self._prune_screenshot_cache()
             return
 
@@ -869,10 +910,32 @@ class SyncService(LoopService):
                 return
             self._upload_one_screenshot(upload, record)
 
+    @staticmethod
+    def _confirmed_drive_file_id(response: Any) -> Optional[str]:
+        """The Drive file id the backend says it stored, or None.
+
+        A 2xx alone is not confirmation. The contract of the upload endpoint
+        is "201 with the stored record, carrying `google_drive_file_id`", and
+        that field is what proves the bytes are in Drive rather than merely
+        accepted by something in front of the API -- a proxy's placeholder
+        page, a backend built before the Drive pipeline. Without it the local
+        copy is not deleted; the row is retried, which is safe because the
+        endpoint is idempotent on `client_screenshot_id`.
+        """
+        if not isinstance(response, dict) or response.get("success") is False:
+            return None
+        record = response.get("screenshot")
+        if not isinstance(record, dict):
+            return None
+        file_id = record.get("google_drive_file_id")
+        return str(file_id) if file_id else None
+
     def _upload_one_screenshot(self, upload, record: Dict[str, Any]) -> None:
         from pathlib import Path
 
         record_id = record["id"]
+        entry_id = record["time_entry_id"]
+        attempt = int(record.get("retry_count") or 0) + 1
         path = Path(record["local_file_path"])
         try:
             image = path.read_bytes()
@@ -880,15 +943,19 @@ class SyncService(LoopService):
             # The file is gone or unreadable — a user cleaning their disk, or a
             # write that never completed. There is nothing to upload and never
             # will be, so the row is dropped rather than retried forever.
-            self.log.warning(
-                "screenshot %s has no readable local file (%s); dropping it",
-                record_id, exc,
+            self.log.error(
+                "SCREENSHOT_DROPPED id=%s entry=%s reason=local_file_unreadable "
+                "path=%s detail=%s",
+                record_id, entry_id, path, exc,
             )
             self._cache.drop_screenshot(record_id)
             return
 
         if not image:
-            self.log.warning("screenshot %s is empty; dropping it", record_id)
+            self.log.error(
+                "SCREENSHOT_DROPPED id=%s entry=%s reason=local_file_empty path=%s",
+                record_id, entry_id, path,
+            )
             self._cache.drop_screenshot(record_id)
             store.delete_screenshot(str(path))
             return
@@ -903,9 +970,14 @@ class SyncService(LoopService):
             "height": record["height"],
             "file_size_bytes": record["file_size_bytes"],
         }
+        self.log.info(
+            "SCREENSHOT_UPLOAD_ATTEMPT id=%s entry=%s attempt=%d bytes=%d captured_at=%s",
+            record_id, entry_id, attempt, len(image), record["captured_at"],
+        )
+        started = time.monotonic()
         try:
-            upload(
-                record["time_entry_id"],
+            response = upload(
+                entry_id,
                 image,
                 path.name,
                 metadata,
@@ -915,12 +987,18 @@ class SyncService(LoopService):
             status = getattr(exc, "status_code", None)
             if status == 401:
                 # Same hold as the action queue: burning retries against a token
-                # that cannot work only delays telling the user.
-                self._cache.fail_screenshot(record_id, str(exc), max_retries=0)
+                # that cannot work only delays telling the user. Parked, not
+                # backed off: `resume_after_auth` revives it the moment the
+                # user has signed in again.
+                self._cache.park_screenshot(record_id, str(exc))
+                self.log.warning(
+                    "SCREENSHOT_UPLOAD_HELD id=%s entry=%s attempt=%d reason=auth_required",
+                    record_id, entry_id, attempt,
+                )
                 self._awaiting_auth = True
                 self.auth_required.emit()
                 return
-            if status in (403, 404, 422):
+            if status in (403, 404, 413, 422):
                 # The server refused this screenshot and will refuse it again.
                 # The row is parked rather than retried — but the **file is
                 # kept**, and that distinction cost four real captures to
@@ -930,38 +1008,64 @@ class SyncService(LoopService):
                 # client that upgraded before its server destroyed every
                 # screenshot it took in the meantime.
                 #
-                # A parked row keeps its file and is retried at the next
-                # launch, which is when the server may have caught up.
+                # A parked row keeps its file and is revived at the next
+                # launch, when a hold ends, and once an hour, which is when
+                # the server may have caught up.
+                self._cache.park_screenshot(record_id, f"HTTP {status}")
                 self.log.warning(
-                    "screenshot %s refused by the backend (HTTP %s); parking it "
-                    "with its file for a later attempt", record_id, status,
-                )
-                self._cache.fail_screenshot(
-                    record_id, f"HTTP {status}", max_retries=0
+                    "SCREENSHOT_UPLOAD_REFUSED id=%s entry=%s attempt=%d http=%s "
+                    "action=parked_with_file next_retry_in=%ds",
+                    record_id, entry_id, attempt, status,
+                    SCREENSHOT_PARKED_RETRY_INTERVAL,
                 )
                 return
-            will_retry = self._cache.fail_screenshot(
-                record_id, str(exc), max_retries=SCREENSHOT_MAX_RETRIES
-            )
-            self.log.warning(
-                "screenshot %s upload failed (%s); %s",
-                record_id, exc, "will retry" if will_retry else "giving up for now",
-            )
+            self._retry_screenshot_later(record_id, entry_id, attempt, f"HTTP {status}" if status else "network", str(exc))
             return
         except Exception as exc:  # noqa: BLE001
             self.log.exception("screenshot %s upload failed unexpectedly", record_id)
-            self._cache.fail_screenshot(
-                record_id, f"{type(exc).__name__}: {exc}",
-                max_retries=SCREENSHOT_MAX_RETRIES,
+            self._retry_screenshot_later(
+                record_id, entry_id, attempt, "unexpected", f"{type(exc).__name__}: {exc}"
             )
             return
 
-        # Confirmed stored. Only now may the local copy go.
+        drive_file_id = self._confirmed_drive_file_id(response)
+        if not drive_file_id:
+            # Accepted by something, confirmed by nothing. The file stays and
+            # the row is retried; see `_confirmed_drive_file_id`.
+            self._retry_screenshot_later(
+                record_id, entry_id, attempt, "unconfirmed",
+                "the backend answered without a Drive file id",
+            )
+            return
+
+        # Confirmed stored in Drive. Only now may the local copy go.
         stored_path = self._cache.complete_screenshot(record_id)
         if stored_path:
             store.delete_screenshot(stored_path)
         self._mark_synced()
-        self.log.info("screenshot %s uploaded and removed locally", record_id)
+        stored = response.get("screenshot") or {}
+        self.log.info(
+            "SCREENSHOT_UPLOADED id=%s entry=%s attempt=%d backend_id=%s drive_file=%s "
+            "duplicate=%s bytes=%d elapsed_ms=%d local_file_removed=%s",
+            record_id, entry_id, attempt, stored.get("id"), drive_file_id,
+            bool(response.get("duplicate")), len(image),
+            int((time.monotonic() - started) * 1000), bool(stored_path),
+        )
+
+    def _retry_screenshot_later(
+        self, record_id: str, entry_id: Any, attempt: int, reason: str, detail: str
+    ) -> None:
+        """Schedule a transient failure's next attempt and say when it is."""
+        self._cache.fail_screenshot(
+            record_id, detail, max_delay_seconds=SCREENSHOT_RETRY_MAX_DELAY
+        )
+        next_at = self._cache.next_screenshot_retry_at(record_id)
+        self.log.warning(
+            "SCREENSHOT_UPLOAD_FAILED id=%s entry=%s attempt=%d reason=%s "
+            "action=retry next_retry_in=%ds detail=%s",
+            record_id, entry_id, attempt, reason,
+            max(0, int((next_at or 0) - time.time())), detail,
+        )
 
     def _prune_screenshot_cache(self) -> None:
         """

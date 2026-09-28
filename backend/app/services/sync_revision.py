@@ -103,6 +103,14 @@ def scope_components(db: Session, user: User) -> Dict[str, str]:
         "time_entries": _fingerprint(db, select(
             func.count(TimeEntry.id), func.max(TimeEntry.updated_at), func.max(TimeEntry.id),
         ).where(TimeEntry.user_id == user.id)),
+        # The caller's own row. An administrator editing this member on the
+        # web -- switching Add Task off for them, changing their role -- must
+        # reach an open desktop the same way a task edit does: `updated_at`
+        # moves, the fingerprint moves, and the client re-reads its profile
+        # with the rest of the refresh round.
+        "profile": _fingerprint(db, select(
+            func.count(User.id), func.max(User.updated_at), func.max(User.id),
+        ).where(User.id == user.id)),
     }
 
 

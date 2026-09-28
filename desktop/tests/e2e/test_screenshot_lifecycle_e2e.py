@@ -214,6 +214,17 @@ def _capture_windows(runtime, count: int) -> list:
     from background_services.screenshot import config, scheduler
 
     service = runtime.screenshot
+    # The service holds captures until its first privacy-config fetch has
+    # resolved (success or failure); the armed timer simply retries two
+    # seconds later. Waiting for that here is the same thing without the
+    # sleep, and keeps a capture from racing the fetch on a slow backend.
+    deadline = time.monotonic() + 60
+    while not service._privacy_config_loaded and time.monotonic() < deadline:
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.instance().processEvents()
+        time.sleep(0.05)
+    assert service._privacy_config_loaded, "the privacy configuration fetch never resolved"
     first = scheduler.window_index(time.time(), config.window_seconds())
     records = []
     for offset in range(count):
@@ -221,6 +232,7 @@ def _capture_windows(runtime, count: int) -> list:
         assert record is not None, (
             "the real screen capture produced nothing; this needs a real display"
         )
+        assert "window_start" in record, f"capture was withheld: {record}"
         records.append(record)
     return records
 
@@ -708,6 +720,197 @@ def test_a_merged_capture_taken_offline_uploads_exactly_once_on_reconnect(
 
     timer.stop_tracking()
     _pump(qapp, lambda: not timer.is_running(), 30, "the stop")
+
+
+# ── 4b. Recovery: a Drive outage, a backend replaced, a desktop restarted ─────
+
+@pytest.fixture(scope="module")
+def broken_drive_backend():
+    """A second real backend whose Drive root does not exist.
+
+    Everything else about it is genuine -- same code, same development
+    database, same credential -- so an upload gets as far as Drive and is
+    refused there with a 503, exactly as a production backend with a wrong
+    root id, an unshared folder or a revoked key behaves. It stands in for
+    "Google Drive is unavailable" without touching Google's side of anything.
+    """
+    port = _free_port()
+    env = dict(os.environ, ENV="development", PYTHONUNBUFFERED="1",
+               GOOGLE_DRIVE_ROOT_FOLDER_ID="0000000000000000000-does-not-exist")
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1",
+         "--port", str(port), "--log-level", "warning"],
+        cwd=str(BACKEND_ROOT), env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+    )
+    base = f"http://127.0.0.1:{port}"
+    try:
+        deadline = time.monotonic() + 90
+        while True:
+            try:
+                if httpx.get(f"{base}/health", timeout=2).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                pass
+            if proc.poll() is not None or time.monotonic() > deadline:
+                raise RuntimeError("the broken-Drive backend did not come up")
+            time.sleep(0.25)
+        yield base
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def _queue_row(runtime, client_screenshot_id: str) -> dict:
+    row = runtime.cache.storage.query_one(
+        "SELECT status, retry_count, last_error, local_file_path "
+        "FROM pending_screenshots WHERE client_screenshot_id = ?",
+        (client_screenshot_id,),
+    )
+    return dict(row) if row else {}
+
+
+def test_a_drive_outage_keeps_the_capture_queued_and_it_lands_once_drive_is_back(
+    qapp, desktop, api, db, principal, drive_litter, broken_drive_backend, backend
+):
+    """TEST F + TEST E: Drive refuses, nothing is lost, recovery stores it once.
+
+    The desktop first talks to a backend that cannot reach its Drive root. The
+    upload is answered 503; the capture must stay in the local queue **as
+    pending, with its file**, and must not be parked. Then the desktop is
+    pointed at the healthy backend -- a different process, as after a
+    redeploy or a restart -- and the very same capture must reach Drive and
+    the database exactly once.
+    """
+    # The broken backend says so itself, before any upload: the probe is what
+    # an operator checks after a deploy.
+    health = httpx.get(f"{broken_drive_backend}/health", timeout=10).json()
+    probe = health["screenshot_storage"].get("probe", {})
+    deadline = time.monotonic() + 60
+    while probe.get("ok") is None and time.monotonic() < deadline:
+        time.sleep(1)
+        probe = httpx.get(f"{broken_drive_backend}/health", timeout=10).json()["screenshot_storage"]["probe"]
+    assert probe["ok"] is False, f"the broken backend reported {probe}"
+    assert probe["reason"] == "root_folder_not_accessible"
+    # The probe names a reason code only; the operator detail (which would
+    # name the folder and the service account) stays in the backend log.
+    assert set(probe) == {"ok", "reason", "checked_at"}, probe
+
+    desktop.api_client.base_url = broken_drive_backend
+
+    timer = desktop.timer
+    timer.start_tracking(principal["project_id"], principal["task_id"], "E2E drive outage")
+    _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
+    entry_id = timer.entry_id
+
+    (record,) = _capture_windows(desktop, 1)
+    client_id = record["client_screenshot_id"]
+
+    desktop.sync.wake()
+    _pump(qapp, lambda: _queue_row(desktop, client_id).get("retry_count", 0) >= 1, 90,
+          "the first upload attempt to be refused by the broken backend")
+    row = _queue_row(desktop, client_id)
+    assert row["status"] == "pending", f"a Drive outage must not park the capture: {row}"
+    # 503 when Drive reports the root as not visible (an unshared but
+    # well-formed id), 502 when Drive rejects the id outright; both are the
+    # backend saying "storage failed", and both must be retried, not parked.
+    assert any(code in (row["last_error"] or "") for code in ("502", "503")), row
+    assert Path(row["local_file_path"]).exists(), "the file must survive the refusal"
+    assert _stored_rows(db, entry_id) == [], "nothing may be recorded without a Drive object"
+
+    # Drive is "back": the healthy backend takes over. A backoff earned against
+    # the outage is brought forward, exactly as the hold-end path does.
+    desktop.api_client.base_url = backend
+    desktop.cache.make_screenshots_ready()
+    _drain(qapp, desktop, 1, db, lambda: entry_id, "the capture to land after the outage", timeout=180)
+
+    rows = _stored_rows(db, entry_id)
+    assert len(rows) == 1, f"recovery stored {len(rows)} rows, not one"
+    assert rows[0]["client_screenshot_id"] == client_id
+    assert rows[0]["google_drive_file_id"]
+    drive_litter.append(rows[0]["google_drive_file_id"])
+    _pump(qapp, lambda: not desktop.cache.get_screenshot_backlog_paths(), 60,
+          "the local cache to be reclaimed")
+
+    timer.stop_tracking()
+    _pump(qapp, lambda: not timer.is_running(), 30, "the stop")
+
+
+def test_a_capture_pending_at_shutdown_is_uploaded_by_the_next_launch(
+    qapp, tmp_path, backend, principal, db, drive_litter, monkeypatch
+):
+    """TEST D: the desktop is closed with an upload outstanding, and relaunched.
+
+    Two real runtimes on the same on-disk cache, one after the other. The
+    first captures while its upload path is failing, exactly as a machine
+    with no network does, and is shut down cleanly. The second is what a
+    user gets when they open Monitra again: it must find the capture, still
+    with its file, and store it exactly once.
+    """
+    from app.api.exceptions import ApiError
+    from core import paths
+    from core.runtime import ApplicationRuntime
+    from storage.manager import StorageManager
+
+    monkeypatch.setenv("SMS_API_BASE_URL", backend)
+    monkeypatch.setenv("MONITRA_ENV", "development")
+    monkeypatch.setenv("MONITRA_DATA_DIR", str(tmp_path / "data"))
+    paths.reset_cache()
+    db_path = str(tmp_path / "restart-cache.db")
+
+    def launch() -> ApplicationRuntime:
+        runtime = ApplicationRuntime(storage=StorageManager(db_path))
+        runtime.api_client.base_url = backend
+        runtime.api_client.access_token = principal["token"]
+        runtime.start_services()
+        return runtime
+
+    # ── first launch: capture, fail to upload, quit ──
+    first = launch()
+    try:
+        monkeypatch.setattr(
+            first.time_entry_service, "upload_screenshot",
+            lambda *a, **k: (_ for _ in ()).throw(
+                ApiError("Failed to upload screenshot: Network connection error")
+            ),
+        )
+        timer = first.timer
+        timer.start_tracking(principal["project_id"], principal["task_id"], "E2E restart")
+        _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
+        entry_id = timer.entry_id
+        (record,) = _capture_windows(first, 1)
+        client_id = record["client_screenshot_id"]
+        first.sync.wake()
+        _pump(qapp, lambda: _queue_row(first, client_id).get("retry_count", 0) >= 1, 60,
+              "the offline upload attempt")
+        local_file = Path(_queue_row(first, client_id)["local_file_path"])
+        assert local_file.exists()
+        timer.stop_tracking()
+        _pump(qapp, lambda: not timer.is_running(), 30, "the stop")
+    finally:
+        assert first.shutdown(timeout_ms=5000), "the first runtime must shut down cleanly"
+
+    assert local_file.exists(), "quitting must not discard an unsent capture"
+
+    # ── second launch: recover and upload ──
+    second = launch()
+    try:
+        row = _queue_row(second, client_id)
+        assert row and row["status"] == "pending", f"not recovered at launch: {row}"
+        _drain(qapp, second, 1, db, lambda: entry_id, "the recovered capture to be stored", timeout=180)
+        rows = _stored_rows(db, entry_id)
+        assert len(rows) == 1
+        assert rows[0]["client_screenshot_id"] == client_id
+        drive_litter.append(rows[0]["google_drive_file_id"])
+        _pump(qapp, lambda: not second.cache.get_screenshot_backlog_paths(), 60,
+              "the local cache to be reclaimed")
+        assert not local_file.exists()
+    finally:
+        second.shutdown(timeout_ms=5000)
+        paths.reset_cache()
 
 
 # ── 5. Private browsing, through the same pipeline ───────────────────────────

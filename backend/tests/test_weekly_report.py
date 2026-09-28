@@ -939,7 +939,8 @@ class TestExistingWorkflowsStillWork(unittest.TestCase):
 
         self.assertEqual(
             set(BUILDERS),
-            {"welcome", "feedback", "feedback_status", "release", "weekly_report"},
+            {"welcome", "feedback", "feedback_status", "release", "weekly_report",
+             "monthly_report"},
         )
 
 

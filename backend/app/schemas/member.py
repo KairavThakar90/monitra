@@ -98,6 +98,8 @@ class MemberUpdate(BaseModel):
     idle_enabled: Optional[bool] = None
     idle_minutes: IdleMinutes = None
     capture_frequency: CaptureFrequencyMinutes = None
+    #: The Members directory's Allow / Not allow switch for task creation.
+    can_add_tasks: Optional[bool] = None
 
     @field_validator("name", "designation")
     @classmethod
@@ -129,10 +131,17 @@ class MemberResponse(BaseModel):
     idle_enabled: bool
     idle_minutes: int
     capture_frequency: int
+    can_add_tasks: bool = True
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("can_add_tasks", mode="before")
+    @classmethod
+    def unset_means_allowed(cls, value):
+        # Only an explicit False withdraws; an unset value is the default.
+        return True if value is None else value
 
 
 class MemberListResponse(BaseModel):

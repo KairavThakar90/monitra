@@ -20,7 +20,7 @@ from markupsafe import Markup
 
 from app.core.config import settings
 from app.core.time_format import IST, to_ist
-from app.models.email_notification import TYPE_WEEKLY_REPORT
+from app.models.email_notification import TYPE_MONTHLY_REPORT, TYPE_WEEKLY_REPORT
 from app.services.email import assets
 from app.services.email.provider import (
     EmailAddressError, OutgoingEmail, assert_header_safe, normalise_address,
@@ -1069,6 +1069,12 @@ def weekly_report_dashboard_url(payload: dict[str, Any]) -> Optional[str]:
     resolves on the *reader's* machine, and a button that goes nowhere is
     worse than no button.
     """
+    return _report_dashboard_url(payload, start_key="week_start", end_key="week_end")
+
+
+def _report_dashboard_url(payload: dict[str, Any], *, start_key: str, end_key: str) -> Optional[str]:
+    """The Reports page filtered to the period under `start_key`/`end_key`,
+    or None when MONITRA_APP_URL is not a real https:// URL."""
     base = (settings.MONITRA_APP_URL or "").strip().rstrip("/")
     if not base.startswith("https://"):
         return None
@@ -1077,8 +1083,8 @@ def weekly_report_dashboard_url(payload: dict[str, Any]) -> Optional[str]:
         WEEKLY_REPORT_ADMIN_PATH if payload.get("can_view_all_time")
         else WEEKLY_REPORT_MEMBER_PATH
     )
-    start = str(payload.get("week_start") or "").strip()
-    end = str(payload.get("week_end") or "").strip()
+    start = str(payload.get(start_key) or "").strip()
+    end = str(payload.get(end_key) or "").strip()
     if not (start and end):
         return f"{base}{path}"
     return f"{base}{path}?{urlencode({'start': start, 'end': end})}"
@@ -1271,3 +1277,151 @@ def build_weekly_report_email(payload: dict[str, Any], recipients: list[str]) ->
 #: builder is defined below it. The dict is still the one registry the outbox
 #: dispatches through — `TYPE_WEEKLY_REPORT`'s wire value, matched exactly.
 BUILDERS[TYPE_WEEKLY_REPORT] = build_weekly_report_email
+
+
+# ----------------------------------------------------------------------
+# Workflow 8 — monthly productivity report
+# ----------------------------------------------------------------------
+
+def monthly_report_subject(payload: dict[str, Any]) -> str:
+    """"Your Monitra Monthly Report — Aug 2026". No figure, for the same
+    lock-screen reason as the weekly subject."""
+    period = str(payload.get("period_short") or "").strip()
+    return clean_subject(
+        f"Your Monitra Monthly Report — {period}" if period
+        else "Your Monitra Monthly Report"
+    )
+
+
+def monthly_report_dashboard_url(payload: dict[str, Any]) -> Optional[str]:
+    """"View Detailed Report" for the month: the same Reports route the weekly
+    button opens, filtered to the month's first and last day."""
+    return _report_dashboard_url(payload, start_key="month_start", end_key="month_end")
+
+
+def _most_productive_day_text(payload: dict[str, Any]) -> str:
+    day = payload.get("most_productive_day") or {}
+    label = str(day.get("label") or "").strip()
+    if not label:
+        # Nothing was tracked, so there is no such day. Said plainly rather
+        # than left out: this is one of the six rows the report always shows.
+        return "No tracked days"
+    return f"{label} ({format_duration(day.get('total_seconds'))})"
+
+
+def _monthly_rows(payload: dict[str, Any]) -> list[tuple[str, str]]:
+    """The six figures the monthly email always shows, in order. Shared by the
+    HTML table and the plain-text alternative so the two cannot disagree."""
+    return [
+        ("Total tracked time", format_duration(payload.get("total_seconds"))),
+        ("Average activity", format_activity(payload.get("average_activity"))),
+        ("Projects", str(int(payload.get("project_count") or 0))),
+        ("Total working days", str(int(payload.get("working_days") or 0))),
+        ("Average per working day", format_duration(payload.get("average_seconds_per_working_day"))),
+        ("Most productive day", _most_productive_day_text(payload)),
+    ]
+
+
+def _monthly_summary_table(payload: dict[str, Any]) -> Markup:
+    return _rows_table(detail_rows(_monthly_rows(payload)))
+
+
+def _monthly_cta(payload: dict[str, Any]) -> Markup:
+    url = monthly_report_dashboard_url(payload)
+    if url is None:
+        return Markup("")
+    return Markup(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+        'class="st-cta" style="margin:30px 0 0 0;">'
+        '<tr><td align="center" style="background-color:#2563EB;border-radius:8px;">'
+        '<a href="{url}" style="display:inline-block;padding:13px 30px;'
+        'font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;'
+        'color:#FFFFFF;text-decoration:none;">View Detailed Report</a>'
+        '</td></tr></table>'
+    ).format(url=url)
+
+
+def _monthly_text_lines(payload: dict[str, Any], has_activity: bool) -> list[str]:
+    period = str(payload.get("period_label") or "")
+    lines = [
+        "YOUR MONITRA MONTHLY PRODUCTIVITY REPORT",
+        "",
+        _greeting(payload.get("name")),
+        "",
+        f"Month of {period}" if period else "",
+        "",
+    ]
+    if not has_activity:
+        lines += [
+            f"You had no tracked activity during {period}." if period
+            else "You had no tracked activity last month.",
+            "",
+        ]
+    lines.append("-" * 48)
+    for label, value in _monthly_rows(payload):
+        lines.append(f"  {label}{' ' * max(1, 26 - len(label))}{value}")
+    lines.append("-" * 48)
+    if not has_activity:
+        lines += ["", "Open Monitra and start a timer to begin tracking your work this month."]
+    if (url := monthly_report_dashboard_url(payload)):
+        lines += ["", f"View your detailed report: {url}"]
+    if (support := (settings.MONITRA_SUPPORT_EMAIL or "").strip()):
+        lines += ["", f"Need a hand? Write to {support}."]
+    lines += ["", "Keep tracking. Keep improving.", "", "Monitra — Staff Management System", "Store Transform"]
+    return lines
+
+
+def build_monthly_report_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    """One person's month, rendered for delivery from its frozen payload."""
+    subject = monthly_report_subject(payload)
+    period = str(payload.get("period_label") or "")
+    has_activity = bool(payload.get("has_activity"))
+
+    frame = _frame_context(
+        subject=subject,
+        preheader=(
+            f"Your tracked time, activity, projects and working days for {period}." if period
+            else "Your Monitra monthly productivity summary."
+        ),
+        footer_note=(
+            "You are receiving this because you have a Monitra account. It is "
+            "sent once a month and covers only the previous completed month."
+        ),
+    )
+
+    if has_activity:
+        lead = Markup("Here is a quick look at your work activity from the previous month.")
+        closing_note = Markup(
+            "Your complete activity, time and project details are available "
+            "in the Monitra dashboard."
+        )
+    else:
+        lead = Markup("You had no tracked activity during this period.")
+        closing_note = Markup(
+            "Open Monitra and start a timer to begin tracking your work this month."
+        )
+
+    html = render_page(
+        "monthly_report.html",
+        {
+            **frame,
+            "greeting": _greeting(payload.get("name")),
+            "period_label": period,
+            "lead": lead,
+            "summary_table": _monthly_summary_table(payload),
+            "cta_block": _monthly_cta(payload),
+            "closing_note": closing_note,
+        },
+    )
+
+    return OutgoingEmail(
+        to=recipients,
+        subject=subject,
+        html=html,
+        text="\n".join(_monthly_text_lines(payload, has_activity)),
+        reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
+        inline_images=frame["_inline_images"],
+    )
+
+
+BUILDERS[TYPE_MONTHLY_REPORT] = build_monthly_report_email

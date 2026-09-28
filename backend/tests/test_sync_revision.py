@@ -42,8 +42,8 @@ class _Answers:
 STAMP = datetime(2026, 9, 15, 10, 0, tzinfo=timezone.utc)
 LATER = datetime(2026, 9, 15, 10, 5, tzinfo=timezone.utc)
 
-#: projects, memberships, tasks, assignments, time_entries -- in that order.
-BASELINE = [(3, STAMP, 30), (5, STAMP, 50), (12, STAMP, 120), (4, STAMP, 40), (9, STAMP, 90)]
+#: projects, memberships, tasks, assignments, time_entries, profile -- in that order.
+BASELINE = [(3, STAMP, 30), (5, STAMP, 50), (12, STAMP, 120), (4, STAMP, 40), (9, STAMP, 90), (1, STAMP, 1)]
 
 
 def _revision(answers, user=None):
@@ -81,17 +81,26 @@ class TestRevisionMovesOnEveryKindOfChange(unittest.TestCase):
         changed[4] = (9, LATER, 90)            # an entry stopped or approved
         self.assertNotEqual(_revision(BASELINE), _revision(changed))
 
+    def test_the_callers_own_profile_is_part_of_it(self):
+        """An administrator switching Add Task off for this member (or
+        changing anything else on their row) has to reach an open desktop
+        without a restart, so the caller's own `users.updated_at` is in."""
+        changed = list(BASELINE)
+        changed[5] = (1, LATER, 1)             # the member's row was edited
+        self.assertNotEqual(_revision(BASELINE), _revision(changed))
+
     def test_every_component_is_named(self):
         components = sync_revision.scope_components(_Answers(BASELINE), _user())
         self.assertEqual(
-            set(components), {"projects", "memberships", "tasks", "assignments", "time_entries"}
+            set(components),
+            {"projects", "memberships", "tasks", "assignments", "time_entries", "profile"},
         )
         self.assertEqual(components["projects"], f"3:{STAMP.isoformat()}:30")
 
     def test_an_empty_scope_is_a_real_answer(self):
         """A user with nothing to see gets a fingerprint, not an error, and
         one that differs from a user who can see something."""
-        empty = [(0, None, None)] * 5
+        empty = [(0, None, None)] * 6
         self.assertNotEqual(_revision(empty), _revision(BASELINE))
         self.assertEqual(_revision(empty), _revision(empty))
 
@@ -125,6 +134,11 @@ class TestScope(unittest.TestCase):
     def test_time_entries_are_the_callers_own(self):
         entries_sql = self._sql(_user(user_id=42))[4]
         self.assertIn("user_id", entries_sql)
+
+    def test_the_profile_is_the_callers_own_row(self):
+        profile_sql = self._sql(_user(user_id=42))[5]
+        self.assertIn("FROM users", profile_sql)
+        self.assertIn("users.id =", profile_sql)
 
     def test_an_employees_tasks_carry_the_task_scope(self):
         """The same narrowing `GET /projects/{id}/tasks` applies: their own,
