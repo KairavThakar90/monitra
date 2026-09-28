@@ -54,11 +54,12 @@ from core.logging_setup import get_logger
 from core.time_format import format_hms, ist_today
 
 #: What the user is told when an administrator has switched Add Task off for
-#: them in the Members directory (`users.can_add_tasks`). The same sentence
-#: the backend answers a refused create with, so the button's tooltip, the
-#: click on a stale button and the server's own refusal all read alike.
+#: them in the Members directory (`users.can_add_tasks`): the button's
+#: tooltip, the toast when the greyed button is clicked, and the toast when
+#: the section is asked to add anyway. A create the backend itself refuses
+#: shows the backend's own sentence instead.
 TASK_CREATION_BLOCKED_MESSAGE = (
-    "Adding tasks has been turned off for your account by an administrator."
+    "You are not allowed to add tasks yet. Once an administrator allows you, you can add tasks."
 )
 
 

@@ -67,7 +67,6 @@ def test_switched_off_the_button_goes_off_for_an_active_project(qapp):
 
     assert availability == [True, False]
     assert reasons == [TASK_CREATION_BLOCKED_MESSAGE]
-    assert TASK_CREATION_BLOCKED_MESSAGE == BLOCKED_DETAIL, "must match the backend's sentence"
 
 
 def test_a_project_loaded_while_switched_off_never_offers_the_button(qapp):
@@ -327,6 +326,63 @@ def test_the_profile_read_hits_auth_me(dashboard):
 
     assert runner.calls["load-profile"][0]() == _profile(can_add_tasks=False)
     widget.api_client.get.assert_called_once_with("/auth/me")
+
+
+def _press_at(widget, point):
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    event = QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress, QPointF(point), QPointF(point),
+        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+    )
+    widget.mousePressEvent(event)
+
+
+def test_clicking_the_greyed_button_shows_why(dashboard):
+    """A disabled button emits nothing, so the press has to be caught by
+    the top bar and answered with a toast and a status-bar line."""
+    widget, _ = dashboard
+    widget.api.notify = MagicMock()
+    widget.on_login(_profile(can_add_tasks=False))
+    widget._task_section.set_tasks(TASKS, ACTIVE_PROJECT, "#3B82F6")
+    widget.show()
+    topbar = widget._topbar
+    assert not _button(widget).isEnabled()
+
+    _press_at(topbar, topbar._add_task_button_rect().center())
+
+    widget.api.notify.assert_called_once()
+    assert widget.api.notify.call_args.args[0] == TASK_CREATION_BLOCKED_MESSAGE
+
+
+def test_a_press_elsewhere_on_the_top_bar_says_nothing(dashboard):
+    widget, _ = dashboard
+    widget.api.notify = MagicMock()
+    widget.on_login(_profile(can_add_tasks=False))
+    widget._task_section.set_tasks(TASKS, ACTIVE_PROJECT, "#3B82F6")
+    widget.show()
+    topbar = widget._topbar
+
+    from PySide6.QtCore import QPoint
+    _press_at(topbar, topbar._add_task_button_rect().bottomRight() + QPoint(40, 40))
+
+    widget.api.notify.assert_not_called()
+
+
+def test_the_greyed_button_is_silent_once_allowed_again(dashboard):
+    """Off because no project is selected is not the same as off because
+    an administrator said so: only the second deserves the toast."""
+    widget, _ = dashboard
+    widget.api.notify = MagicMock()
+    widget.on_login(_profile(can_add_tasks=True))
+    widget.show()
+    topbar = widget._topbar
+    assert not _button(widget).isEnabled(), "no project selected yet"
+
+    _press_at(topbar, topbar._add_task_button_rect().center())
+
+    widget.api.notify.assert_not_called()
 
 
 def test_logout_resets_the_switch_for_the_next_user(dashboard):

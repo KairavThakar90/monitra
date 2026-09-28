@@ -22,7 +22,7 @@ enforces for itself (see `ui/task_table.py` and `ui/activity_section.py`).
 from datetime import date, timedelta
 from typing import Optional
 
-from PySide6.QtCore import Qt, QSize, QDate, QTimer, Signal
+from PySide6.QtCore import Qt, QPoint, QRect, QSize, QDate, QTimer, Signal
 from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCalendarWidget, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu,
@@ -80,6 +80,10 @@ class TopBar(QFrame):
     #: Add Task, same arrangement: button here, dialog and create call in
     #: TaskSection.
     add_task_clicked = Signal()
+    #: The greyed-out Add Task button was clicked while an administrator has
+    #: it switched off for this user. Carries the reason to show. A disabled
+    #: QPushButton emits nothing, so the press is caught here instead.
+    add_task_blocked_clicked = Signal(str)
     #: Live text of the header search field; TaskSection filters on it.
     search_changed = Signal(str)
 
@@ -267,6 +271,7 @@ class TopBar(QFrame):
         self._add_task_btn.setEnabled(False)
         self._add_task_btn.setToolTip("Add a task to the selected project")
         self._add_task_btn.clicked.connect(self.add_task_clicked.emit)
+        self._add_task_blocked_reason = ""
         layout.addWidget(self._add_task_btn)
 
         # ── Request (manual time entry) ────────────────────────────
@@ -441,10 +446,34 @@ class TopBar(QFrame):
         administrator switched it off in the Members directory), or "" to
         restore the ordinary hint. The enabled state itself still arrives
         through `set_add_task_enabled`; this only explains it."""
+        self._add_task_blocked_reason = reason or ""
         self._add_task_btn.setToolTip(reason or "Add a task to the selected project")
 
     def add_task_tooltip(self) -> str:
         return self._add_task_btn.toolTip()
+
+    def add_task_blocked_reason(self) -> str:
+        return self._add_task_blocked_reason
+
+    def _add_task_button_rect(self) -> QRect:
+        """The button's rectangle in this widget's coordinates, whatever
+        container the layout parented it to."""
+        return QRect(self._add_task_btn.mapTo(self, QPoint(0, 0)), self._add_task_btn.size())
+
+    def mousePressEvent(self, event) -> None:
+        # A disabled button receives no mouse events; the press falls through
+        # to the nearest ancestor that handles it, which is this widget. When
+        # Add Task is off because an administrator switched it off, a click
+        # on the greyed button still deserves an answer -- the reason.
+        if (
+            self._add_task_blocked_reason
+            and not self._add_task_btn.isEnabled()
+            and self._add_task_button_rect().contains(event.position().toPoint())
+        ):
+            self.add_task_blocked_clicked.emit(self._add_task_blocked_reason)
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     def search_text(self) -> str:
         return self._search.text()

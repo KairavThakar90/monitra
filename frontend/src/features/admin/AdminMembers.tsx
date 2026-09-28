@@ -59,33 +59,30 @@ const AddTaskSwitch: React.FC<{
   busy: boolean;
   onChange: (allowed: boolean) => void;
 }> = ({ allowed, editable, busy, onChange }) => {
-  if (!editable) {
-    return allowed
-      ? <span className="inline-flex items-center rounded-md bg-emerald-50 px-2.5 py-1 text-[11px] font-bold tracking-wider text-emerald-600 border border-emerald-200">Allowed</span>
-      : <span className="inline-flex items-center rounded-md bg-rose-50 px-2.5 py-1 text-[11px] font-bold tracking-wider text-rose-500 border border-rose-200">Not allowed</span>;
-  }
-  const base = 'px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider transition disabled:cursor-not-allowed disabled:opacity-60';
+  const pill = allowed
+    ? <span className="inline-flex items-center rounded-md bg-emerald-50 px-2.5 py-1 text-[11px] font-bold tracking-wider text-emerald-600 border border-emerald-200">Allowed</span>
+    : <span className="inline-flex items-center rounded-md bg-rose-50 px-2.5 py-1 text-[11px] font-bold tracking-wider text-rose-500 border border-rose-200">Excluded</span>;
+  if (!editable) return pill;
   return (
-    <div role="group" aria-label="Add task permission" className="inline-flex overflow-hidden rounded border border-slate-200">
+    <div className="flex items-center gap-3">
+      {pill}
       <button
         type="button"
+        role="switch"
+        aria-checked={allowed}
+        aria-label={allowed ? 'Exclude this member from adding tasks' : 'Allow this member to add tasks'}
+        title={allowed ? 'Click to exclude this member from adding tasks' : 'Click to allow this member to add tasks'}
         disabled={busy}
-        aria-pressed={allowed}
-        title="This member can add tasks"
-        onClick={() => onChange(true)}
-        className={`${base} ${allowed ? 'bg-emerald-500 text-white' : 'bg-white text-slate-500 hover:bg-emerald-50 hover:text-emerald-600'}`}
+        onClick={() => onChange(!allowed)}
+        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/40 disabled:cursor-not-allowed disabled:opacity-60 ${
+          allowed ? 'bg-blue-600' : 'bg-slate-300'
+        }`}
       >
-        Allow
-      </button>
-      <button
-        type="button"
-        disabled={busy}
-        aria-pressed={!allowed}
-        title="This member cannot add tasks until allowed again"
-        onClick={() => onChange(false)}
-        className={`${base} border-l border-slate-200 ${!allowed ? 'bg-rose-500 text-white' : 'bg-white text-slate-500 hover:bg-rose-50 hover:text-rose-500'}`}
-      >
-        Not allow
+        <span
+          className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+            allowed ? 'translate-x-5' : 'translate-x-0.5'
+          }`}
+        />
       </button>
     </div>
   );
@@ -733,7 +730,9 @@ export const AdminMembers: React.FC = () => {
     try {
       await updateMember({ id: member.id, body: { can_add_tasks: allowed } }).unwrap();
       showToast(
-        allowed ? `${member.name} can add tasks again.` : `${member.name} can no longer add tasks.`,
+        allowed
+          ? `${member.name} is now allowed to add tasks.`
+          : `${member.name} is now excluded from adding tasks.`,
         'success',
       );
     } catch (err) {

@@ -523,6 +523,7 @@ class DashboardWindow(QWidget):
         self._topbar.search_changed.connect(self._task_section.apply_search)
         self._task_section.add_task_available.connect(self._topbar.set_add_task_enabled)
         self._task_section.task_creation_blocked.connect(self._topbar.set_add_task_blocked_reason)
+        self._topbar.add_task_blocked_clicked.connect(self._on_add_task_blocked_clicked)
         self._task_section.setMinimumHeight(220)
         self._content_splitter.addWidget(self._task_section)
 
@@ -1058,6 +1059,11 @@ class DashboardWindow(QWidget):
         self.api.apply_idle_profile(user_data)
         self.api.apply_screenshot_profile(user_data)
         self._apply_profile(user_data)
+
+    def _on_add_task_blocked_clicked(self, reason: str) -> None:
+        """The user clicked the greyed Add Task button: say why it is off."""
+        self.api.notify(reason, NotificationLevel.WARNING, key="add-task-blocked")
+        self._status_bar.set_message(reason, WARNING)
 
     def _apply_profile(self, user_data: dict) -> None:
         """Render the signed-in user's profile: who they are, their role, and
