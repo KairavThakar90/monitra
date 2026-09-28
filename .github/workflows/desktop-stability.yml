@@ -75,7 +75,16 @@ jobs:
       # a widget is shown, unrelated to anything in this codebase. Xvfb gives
       # Qt a real (virtual) display and the mature, stable "xcb" platform
       # instead, which does not carry that defect.
+      #
+      # QT_QPA_PLATFORM must be set explicitly to something other than
+      # "offscreen" here, not merely left unset: tests/conftest.py (and the
+      # soak/launch-cycle scripts) call
+      # os.environ.setdefault("QT_QPA_PLATFORM", "offscreen") themselves, so
+      # an unset variable still silently ends up offscreen regardless of what
+      # Xvfb provides.
       - name: Run tests
+        env:
+          QT_QPA_PLATFORM: xcb
         run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" python -m pytest tests/ -v --tb=short
 
   launch-cycles:
@@ -107,7 +116,11 @@ jobs:
       # single run proves nothing. This fails if any cycle hangs, crashes,
       # leaves a thread running, or escalates shutdown to terminate().
       # Xvfb, not QT_QPA_PLATFORM=offscreen -- see the "Run tests" step above.
+      # Set explicitly: run_launch_cycles.py defaults it to offscreen itself
+      # when unset.
       - name: Ten launch/quit cycles
+        env:
+          QT_QPA_PLATFORM: xcb
         run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" python tests/soak/run_launch_cycles.py --cycles 10 --uptime 5
 
   soak:
@@ -141,5 +154,8 @@ jobs:
       # timer cycling. Fails on thread growth, duplicate operations, a queue
       # that does not drain, or an unclean shutdown.
       # Xvfb, not QT_QPA_PLATFORM=offscreen -- see the "Run tests" step above.
+      # Set explicitly: run_soak.py defaults it to offscreen itself when unset.
       - name: Soak under 200-user-equivalent load
+        env:
+          QT_QPA_PLATFORM: xcb
         run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" python tests/soak/run_soak.py --duration 180 --users 200 --drain 180
