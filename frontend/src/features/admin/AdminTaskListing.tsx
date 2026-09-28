@@ -191,9 +191,13 @@ export const AdminTaskListing: React.FC = () => {
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
   
-  const [datePreset, setDatePreset] = useState('All Time');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  // Defaults to Today, not All Time: the task list itself always shows only
+  // what's active today (the backend narrows it regardless of this filter),
+  // so the displayed hour totals should match that on first load rather than
+  // reading "All Time" next to a list that is quietly scoped to today.
+  const [datePreset, setDatePreset] = useState('Today');
+  const [startDate, setStartDate] = useState(() => applyDatePreset('Today').start);
+  const [endDate, setEndDate] = useState(() => applyDatePreset('Today').end);
   const [dateFilterOpen, setDateFilterOpen] = useState(false);
   
   const [filterProjectIds, setFilterProjectIds] = useState<string[]>([]);

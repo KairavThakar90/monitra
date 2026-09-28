@@ -281,6 +281,7 @@ class TaskSummaryScopeTests(unittest.TestCase):
                    return_value=([], 0)) as paged, \
              patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}), \
              patch("app.services.reports.ReportsRepository.active_tasks_by_project", return_value={}), \
+             patch("app.services.reports.ReportsRepository.tasks_touched_today", return_value=set()), \
              patch("app.services.reports.ReportsRepository.project_statuses_lookup", return_value={}):
             ReportsService.build_project_task_summary(db, user, 1, 5, project_ids, None, None, None)
         return paged.call_args.args[2]
