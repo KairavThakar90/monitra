@@ -28,7 +28,6 @@ from tests.test_timer_lifecycle_reliability import (  # noqa: F401  (fixtures an
 )
 from ui.action_banner import ActionBanner
 from ui.dashboard_window import BREAK_ENDED_MESSAGE, BREAK_STARTED_MESSAGE
-from tests.test_stat_cards_fit_maximised import real_value_fonts_available
 from ui.stat_cards import StatCardsRow
 from ui.styles import SUCCESS, WARNING
 from ui.timer_control import (
@@ -170,14 +169,13 @@ def test_the_active_card_is_wider_and_the_name_keeps_room_at_the_floor(qapp):
     """The button is paid for partly by the card and partly by the name,
     which elides; at the narrowest one-row width the name still has room,
     and above it the active column stretches faster than the others."""
-    row = StatCardsRow()
-    _laid_out(qapp, row, row.SINGLE_ROW_MINIMUM_WIDTH)
+    row = _laid_out(qapp, StatCardsRow(), StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH)
     assert row.columns() == len(row._cards)
     assert row.active_card.width() > row.total_card.width()
     assert row.active_card._value.width() >= 118
     assert row.active_card._value.x() + row.active_card._value.width() <= row.break_button.x()
 
-    _laid_out(qapp, row, row.SINGLE_ROW_MINIMUM_WIDTH + 200)
+    _laid_out(qapp, row, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH + 200)
     assert row.active_card._value.width() >= 118 + 50, "slack goes to the name first"
     row.hide()
     row.deleteLater()
@@ -187,9 +185,6 @@ def test_a_1600px_window_still_shows_the_cards_in_one_row(qapp):
     """1600x900 leaves 1260px of content once the sidebar and margins are
     taken out; the row showed one line there before the button and must
     still."""
-    if not real_value_fonts_available():
-        pytest.skip("the card floors are measured from the value font, and this "
-                    "platform resolves none (every glyph is a 23px box)")
     row = _laid_out(qapp, StatCardsRow(), 1600 - 300 - 40)
     assert row.columns() == len(row._cards), \
         "1260px of content must still fit every card (including TODAY'S ACTIVITY) in one row"

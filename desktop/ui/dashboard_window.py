@@ -538,7 +538,7 @@ class DashboardWindow(QWidget):
         # Each section reports its own measurement; the splitter reads both
         # at every resize, and again when the task list's rows change.
         self._content_splitter.set_content_sizing(
-            self._task_section.content_heights, self._activity_section.usable_height
+            self._task_section.content_height, self._activity_section.usable_height
         )
         self._task_section.content_height_changed.connect(self._content_splitter.relayout)
 

@@ -16,11 +16,10 @@ the state it is given; the timer service owns the break.
 """
 from __future__ import annotations
 
-import math
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QFontMetricsF
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QSizePolicy,
     QVBoxLayout, QWidget
@@ -39,9 +38,14 @@ from ui.styles import (
 _fmt = format_hms
 
 #: What one card needs beside its text: the 48px gradient tile, the layout's
-#: 16/18 margins and the 14px gap. The card's own border is added per
-#: card, from the frame (see `StatCard.__init__`).
+#: 16/18 margins and the 14px gap.
 _CARD_CHROME_WIDTH = 48 + 16 + 18 + 14
+
+#: Room for the card's *value*. Measured, not guessed: "01:02:05" in the
+#: 17pt mono face the total-time card uses is 184px wide. The sub-line and the
+#: caption may be shortened when a card is narrow; the number the card exists
+#: to show may not, so this is the card's floor.
+_CARD_VALUE_WIDTH = 190
 
 #: Gap between cards, in both directions.
 _CARD_SPACING = 14
@@ -49,55 +53,17 @@ _CARD_SPACING = 14
 #: Gap between a card's text and a trailing action.
 _ACTION_SPACING = 12
 
-#: How much wider the ACTIVE TASK card's floor is than the others': the
-#: Break In / Break Out button's whole footprint, so the card's own value
-#: ("No active task", or the task name) keeps the width its floor promises
-#: with the button beside it. This used to be 40px -- less than the button
-#: -- to keep the one-row threshold inside a 1600px window, back when each
-#: card's floor was a 190px constant. The floors are measured now (see
-#: `value_width`) and are far smaller, so the whole button fits with room
-#: to spare.
-ACTIVE_CARD_EXTRA_WIDTH = BREAK_BUTTON_WIDTH + _ACTION_SPACING
-
-#: The project statuses the backend defines (alembic c1a2b3d4e5f6 consolidated
-#: them to exactly these three). The status card's floor is the widest of
-#: them, so whichever one a project is in shows whole.
-PROJECT_STATUS_NAMES = ("Active", "Paused", "Completed")
-
-#: The widest *fixed* value each card shows -- the text it exists to show,
-#: which may never be shortened. A task name or a status an admin invents
-#: later elides like any other overflow; these do not.
-STATUS_CARD_WIDEST_VALUE = max(PROJECT_STATUS_NAMES, key=len)
-TOTAL_CARD_WIDEST_VALUE = "00:00:00"
-ACTIVE_CARD_WIDEST_VALUE = "No active task"
-ACTIVITY_CARD_WIDEST_VALUE = "100%"
-
-
-def _value_font(mono: bool) -> QFont:
-    """The one font a card's value is drawn in, so the floor and the label
-    can never disagree about it."""
-    return QFont("Consolas" if mono else "Segoe UI", 17 if mono else 18, QFont.Weight.Black)
-
-
-def value_width(text: str, *, mono: bool = False) -> int:
-    """How wide `text` is in the value font, on this display.
-
-    Measured, not written down. The floor used to be a 190px constant with
-    a note that "01:02:05" in the mono face measured 184px; on the Windows
-    font engine it measures 104px. Four cards each 80px wider than they
-    needed to be put the one-row threshold at 1226px, above the ~1163px a
-    maximised window has for content on a 1920x1080 display at 125%
-    scaling, so the cards wrapped to two rows there and took 206px from
-    the task list and the Activity panel below.
-    """
-    return text_width(text, _value_font(mono))
-
-
-def text_width(text: str, font: QFont) -> int:
-    """`text`'s advance in `font`, rounded up. Letter spacing is fractional
-    (0.9px per glyph here), and the integer metrics round the total down:
-    a floor one pixel short of the true advance elided the last letter."""
-    return math.ceil(QFontMetricsF(font).horizontalAdvance(text))
+#: How much wider the ACTIVE TASK card's floor is than the others', for its
+#: Break In / Break Out button. Deliberately less than the button's own
+#: 108px: the button is paid for partly by the card and partly by the task
+#: name, which elides. A task name shortens gracefully and a clock does not,
+#: and adding the button's whole width to the floor would have moved the
+#: one-row threshold past what a 1600px-wide window has left for content,
+#: wrapping the cards two-by-two on a screen that showed them in one row
+#: before. At the floor the name still has ~120px; above it, the columns
+#: stretch in proportion to their floors (see `_arrange`), so the name
+#: gets more room the moment there is any.
+ACTIVE_CARD_EXTRA_WIDTH = 40
 
 
 class ElidingLabel(QLabel):
@@ -169,43 +135,20 @@ class StatCard(QFrame):
         caption: str,
         icon_name: str,
         tile: str,
-        widest_value: str,
-        *,
-        mono: bool = False,
         parent: Optional[QWidget] = None,
     ) -> None:
-        """
-        :param widest_value: The widest value this card must always show
-            whole; its floor is measured from it and from the caption
-            (see `value_width`).
-        :param mono: Whether that value is drawn in the mono clock face.
-        """
         super().__init__(parent)
         self.setObjectName("StatCard")
         self._tile_key = tile
         self._accent = STAT_TILE_GRADIENTS[tile][2]
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(96)
-        self._build_ui(caption, icon_name)
-        self._apply_style()
         # Wide enough for the value, and no wider. The sub-line and caption
         # elide below their natural width, so a narrow card shortens a
-        # sentence instead of clipping the number above it. The style
-        # sheet's 1px border is part of the width too -- it is read back
-        # from the frame after the style is applied rather than assumed --
-        # because a floor two pixels short elided "01:02:05" to "01:02:…".
-        # The caption is fixed text too ("TODAY'S ACTIVITY" is not a
-        # sentence to shorten), so the floor covers whichever of the two
-        # is wider. Measured through the label, whose metrics include the
-        # letter spacing its style sheet adds.
-        self.value_floor = max(
-            value_width(widest_value, mono=mono),
-            text_width(self._caption.full_text(), self._caption.font()),
-        )
-        frame = self.contentsMargins()
-        self.setMinimumWidth(
-            _CARD_CHROME_WIDTH + frame.left() + frame.right() + self.value_floor
-        )
+        # sentence instead of clipping the number above it.
+        self.setMinimumWidth(_CARD_CHROME_WIDTH + _CARD_VALUE_WIDTH)
+        self._build_ui(caption, icon_name)
+        self._apply_style()
 
     def _build_ui(self, caption: str, icon_name: str) -> None:
         layout = QHBoxLayout(self)
@@ -309,7 +252,9 @@ class StatCard(QFrame):
         """)
 
     def set_value(self, text: str, *, mono: bool = False) -> None:
-        self._value.setFont(_value_font(mono))
+        self._value.setFont(
+            QFont("Consolas" if mono else "Segoe UI", 17 if mono else 18, QFont.Weight.Black)
+        )
         self._value.setText(text)
 
     def set_sub(self, text: str, color: Optional[str] = None) -> None:
@@ -343,13 +288,20 @@ class StatCardsRow(QWidget):
     unaffected: they still get the single row the design intends.
     """
 
-    #: The width at or above which all four fit on one line, and the width
-    #: at or above which two fit on a line (the widget's own floor). Both
-    #: are set per instance in `__init__`, from the cards' measured floors:
-    #: a class constant cannot measure a font, and a figure that fitted one
-    #: platform's fonts is exactly what wrapped the cards on another.
-    SINGLE_ROW_MINIMUM_WIDTH: int
-    TWO_COLUMN_MINIMUM_WIDTH: int
+    #: One card, at its floor.
+    CARD_MINIMUM_WIDTH = _CARD_CHROME_WIDTH + _CARD_VALUE_WIDTH
+    #: The width at or above which all four fit on one line. The ACTIVE TASK
+    #: card is wider than the others by its break button.
+    SINGLE_ROW_MINIMUM_WIDTH = (
+        CARD_MINIMUM_WIDTH * 4 + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING * 3
+    )
+    #: The width at or above which two fit on a line -- the widget's own floor.
+    #: Unchanged by the fourth card: at two columns the ACTIVE TASK card is
+    #: still the widest of the pair sharing its column (see `_arrange`'s
+    #: per-column max), whichever of the plain cards lands beside it.
+    TWO_COLUMN_MINIMUM_WIDTH = (
+        CARD_MINIMUM_WIDTH * 2 + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING
+    )
 
     #: The Break In / Break Out button, forwarded. Intent only; the window
     #: handles both and pushes the outcome back through `set_break_control`.
@@ -369,19 +321,12 @@ class StatCardsRow(QWidget):
         # the four-across width and it could never become narrow enough to
         # wrap -- the resize that would trigger the wrap could not happen.
         self._grid.setSizeConstraint(QGridLayout.SizeConstraint.SetNoConstraint)
+        self.setMinimumWidth(self.TWO_COLUMN_MINIMUM_WIDTH)
 
-        self.status_card = StatCard(
-            "Project status", "task_alt", "blue", STATUS_CARD_WIDEST_VALUE, parent=self
-        )
-        self.total_card = StatCard(
-            "Project hours", "timer", "violet", TOTAL_CARD_WIDEST_VALUE, mono=True, parent=self
-        )
-        self.active_card = StatCard(
-            "Active task", "trending_up", "green", ACTIVE_CARD_WIDEST_VALUE, parent=self
-        )
-        self.activity_card = StatCard(
-            "Today's activity", "bolt", "amber", ACTIVITY_CARD_WIDEST_VALUE, parent=self
-        )
+        self.status_card = StatCard("Project status", "task_alt", "blue", self)
+        self.total_card = StatCard("Project hours", "timer", "violet", self)
+        self.active_card = StatCard("Active task", "trending_up", "green", self)
+        self.activity_card = StatCard("Today's activity", "bolt", "amber", self)
 
         self._cards = (self.status_card, self.total_card, self.active_card, self.activity_card)
 
@@ -392,11 +337,6 @@ class StatCardsRow(QWidget):
         self.active_card.add_action(self.break_button, ACTIVE_CARD_EXTRA_WIDTH)
         self.break_button.break_in_requested.connect(self.break_in_requested)
         self.break_button.break_out_requested.connect(self.break_out_requested)
-
-        # From the cards' measured floors, now that every card has one.
-        self.SINGLE_ROW_MINIMUM_WIDTH = self._columns_minimum_width(len(self._cards))
-        self.TWO_COLUMN_MINIMUM_WIDTH = self._columns_minimum_width(2)
-        self.setMinimumWidth(self.TWO_COLUMN_MINIMUM_WIDTH)
         #: 0 until the first arrangement is applied, so the first call is
         #: never mistaken for "nothing changed".
         self._columns = 0
@@ -405,19 +345,6 @@ class StatCardsRow(QWidget):
         self.reset()
 
     # ── Responsive arrangement ────────────────────────────────────────────────
-
-    def _columns_minimum_width(self, columns: int) -> int:
-        """The narrowest width at which the cards fit `columns` across: each
-        column is as wide as the widest card that lands in it (the same
-        per-column rule `_arrange` stretches by), plus the gaps."""
-        widths = [
-            max(
-                card.minimumWidth()
-                for index, card in enumerate(self._cards) if index % columns == column
-            )
-            for column in range(columns)
-        ]
-        return sum(widths) + _CARD_SPACING * (columns - 1)
 
     def _arrange(self, columns: int) -> None:
         """Lay the cards out `columns` across. Edge-triggered: a resize that

@@ -228,14 +228,14 @@ def test_the_row_fits_a_common_laptop(qapp):
 
 def test_a_wide_window_gets_one_row_of_every_card(qapp):
     row = StatCardsRow()
-    _laid_out(row, row.SINGLE_ROW_MINIMUM_WIDTH)
+    _laid_out(row, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH)
     assert row.columns() == len(row._cards)
     row.hide()
 
 
 def test_a_narrow_window_wraps_to_two_then_one(qapp):
     row = StatCardsRow()
-    _laid_out(row, row.TWO_COLUMN_MINIMUM_WIDTH)
+    _laid_out(row, StatCardsRow.TWO_COLUMN_MINIMUM_WIDTH)
     assert row.columns() == 2
     row.hide()
 
@@ -246,7 +246,7 @@ def test_wrapping_keeps_every_value_readable(qapp):
     row = StatCardsRow()
     row.set_total_seconds(3_725, True)
     row.set_project_status("Active", "#3B82F6")
-    _laid_out(row, row.TWO_COLUMN_MINIMUM_WIDTH)
+    _laid_out(row, StatCardsRow.TWO_COLUMN_MINIMUM_WIDTH)
 
     assert row.total_card._value.text() == "01:02:05"
     assert row.status_card._value.text() == "Active"
@@ -257,14 +257,14 @@ def test_the_arrangement_only_changes_on_a_real_transition(qapp):
     """Re-parenting widgets on every resize event of an unchanged layout is
     the level-triggered shape this project has paid for before."""
     row = StatCardsRow()
-    _laid_out(row, row.SINGLE_ROW_MINIMUM_WIDTH + 200)
+    _laid_out(row, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH + 200)
     assert row.columns() == len(row._cards)
 
-    row.resize(row.SINGLE_ROW_MINIMUM_WIDTH + 100, row.height())
+    row.resize(StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH + 100, row.height())
     QApplication.processEvents()
     assert row.columns() == len(row._cards), "still in one row; nothing should have moved"
 
-    row.resize(row.TWO_COLUMN_MINIMUM_WIDTH, row.height())
+    row.resize(StatCardsRow.TWO_COLUMN_MINIMUM_WIDTH, row.height())
     QApplication.processEvents()
     assert row.columns() == 2
     row.hide()
