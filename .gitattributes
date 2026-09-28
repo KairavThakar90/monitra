@@ -7,6 +7,10 @@
 # from a Windows machine and run on a Mac, so this is not hypothetical.
 *.sh text eol=lf
 
+# Deployment files are consumed on the Linux VMs and by Cloud Build.
+deploy/** text eol=lf
+cloudbuild-*.yaml text eol=lf
+
 # PowerShell is Windows-side and CRLF is its native convention.
 *.ps1 text eol=crlf
 

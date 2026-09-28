@@ -1,0 +1,48 @@
+# Cloud Build: frontend. Trigger on push to main, filtered to frontend/** and
+# deploy/frontend/**. Builds the Vite bundle here (the e2-micro VM is too small
+# to build on), then copies dist/ to the frontend VM and swaps it in.
+#
+# Same IAM requirements as cloudbuild-backend.yaml.
+substitutions:
+  _ZONE: asia-south1-c
+  _VM: frontend
+  _BACKEND_UPSTREAM: 10.160.0.2:80
+
+steps:
+  - id: build
+    name: node:22
+    dir: frontend
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        npm ci
+        npm run lint
+        VITE_API_BASE=/api/v1 npm run build
+        tar -czf /workspace/dist.tgz -C dist .
+
+  - id: package-scripts
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args: [-c, "tar -czf /workspace/deploy.tgz -C deploy frontend"]
+
+  - id: deploy
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        gcloud compute scp --zone=$_ZONE --quiet \
+          /workspace/dist.tgz /workspace/deploy.tgz $_VM:/tmp/
+        gcloud compute ssh --zone=$_ZONE --quiet $_VM --command "
+          set -euo pipefail
+          rm -rf /tmp/deploy && mkdir -p /tmp/deploy && tar -xzf /tmp/deploy.tgz -C /tmp/deploy
+          sudo BACKEND_UPSTREAM=$_BACKEND_UPSTREAM bash /tmp/deploy/frontend/setup_vm.sh
+          sudo bash /tmp/deploy/frontend/deploy.sh /tmp/dist.tgz
+        "
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 900s

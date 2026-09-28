@@ -1,0 +1,56 @@
+# Cloud Build: backend. Trigger on push to main, filtered to backend/** and
+# deploy/backend/**. Builds a release tarball, copies it and the deploy scripts
+# to the backend VM over SSH, and runs deploy/backend/deploy.sh there.
+#
+# The Cloud Build service account needs, on this project:
+#   roles/compute.osAdminLogin      (SSH with sudo via OS Login)
+#   roles/compute.viewer
+#   roles/iam.serviceAccountUser    (on the VM's service account)
+# and the VM must have OS Login enabled (metadata enable-oslogin=TRUE).
+substitutions:
+  _ZONE: asia-south1-c
+  _VM: instance-20260921-144636
+
+steps:
+  - id: test
+    name: python:3.13-slim
+    dir: backend
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        pip install -q -r requirements.txt pytest
+        python -m pytest tests/ -q --ignore=tests/load
+
+  - id: package
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        tar -czf /workspace/backend.tgz -C backend \
+          --exclude=venv --exclude=__pycache__ --exclude='.env*' \
+          --exclude=tests --exclude=.pytest_cache .
+        tar -czf /workspace/deploy.tgz -C deploy backend
+
+  - id: deploy
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        gcloud compute scp --zone=$_ZONE --quiet \
+          /workspace/backend.tgz /workspace/deploy.tgz $_VM:/tmp/
+        gcloud compute ssh --zone=$_ZONE --quiet $_VM --command '
+          set -euo pipefail
+          rm -rf /tmp/deploy && mkdir -p /tmp/deploy && tar -xzf /tmp/deploy.tgz -C /tmp/deploy
+          sudo bash /tmp/deploy/backend/setup_vm.sh
+          sudo bash /tmp/deploy/backend/deploy.sh /tmp/backend.tgz
+        '
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 900s
