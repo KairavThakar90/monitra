@@ -59,6 +59,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            xvfb \
             libegl1 libgl1 libxkbcommon-x11-0 libdbus-1-3 \
             libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
@@ -69,10 +70,13 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
+      # QT_QPA_PLATFORM=offscreen hits a known PySide6/Qt bug on Ubuntu:
+      # intermittent SIGSEGV (exit 139) inside Qt's own offscreen backend when
+      # a widget is shown, unrelated to anything in this codebase. Xvfb gives
+      # Qt a real (virtual) display and the mature, stable "xcb" platform
+      # instead, which does not carry that defect.
       - name: Run tests
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: python -m pytest tests/ -v --tb=short
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" python -m pytest tests/ -v --tb=short
 
   launch-cycles:
     name: Launch/quit cycles
@@ -89,6 +93,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            xvfb \
             libegl1 libgl1 libxkbcommon-x11-0 libdbus-1-3 \
             libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
@@ -101,10 +106,9 @@ jobs:
       # The audited build launched correctly once and hung the next time, so a
       # single run proves nothing. This fails if any cycle hangs, crashes,
       # leaves a thread running, or escalates shutdown to terminate().
+      # Xvfb, not QT_QPA_PLATFORM=offscreen -- see the "Run tests" step above.
       - name: Ten launch/quit cycles
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: python tests/soak/run_launch_cycles.py --cycles 10 --uptime 5
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" python tests/soak/run_launch_cycles.py --cycles 10 --uptime 5
 
   soak:
     name: Soak and scale
@@ -123,6 +127,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            xvfb \
             libegl1 libgl1 libxkbcommon-x11-0 libdbus-1-3 \
             libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
@@ -135,7 +140,6 @@ jobs:
       # Sync bursts sized for 200 concurrent users, network flapping, rapid
       # timer cycling. Fails on thread growth, duplicate operations, a queue
       # that does not drain, or an unclean shutdown.
+      # Xvfb, not QT_QPA_PLATFORM=offscreen -- see the "Run tests" step above.
       - name: Soak under 200-user-equivalent load
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: python tests/soak/run_soak.py --duration 180 --users 200 --drain 180
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" python tests/soak/run_soak.py --duration 180 --users 200 --drain 180
