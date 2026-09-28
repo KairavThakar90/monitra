@@ -128,10 +128,19 @@ def test_previous_sessions_queued_work_is_cancelled(cache):
 # ── Storage concurrency ───────────────────────────────────────────────────────
 
 def test_each_thread_gets_its_own_connection(storage):
+    # The connection *objects* are kept, not their id()s -- the same reason
+    # as the recycled-id test below. These four threads are short-lived, and
+    # on the macOS release runners an earlier one has usually exited before a
+    # later one starts, so the OS hands the later thread the earlier one's id;
+    # the manager then (correctly) closes the dead thread's connection and
+    # opens a fresh one -- which macOS allocates at the very address just
+    # freed. Recording id() saw two different connections as one, and the
+    # x86_64 build of v1.2.5 failed on exactly that. Holding the objects keeps
+    # every address alive, so an equal id() can only mean the same object.
     connections = {}
 
     def record(name):
-        connections[name] = id(storage.connection())
+        connections[name] = storage.connection()
 
     threads = [threading.Thread(target=record, args=(f"t{i}",)) for i in range(4)]
     for t in threads:
@@ -139,7 +148,8 @@ def test_each_thread_gets_its_own_connection(storage):
     for t in threads:
         t.join(5)
 
-    assert len(set(connections.values())) == len(connections), (
+    assert len(connections) == 4, "a worker thread did not finish"
+    assert len({id(conn) for conn in connections.values()}) == len(connections), (
         "a SQLite connection was shared between threads"
     )
 

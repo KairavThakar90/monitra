@@ -17,6 +17,7 @@ app-usage and URL tracking both treat that tuple as "nothing happened"
 and would otherwise record and sync fake data.
 """
 import ctypes
+import os
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -68,7 +69,16 @@ def test_windows_dispatch_strips_the_exe_suffix_from_the_process_name():
     """
     fake_hwnd = 4321
     fake_pid = 777
-    exe_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    # Joined with the host's own separator, not written as a literal
+    # `C:\...\chrome.exe`: the function under test takes the executable's
+    # base name with `os.path.basename`, and on the macOS and Linux runners
+    # `os.path` is posixpath, for which a backslash is an ordinary character
+    # -- the "base name" of the literal was the whole path, and v1.2.3 and
+    # v1.2.4's macOS builds failed on exactly this assertion. What this test
+    # pins is the `.exe` stripping, which does not depend on the separator.
+    exe_path = os.sep.join(
+        ["C:", "Program Files", "Google", "Chrome", "Application", "chrome.exe"]
+    )
     window_title = "GitHub - Google Chrome"
 
     def fake_get_window_text_w(hwnd, buf, size):
