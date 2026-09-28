@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { V2Shell } from "./V2Shell";
 import { Sparkline, TrendAreaChart, Donut, useInView } from "./charts";
@@ -14,11 +14,14 @@ import type { DateRange } from "./filters";
 import { monthByKey } from "./mockData";
 import { buildDistribution, describeCoverage } from "./distribution";
 import { ExportDialog } from "./ExportDialog";
+import { MemberBreakdownAccordion, buildMemberItemBreakdown } from "./MemberBreakdownAccordion";
 import {
   useGetReactReportsSummaryQuery,
   useGetReactReportsListQuery,
   useGetReactReportsTrendQuery,
+  useLazyGetDetailedLogsQuery,
 } from "../../../store/api/reportsApi";
+import type { DetailedLogItem } from "../../../store/api/reportsApi";
 import { formatHMS, formatHoursAsHMS, secondsOf } from "../../../utils/duration";
 import { useGetAllMembersQuery } from "../../../store/api/membersApi";
 import { useGetAllProjectsQuery } from "../../../store/api/projectsApi";
@@ -165,6 +168,99 @@ export const ReportPage: React.FC = () => {
   );
 
   const isFetching = isSummaryFetching || isListFetching || isTrendFetching;
+
+  // Member Breakdown, every tab: a member -> date -> ... accordion, built
+  // client-side from the row-by-row detailed-log endpoint that already backs
+  // the Timesheet CSV export. Fetched eagerly, walking a few pages of the
+  // same endpoint that export uses -- but capped far more conservatively
+  // (this loads on every page view, not on an explicit export click), with
+  // an honest note if the range holds more than that.
+  const MEMBER_BREAKDOWN_PAGE_LIMIT = 200;
+  const MEMBER_BREAKDOWN_MAX_PAGES = 5;
+  const [fetchDetailedLogs] = useLazyGetDetailedLogsQuery();
+  const [memberLogs, setMemberLogs] = useState<DetailedLogItem[]>([]);
+  const [isMemberLogsLoading, setIsMemberLogsLoading] = useState(false);
+  const [isMemberLogsTruncated, setIsMemberLogsTruncated] = useState(false);
+  const memberIdsKey = (queryParams.member_id ?? []).join(",");
+  const projectIdsKey = (queryParams.project_id ?? []).join(",");
+
+  useEffect(() => {
+    if (!config) return;
+    let cancelled = false;
+    setIsMemberLogsLoading(true);
+    (async () => {
+      const rows: DetailedLogItem[] = [];
+      let page = 1;
+      let truncated = false;
+      for (;;) {
+        // `/reports/detailed-logs` takes the legacy `from`/`to` names, not
+        // `start_date`/`end_date` -- FastAPI drops parameters it does not
+        // declare, so passing the wrong pair would silently answer with the
+        // server's default window instead of the range selected above.
+        const response = await fetchDetailedLogs({
+          from: range.from,
+          to: range.to,
+          member_id: queryParams.member_id,
+          project_id: queryParams.project_id,
+          // projects/members/tasks all return the same session-grain rows,
+          // so "projects" serves the Tasks tab too. Apps and URLs are a
+          // different row grain entirely (usage samples, not sessions),
+          // selected through usage_type rather than a different dimension
+          // value -- there is no "urls" dimension on this endpoint.
+          dimension: reportId === "apps" || reportId === "urls" ? "apps" : "projects",
+          usage_type: reportId === "urls" ? "url" : undefined,
+          sort_by: "date",
+          sort_desc: true,
+          page,
+          limit: MEMBER_BREAKDOWN_PAGE_LIMIT,
+        }).unwrap();
+        rows.push(...(response.items || []));
+        const lastPage = Math.max(1, response.pagination?.total_pages || 1);
+        if (page >= lastPage || !response.items?.length) break;
+        if (page >= MEMBER_BREAKDOWN_MAX_PAGES) {
+          truncated = true;
+          break;
+        }
+        page += 1;
+      }
+      if (!cancelled) {
+        setMemberLogs(rows);
+        setIsMemberLogsTruncated(truncated);
+        setIsMemberLogsLoading(false);
+      }
+    })().catch(() => {
+      if (!cancelled) {
+        setMemberLogs([]);
+        setIsMemberLogsTruncated(false);
+        setIsMemberLogsLoading(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportId, config, range.from, range.to, memberIdsKey, projectIdsKey, fetchDetailedLogs]);
+
+  // One item per tab: a project's total on Projects, a task's on Tasks, an
+  // app's or site's on Apps/URLs -- not a date-by-day drilldown. The range
+  // picker above already narrows the window; this answers "how much of each
+  // {item}", not "on which day".
+  const breakdownPicker = useMemo(() => {
+    if (reportId === "tasks") return (row: DetailedLogItem) => row.task_name;
+    if (reportId === "urls") return (row: DetailedLogItem) => row.url;
+    if (reportId === "apps") return (row: DetailedLogItem) => row.app;
+    return (row: DetailedLogItem) => row.project_name;
+  }, [reportId]);
+  const breakdownFallback =
+    reportId === "tasks" ? "No task"
+    : reportId === "urls" ? "Unknown site"
+    : reportId === "apps" ? "Unknown application"
+    : "Unassigned";
+
+  const memberBreakdown = useMemo(
+    () => buildMemberItemBreakdown(memberLogs, breakdownPicker, breakdownFallback),
+    [memberLogs, breakdownPicker, breakdownFallback]
+  );
 
   const finalGrouped = useMemo(() => {
     return (listData?.items || []).map((item: any, i: number) => {
@@ -551,6 +647,20 @@ export const ReportPage: React.FC = () => {
 
           </div>
         </div>
+
+        {/* Member Breakdown: tracked hours by member, drilling down into
+            exactly the one thing this tab is about -- a project's total on
+            Projects, a task's on Tasks, an app's or site's on Apps/URLs. */}
+        <MemberBreakdownAccordion
+          members={memberBreakdown}
+          isLoading={isMemberLogsLoading}
+          isTruncated={isMemberLogsTruncated}
+          itemLabel={
+            reportId === "tasks" ? "Task" : reportId === "urls" ? "Site" : reportId === "apps" ? "App" : "Project"
+          }
+          accentColor={config.color}
+          emptyLabel={`No tracked time for any member between ${range.from} and ${range.to}.`}
+        />
 
         {/* The dialog re-queries with `queryParams`, so the file always covers
             exactly the range/projects/members selected above. */}
