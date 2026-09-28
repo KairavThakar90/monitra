@@ -1,3 +1,11 @@
+# Load-bearing, not style: this class has a staticmethod named `list`, which
+# shadows the builtin inside the class body. Without deferred annotations a
+# bare `list[int]` annotation on any method evaluates against that shadow --
+# eagerly at import on Python <= 3.13 (took production down on 2026-09-28),
+# or on any `__annotations__` access on 3.14. See
+# tests/test_project_service_annotations.py.
+from __future__ import annotations
+
 import re
 from datetime import date
 from math import ceil
@@ -391,6 +399,11 @@ class ProjectManagementService:
     @staticmethod
     def hours_summary(db: Session, user: User, project_ids: Optional[list[int]] = None) -> list[dict]:
         """All-time tracked hours per project, scoped the same way `.list` is.
+
+        (The `list[...]` annotations here are only safe because of the
+        `from __future__ import annotations` at the top of this module --
+        this method sits after `.list` in the class body, where the name
+        `list` is the staticmethod, not the builtin.)
 
         Deliberately a separate call rather than a field on `.list`'s response:
         that response is `ProjectListResponse`, which the desktop client also
