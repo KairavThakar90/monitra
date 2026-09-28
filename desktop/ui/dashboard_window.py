@@ -25,7 +25,7 @@ from typing import Any, Callable, Dict, List, Optional
 from PySide6.QtCore import QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QMessageBox, QSplitter, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QMessageBox, QVBoxLayout, QWidget,
 )
 
 import version
@@ -45,6 +45,7 @@ from core.time_format import format_hms, ist_clock, ist_day_bounds_utc, ist_toda
 from ui import icons
 from ui.action_banner import ActionBanner
 from ui.activity_section import ActivitySection
+from ui.content_split import ContentSplitter
 from ui.feedback_dialog import SUBMIT_KEY, FeedbackDialog
 from ui.idle_alert_dialog import IdleAlertDialog
 from ui.logout_confirm_dialog import LogoutConfirmDialog
@@ -485,10 +486,14 @@ class DashboardWindow(QWidget):
         # shows. It dismisses itself; see ui/action_banner.py.
         self._action_banner = ActionBanner(content_container)
 
-        self._content_splitter = QSplitter(Qt.Orientation.Vertical, content_container)
-        # A section collapsed to 0 height would look like it vanished --
-        # each side keeps a usable minimum instead (enforced below).
-        self._content_splitter.setChildrenCollapsible(False)
+        # Sized from the content, not from a fixed proportion: the task list
+        # is given the height its page needs and the Activity panel takes
+        # the rest, kept at least tall enough to show a row of screenshots
+        # while the window has the room. A plain QSplitter's proportional
+        # rule gave a maximised window three task rows of a ten-row page and
+        # an Activity panel that was mostly empty (see ui/content_split.py).
+        # The user's own drag of the handle still wins over the content.
+        self._content_splitter = ContentSplitter(content_container)
         self._content_splitter.setHandleWidth(10)
         self._content_splitter.setStyleSheet(f"""
             QSplitter::handle {{
@@ -530,11 +535,12 @@ class DashboardWindow(QWidget):
         self._activity_section.setMinimumHeight(220)
         self._content_splitter.addWidget(self._activity_section)
 
-        # Initial split mirrors the previous 4:6 stretch-factor proportion;
-        # the user can drag it anywhere between the two minimums afterward.
-        self._content_splitter.setStretchFactor(0, 4)
-        self._content_splitter.setStretchFactor(1, 6)
-        self._content_splitter.setSizes([400, 600])
+        # Each section reports its own measurement; the splitter reads both
+        # at every resize, and again when the task list's rows change.
+        self._content_splitter.set_content_sizing(
+            self._task_section.content_height, self._activity_section.usable_height
+        )
+        self._task_section.content_height_changed.connect(self._content_splitter.relayout)
 
         content_outer_layout.addWidget(self._content_splitter)
         right_layout.addWidget(content_container, 1)

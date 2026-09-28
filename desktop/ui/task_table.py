@@ -1543,6 +1543,12 @@ class TaskSection(QWidget):
     #: The Add Task button lives in the top bar; this is how its enabled
     #: state follows the selection without the top bar knowing about tasks.
     add_task_available = Signal(bool)
+    #: The rows on screen changed -- a page rendered, cleared, or replaced
+    #: by a status line -- so `content_height()` has a new answer. The
+    #: dashboard's content splitter listens, and re-divides the height
+    #: between this section and the Activity panel. Emitted on a rebuild
+    #: only, never on a timer tick.
+    content_height_changed = Signal()
     #: The selected task changed: `{"project_id", "task_id", "task_name"}`,
     #: or None when nothing is selected. This is the task the sidebar's
     #: circular Play control starts; selecting starts nothing by itself.
@@ -1728,6 +1734,7 @@ class TaskSection(QWidget):
 
         col_header = QWidget(card)
         col_header.setFixedHeight(38)
+        self._column_header = col_header
         col_header.setStyleSheet(f"background: transparent; border-bottom: 1px solid {BORDER_LIGHT};")
         col_layout = QHBoxLayout(col_header)
         col_layout.setContentsMargins(16, 0, 12, 0)
@@ -1864,6 +1871,35 @@ class TaskSection(QWidget):
         self._status_label.setText(f"Loading tasks for {project_name}...")
         self._status_label.show()
         self._has_loaded_tasks = False
+        self.content_height_changed.emit()
+
+    def content_height(self) -> int:
+        """The height at which everything currently on screen -- the column
+        headers, the page's rows (or the status line standing in for them)
+        and the pager when it is shown -- fits without scrolling.
+
+        Read by the dashboard's content splitter, which gives this section
+        that height when the window has it and lets the rows scroll when it
+        does not. Measured from the widgets, not from a row-count formula:
+        a row with a description or a progress bar is taller than a plain
+        one, and the figure has to be right on every font engine.
+
+        The rows are summed one by one rather than read from their
+        container's size hint. A row added to an already-visible container
+        is shown by the layout one event-loop turn later, and until then
+        the container's hint leaves it out -- so the figure announced at
+        the end of a rebuild would have been that of an empty list.
+        """
+        height = self._column_header.height()
+        if self._task_rows:
+            spacing = max(0, self._rows_layout.spacing())
+            height += sum(row.sizeHint().height() for row in self._task_rows)
+            height += spacing * (len(self._task_rows) - 1)
+        elif not self._status_label.isHidden():
+            height += self._status_label.sizeHint().height()
+        if not self._pagination_widget.isHidden():
+            height += self._pagination_widget.height()
+        return height
 
     def set_tasks(
         self,
@@ -1919,6 +1955,7 @@ class TaskSection(QWidget):
         self._status_label.setText(f"{icons.img_tag('warning', ERROR)} {message}")
         self._status_label.show()
         self._has_loaded_tasks = False
+        self.content_height_changed.emit()
 
     def clear(self) -> None:
         self._clear_rows()
@@ -1930,6 +1967,7 @@ class TaskSection(QWidget):
         self._has_loaded_tasks = False
         self._current_page = 1
         self._set_selected_task(None)
+        self.content_height_changed.emit()
 
     # ── Selection: the task the circular Play control starts ─────────────────
 
@@ -2151,6 +2189,7 @@ class TaskSection(QWidget):
             self._status_label.setText(msg)
             self._status_label.show()
             self._pagination_widget.hide()
+            self.content_height_changed.emit()
             return
 
         self._status_label.hide()
@@ -2196,6 +2235,10 @@ class TaskSection(QWidget):
 
             self._rows_layout.insertWidget(self._rows_layout.count() - 1, row)
             self._task_rows.append(row)
+
+        # Announced once, after the last row is in, so the splitter divides
+        # the height for the page that is actually on screen.
+        self.content_height_changed.emit()
 
     # ── Pagination ────────────────────────────────────────────────────────────
 
