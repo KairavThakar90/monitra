@@ -80,6 +80,10 @@ class TopBar(QFrame):
     #: Add Task, same arrangement: button here, dialog and create call in
     #: TaskSection.
     add_task_clicked = Signal()
+    #: The greyed-out Add Task button was clicked while an administrator has
+    #: it switched off for this user. Carries the reason to show. A disabled
+    #: QPushButton emits nothing, so the press is caught here instead.
+    add_task_blocked_clicked = Signal(str)
     #: Live text of the header search field; TaskSection filters on it.
     search_changed = Signal(str)
 
@@ -266,7 +270,9 @@ class TopBar(QFrame):
         self._add_task_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._add_task_btn.setEnabled(False)
         self._add_task_btn.setToolTip("Add a task to the selected project")
-        self._add_task_btn.clicked.connect(self.add_task_clicked.emit)
+        self._add_task_btn.clicked.connect(self._on_add_task_pressed)
+        self._add_task_available = False
+        self._add_task_blocked_reason = ""
         layout.addWidget(self._add_task_btn)
 
         # ── Request (manual time entry) ────────────────────────────
@@ -393,6 +399,12 @@ class TopBar(QFrame):
                 background: #C7D2FE;
                 color: #F8FAFC;
             }}
+            /* Excluded by an administrator: looks off, still answers a click. */
+            QPushButton#HeaderAddTaskBtn[blocked="true"],
+            QPushButton#HeaderAddTaskBtn[blocked="true"]:hover {{
+                background: #C7D2FE;
+                color: #F8FAFC;
+            }}
             QPushButton#RequestBtn {{
                 background: {CARD_BG};
                 border: 1px solid {BORDER_LIGHT};
@@ -434,7 +446,47 @@ class TopBar(QFrame):
 
     def set_add_task_enabled(self, enabled: bool) -> None:
         """Add Task is only meaningful once a project is selected."""
-        self._add_task_btn.setEnabled(enabled)
+        self._add_task_available = enabled
+        self._refresh_add_task_button()
+
+    def set_add_task_blocked_reason(self, reason: str) -> None:
+        """Why Add Task is off for this user regardless of the project (an
+        administrator switched it off in the Members directory), or "" to
+        restore the ordinary state.
+
+        While blocked the button stays *clickable* but greyed. A disabled
+        QPushButton emits nothing, and the user who clicks it would get no
+        answer; a blocked one answers every click with the reason, through
+        `add_task_blocked_clicked`, and never opens the dialog.
+        """
+        self._add_task_blocked_reason = reason or ""
+        self._refresh_add_task_button()
+
+    def _refresh_add_task_button(self) -> None:
+        btn = self._add_task_btn
+        blocked = bool(self._add_task_blocked_reason)
+        btn.setEnabled(True if blocked else self._add_task_available)
+        btn.setToolTip(self._add_task_blocked_reason or "Add a task to the selected project")
+        btn.setCursor(Qt.CursorShape.ForbiddenCursor if blocked else Qt.CursorShape.PointingHandCursor)
+        if btn.property("blocked") != blocked:
+            btn.setProperty("blocked", blocked)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+    def _on_add_task_pressed(self) -> None:
+        if self._add_task_blocked_reason:
+            self.add_task_blocked_clicked.emit(self._add_task_blocked_reason)
+            return
+        self.add_task_clicked.emit()
+
+    def is_add_task_blocked(self) -> bool:
+        return bool(self._add_task_blocked_reason)
+
+    def add_task_tooltip(self) -> str:
+        return self._add_task_btn.toolTip()
+
+    def add_task_blocked_reason(self) -> str:
+        return self._add_task_blocked_reason
 
     def search_text(self) -> str:
         return self._search.text()

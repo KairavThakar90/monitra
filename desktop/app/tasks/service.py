@@ -106,7 +106,15 @@ class TaskService:
             if e.status_code == 401:
                 raise ApiError("Session expired. Please log in again.", status_code=401)
             if e.status_code == 403:
-                raise ApiError("You do not have permission to create tasks.", status_code=403)
+                # The backend says *why*: a role without `tasks:create`, or
+                # an administrator who switched Add Task off for this member
+                # from the Members directory. The second is the one the user
+                # can act on (ask their admin), so its sentence is shown as
+                # is rather than flattened into the generic refusal.
+                raise ApiError(
+                    error_detail(e.response_body) or "You do not have permission to create tasks.",
+                    status_code=403,
+                )
             raise _explain("Creating the task", e)
         except ApiConnectionError:
             raise ApiError("Failed to create task: Network connection error.")

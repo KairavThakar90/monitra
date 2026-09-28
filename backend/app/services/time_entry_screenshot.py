@@ -20,6 +20,7 @@ Three responsibilities, in the order the product uses them:
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -392,8 +393,10 @@ class TimeEntryScreenshotService:
         )
         if existing is not None:
             logger.info(
-                "screenshot %s already stored as id %s; returning the existing record",
-                client_screenshot_id, existing.id,
+                "SCREENSHOT_DUPLICATE client_id=%s user=%s entry=%s stored_id=%s "
+                "drive_file=%s reason=already_stored",
+                client_screenshot_id, current_user.id, time_entry_id,
+                existing.id, existing.google_drive_file_id,
             )
             return existing, True
 
@@ -422,19 +425,29 @@ class TimeEntryScreenshotService:
             when = when.replace(tzinfo=timezone.utc)
 
         file_name = f"screenshot_{client_screenshot_id}.webp"
+        started = time.monotonic()
         try:
             # The folder is named for the entry's owner, not for the caller —
             # they are the same person on the upload path today, but naming a
             # folder after whoever happened to send the request is the kind of
             # assumption that silently misfiles data the moment it stops
             # holding.
+            #
+            # The day folder is the **IST calendar day** the capture belongs
+            # to -- the same day the timeline, the admin grid and the desktop's
+            # own Activity tab file it under. It used to be the UTC date, so a
+            # capture at 00:53 IST landed in *yesterday's* Drive folder while
+            # every screen showed it under today: measured against the real
+            # shared drive, every upload between 00:00 and 05:30 IST was in
+            # the wrong folder, and "today's folder does not exist" was the
+            # report that followed.
             owner = db.get(User, entry.user_id)
             folder_id, logical_path = drive_service.ensure_screenshot_folder(
                 user_id=entry.user_id,
-                captured_on=when.astimezone(timezone.utc).date(),
+                captured_on=TimeEntryScreenshotService._ist_day_of(when),
                 user_name=getattr(owner, "name", None),
             )
-            file_id = drive_service.upload_file(
+            file_id, reused = drive_service.upload_file_idempotent(
                 folder_id=folder_id,
                 file_name=file_name,
                 content=content,
@@ -444,19 +457,38 @@ class TimeEntryScreenshotService:
             # A misconfiguration, not an outage. Reported as 503 so it reads as
             # "this server cannot store screenshots" rather than as a blip the
             # client should expect to clear on its own.
-            logger.error("screenshot storage is misconfigured: %s", exc)
+            drive_service.invalidate_folder_cache()
+            logger.error(
+                "SCREENSHOT_UPLOAD_FAILED stage=drive client_id=%s user=%s entry=%s "
+                "outcome=503 reason=misconfigured detail=%s",
+                client_screenshot_id, entry.user_id, time_entry_id, exc,
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Screenshot storage is not available on this server",
             )
         except GoogleDriveError as exc:
-            logger.error("Drive upload failed for %s: %s", client_screenshot_id, exc)
+            drive_service.invalidate_folder_cache()
+            logger.error(
+                "SCREENSHOT_UPLOAD_FAILED stage=drive client_id=%s user=%s entry=%s "
+                "outcome=502 reason=drive_error detail=%s",
+                client_screenshot_id, entry.user_id, time_entry_id, exc,
+            )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Screenshot storage is temporarily unavailable",
             )
         except Exception as exc:  # noqa: BLE001
-            logger.exception("unexpected Drive failure for %s", client_screenshot_id)
+            # Whatever it was, a cached folder id may be what is wrong (a
+            # parent trashed or moved out from under us reads as a bare 404
+            # from Drive). Dropping the cache costs four lookups on the next
+            # attempt and heals every stale-id case there is.
+            drive_service.invalidate_folder_cache()
+            logger.exception(
+                "SCREENSHOT_UPLOAD_FAILED stage=drive client_id=%s user=%s entry=%s "
+                "outcome=502 reason=unexpected",
+                client_screenshot_id, entry.user_id, time_entry_id,
+            )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Screenshot storage is temporarily unavailable",
@@ -486,17 +518,49 @@ class TimeEntryScreenshotService:
             # Drive object and returns the winner's row, so the retry still
             # sees a success and the orphan does not accumulate.
             db.rollback()
-            drive_service.delete_file(file_id)
             winner = TimeEntryScreenshotRepository.get_by_client_id(
                 db, current_user.organization_id, client_screenshot_id
             )
             if winner is None:
                 raise
+            if winner.google_drive_file_id != file_id:
+                drive_service.delete_file(file_id)
+            logger.info(
+                "SCREENSHOT_DUPLICATE client_id=%s user=%s entry=%s stored_id=%s "
+                "drive_file=%s reason=concurrent_upload",
+                client_screenshot_id, entry.user_id, time_entry_id,
+                winner.id, winner.google_drive_file_id,
+            )
             return winner, True
+        except Exception:  # noqa: BLE001
+            # The bytes are in Drive; only the record is missing. The object is
+            # deliberately **kept**: it is the real screenshot, and the
+            # desktop's retry -- which the 500 below provokes -- goes through
+            # `upload_file_idempotent`, finds it by name and writes the row
+            # against the same file. Deleting it here would turn a database
+            # blip into a second upload, and a persistent database failure
+            # into a lost capture.
+            db.rollback()
+            logger.exception(
+                "SCREENSHOT_DB_WRITE_FAILED client_id=%s user=%s entry=%s folder=%s "
+                "drive_file=%s bytes=%d; the Drive object is kept and the client "
+                "will retry against it",
+                client_screenshot_id, entry.user_id, time_entry_id,
+                folder_id, file_id, len(content),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Screenshot metadata could not be recorded; please retry",
+            )
 
         logger.info(
-            "stored screenshot %s for entry %s as Drive file %s (%d bytes)",
-            client_screenshot_id, time_entry_id, file_id, len(content),
+            "SCREENSHOT_STORED client_id=%s user=%s entry=%s id=%s folder=%s "
+            "drive_file=%s path=%s bytes=%d geometry=%sx%s displays=%d "
+            "drive_reused=%s elapsed_ms=%d",
+            client_screenshot_id, entry.user_id, time_entry_id, record.id,
+            folder_id, file_id, f"{logical_path}/{file_name}", len(content),
+            width, height, display_count, reused,
+            int((time.monotonic() - started) * 1000),
         )
         return record, False
 

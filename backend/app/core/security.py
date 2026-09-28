@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.core.config import settings
+from app.core.permissions import PER_MEMBER_OVERRIDE_MESSAGES, PER_MEMBER_PERMISSION_OVERRIDES
 from app.core.database import get_db
 from app.repositories.user import UserRepository
 from app.models.user import User
@@ -98,14 +99,35 @@ def forbid_service_principal(current_user: User = Depends(get_current_user)) -> 
     return current_user
 
 
+def permission_withdrawn(user: User, permission_name: str) -> bool:
+    """Whether a per-member override has switched `permission_name` off for
+    `user` -- the Members directory's Allow / Not allow switch (see
+    PER_MEMBER_PERMISSION_OVERRIDES). Only an explicit False counts."""
+    column = PER_MEMBER_PERMISSION_OVERRIDES.get(permission_name)
+    return column is not None and getattr(user, column, None) is False
+
+
+def has_permission(user: User, permission_name: str) -> bool:
+    """Whether `user` currently holds `permission_name`.
+
+    Two checks, both required: the role's permission map grants it, and no
+    per-member override has withdrawn it. The override is read from the user
+    row on every request, so an administrator flipping it takes effect on
+    the member's very next call, without waiting for them to sign in again.
+    """
+    permissions = user.permissions or {}
+    if not permissions.get(permission_name):
+        return False
+    return not permission_withdrawn(user, permission_name)
+
+
 def require_permission(permission_name: str):
     def dependency(current_user: User = Depends(get_current_user)) -> User:
-        permissions = current_user.permissions or {}
-        if not permissions.get(permission_name):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Insufficient permissions for this action"
-            )
+        if not has_permission(current_user, permission_name):
+            detail = "Insufficient permissions for this action"
+            if permission_withdrawn(current_user, permission_name):
+                detail = PER_MEMBER_OVERRIDE_MESSAGES.get(permission_name, detail)
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
         return current_user
     return dependency
 

@@ -14,6 +14,8 @@ export interface Member {
   idle_enabled?: boolean;
   idle_minutes?: number;
   capture_frequency?: number;
+  /** The Members directory's Allow / Not allow switch for adding tasks. Absent on an older backend means allowed. */
+  can_add_tasks?: boolean;
   created_at?: string;
   updated_at?: string;
   organization?: { id: number; name: string };

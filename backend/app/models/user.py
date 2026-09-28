@@ -37,6 +37,12 @@ class User(Base):
     wp_capabilities: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('true'))
     idle_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('true'))
+    #: Whether this member may create tasks. An administrator withdraws it per
+    #: person from the Members directory; the role's `tasks:create` stays in
+    #: `permissions` untouched (that map is rebuilt from the role at every
+    #: sign-in, which is exactly why this lives in its own column). Enforced by
+    #: `require_permission` through PER_MEMBER_PERMISSION_OVERRIDES.
+    can_add_tasks: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('true'))
     idle_minutes: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('5'))
     capture_frequency: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'active'"))

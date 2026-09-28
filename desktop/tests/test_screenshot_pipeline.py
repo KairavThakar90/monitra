@@ -679,6 +679,17 @@ class TestQueue:
         assert sorted(cache.get_screenshot_backlog_paths()) == ["/tmp/a.webp", "/tmp/b.webp"]
 
 
+def _confirmed(file_id: str = "drive-file-1", backend_id: int = 1, duplicate: bool = False) -> dict:
+    """What the real upload endpoint answers: the stored record, carrying the
+    Drive file id that proves the bytes are in Drive. A bare ``{"success":
+    True}`` is deliberately *not* enough for the uploader any more."""
+    return {
+        "success": True,
+        "duplicate": duplicate,
+        "screenshot": {"id": backend_id, "google_drive_file_id": file_id},
+    }
+
+
 class TestUpload:
     """SyncService is the only uploader, and the only thing that deletes."""
 
@@ -717,7 +728,7 @@ class TestUpload:
             seen["entry_id"] = entry_id
             seen["metadata"] = metadata
             seen["bytes"] = image
-            return {"success": True}
+            return _confirmed()
 
         entries.upload_screenshot = upload
         service._sync_screenshots()
@@ -757,7 +768,7 @@ class TestUpload:
         # Back online. The backoff has not elapsed, so the rows are not yet
         # due; clearing it is what a passing retry timer does.
         cache.storage.execute("UPDATE pending_screenshots SET next_retry_at = 0")
-        entries.upload_screenshot = lambda *a, **k: {"success": True}
+        entries.upload_screenshot = lambda *a, **k: _confirmed()
         service._sync_screenshots()
 
         assert not any(p.exists() for p in paths)
@@ -797,7 +808,7 @@ class TestUpload:
 
         # The server is upgraded and the desktop restarts.
         assert cache.requeue_screenshots_for_new_run() == 1
-        entries.upload_screenshot = lambda *a, **k: {"success": True}
+        entries.upload_screenshot = lambda *a, **k: _confirmed()
         service._sync_screenshots()
 
         assert not path.exists()
@@ -831,7 +842,7 @@ class TestUpload:
         service, entries = sync
         self._capture(cache, tmp_path, "uuid-abc")
         captured = {}
-        entries.upload_screenshot = lambda e, i, n, m, t=None: captured.update(m) or {"ok": True}
+        entries.upload_screenshot = lambda e, i, n, m, t=None: captured.update(m) or _confirmed()
 
         service._sync_screenshots()
         assert captured["client_screenshot_id"] == "uuid-abc"

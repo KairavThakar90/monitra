@@ -53,6 +53,15 @@ from core.date_mode import as_calendar_day, is_live_date
 from core.logging_setup import get_logger
 from core.time_format import format_hms, ist_today
 
+#: What the user is told when an administrator has switched Add Task off for
+#: them in the Members directory (`users.can_add_tasks`): the button's
+#: tooltip, the toast when the greyed button is clicked, and the toast when
+#: the section is asked to add anyway. A create the backend itself refuses
+#: shows the backend's own sentence instead.
+TASK_CREATION_BLOCKED_MESSAGE = (
+    "You are not allowed to add tasks yet. Once an administrator allows you, you can add tasks."
+)
+
 
 log = get_logger("ui.tasks")
 
@@ -1543,6 +1552,11 @@ class TaskSection(QWidget):
     #: The Add Task button lives in the top bar; this is how its enabled
     #: state follows the selection without the top bar knowing about tasks.
     add_task_available = Signal(bool)
+    #: Why Add Task is unavailable regardless of the selected project, or ""
+    #: when nothing stands in the way. Emitted on transition only, when the
+    #: Members directory's Allow / Not allow switch for this user changes;
+    #: the top bar shows it as the button's tooltip.
+    task_creation_blocked = Signal(str)
     #: The selected task changed: `{"project_id", "task_id", "task_name"}`,
     #: or None when nothing is selected. This is the task the sidebar's
     #: circular Play control starts; selecting starts nothing by itself.
@@ -1588,6 +1602,14 @@ class TaskSection(QWidget):
         #: that shortens the list can never leave an empty page showing.
         self._current_page = 1
         self.user_role = None
+        #: The Members directory's Allow / Not allow switch for this user
+        #: (`can_add_tasks` on the `/auth/me` profile). Seeded at login and
+        #: session verification, re-read with every refresh round, and
+        #: switched off on the spot when the backend refuses a create with
+        #: 403 -- so the button never keeps offering what the server will
+        #: refuse. Allowed until the profile says otherwise: an older backend
+        #: without the field must not lock every user out of Add Task.
+        self._task_creation_allowed = True
         self._has_loaded_tasks = False
         #: The calendar day the window is showing, and whether that makes this
         #: list read-only. Only today is live: a past day is finished history
@@ -1635,6 +1657,35 @@ class TaskSection(QWidget):
     def set_user_id(self, user_id: int) -> None:
         self._user_id = user_id
 
+    def set_task_creation_allowed(self, allowed: Any) -> None:
+        """Apply the Members directory's Allow / Not allow switch for this user.
+
+        `allowed` is the profile's `can_add_tasks` as received: only an
+        explicit False withdraws, so a profile from an older backend (no such
+        field, `None`) leaves Add Task available. The button state and the
+        tooltip are re-published only when the answer actually changes.
+        """
+        value = allowed is not False
+        if value == self._task_creation_allowed:
+            return
+        self._task_creation_allowed = value
+        log.info("task creation %s for this user", "allowed" if value else "switched off by an administrator")
+        self.task_creation_blocked.emit("" if value else TASK_CREATION_BLOCKED_MESSAGE)
+        if self._project is not None:
+            self.add_task_available.emit(self._can_add_task_to(self._project))
+
+    @property
+    def task_creation_allowed(self) -> bool:
+        return self._task_creation_allowed
+
+    def _can_add_task_to(self, project: Optional[Dict[str, Any]]) -> bool:
+        """Whether Add Task applies to `project` right now: the user's own
+        switch is on, and the project is neither paused nor completed."""
+        if not self._task_creation_allowed or not project:
+            return False
+        status_name = (project.get("status") or {}).get("name")
+        return status_name not in ("Paused", "Completed")
+
     def set_all_projects(self, projects: List[Dict[str, Any]]) -> None:
         """Every project the user can see, for the manual-entry dialog's
         project dropdown. Called by DashboardWindow whenever its own project
@@ -1649,6 +1700,7 @@ class TaskSection(QWidget):
     def _run_task_mutation(
         self, call, success_message: str, key: str, *, kind: str, project_id: int,
         after_success: Optional[Callable[[], None]] = None,
+        after_failure: Optional[Callable[[BaseException], None]] = None,
     ) -> None:
         """
         Run a task CRUD call on the shared bounded pool.
@@ -1673,10 +1725,20 @@ class TaskSection(QWidget):
             self.task_mutated.emit(kind, project_id, result)
 
         def on_error(exc: BaseException) -> None:
+            if after_failure is not None:
+                after_failure(exc)
             self.api.notify(str(exc), NotificationLevel.ERROR, key=f"task-mut-err-{key}")
             self.error_occurred.emit(str(exc))
 
         self.api.run_in_background(call, on_success=on_success, on_error=on_error, key=key)
+
+    def _on_create_refused(self, exc: BaseException) -> None:
+        """A 403 on create means the server will refuse every create until an
+        administrator changes something, so stop offering the button now
+        rather than after the next profile read. The notification carrying
+        the backend's own sentence still follows."""
+        if getattr(exc, "status_code", None) == 403:
+            self.set_task_creation_allowed(False)
 
     def _client_op_for_create(self, project_id: int, task_name: str) -> str:
         """The idempotency key for creating `task_name` in `project_id`.
@@ -1884,9 +1946,7 @@ class TaskSection(QWidget):
         self._project_color = color
         self._search_text = ""
         
-        status_name = (project.get("status") or {}).get("name") if project else None
-        can_add = status_name not in ["Paused", "Completed"]
-        self.add_task_available.emit(can_add)
+        self.add_task_available.emit(self._can_add_task_to(project))
 
         # _rebuild_rows() sets the title (name + task count) below -- no
         # need to set it here too and have it immediately overwritten.
@@ -2451,6 +2511,14 @@ class TaskSection(QWidget):
         project_id = self._project.get("id")
         if project_id is None:
             return
+        if not self._task_creation_allowed:
+            # The button is disabled whenever this is false, but a keyboard
+            # shortcut or a stale window can still land here; say why rather
+            # than open a dialog whose Save the server would refuse.
+            self.api.notify(
+                TASK_CREATION_BLOCKED_MESSAGE, NotificationLevel.WARNING, key="add-task-blocked",
+            )
+            return
 
         proj_name = self._project.get("project_name", "Project")
         dialog = AddTaskDialog(proj_name, self)
@@ -2481,6 +2549,7 @@ class TaskSection(QWidget):
             kind="created",
             project_id=project_id,
             after_success=lambda: self._pending_create_ops.pop((project_id, task_name), None),
+            after_failure=self._on_create_refused,
         )
 
     # ── Manual time entry ─────────────────────────────────────────────────────

@@ -52,9 +52,12 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.schemas.email_notification import DispatchResult, WeeklyReportRunResult
+from app.schemas.email_notification import (
+    DispatchResult, MonthlyReportRunResult, WeeklyReportRunResult,
+)
 from app.services.email import EmailOutboxService
 from app.services.email import assets as email_assets
+from app.services.monthly_report import MonthlyReportService
 from app.services.weekly_report import WeeklyReportService
 
 logger = logging.getLogger("uvicorn.error")
@@ -277,6 +280,90 @@ def preview_weekly_report(
             detail="No eligible user with that id.",
         )
     message = messages.build_weekly_report_email(payload, ["preview@example.invalid"])
+    return HTMLResponse(content=message.html)
+
+
+@router.post(
+    "/internal/reports/monthly/run",
+    response_model=MonthlyReportRunResult,
+    summary="Queue the monthly productivity report for every eligible user (scheduler only).",
+    description=(
+        "Resolves the previous completed calendar month, aggregates it per "
+        "organisation and queues one report per eligible user. It does **not** "
+        "send: the dispatch sweeper delivers what this queues.\n\n"
+        "Safe to call twice. Each report is keyed on `(monthly_report, "
+        "month:<start>:user:<id>)`, so a retry or re-run queues nothing new.\n\n"
+        "`month_start` reports a specific month instead of the previous one "
+        "(any date inside it will do); `user_id` restricts the run to one "
+        "person; `dry_run` computes and queues nothing.\n\n"
+        "Authenticate with `EMAIL_DISPATCH_TOKEN`."
+    ),
+    responses={
+        401: {"description": "Missing or incorrect dispatch token."},
+        503: {"description": "EMAIL_DISPATCH_TOKEN is not configured."},
+    },
+)
+def run_monthly_reports(
+    month_start: Optional[date] = Query(
+        None, description="Any date inside the month to report on. Defaults to the previous month.",
+    ),
+    user_id: Optional[int] = Query(None, ge=1, description="Restrict the run to one user."),
+    dry_run: bool = Query(False, description="Aggregate and report the tally without queueing."),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    return MonthlyReportRunResult(**{
+        key: value
+        for key, value in MonthlyReportService.run(
+            db, month_start=month_start, user_id=user_id, dry_run=dry_run,
+        ).items()
+        if key in MonthlyReportRunResult.model_fields
+    })
+
+
+@router.get(
+    "/internal/reports/monthly/run",
+    response_model=MonthlyReportRunResult,
+    include_in_schema=False,
+    summary="Queue the monthly productivity report (scheduler only).",
+)
+def run_monthly_reports_get(
+    month_start: Optional[date] = Query(None),
+    user_id: Optional[int] = Query(None, ge=1),
+    dry_run: bool = Query(False),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    """GET alias for Vercel Cron, which can only issue a GET. Same operation as the POST."""
+    return run_monthly_reports(
+        month_start=month_start, user_id=user_id, dry_run=dry_run, _=None, db=db,
+    )
+
+
+@router.get(
+    "/internal/reports/monthly/preview",
+    include_in_schema=False,
+    summary="Render one user's monthly report without queueing or sending it.",
+    response_class=HTMLResponse,
+)
+def preview_monthly_report(
+    user_id: int = Query(..., ge=1, description="The user whose month to render."),
+    month_start: Optional[date] = Query(
+        None, description="Any date inside the month. Defaults to the previous completed month.",
+    ),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    """The exact HTML that user would be sent, for eyes-on verification."""
+    from app.services.email import messages
+    from app.services.email.workflows import build_monthly_report_preview
+
+    payload = build_monthly_report_preview(db, user_id=user_id, month_start=month_start)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No eligible user with that id.",
+        )
+    message = messages.build_monthly_report_email(payload, ["preview@example.invalid"])
     return HTMLResponse(content=message.html)
 
 

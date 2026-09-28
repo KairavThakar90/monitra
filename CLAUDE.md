@@ -225,7 +225,12 @@ These are **unimplemented features**, deliberately left out of the stability wor
    covers a session that is still running, and `SyncService._adopt_session_telemetry`
    covers a start confirmed through the durable queue, which may land after the session
    has already stopped. Never key that adoption on the capture's window — a session is
-   not one window long.
+   not one window long. **[docs/SCREENSHOT_PERSISTENCE.md](docs/SCREENSHOT_PERSISTENCE.md)
+   is authoritative** for everything after capture: the queue states, the retry policy
+   (transient failures retry forever at a capped interval; only server refusals park,
+   and parked rows are revived), the Drive-level idempotency, the IST day folder, the
+   `SCREENSHOT_*` log lines, `/health`'s `screenshot_storage.probe`, and
+   `backend/scripts/drive_diagnostic.py`.
 4. **Tray/taskbar behaviour is unverified on a real display** — all automated runs are headless.
 5. `.github/CODEOWNERS` still contains placeholder handles.
 6. **Auto-update — implemented (2026-09-08), but not yet safe to publish for real

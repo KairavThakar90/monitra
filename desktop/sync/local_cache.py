@@ -1738,14 +1738,29 @@ class LocalCache:
         self._storage.execute("DELETE FROM pending_screenshots WHERE id = ?", (record_id,))
         return row["local_file_path"] if row else None
 
-    def fail_screenshot(self, record_id: str, error_message: str, max_retries: int = 12) -> bool:
+    def fail_screenshot(
+        self,
+        record_id: str,
+        error_message: str,
+        max_retries: Optional[int] = None,
+        max_delay_seconds: float = 300.0,
+    ) -> bool:
         """
-        Record an upload failure and schedule a jittered retry.
+        Record a *transient* upload failure and schedule a jittered retry.
+
+        Unbounded by default. The backoff doubles from one second and stops
+        growing at `max_delay_seconds`, and the row stays `pending` for as long
+        as the process lives: a network outage, a backend restart or a Drive
+        blip is retried until it clears, at no more than one attempt per
+        `max_delay_seconds` per screenshot. `max_retries` exists for a caller
+        that genuinely wants a budget (and for the tests of the parked state);
+        the uploader does not pass one, because a budget that ran out parked a
+        whole afternoon of captures over a half-hour outage.
 
         :return: True if the screenshot will be retried. A row that exhausts
-            its retries is parked as 'failed' rather than deleted — its file
-            stays on disk, because discarding captured evidence of tracked work
-            because the network was down for a day is not an acceptable
+            an explicit budget is parked as 'failed' rather than deleted — its
+            file stays on disk, because discarding captured evidence of tracked
+            work because the network was down for a day is not an acceptable
             outcome.
         """
         import random
@@ -1757,20 +1772,84 @@ class LocalCache:
         if not row:
             return False
         retry_count = row["retry_count"] + 1
-        if retry_count > max_retries:
+        if max_retries is not None and retry_count > max_retries:
             self._storage.execute(
                 "UPDATE pending_screenshots SET status = 'failed', last_error = ?, "
                 "retry_count = ?, updated_at = ? WHERE id = ?",
                 (error_message, retry_count, now, record_id),
             )
             return False
-        delay = min(2 ** (retry_count - 1), 300) * (0.5 + random.random())
+        # The exponent is capped before the power is taken: an outage measured
+        # in days must not compute 2**5000 to find out the answer is "cap".
+        delay = min(2.0 ** min(retry_count - 1, 20), max_delay_seconds) * (0.5 + random.random())
         self._storage.execute(
             "UPDATE pending_screenshots SET status = 'pending', retry_count = ?, "
             "next_retry_at = ?, last_error = ?, updated_at = ? WHERE id = ?",
             (retry_count, now + delay, error_message, now, record_id),
         )
         return True
+
+    def next_screenshot_retry_at(self, record_id: str) -> Optional[float]:
+        """When the given row is next eligible, for the log line that says so."""
+        row = self._storage.query_one(
+            "SELECT next_retry_at FROM pending_screenshots WHERE id = ?", (record_id,)
+        )
+        return float(row["next_retry_at"]) if row else None
+
+    def park_screenshot(self, record_id: str, error_message: str) -> None:
+        """
+        Set a screenshot aside after the backend *refused* it.
+
+        A refusal (403, 404, 413, 422) is an answer, and it will be the same
+        answer until something changes on the server, so the row leaves the
+        transient retry cadence. It is not abandoned: the file is kept, the
+        row stays in the queue, and `revive_parked_screenshots` returns it to
+        `pending` at launch, when a hold ends, and on a slow interval.
+        """
+        self._storage.execute(
+            "UPDATE pending_screenshots SET status = 'failed', last_error = ?, "
+            "retry_count = retry_count + 1, updated_at = ? WHERE id = ?",
+            (error_message, time.time(), record_id),
+        )
+
+    def revive_parked_screenshots(self, older_than_seconds: float = 0.0) -> int:
+        """
+        Return parked (`failed`) screenshots to the queue with a fresh budget.
+
+        `older_than_seconds` limits it to rows parked at least that long ago,
+        so the periodic revival in the sync loop offers a refused capture again
+        once an hour rather than once a tick; the hold-end and re-auth callers
+        pass zero, because those are the moments something has changed.
+
+        :return: how many rows were revived.
+        """
+        now = time.time()
+        cursor = self._storage.execute(
+            "UPDATE pending_screenshots "
+            "SET status = 'pending', retry_count = 0, next_retry_at = 0, updated_at = ? "
+            "WHERE status = 'failed' AND updated_at <= ?",
+            (now, now - older_than_seconds),
+        )
+        return cursor.rowcount or 0
+
+    def make_screenshots_ready(self) -> int:
+        """Let every backed-off screenshot be attempted now.
+
+        The screenshot counterpart of `make_timer_actions_ready`: a backoff
+        was computed against a backend that was failing, and says nothing
+        once the network is back or the user has signed in again. Called when
+        the sync consumer's hold ends. The jitter that protects the backend
+        from a fleet retrying in lockstep is kept for the ordinary retry path.
+
+        :return: how many rows were brought forward.
+        """
+        now = time.time()
+        cursor = self._storage.execute(
+            "UPDATE pending_screenshots SET next_retry_at = ? "
+            "WHERE status = 'pending' AND next_retry_at > ?",
+            (now, now),
+        )
+        return cursor.rowcount or 0
 
     def drop_screenshot(self, record_id: str) -> Optional[str]:
         """Remove a row whose capture can never be uploaded (a missing or

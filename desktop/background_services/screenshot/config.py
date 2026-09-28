@@ -123,10 +123,28 @@ PAD_COLOR = (24, 24, 27)
 #: Directory (under the Monitra data directory) holding the day folders.
 CACHE_DIR_NAME = "screenshot-cache"
 
-#: How many upload attempts a queued screenshot gets before it is parked as
-#: `failed`. At the shared 50–150% jittered exponential backoff this spans
-#: several hours, which covers an overnight outage.
-MAX_UPLOAD_RETRIES = 12
+#: Longest a queued screenshot waits between two upload attempts. The backoff
+#: doubles from one second with 50-150% jitter and stops growing here, and
+#: it keeps going: a transient failure -- no network, a backend restart, a
+#: Drive outage, a timeout -- is retried for as long as the process lives.
+#:
+#: There used to be a retry *budget* (twelve attempts), described as spanning
+#: several hours. It did not: doubling from one second and capped at five
+#: minutes, twelve attempts are spent in roughly twenty-five minutes, after
+#: which every capture was parked as `failed` until the next launch. A tray
+#: application is not relaunched for days, so an outage of half an hour
+#: turned into "the desktop says it captured, Drive has nothing, and nothing
+#: retries" -- exactly the silent state this pipeline exists to prevent.
+UPLOAD_RETRY_MAX_DELAY_SECONDS = 300
+
+#: How long a screenshot the backend *refused* (403, 404, 413, 422) stays
+#: parked before it is offered again. A refusal is answered by the server and
+#: will be answered the same way until something changes server-side -- a
+#: deploy that adds the endpoint, a fix to the entry -- so it is not retried
+#: at the transient cadence. It is not abandoned either: the file is kept and
+#: the row is revived at launch, when connectivity returns, and on this
+#: interval, so a fixed server picks the capture up within the hour.
+PARKED_RETRY_INTERVAL_SECONDS = 3600
 
 #: Cap on one upload's HTTP timeout. A screenshot is ~100 KB, but a queued
 #: backlog uploads over whatever link the user has.

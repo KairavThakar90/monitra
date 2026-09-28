@@ -26,6 +26,7 @@ from app.api.clients import router as clients_router, public_router as clients_p
 from app.react_apis.reports import router as reports_router
 from app.react_apis.manual_time_entry import router as react_manual_time_entry_router
 from app.react_apis.member_usage import router as member_usage_router
+from app.react_apis.member_activity_log import router as member_activity_log_router
 from app.react_apis.reports_page.router import router as reports_page_router
 from app.react_apis.dashboard.router import router as dashboard_router
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,6 +63,12 @@ try:
             "Screenshot storage: Google Drive root %s (credentials from %s)",
             _drive_config["root_folder_id"], _drive_config["credential_source"],
         )
+        # Configured is not reachable. The probe actually opens the root
+        # folder with the configured credential and logs
+        # SCREENSHOT_STORAGE_PROBE with the outcome; on a background thread so
+        # a slow or failing Drive never delays the process from serving. Its
+        # result is what /health reports as `screenshot_storage.probe`.
+        _drive_service._refresh_probe_in_background()
     else:
         logger.warning(
             "Screenshot storage is DISABLED: %s. Desktop clients will queue "
@@ -158,6 +165,7 @@ app.include_router(time_tracking_router)
 app.include_router(reports_router)
 app.include_router(react_manual_time_entry_router)
 app.include_router(member_usage_router)
+app.include_router(member_activity_log_router)
 app.include_router(reports_page_router)
 app.include_router(dashboard_router)
 app.include_router(screenshot_privacy_router)
@@ -186,6 +194,12 @@ def health_check():
         storage = drive_service.describe_configuration()
         if not storage["configured"]:
             storage["reason"] = drive_service.unconfigured_reason()
+        else:
+            # Whether the configured credential can actually open the root
+            # folder, from the cached probe (see GoogleDriveService.probe):
+            # never a Drive round trip on this request, and never more than a
+            # coarse reason code, since this endpoint is public.
+            storage["probe"] = drive_service.probe()
         payload["screenshot_storage"] = storage
     except Exception:  # noqa: BLE001
         # Health must stay answerable even if storage cannot be introspected.

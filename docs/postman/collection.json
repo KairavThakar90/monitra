@@ -1556,6 +1556,74 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "Member Activity Log",
+      "item": [
+        {
+          "name": "Member activity log (one member, one IST day)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/members/1/activity-log?date=2026-09-18",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "members",
+                "1",
+                "activity-log"
+              ],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "2026-09-18",
+                  "description": "IST calendar day, YYYY-MM-DD. Omit for today."
+                }
+              ]
+            },
+            "description": "Requires `view_employees`. A leader may only read their own team (404 otherwise). See docs/Member_Activity_Log_API.md."
+          },
+          "response": []
+        },
+        {
+          "name": "Member activity log as employee -> 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{employee_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/members/1/activity-log",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "members",
+                "1",
+                "activity-log"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
     }
   ],
   "variable": [
