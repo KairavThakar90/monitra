@@ -104,7 +104,7 @@ def test_windows_dispatch_strips_the_exe_suffix_from_the_process_name():
     assert pid == fake_pid
     assert hwnd == fake_hwnd
 
-
+ 
 def test_macos_dispatch_returns_frontmost_app_and_window_title():
     """Exercises _macos_active_window_details() itself against mocked
     AppKit/Quartz objects shaped like the real pyobjc API -- this is the
