@@ -261,12 +261,23 @@ def _button(dashboard):
     return dashboard._topbar._add_task_btn
 
 
+def _blocked(dashboard) -> bool:
+    """Greyed and answering clicks with the reason, never opening the dialog."""
+    topbar = dashboard._topbar
+    return (topbar.is_add_task_blocked() and _button(dashboard).isEnabled()
+            and _button(dashboard).property("blocked") is True)
+
+
+def _offered(dashboard) -> bool:
+    return _button(dashboard).isEnabled() and not dashboard._topbar.is_add_task_blocked()
+
+
 def test_login_seeds_the_switch_from_the_profile(dashboard):
     widget, _ = dashboard
     widget.on_login(_profile(can_add_tasks=False))
     widget._task_section.set_tasks(TASKS, ACTIVE_PROJECT, "#3B82F6")
 
-    assert not _button(widget).isEnabled()
+    assert _blocked(widget)
     assert _button(widget).toolTip() == TASK_CREATION_BLOCKED_MESSAGE
 
 
@@ -274,7 +285,7 @@ def test_login_with_an_older_profile_keeps_add_task(dashboard):
     widget, _ = dashboard
     widget.on_login(_profile())
     widget._task_section.set_tasks(TASKS, ACTIVE_PROJECT, "#3B82F6")
-    assert _button(widget).isEnabled()
+    assert _offered(widget)
     assert _button(widget).toolTip() == "Add a task to the selected project"
 
 
@@ -282,11 +293,11 @@ def test_session_verification_applies_the_switch(dashboard):
     widget, _ = dashboard
     widget.on_login(_profile())
     widget._task_section.set_tasks(TASKS, ACTIVE_PROJECT, "#3B82F6")
-    assert _button(widget).isEnabled()
+    assert _offered(widget)
 
     widget.on_session_verified(_profile(can_add_tasks=False))
 
-    assert not _button(widget).isEnabled()
+    assert _blocked(widget)
 
 
 def test_a_refresh_round_re_reads_the_profile_and_applies_it_both_ways(dashboard):
@@ -303,14 +314,14 @@ def test_a_refresh_round_re_reads_the_profile_and_applies_it_both_ways(dashboard
     widget.refresh_data()
     assert "load-profile" in runner.calls
     runner.succeed("load-profile", _profile(can_add_tasks=False))
-    assert not _button(widget).isEnabled()
+    assert _blocked(widget)
     assert _button(widget).toolTip() == TASK_CREATION_BLOCKED_MESSAGE
 
     runner.calls.clear()
     widget._refresh_outstanding = 0
     widget.refresh_data()
     runner.succeed("load-profile", _profile(can_add_tasks=True))
-    assert _button(widget).isEnabled()
+    assert _offered(widget)
     assert _button(widget).toolTip() == "Add a task to the selected project"
 
 
@@ -328,59 +339,64 @@ def test_the_profile_read_hits_auth_me(dashboard):
     widget.api_client.get.assert_called_once_with("/auth/me")
 
 
-def _press_at(widget, point):
-    from PySide6.QtCore import QPointF, Qt
-    from PySide6.QtGui import QMouseEvent
-
-    event = QMouseEvent(
-        QMouseEvent.Type.MouseButtonPress, QPointF(point), QPointF(point),
-        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
-    )
-    widget.mousePressEvent(event)
-
-
-def test_clicking_the_greyed_button_shows_why(dashboard):
-    """A disabled button emits nothing, so the press has to be caught by
-    the top bar and answered with a toast and a status-bar line."""
+def test_clicking_the_greyed_button_shows_the_toast_and_no_dialog(dashboard, monkeypatch):
+    """The button stays clickable while excluded -- a disabled QPushButton
+    emits nothing -- so a real click is answered with the reason as a toast
+    and a status-bar line, and the dialog never opens."""
     widget, _ = dashboard
     widget.api.notify = MagicMock()
+    opened = []
+    monkeypatch.setattr("ui.task_table.AddTaskDialog", lambda *a, **k: opened.append(a) or MagicMock())
     widget.on_login(_profile(can_add_tasks=False))
     widget._task_section.set_tasks(TASKS, ACTIVE_PROJECT, "#3B82F6")
-    widget.show()
-    topbar = widget._topbar
-    assert not _button(widget).isEnabled()
+    assert _blocked(widget)
 
-    _press_at(topbar, topbar._add_task_button_rect().center())
+    _button(widget).click()
 
+    assert opened == []
     widget.api.notify.assert_called_once()
     assert widget.api.notify.call_args.args[0] == TASK_CREATION_BLOCKED_MESSAGE
+    assert widget._status_bar._msg.text() == TASK_CREATION_BLOCKED_MESSAGE
 
 
-def test_a_press_elsewhere_on_the_top_bar_says_nothing(dashboard):
+def test_every_click_while_excluded_answers(dashboard):
     widget, _ = dashboard
     widget.api.notify = MagicMock()
     widget.on_login(_profile(can_add_tasks=False))
     widget._task_section.set_tasks(TASKS, ACTIVE_PROJECT, "#3B82F6")
-    widget.show()
-    topbar = widget._topbar
 
-    from PySide6.QtCore import QPoint
-    _press_at(topbar, topbar._add_task_button_rect().bottomRight() + QPoint(40, 40))
+    for _ in range(3):
+        _button(widget).click()
 
+    assert widget.api.notify.call_count == 3
+
+
+def test_a_click_once_allowed_again_opens_the_dialog(dashboard, monkeypatch):
+    widget, _ = dashboard
+    widget.api.notify = MagicMock()
+    opened = []
+    monkeypatch.setattr("ui.task_table.AddTaskDialog", lambda *a, **k: opened.append(a) or MagicMock())
+    widget.on_login(_profile(can_add_tasks=False))
+    widget._task_section.set_tasks(TASKS, ACTIVE_PROJECT, "#3B82F6")
+    widget.on_session_verified(_profile(can_add_tasks=True))
+    assert _offered(widget)
+
+    _button(widget).click()
+
+    assert len(opened) == 1
     widget.api.notify.assert_not_called()
 
 
-def test_the_greyed_button_is_silent_once_allowed_again(dashboard):
-    """Off because no project is selected is not the same as off because
-    an administrator said so: only the second deserves the toast."""
+def test_without_a_project_the_button_is_simply_off(dashboard):
+    """Off because no project is selected is not the same as excluded:
+    plainly disabled, no reason, and a click says nothing."""
     widget, _ = dashboard
     widget.api.notify = MagicMock()
     widget.on_login(_profile(can_add_tasks=True))
-    widget.show()
-    topbar = widget._topbar
-    assert not _button(widget).isEnabled(), "no project selected yet"
+    assert not _button(widget).isEnabled()
+    assert not widget._topbar.is_add_task_blocked()
 
-    _press_at(topbar, topbar._add_task_button_rect().center())
+    _button(widget).click()
 
     widget.api.notify.assert_not_called()
 
