@@ -15,7 +15,7 @@ export const establishSessionExpiry = (response: Pick<TokenPair, "session_create
   const expiresAt = Number.isFinite(serverExpiry) ? Math.min(clientExpiry, serverExpiry) : clientExpiry;
   localStorage.setItem(SESSION_EXPIRES_AT_KEY, String(expiresAt));
 };
-
+ 
 export const ensureSessionExpiry = (): number | null => {
   const existing = getSessionExpiresAt();
   if (existing !== null) return existing;
