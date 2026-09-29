@@ -36,3 +36,14 @@ node_modules/
 
 # local dev server logs
 *.log
+
+# One-off scripts that hardcoded the production database URL, password
+# included. Untracked on 2026-09-29; the files stay on the machine that wrote
+# them. Scripts that need a database read DATABASE_URL from backend/.env.
+/test_db.py
+/backend/reset_pwd.py
+/backend/test_dates.py
+/backend/test_db_update.py
+/backend/test_live_api*.py
+/backend/test_local_api.py
+/backend/test_service_update.py
