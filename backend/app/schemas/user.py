@@ -34,10 +34,12 @@ class UserBase(BaseModel):
     #: Add Task at all. The backend refuses the create regardless; this only
     #: lets the client explain the refusal before the user types a name.
     can_add_tasks: bool = True
+    #: False while an administrator has excluded this member from signing in.
+    can_login: bool = True
     status: str = "active"
     is_active: bool = True
 
-    @field_validator("can_add_tasks", mode="before")
+    @field_validator("can_add_tasks", "can_login", mode="before")
     @classmethod
     def unset_means_allowed(cls, value):
         # Only an explicit False withdraws (see PER_MEMBER_PERMISSION_OVERRIDES).

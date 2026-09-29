@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.core.config import settings
+from app.core.login_access import refuse_if_login_disabled
 from app.core.permissions import PER_MEMBER_OVERRIDE_MESSAGES, PER_MEMBER_PERMISSION_OVERRIDES
 from app.core.database import get_db
 from app.repositories.user import UserRepository
@@ -79,6 +80,9 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated"
         )
+    # Excluded from signing in by an administrator: 401 so every client takes
+    # its ordinary "session over" path, with a detail that says why.
+    refuse_if_login_disabled(user, status.HTTP_401_UNAUTHORIZED)
     return user
 
 def forbid_service_principal(current_user: User = Depends(get_current_user)) -> User:

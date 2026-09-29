@@ -100,6 +100,8 @@ class MemberUpdate(BaseModel):
     capture_frequency: CaptureFrequencyMinutes = None
     #: The Members directory's Allow / Not allow switch for task creation.
     can_add_tasks: Optional[bool] = None
+    #: The Members directory's Allow / Exclude switch for signing in.
+    can_login: Optional[bool] = None
     #: Whether this member may be chosen as a project's Owner. Withdrawing it
     #: does not unassign the projects they already own; it only stops them
     #: being chosen again. See app/services/project_ownership.py.
@@ -145,6 +147,7 @@ class MemberResponse(BaseModel):
     idle_minutes: int
     capture_frequency: int
     can_add_tasks: bool = True
+    can_login: bool = True
     can_own_projects: bool = False
     created_at: datetime
     updated_at: datetime
@@ -158,7 +161,7 @@ class MemberResponse(BaseModel):
         # never assumed.
         return False if value is None else value
 
-    @field_validator("can_add_tasks", mode="before")
+    @field_validator("can_add_tasks", "can_login", mode="before")
     @classmethod
     def unset_means_allowed(cls, value):
         # Only an explicit False withdraws; an unset value is the default.
