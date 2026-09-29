@@ -15,6 +15,7 @@ class ClientPermissions(BaseModel):
     share_screenshots: bool = False
     share_tasks: bool = True
     share_timing: bool = True
+    share_billing: bool = False
 
 
 class ClientInvitationCreate(BaseModel):

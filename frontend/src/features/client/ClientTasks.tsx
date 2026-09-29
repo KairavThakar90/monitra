@@ -5,8 +5,7 @@ import { ClientMemberFilter, ClientProjectFilter } from './ClientFilters';
 import { ClientExportButton } from './ClientExportButton';
 import { ClientExportDialog } from './ClientExportDialog';
 import { Card, EmptyState, ErrorNote } from '../member/MemberUi';
-import { RankedBars } from '../dashboard/v2/charts';
-import { series } from '../dashboard/v2/theme';
+import { ClientTable } from './ClientTable';
 import { DateRangeFilter } from '../dashboard/v2/filters';
 import { useGetMyMemberHoursQuery, useGetMyProjectsQuery, useGetMyTaskHoursQuery } from '../../store/api/clientPortalApi';
 import { CLIENT_DEFAULT_RANGE, formatSharedHMS, longDate } from './clientRange';
@@ -64,27 +63,48 @@ export const ClientTasks: React.FC = () => {
         <div className={`space-y-6 transition-opacity ${isFetching ? 'opacity-60' : ''}`}>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <ClientKpiCard title="Total Task Hours" value={formatSharedHMS(totalSeconds)} />
-            <ClientKpiCard title="Tasks Worked" value={tasks.length} />
+            <ClientKpiCard title="Tasks Shown" value={tasks.length} />
           </div>
 
-          <Card title="Top Tasks">
-            {!tasksShared ? (
+          {!tasksShared ? (
+            <Card title="Top Tasks">
               <EmptyState message="Tasks are not shared for your account." hint="Ask your admin to enable it if you need this." />
-            ) : tasks.length === 0 ? (
+            </Card>
+          ) : tasks.length === 0 ? (
+            <Card title="Top Tasks">
               <EmptyState message="No task activity for this range or filter." hint="Try a different date range, or clear the filters." />
-            ) : (
-              <RankedBars
-                items={tasks.map((task) => ({
-                  id: String(task.id),
-                  name: task.task_name,
-                  value: task.total_tracked_hours ?? 0,
-                  meta: task.project_name ?? 'Unknown project',
-                }))}
-                color={series[3]}
-                formatValue={(n) => `${n}h`}
-              />
-            )}
-          </Card>
+            </Card>
+          ) : (
+            <ClientTable
+              headers={[
+                { label: 'Task' },
+                { label: 'Project' },
+                { label: 'Assigned To' },
+                { label: 'Status' },
+                { label: 'Created' },
+                { label: 'Hours', align: 'right' },
+                { label: 'Tracked Time', align: 'right' },
+              ]}
+            >
+              {tasks.map((task) => (
+                <tr key={task.id}>
+                  <td className="px-4 py-3 font-medium text-[#0F172A]">{task.task_name}</td>
+                  <td className="px-4 py-3 text-[#475569]">{task.project_name ?? 'Unknown project'}</td>
+                  <td className="px-4 py-3 text-[#475569]">{task.assignee ?? '—'}</td>
+                  <td className="px-4 py-3 capitalize text-[#475569]">{task.status?.replace('_', ' ') ?? '—'}</td>
+                  <td className="px-4 py-3 text-[#475569]">
+                    {task.created_date ? longDate(task.created_date) : '—'}
+                  </td>
+                  <td className="px-4 py-3 text-right font-semibold text-[#0F172A]">
+                    {task.total_tracked_hours ?? 0}h
+                  </td>
+                  <td className="px-4 py-3 text-right text-[#475569]">
+                    {formatSharedHMS(task.total_tracked_seconds)}
+                  </td>
+                </tr>
+              ))}
+            </ClientTable>
+          )}
         </div>
       </div>
 

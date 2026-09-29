@@ -38,6 +38,7 @@ class ClientRepository:
         share_screenshots: bool = False,
         share_tasks: bool = True,
         share_timing: bool = True,
+        share_billing: bool = False,
     ) -> Client:
         client = Client(
             organization_id=organization_id,
@@ -49,6 +50,7 @@ class ClientRepository:
             share_screenshots=share_screenshots,
             share_tasks=share_tasks,
             share_timing=share_timing,
+            share_billing=share_billing,
         )
         db.add(client)
         db.commit()
@@ -64,11 +66,13 @@ class ClientRepository:
         share_screenshots: bool,
         share_tasks: bool,
         share_timing: bool,
+        share_billing: bool,
     ) -> Client:
         client.share_member_details = share_member_details
         client.share_screenshots = share_screenshots
         client.share_tasks = share_tasks
         client.share_timing = share_timing
+        client.share_billing = share_billing
         db.commit()
         db.refresh(client)
         return client

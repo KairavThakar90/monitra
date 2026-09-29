@@ -199,7 +199,7 @@ class ProjectManagementService:
 
     @staticmethod
     def _task_payload(task: Task, task_status: TaskStatus, assignee: Optional[User]):
-        return {"id": task.id, "project_id": task.project_id, "name": task.task_name, "assignee_id": task.assignee_id, "assignee": ProjectManagementService._person(assignee), "status": task_status, "created_at": task.created_at, "updated_at": task.updated_at}
+        return {"id": task.id, "project_id": task.project_id, "name": task.task_name, "assignee_id": task.assignee_id, "assignee": ProjectManagementService._person(assignee), "status": task_status, "estimated_hours": float(task.estimated_hours) if task.estimated_hours is not None else None, "created_at": task.created_at, "updated_at": task.updated_at}
 
     @staticmethod
     def _detail_payload(db: Session, project: Project, user: User):
@@ -570,7 +570,7 @@ class ProjectManagementService:
         # legacy route has always done.
         if assignee is None and is_task_scoped(user):
             assignee = user
-        task = Task(organization_id=user.organization_id, project_id=project.id, task_name=payload.name, assignee_id=assignee.id if assignee else None, status_id=task_status.id, status=ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task"), created_by=user.id, client_op=payload.client_op)
+        task = Task(organization_id=user.organization_id, project_id=project.id, task_name=payload.name, assignee_id=assignee.id if assignee else None, status_id=task_status.id, status=ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task"), created_by=user.id, client_op=payload.client_op, estimated_hours=payload.estimated_hours)
         db.add(task)
         try:
             db.flush()
@@ -625,6 +625,7 @@ class ProjectManagementService:
             db.add(TaskAssignee(task_id=task.id, user_id=assignee.id, assigned_by=user.id))
             task.assignee_id = assignee.id
         if "name" in values: task.task_name = values["name"]
+        if "estimated_hours" in values: task.estimated_hours = values["estimated_hours"]
         db.commit()
         db.refresh(task)
         return ProjectManagementService._task_payload(task, task_status, assignee)

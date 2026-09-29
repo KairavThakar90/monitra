@@ -46,7 +46,11 @@ export const ENDPOINTS = {
     MY_PROJECTS: `${API_BASE_URL}/clients/me/projects`,
     MY_PROJECT_BY_ID: (id: string | number) => `${API_BASE_URL}/clients/me/projects/${id}`,
     MY_MEMBERS: `${API_BASE_URL}/clients/me/members`,
+    MY_MEMBER_BY_ID: (id: string | number) => `${API_BASE_URL}/clients/me/members/${id}`,
     MY_TASKS: `${API_BASE_URL}/clients/me/tasks`,
+    // Billing usage for shared billable projects — always all-time, so it
+    // takes no date range (a budget is spent across a project's whole life).
+    MY_BILLING: `${API_BASE_URL}/clients/me/billing`,
     MY_PROJECT_SCREENSHOTS: (id: string | number) => `${API_BASE_URL}/clients/me/projects/${id}/screenshots`,
     MY_PROJECT_SCREENSHOT_VIEW: (projectId: string | number, screenshotId: string | number) =>
       `${API_BASE_URL}/clients/me/projects/${projectId}/screenshots/${screenshotId}/view`,

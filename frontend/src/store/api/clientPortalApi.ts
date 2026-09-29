@@ -11,14 +11,27 @@ export interface MyProfile {
   permissions: ClientPermissions;
 }
 
+/** One assigned-roster entry on a shared project. */
+export interface MyProjectRosterMember {
+  id: number;
+  name: string;
+  designation: string | null;
+}
+
 export interface MyProjectSummary {
   id: number;
   project_name: string;
   description: string | null;
   status: string;
+  deadline: string | null;
+  project_start_date: string | null;
   total_tracked_seconds: number | null;
   total_tracked_hours: number | null;
   member_count: number | null;
+  /** The assigned roster — the same people the admin sees on the project.
+   * `[]` when Member Details is not shared. Optional so a response from a
+   * backend predating the field renders as empty rather than crashing. */
+  members?: MyProjectRosterMember[];
 }
 
 export interface MyProjectsResponse {
@@ -31,9 +44,13 @@ export interface MyProjectsResponse {
 export interface MyMemberHours {
   id: number;
   name: string;
+  designation: string | null;
   total_tracked_seconds: number | null;
   total_tracked_hours: number | null;
   project_count: number;
+  /** The shared projects this member worked on in range, by name. Optional
+   * so a response from a backend predating the field renders as empty. */
+  project_names?: string[];
 }
 
 export interface MyMemberHoursResponse {
@@ -47,6 +64,10 @@ export interface MyTaskHours {
   id: number;
   task_name: string;
   project_name: string | null;
+  status?: string;
+  created_date?: string | null;
+  /** Assigned member's name; null when unassigned or Member Details is not shared. */
+  assignee?: string | null;
   total_tracked_seconds: number | null;
   total_tracked_hours: number | null;
 }
@@ -56,6 +77,75 @@ export interface MyTaskHoursResponse {
   end_date: string;
   permissions: ClientPermissions;
   items: MyTaskHours[];
+}
+
+/** Budget/usage figures shared by the billing read's project and task rows.
+ * `total_hours`/`remaining_hours` are null when no budget is set (a task
+ * without an estimate); `remaining_hours` goes negative when overspent. */
+export interface MyBillingUsage {
+  total_hours: number | null;
+  used_seconds: number;
+  used_hours: number;
+  remaining_hours: number | null;
+}
+
+/** One member's share of a task's tracked time. */
+export interface MyBillingTaskMember {
+  id: number;
+  name: string;
+  used_seconds: number;
+  used_hours: number;
+}
+
+export interface MyBillingTask extends MyBillingUsage {
+  id: number;
+  task_name: string;
+  status: string;
+  /** Who worked on this task and for how long. `[]` when the client was not
+   * granted Member Details — identity is that flag's concern, so Billing
+   * withholds it the same way the roster and member-hours reads do.
+   * Optional so an older backend's response renders without the rows. */
+  members?: MyBillingTaskMember[];
+}
+
+export interface MyBillingProject extends MyBillingUsage {
+  id: number;
+  project_name: string;
+  status: string;
+  billing_type: string;
+  tasks: MyBillingTask[];
+}
+
+export interface MyBillingResponse {
+  permissions: ClientPermissions;
+  items: MyBillingProject[];
+}
+
+/** One IST day of a member's activity against shared projects. */
+export interface MyMemberDay {
+  date: string;
+  /** Pre-formatted IST clock times ("09:12 AM"); last is null while a
+   * session is still running. */
+  first_activity: string;
+  last_activity: string | null;
+  session_count: number;
+  total_tracked_seconds: number;
+  total_tracked_hours: number;
+}
+
+export interface MyMemberDetail {
+  id: number;
+  name: string;
+  designation: string | null;
+  start_date: string;
+  end_date: string;
+  permissions: ClientPermissions;
+  projects: { id: number; project_name: string; assigned: boolean }[];
+  /** Date-wise activity, newest day first; `[]` when Timing is not shared. */
+  days: MyMemberDay[];
+  days_active: number | null;
+  total_tracked_seconds: number | null;
+  total_tracked_hours: number | null;
 }
 
 export interface MyProjectTask {
@@ -163,6 +253,16 @@ export const clientPortalApi = baseApi.injectEndpoints({
       providesTags: [{ type: 'ClientProject', id: 'TASKS' }],
     }),
 
+    getMyMemberDetail: builder.query<MyMemberDetail, { memberId: number } & ClientQueryArg>({
+      query: ({ memberId, ...rest }) => withQuery(ENDPOINTS.CLIENTS.MY_MEMBER_BY_ID(memberId), rest),
+      providesTags: (_result, _error, { memberId }) => [{ type: 'ClientProject', id: `member-${memberId}` }],
+    }),
+
+    getMyBilling: builder.query<MyBillingResponse, { project_ids?: number[] } | void>({
+      query: (arg) => withQuery(ENDPOINTS.CLIENTS.MY_BILLING, arg ?? undefined),
+      providesTags: [{ type: 'ClientProject', id: 'BILLING' }],
+    }),
+
     getMyProjectDetail: builder.query<MyProjectDetail, { projectId: number } & ClientQueryArg>({
       query: ({ projectId, ...rest }) => withQuery(ENDPOINTS.CLIENTS.MY_PROJECT_BY_ID(projectId), rest),
       providesTags: (_result, _error, { projectId }) => [{ type: 'ClientProject', id: projectId }],
@@ -184,7 +284,9 @@ export const {
   useGetMyProfileQuery,
   useGetMyProjectsQuery,
   useGetMyMemberHoursQuery,
+  useGetMyMemberDetailQuery,
   useGetMyTaskHoursQuery,
+  useGetMyBillingQuery,
   useGetMyProjectDetailQuery,
   useGetMyProjectScreenshotsQuery,
   useGetMyScreenshotsGridQuery,

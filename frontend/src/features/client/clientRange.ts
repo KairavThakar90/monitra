@@ -1,10 +1,12 @@
-import { rangeFor } from '../dashboard/v2/filters';
+import { DEFAULT_RANGE } from '../dashboard/v2/filters';
 import type { DateRange } from '../dashboard/v2/filters';
 import { formatHMS } from '../../utils/duration';
 
-/** The client portal's default filter: today, using the same `DateRange`
- * shape and `DateRangeFilter` component the staff/member dashboards use. */
-export const CLIENT_DEFAULT_RANGE: DateRange = rangeFor('today', { preset: 'today', from: '', to: '' });
+/** The client portal's default filter: the same last-7-days default the
+ * staff/member dashboards open on (`DEFAULT_RANGE`). It used to be "today",
+ * which made Timing/Members/Tasks open empty for any client whose team had
+ * not tracked *that day* — indistinguishable, to the client, from broken. */
+export const CLIENT_DEFAULT_RANGE: DateRange = DEFAULT_RANGE;
 
 /** A tracked-seconds figure the backend may have withheld (Timing disabled
  * for this client): `null` renders as "Not shared", never as a fabricated

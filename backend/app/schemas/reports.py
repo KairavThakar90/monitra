@@ -107,6 +107,10 @@ class ProjectTaskSummaryTask(BaseModel):
     total_tracked_seconds: int
     total_tracked_hours: float
     total_tracked_time: str
+    #: The task's budgeted hours (None when no budget is set) -- shown and
+    #: edited inline on the Task Listing screen, and what the client
+    #: portal's Billing page measures the task's remaining hours against.
+    estimated_hours: Optional[float] = None
 
 
 class ProjectTaskSummaryProject(BaseModel):

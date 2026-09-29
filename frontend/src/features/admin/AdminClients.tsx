@@ -63,9 +63,10 @@ const PERMISSION_LABELS: { key: keyof ClientPermissions; label: string; hint: st
   { key: 'share_screenshots', label: 'Screenshots', hint: "Screenshots captured while working on the shared project(s)." },
   { key: 'share_tasks', label: 'Tasks', hint: 'Project task details and task activity.' },
   { key: 'share_timing', label: 'Timing', hint: 'Member/project working hours and time-tracking details.' },
+  { key: 'share_billing', label: 'Billing Details', hint: 'Budgeted, used and remaining hours for billable projects, broken down by task.' },
 ];
 
-/** The four sharing-permission toggles, shared by the Add Client and Edit
+/** The sharing-permission toggles, shared by the Add Client and Edit
  * Access modals. */
 const PermissionsChecklist: React.FC<{
   permissions: ClientPermissions;

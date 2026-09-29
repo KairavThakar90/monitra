@@ -422,6 +422,7 @@ class ReportsService:
                     "total_tracked_seconds": task_seconds.get(task.id, 0),
                     "total_tracked_hours": round(task_seconds.get(task.id, 0) / 3600, 2),
                     "total_tracked_time": format_hms(task_seconds.get(task.id, 0)),
+                    "estimated_hours": float(task.estimated_hours) if task.estimated_hours is not None else None,
                 }
                 for task in tasks
             ]

@@ -216,9 +216,11 @@ class ProjectTaskSummaryTests(unittest.TestCase):
         )
         self.tracked_task = SimpleNamespace(
             id=100, task_name="Design", created_at=datetime(2026, 8, 2), project_id=1,
+            estimated_hours=None,
         )
         self.untracked_task = SimpleNamespace(
             id=101, task_name="Untouched", created_at=datetime(2026, 8, 3), project_id=1,
+            estimated_hours=None,
         )
 
     def test_date_and_date_range_together_raises_400(self):

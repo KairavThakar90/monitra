@@ -31,7 +31,7 @@ type NavItem = {
   path: string;
   label: string;
   icon: React.ReactNode;
-  permission?: 'share_timing' | 'share_member_details' | 'share_tasks' | 'share_screenshots';
+  permission?: 'share_timing' | 'share_member_details' | 'share_tasks' | 'share_screenshots' | 'share_billing';
 };
 
 const icon = (d: string) => <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={d} />;
@@ -66,6 +66,14 @@ const NAV: NavItem[] = [
     permission: 'share_tasks',
     icon: icon(
       'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2'
+    ),
+  },
+  {
+    path: '/client/billing',
+    label: 'Billing',
+    permission: 'share_billing',
+    icon: icon(
+      'M9 7h6m-6 4h6m-2 4h2M5 3h14a1 1 0 011 1v16a1 1 0 01-1 1H5a1 1 0 01-1-1V4a1 1 0 011-1z'
     ),
   },
   {

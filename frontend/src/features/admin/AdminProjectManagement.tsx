@@ -993,7 +993,7 @@ export const AdminProjectManagement: React.FC = () => {
                   <tr key={proj.id} className="group transition hover:bg-slate-50/80">
                     {visibleColumns.project && <td className="px-6 py-4">
                       <div className="font-bold text-slate-800">{proj.project_name}</div>
-                      {proj.description && <div className="text-xs text-slate-500 truncate max-w-[200px]">{proj.description}</div>}
+                      {/* {proj.description && <div className="text-xs text-slate-500 truncate max-w-[200px]">{proj.description}</div>} */}
                     </td>}
                     {visibleColumns.status && <td className="px-6 py-4 overflow-visible">
                       <StatusPillDropdown

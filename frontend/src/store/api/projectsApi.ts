@@ -34,6 +34,9 @@ export interface ProjectTask {
   name: string;
   assignee: ProjectUser | null;
   status: { id: number; name: string; color: string };
+  /** The task's budgeted hours — what the client portal's Billing page shows
+   * as the task's total. `null` when no budget was set. */
+  estimated_hours: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -169,6 +172,7 @@ const patchTaskSummaries = (
       total_tracked_seconds: 0,
       total_tracked_hours: 0,
       total_tracked_time: '00:00:00',
+      estimated_hours: task.estimated_hours ?? null,
     });
     project.total_task_count = (project.total_task_count || 0) + 1;
   });
@@ -370,7 +374,7 @@ export const projectsApi = baseApi.injectEndpoints({
 
     createTask: builder.mutation<
       ProjectTask,
-      { projectId: number; body: { project_id?: number; name: string; assignee_id: number | null; status_id: number } }
+      { projectId: number; body: { project_id?: number; name: string; assignee_id: number | null; status_id: number; estimated_hours?: number | null } }
     >({
       query: ({ projectId, body }) => ({
         url: ENDPOINTS.PROJECTS.TASKS(projectId),
@@ -401,7 +405,7 @@ export const projectsApi = baseApi.injectEndpoints({
 
     updateTask: builder.mutation<
       ProjectTask,
-      { projectId: number; taskId: number; body: { name?: string; assignee_id?: number | null; status_id?: number } }
+      { projectId: number; taskId: number; body: { name?: string; assignee_id?: number | null; status_id?: number; estimated_hours?: number | null } }
     >({
       query: ({ projectId, taskId, body }) => ({
         url: ENDPOINTS.PROJECTS.TASK_BY_ID(projectId, taskId),

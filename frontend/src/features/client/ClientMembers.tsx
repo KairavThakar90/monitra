@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { ClientShell } from './ClientShell';
 import { ClientKpiCard } from './ClientKpiCard';
 import { ClientMemberFilter, ClientProjectFilter } from './ClientFilters';
 import { ClientExportButton } from './ClientExportButton';
 import { ClientExportDialog } from './ClientExportDialog';
 import { Card, EmptyState, ErrorNote } from '../member/MemberUi';
-import { RankedBars } from '../dashboard/v2/charts';
-import { series } from '../dashboard/v2/theme';
+import { ClientTable } from './ClientTable';
 import { DateRangeFilter } from '../dashboard/v2/filters';
 import { useGetMyMemberHoursQuery, useGetMyProjectsQuery } from '../../store/api/clientPortalApi';
 import { CLIENT_DEFAULT_RANGE, formatSharedHMS, longDate } from './clientRange';
@@ -16,6 +16,7 @@ import { CLIENT_DEFAULT_RANGE, formatSharedHMS, longDate } from './clientRange';
  * client-portal equivalent of the member/admin reports' own per-member
  * ranking. */
 export const ClientMembers: React.FC = () => {
+  const navigate = useNavigate();
   const [range, setRange] = useState(CLIENT_DEFAULT_RANGE);
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
@@ -70,25 +71,51 @@ export const ClientMembers: React.FC = () => {
             <ClientKpiCard title="Members Shown" value={members.length} />
           </div>
 
-          <Card title="Time by Member">
-            {!memberDetailsShared ? (
+          {!memberDetailsShared ? (
+            <Card title="Time by Member">
               <EmptyState message="Member details are not shared for your account." hint="Ask your admin to enable it if you need this." />
-            ) : members.length === 0 ? (
+            </Card>
+          ) : members.length === 0 ? (
+            <Card title="Time by Member">
               <EmptyState message="No member activity for this range or filter." hint="Try a different date range, or clear the filters." />
-            ) : (
-              <RankedBars
-                items={members.map((member) => ({
-                  id: String(member.id),
-                  name: member.name,
-                  value: member.total_tracked_hours ?? 0,
-                  meta: `${member.project_count} project${member.project_count === 1 ? '' : 's'}`,
-                }))}
-                color={series[1]}
-                formatValue={(n) => `${n}h`}
-                avatars
-              />
-            )}
-          </Card>
+            </Card>
+          ) : (
+            <ClientTable
+              headers={[
+                { label: 'Member' },
+                { label: 'Designation' },
+                { label: 'Projects' },
+                { label: 'Hours', align: 'right' },
+                { label: 'Tracked Time', align: 'right' },
+                { label: '', align: 'right' },
+              ]}
+            >
+              {members.map((member) => (
+                <tr
+                  key={member.id}
+                  onClick={() => navigate(`/client/members/${member.id}?start=${range.from}&end=${range.to}`)}
+                  className="cursor-pointer transition hover:bg-[#F8FAFC]"
+                >
+                  <td className="px-4 py-3 font-medium text-[#0F172A]">{member.name}</td>
+                  <td className="px-4 py-3 text-[#475569]">{member.designation || '—'}</td>
+                  <td className="max-w-sm px-4 py-3 text-[#475569]">
+                    <span className="line-clamp-1" title={(member.project_names ?? []).join(', ')}>
+                      {member.project_names?.length ? member.project_names.join(', ') : '—'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right font-semibold text-[#0F172A]">
+                    {member.total_tracked_hours ?? 0}h
+                  </td>
+                  <td className="px-4 py-3 text-right text-[#475569]">
+                    {formatSharedHMS(member.total_tracked_seconds)}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <span className="text-sm font-semibold text-[#2563EB]">View</span>
+                  </td>
+                </tr>
+              ))}
+            </ClientTable>
+          )}
         </div>
       </div>
 

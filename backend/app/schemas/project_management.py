@@ -141,6 +141,11 @@ class TaskCreate(BaseModel):
     #: the organization has already seen is answered with the task that key
     #: produced, never with a second task -- see `Task.client_op`.
     client_op: OptionalIdempotencyKey = None
+    #: The task's budgeted hours -- what the client portal's Billing page
+    #: shows as the task's total, and what its remaining hours are measured
+    #: against. Optional: a task without one shows used hours only, never a
+    #: guessed allocation. Bounded by the column type (Numeric(5,2)).
+    estimated_hours: Optional[float] = Field(None, ge=0, le=999.99)
 
     @field_validator("name")
     @classmethod
@@ -155,6 +160,9 @@ class TaskUpdate(BaseModel):
     name: Optional[str] = Field(None, max_length=150)
     assignee_id: Optional[int] = Field(None, gt=0)
     status_id: Optional[int] = Field(None, gt=0)
+    #: Sent explicitly as null, this *clears* the budget (the service applies
+    #: `exclude_unset`, so an omitted field leaves it alone).
+    estimated_hours: Optional[float] = Field(None, ge=0, le=999.99)
 
     @field_validator("name")
     @classmethod
@@ -174,6 +182,7 @@ class TaskRead(BaseModel):
     assignee_id: Optional[int]
     assignee: Optional[PersonRead]
     status: Optional[StatusRead] = None
+    estimated_hours: Optional[float] = None
     created_at: datetime
     updated_at: datetime
 
