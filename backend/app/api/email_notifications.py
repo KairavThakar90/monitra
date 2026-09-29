@@ -53,10 +53,12 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.email_notification import (
-    DispatchResult, MonthlyReportRunResult, WeeklyReportRunResult,
+    DispatchResult, MonthlyProjectSummaryRunResult, MonthlyReportRunResult,
+    ProjectBudgetAlertRunResult, WeeklyReportRunResult,
 )
 from app.services.email import EmailOutboxService
 from app.services.email import assets as email_assets
+from app.services.monthly_project_summary import MonthlyProjectSummaryService
 from app.services.monthly_report import MonthlyReportService
 from app.services.weekly_report import WeeklyReportService
 
@@ -365,6 +367,169 @@ def preview_monthly_report(
         )
     message = messages.build_monthly_report_email(payload, ["preview@example.invalid"])
     return HTMLResponse(content=message.html)
+
+
+@router.post(
+    "/internal/reports/monthly-projects/run",
+    response_model=MonthlyProjectSummaryRunResult,
+    summary="Queue the monthly project summary for admins, owners and leaders (scheduler only).",
+    description=(
+        "Resolves the previous completed calendar month, computes each "
+        "organisation's project summary once, and queues one email per "
+        "recipient: company-wide for administrators and owners, scoped to "
+        "their own projects for leaders. It does **not** send: the dispatch "
+        "sweeper delivers what this queues.\n\n"
+        "Safe to call twice: each summary is keyed on `(monthly_project_summary, "
+        "month:<start>:user:<id>)`.\n\n"
+        "`month_start` reports a specific month (any date inside it); "
+        "`user_id` restricts the run to one recipient; `dry_run` queues nothing.\n\n"
+        "Authenticate with `EMAIL_DISPATCH_TOKEN`."
+    ),
+    responses={
+        401: {"description": "Missing or incorrect dispatch token."},
+        503: {"description": "EMAIL_DISPATCH_TOKEN is not configured."},
+    },
+)
+def run_monthly_project_summary(
+    month_start: Optional[date] = Query(None, description="Any date inside the month. Defaults to the previous month."),
+    user_id: Optional[int] = Query(None, ge=1, description="Restrict the run to one recipient."),
+    dry_run: bool = Query(False, description="Compute and report the tally without queueing."),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    return MonthlyProjectSummaryRunResult(**{
+        key: value
+        for key, value in MonthlyProjectSummaryService.run(
+            db, month_start=month_start, user_id=user_id, dry_run=dry_run,
+        ).items()
+        if key in MonthlyProjectSummaryRunResult.model_fields
+    })
+
+
+@router.get(
+    "/internal/reports/monthly-projects/run",
+    response_model=MonthlyProjectSummaryRunResult,
+    include_in_schema=False,
+    summary="Queue the monthly project summary (scheduler only).",
+)
+def run_monthly_project_summary_get(
+    month_start: Optional[date] = Query(None),
+    user_id: Optional[int] = Query(None, ge=1),
+    dry_run: bool = Query(False),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    """GET alias for Vercel Cron, which can only issue a GET. Same operation as the POST."""
+    return run_monthly_project_summary(
+        month_start=month_start, user_id=user_id, dry_run=dry_run, _=None, db=db,
+    )
+
+
+@router.get(
+    "/internal/reports/monthly-projects/preview",
+    include_in_schema=False,
+    summary="Render one recipient's monthly project summary without queueing or sending it.",
+    response_class=HTMLResponse,
+)
+def preview_monthly_project_summary(
+    user_id: int = Query(..., ge=1, description="The recipient whose summary to render."),
+    month_start: Optional[date] = Query(None, description="Any date inside the month."),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    """The exact HTML that recipient would be sent. Queues, sends and writes nothing.
+    404 for anyone who is not an eligible recipient, so it cannot be used to
+    read the summary as somebody who would never receive it."""
+    from app.services.email import messages
+
+    payload = MonthlyProjectSummaryService.preview_payload(db, user_id=user_id, month_start=month_start)
+    if payload is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No eligible recipient with that id.")
+    message = messages.build_monthly_project_summary_email(payload, ["preview@example.invalid"])
+    return HTMLResponse(content=message.html)
+
+
+@router.post(
+    "/internal/project-budget-alerts/run",
+    response_model=ProjectBudgetAlertRunResult,
+    summary="Evaluate fixed-hours budget alerts (scheduler only).",
+    description=(
+        "Evaluates every monitored fixed-hours project against the shared hours "
+        "calculation, claims each newly crossed 50% / 20% / 10% / exhausted event "
+        "exactly once, and queues its emails. Safe to run concurrently with itself "
+        "and with the timer-stop and approval hooks.\n\n"
+        "`project_id` restricts the evaluation to one project; `dry_run` claims and "
+        "queues nothing. Authenticate with `EMAIL_DISPATCH_TOKEN`."
+    ),
+    responses={401: {"description": "Missing or incorrect dispatch token."},
+               503: {"description": "EMAIL_DISPATCH_TOKEN is not configured."}},
+)
+def run_project_budget_alerts(
+    project_id: Optional[int] = Query(None, ge=1),
+    dry_run: bool = Query(False),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    from app.services.project_budget_alerts import ProjectBudgetAlertService
+
+    result = ProjectBudgetAlertService.run(
+        db, project_ids=[project_id] if project_id else None, dry_run=dry_run,
+        source="manual" if project_id else "reconciliation",
+    )
+    return ProjectBudgetAlertRunResult(**{k: v for k, v in result.items() if k in ProjectBudgetAlertRunResult.model_fields})
+
+
+@router.get(
+    "/internal/project-budget-alerts/run",
+    response_model=ProjectBudgetAlertRunResult,
+    include_in_schema=False,
+)
+def run_project_budget_alerts_get(
+    project_id: Optional[int] = Query(None, ge=1),
+    dry_run: bool = Query(False),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    """GET alias for Vercel Cron. Same operation as the POST."""
+    return run_project_budget_alerts(project_id=project_id, dry_run=dry_run, _=None, db=db)
+
+
+@router.get(
+    "/internal/project-budget-alerts/preview",
+    include_in_schema=False,
+    response_class=HTMLResponse,
+    summary="Render one budget alert for one eligible recipient, without claiming or sending anything.",
+)
+def preview_project_budget_alert(
+    project_id: int = Query(..., ge=1),
+    user_id: int = Query(..., ge=1, description="A recipient of this project's alerts."),
+    event: str = Query("remaining_50", pattern="^(remaining_50|remaining_20|remaining_10|exhausted)$"),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    """Current figures for the project, rendered as `event`. 404 unless the
+    project is a monitored fixed-hours project and `user_id` would receive its
+    alerts -- so this cannot show a project to someone outside its scope."""
+    from datetime import datetime, timezone
+
+    from app.repositories.project_budget_alert import ProjectBudgetAlertRepository
+    from app.services.email import messages
+    from app.services.project_budget_alerts import ProjectBudgetAlertService, alert_payload, allocation_seconds
+    from app.services.project_hours import all_time_project_hours
+
+    [project] = ProjectBudgetAlertRepository.monitored_fixed_projects(db, [project_id]) or [None]
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No monitored fixed-hours project with that id.")
+    recipients = ProjectBudgetAlertService._recipients_by_project(db, project.organization_id, {project.id})[project.id]
+    user = next((u for u in recipients if u.id == user_id), None)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That user does not receive this project's alerts.")
+    split = all_time_project_hours(db, project.organization_id, [project.id])[project.id]
+    payload = alert_payload(
+        project, event=event, allocation=allocation_seconds(project.fixed_hours), used=split.used_seconds,
+        internal=split.internal_seconds, recipient_user=user, generated_at=datetime.now(timezone.utc),
+    )
+    return HTMLResponse(content=messages.build_project_budget_alert_email(payload, ["preview@example.invalid"]).html)
 
 
 @router.get(

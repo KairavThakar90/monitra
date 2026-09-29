@@ -43,6 +43,11 @@ class User(Base):
     #: sign-in, which is exactly why this lives in its own column). Enforced by
     #: `require_permission` through PER_MEMBER_PERMISSION_OVERRIDES.
     can_add_tasks: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('true'))
+    #: Whether this member may sign in at all. An administrator excludes a
+    #: member from the Members directory; see app/core/login_access.py for
+    #: everything that follows (running timer stopped, sessions revoked,
+    #: every request and sign-in refused until allowed again).
+    can_login: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('true'))
     #: Whether this member may be chosen as a project's owner. A capability,
     #: not a role: an owner keeps whatever role they have. Off by default and
     #: granted per member (`PATCH /members/{id}`); read by

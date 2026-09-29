@@ -58,7 +58,13 @@ const AddTaskSwitch: React.FC<{
   editable: boolean;
   busy: boolean;
   onChange: (allowed: boolean) => void;
-}> = ({ allowed, editable, busy, onChange }) => {
+  /** What the switch governs, for its accessible label and tooltip. */
+  subject?: string;
+  /** The same, as the thing being allowed ("to add tasks"). */
+  allowPhrase?: string;
+  /** Shown instead of a working switch, e.g. on the administrator's own row. */
+  lockedReason?: string;
+}> = ({ allowed, editable, busy, onChange, subject = 'adding tasks', allowPhrase = 'to add tasks', lockedReason }) => {
   const pill = allowed
     ? <span className="inline-flex items-center rounded-md bg-emerald-50 px-2.5 py-1 text-[11px] font-bold tracking-wider text-emerald-600 border border-emerald-200">Allowed</span>
     : <span className="inline-flex items-center rounded-md bg-rose-50 px-2.5 py-1 text-[11px] font-bold tracking-wider text-rose-500 border border-rose-200">Excluded</span>;
@@ -70,9 +76,9 @@ const AddTaskSwitch: React.FC<{
         type="button"
         role="switch"
         aria-checked={allowed}
-        aria-label={allowed ? 'Exclude this member from adding tasks' : 'Allow this member to add tasks'}
-        title={allowed ? 'Click to exclude this member from adding tasks' : 'Click to allow this member to add tasks'}
-        disabled={busy}
+        aria-label={allowed ? `Exclude this member from ${subject}` : `Allow this member ${allowPhrase}`}
+        title={lockedReason ?? (allowed ? `Click to exclude this member from ${subject}` : `Click to allow this member ${subject}`)}
+        disabled={busy || !!lockedReason}
         onClick={() => onChange(!allowed)}
         className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/40 disabled:cursor-not-allowed disabled:opacity-60 ${
           allowed ? 'bg-blue-600' : 'bg-slate-300'
@@ -743,6 +749,38 @@ export const AdminMembers: React.FC = () => {
     }
   };
 
+  // The Login switch. Excluding signs the member out of the desktop and the
+  // web within seconds and stops a running timer, so it asks first; allowing
+  // them back is harmless and immediate. The row flips optimistically.
+  const [pendingLoginId, setPendingLoginId] = useState<number | null>(null);
+  const handleSetLogin = async (member: Member, allowed: boolean) => {
+    if ((member.can_login !== false) === allowed) return;
+    if (
+      !allowed &&
+      !(await confirmAction(
+        `Exclude ${member.name} from logging in?`,
+        'They will be signed out of the desktop app and the website right away, and any running timer will be stopped. They cannot sign in again until you allow them.',
+      ))
+    ) {
+      return;
+    }
+    setPendingLoginId(member.id);
+    try {
+      await updateMember({ id: member.id, body: { can_login: allowed } }).unwrap();
+      showToast(
+        allowed
+          ? `${member.name} is now allowed to log in.`
+          : `${member.name} has been excluded and signed out.`,
+        'success',
+      );
+    } catch (err) {
+      console.error('Failed to update the login permission', err);
+      showToast('Unable to update the login permission. Please try again.', 'error');
+    } finally {
+      setPendingLoginId(null);
+    }
+  };
+
   const handleDeleteMember = async (id: number) => {
     if (await confirmAction('Delete member?', 'This member will be permanently removed from the directory.')) {
       try {
@@ -874,6 +912,7 @@ export const AdminMembers: React.FC = () => {
                   <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Date of Joining</th>
                   <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Date of Birth</th>
                   <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Add Task</th>
+                  <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Login</th>
                   {canManageMembers && (
                     <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px] text-right">Action</th>
                   )}
@@ -882,13 +921,13 @@ export const AdminMembers: React.FC = () => {
               <tbody className="divide-y divide-slate-100">
                 {showFirstLoad ? (
                   <tr>
-                    <td colSpan={canManageMembers ? 8 : 7} className="px-6 py-8">
+                    <td colSpan={canManageMembers ? 9 : 8} className="px-6 py-8">
                       <LoadingSpinner />
                     </td>
                   </tr>
                 ) : isError ? (
                   <tr>
-                    <td colSpan={canManageMembers ? 8 : 7} className="px-6 py-12 text-center text-red-500">
+                    <td colSpan={canManageMembers ? 9 : 8} className="px-6 py-12 text-center text-red-500">
                       Failed to fetch members. Please try again.
                     </td>
                   </tr>
@@ -929,6 +968,17 @@ export const AdminMembers: React.FC = () => {
                           onChange={(allowed) => handleSetAddTask(member, allowed)}
                         />
                       </td>
+                      <td className="px-6 py-4">
+                        <AddTaskSwitch
+                          allowed={member.can_login !== false}
+                          editable={canManageMembers}
+                          busy={pendingLoginId === member.id}
+                          subject="logging in"
+                          allowPhrase="to log in"
+                          lockedReason={member.id === currentUser?.id ? 'You cannot exclude your own account from logging in' : undefined}
+                          onChange={(allowed) => handleSetLogin(member, allowed)}
+                        />
+                      </td>
                       {canManageMembers && (
                         <td className="px-6 py-4 text-right">
                           <div className="flex items-center justify-end gap-2">
@@ -951,7 +1001,7 @@ export const AdminMembers: React.FC = () => {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={canManageMembers ? 8 : 7} className="px-6 py-12 text-center text-slate-500">
+                    <td colSpan={canManageMembers ? 9 : 8} className="px-6 py-12 text-center text-slate-500">
                       No members found matching your criteria.
                     </td>
                   </tr>

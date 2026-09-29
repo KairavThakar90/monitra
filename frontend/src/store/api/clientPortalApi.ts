@@ -121,6 +121,11 @@ export interface MyBillingProject extends MyBillingUsage {
   project_name: string;
   status: string;
   billing_type: string;
+  /** Time on the project's four default (internal) tasks. Not part of
+   * `used_hours` and not taken from the budget. Optional so an older
+   * backend's response still renders. */
+  internal_seconds?: number;
+  internal_hours?: number;
   tasks: MyBillingTask[];
 }
 

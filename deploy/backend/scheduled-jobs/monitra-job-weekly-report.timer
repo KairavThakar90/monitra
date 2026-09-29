@@ -1,0 +1,11 @@
+[Unit]
+Description=Monitra: weekly report, Monday 09:00 IST
+
+[Timer]
+OnCalendar=Mon *-*-* 03:30:00 UTC
+Persistent=true
+AccuracySec=1s
+Unit=monitra-job@weekly-report.service
+
+[Install]
+WantedBy=timers.target

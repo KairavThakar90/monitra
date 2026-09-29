@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request, Response, status, Query
+from fastapi import BackgroundTasks, APIRouter, Depends, Request, Response, status, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime, timezone
@@ -63,10 +63,11 @@ def stop_timer(
     id: int,
     payload: TimeEntryStop,
     request: Request,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    entry, _finalized_now = TimeEntryService.stop_timer(
+    entry, finalized_now = TimeEntryService.stop_timer(
         db=db,
         entry_id=id,
         description=payload.description,
@@ -75,6 +76,13 @@ def stop_timer(
         client_time=payload.client_time,
         request_id=_request_id(request),
     )
+    if finalized_now:
+        # The session's final length is now known: check its project's fixed
+        # budget right after the response. The five-minute reconciliation
+        # catches anything this misses.
+        from app.services.project_budget_alerts import evaluate_project_in_background
+
+        background_tasks.add_task(evaluate_project_in_background, entry.project_id, "timer_stop")
     return _one(db, entry)
 
 @router.get("", response_model=List[TimeEntryRead])

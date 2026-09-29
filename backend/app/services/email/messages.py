@@ -21,7 +21,11 @@ from markupsafe import Markup
 
 from app.core.config import settings
 from app.core.time_format import IST, to_ist
-from app.models.email_notification import TYPE_MONTHLY_REPORT, TYPE_WEEKLY_REPORT
+from app.models.email_notification import (
+    TYPE_MANUAL_TIME_DECISION, TYPE_MANUAL_TIME_RECEIPT, TYPE_MANUAL_TIME_REQUEST,
+    TYPE_MONTHLY_PROJECT_SUMMARY, TYPE_MONTHLY_REPORT, TYPE_PROJECT_BUDGET_ALERT,
+    TYPE_WEEKLY_REPORT,
+)
 from app.services.email import assets
 from app.services.email.provider import (
     EmailAddressError, OutgoingEmail, assert_header_safe, normalise_address,
@@ -1438,3 +1442,716 @@ def build_monthly_report_email(payload: dict[str, Any], recipients: list[str]) -
 
 
 BUILDERS[TYPE_MONTHLY_REPORT] = build_monthly_report_email
+
+
+# ----------------------------------------------------------------------
+# Workflow 9 & 10 — manual time request, receipt, and decision
+# ----------------------------------------------------------------------
+
+#: Where each audience reviews or follows a request. Existing routes: the
+#: admin/leader Time Tracking screen (opened on its Manual Requests tab) and
+#: the member's own Time Tracking screen.
+MANUAL_TIME_REVIEW_PATH = "/admin/time-tracking?tab=requests"
+MANUAL_TIME_MEMBER_PATH = "/member/time-tracking"
+
+MANUAL_TIME_STATUS_PRESENTATION: dict[str, dict[str, str]] = {
+    "pending": {"label": "Pending approval", "accent": "#B45309", "chip_bg": "#FFFBEB", "chip_border": "#FDE68A"},
+    "approved": {"label": "Approved", "accent": "#047857", "chip_bg": "#ECFDF5", "chip_border": "#A7F3D0"},
+    "rejected": {"label": "Rejected", "accent": "#B91C1C", "chip_bg": "#FEF2F2", "chip_border": "#FECACA"},
+}
+
+
+def _manual_time_status(status: str) -> dict[str, str]:
+    presentation = MANUAL_TIME_STATUS_PRESENTATION.get(status)
+    if presentation is None:
+        raise KeyError(f"No manual time email is defined for status {status!r}.")
+    return presentation
+
+
+def _app_url(path: str) -> Optional[str]:
+    base = (settings.MONITRA_APP_URL or "").strip().rstrip("/")
+    if not base.startswith("https://"):
+        return None
+    return f"{base}{path}"
+
+
+def manual_time_review_url() -> Optional[str]:
+    return _app_url(MANUAL_TIME_REVIEW_PATH)
+
+
+def manual_time_requester_url(payload: dict[str, Any]) -> Optional[str]:
+    return _app_url(
+        MANUAL_TIME_REVIEW_PATH if payload.get("requester_can_view_directory")
+        else MANUAL_TIME_MEMBER_PATH
+    )
+
+
+def _manual_date(payload: dict[str, Any]) -> str:
+    raw = str(payload.get("work_date") or "")
+    try:
+        return datetime.fromisoformat(raw).strftime("%d %B %Y")
+    except ValueError:
+        return raw
+
+
+def _manual_time_range(payload: dict[str, Any]) -> Optional[str]:
+    if not (payload.get("start_time") and payload.get("end_time")):
+        return None
+    _d, start, _ = _display_times(payload.get("start_time"))
+    _d, end, _ = _display_times(payload.get("end_time"))
+    return f"{start.replace(' IST', '')} – {end}"
+
+
+def _manual_duration(payload: dict[str, Any]) -> str:
+    return format_duration(payload.get("total_seconds"))
+
+
+def _manual_rows(payload: dict[str, Any], *, include_employee: bool, include_decision: bool) -> list[tuple[str, Any]]:
+    """The request exactly as it was filed, one label/value pair per field."""
+    rows: list[tuple[str, Any]] = []
+    if include_employee:
+        rows += [("Employee", payload.get("name")), ("Email", payload.get("email"))]
+    rows += [
+        ("Project", payload.get("project_name")),
+        ("Task", payload.get("task_name")),
+        ("Date", _manual_date(payload)),
+        ("Time", _manual_time_range(payload)),
+        ("Duration", _manual_duration(payload)),
+        ("Billable", "Yes" if payload.get("is_billable") else "No"),
+        ("Submitted", _display_times(payload.get("submitted_at"))[2]),
+    ]
+    if include_decision:
+        rows += [
+            ("Status", _manual_time_status(str(payload.get("status") or ""))["label"]),
+            ("Reviewed by", payload.get("reviewer_name")),
+            ("Reviewed", _display_times(payload.get("decided_at"))[2] if payload.get("decided_at") else None),
+        ]
+    return rows
+
+
+def _manual_rows_text(rows: list[tuple[str, Any]]) -> list[str]:
+    return [
+        f"  {label}{' ' * max(1, 14 - len(label))}{value}"
+        for label, value in rows
+        if value is not None and str(value).strip()
+    ]
+
+
+def _manual_note_block(payload: dict[str, Any]) -> Markup:
+    """The requester's own description, verbatim and escaped, or nothing."""
+    description = str(payload.get("description") or "")
+    if not description.strip():
+        return Markup("")
+    return Markup(
+        '<p style="margin:24px 0 8px 0;font-family:Helvetica,Arial,sans-serif;font-size:12px;'
+        'font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6B7280;">Description</p>'
+        '<div style="padding:14px 16px;background-color:#F8FAFC;border:1px solid #E8ECF3;border-radius:10px;'
+        'font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:22px;color:#1F2937;">{body}</div>'
+    ).format(body=paragraphs(description))
+
+
+def _manual_cta(url: Optional[str], label: str) -> Markup:
+    if url is None:
+        return Markup("")
+    return Markup(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+        'class="st-cta" style="margin:28px 0 0 0;">'
+        '<tr><td align="center" style="background-color:#2563EB;border-radius:8px;">'
+        '<a href="{url}" style="display:inline-block;padding:13px 30px;'
+        'font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;'
+        'color:#FFFFFF;text-decoration:none;">{label}</a>'
+        '</td></tr></table>'
+    ).format(url=url, label=label)
+
+
+def _manual_email(
+    payload: dict[str, Any], recipients: list[str], *, subject: str, status: str,
+    heading: str, greeting: str, lead: str, body: str, rows: list[tuple[str, Any]],
+    cta_url: Optional[str], cta_label: str, footer_note: str, preheader: str,
+) -> OutgoingEmail:
+    presentation = _manual_time_status(status)
+    frame = _frame_context(subject=subject, preheader=preheader, footer_note=footer_note)
+    html = render_page(
+        "manual_time_request.html",
+        {
+            **frame,
+            "status_chip": _status_chip(presentation),
+            "heading": heading,
+            "greeting": greeting,
+            "lead": lead,
+            "body": body,
+            "detail_rows": detail_rows(rows),
+            "note_block": _manual_note_block(payload),
+            "cta_block": _manual_cta(cta_url, cta_label),
+        },
+    )
+
+    description = str(payload.get("description") or "")
+    text = [heading.upper(), "", greeting, "", lead]
+    if body:
+        text += ["", body]
+    text += ["", "-" * 48, *_manual_rows_text(rows), "-" * 48]
+    if description.strip():
+        text += ["", "Description", description]
+    if cta_url:
+        text += ["", f"{cta_label}: {cta_url}"]
+    if (support := (settings.MONITRA_SUPPORT_EMAIL or "").strip()):
+        text += ["", f"Need a hand? Write to {support}."]
+    text += ["", "Monitra — Staff Management System", "Store Transform"]
+
+    return OutgoingEmail(
+        to=recipients,
+        subject=subject,
+        html=html,
+        text="\n".join(text),
+        reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
+        inline_images=frame["_inline_images"],
+    )
+
+
+def manual_time_request_subject(payload: dict[str, Any]) -> str:
+    """"Manual Time Request — Priya Raman — 15 September 2026". Goes to an
+    approver's inbox, where who and which day are what they sort by."""
+    who = str(payload.get("name") or "").strip()
+    parts = ["Manual Time Request"] + ([who] if who else []) + [_manual_date(payload)]
+    return clean_subject(" — ".join(part for part in parts if part))
+
+
+def build_manual_time_request_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    """To an admin or leader: a request is waiting for their review."""
+    who = str(payload.get("name") or "A team member").strip()
+    duration = _manual_duration(payload)
+    day = _manual_date(payload)
+    return _manual_email(
+        payload, recipients,
+        subject=manual_time_request_subject(payload),
+        status="pending",
+        heading="New manual time request",
+        greeting=_greeting(payload.get("recipient_name")),
+        lead=f"{who} has submitted a manual time request for {duration} on {day}, and it is waiting for your review.",
+        body="The request is shown below exactly as it was submitted. Approve or reject it from the Manual Requests tab in Time Tracking.",
+        rows=_manual_rows(payload, include_employee=True, include_decision=False),
+        cta_url=manual_time_review_url(),
+        cta_label="Review Request",
+        footer_note=(
+            "You are receiving this because you can approve manual time requests for "
+            "this employee in Monitra. It is sent once for each new request."
+        ),
+        preheader=f"{who} requested {duration} on {day}. Waiting for your review.",
+    )
+
+
+def manual_time_receipt_subject(payload: dict[str, Any]) -> str:
+    return clean_subject(f"Your Manual Time Request Was Submitted — {_manual_date(payload)}")
+
+
+def build_manual_time_receipt_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    """To the requester: we received your request and sent it for review."""
+    duration = _manual_duration(payload)
+    day = _manual_date(payload)
+    return _manual_email(
+        payload, recipients,
+        subject=manual_time_receipt_subject(payload),
+        status="pending",
+        heading="Your manual time request was submitted",
+        greeting=_greeting(payload.get("name")),
+        lead=f"Your request for {duration} on {day} has been sent to your admin, HR, manager and team leader for review.",
+        body="You will receive another email as soon as it is approved or rejected. Until then it stays pending and is not counted in your tracked time.",
+        rows=_manual_rows(payload, include_employee=False, include_decision=False),
+        cta_url=manual_time_requester_url(payload),
+        cta_label="View My Requests",
+        footer_note=(
+            "You are receiving this because you submitted a manual time request in Monitra. "
+            "It is sent once for each request."
+        ),
+        preheader=f"Your request for {duration} on {day} is pending review.",
+    )
+
+
+def manual_time_decision_subject(payload: dict[str, Any]) -> str:
+    status = str(payload.get("status") or "")
+    word = "Approved" if status == "approved" else "Rejected"
+    return clean_subject(f"Your Manual Time Request Was {word} — {_manual_date(payload)}")
+
+
+def build_manual_time_decision_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    """To the requester: the outcome of their request."""
+    status = str(payload.get("status") or "")
+    duration = _manual_duration(payload)
+    day = _manual_date(payload)
+    if status == "approved":
+        heading = "Your manual time request was approved"
+        lead = f"Good news — your request for {duration} on {day} has been approved."
+        body = "This time has been added to your tracked time and now appears in your timesheet and reports."
+        preheader = f"Approved: {duration} on {day} has been added to your tracked time."
+    elif status == "rejected":
+        heading = "Your manual time request was rejected"
+        lead = f"Your request for {duration} on {day} was not approved."
+        body = ("This time has not been added to your tracked time. If you think this is a mistake, "
+                "please speak to your admin or team leader, or submit a corrected request.")
+        preheader = f"Rejected: {duration} on {day} was not added to your tracked time."
+    else:
+        raise KeyError(f"No manual time decision email is defined for status {status!r}.")
+    return _manual_email(
+        payload, recipients,
+        subject=manual_time_decision_subject(payload),
+        status=status,
+        heading=heading,
+        greeting=_greeting(payload.get("name")),
+        lead=lead,
+        body=body,
+        rows=_manual_rows(payload, include_employee=False, include_decision=True),
+        cta_url=manual_time_requester_url(payload),
+        cta_label="View My Requests",
+        footer_note=(
+            "You are receiving this because you submitted a manual time request in Monitra. "
+            "It is sent once, when the request is decided."
+        ),
+        preheader=preheader,
+    )
+
+
+BUILDERS[TYPE_MANUAL_TIME_REQUEST] = build_manual_time_request_email
+BUILDERS[TYPE_MANUAL_TIME_RECEIPT] = build_manual_time_receipt_email
+BUILDERS[TYPE_MANUAL_TIME_DECISION] = build_manual_time_decision_email
+
+
+# ----------------------------------------------------------------------
+# Workflow 11 — monthly project summary
+# ----------------------------------------------------------------------
+
+_CELL = "padding:9px 8px;border-bottom:1px solid #EDF0F5;font-family:Helvetica,Arial,sans-serif;font-size:13px;line-height:18px;"
+_HEAD = ("padding:8px 8px;border-bottom:1px solid #E2E8F0;background-color:#F8FAFC;"
+         "font-family:Helvetica,Arial,sans-serif;font-size:10px;font-weight:700;letter-spacing:0.06em;"
+         "text-transform:uppercase;color:#64748B;")
+
+
+def monthly_project_summary_subject(payload: dict[str, Any]) -> str:
+    """"Monitra Monthly Project Summary — Sep 2026". No figures in the subject:
+    a lock screen is not the place for a company's hours."""
+    period = str(payload.get("month_short") or "").strip()
+    return clean_subject(
+        f"Monitra Monthly Project Summary — {period}" if period else "Monitra Monthly Project Summary"
+    )
+
+
+def monthly_project_summary_url(payload: dict[str, Any]) -> Optional[str]:
+    """The Reports page's Projects report, filtered to the reported month.
+
+    An existing route with its existing ``?start=&end=`` parameters. Readers
+    with ``time_entries:view_all`` open the organisation screen (which a
+    leader's own scope already narrows); anyone else opens their own Reports
+    screen, the only one their account can open.
+    """
+    return _report_dashboard_url(payload, start_key="month_start", end_key="month_end")
+
+
+def _hours_text(seconds: Any) -> str:
+    return format_duration(seconds)
+
+
+def _remaining_markup(project: dict[str, Any]) -> Markup:
+    remaining = project.get("remaining_seconds")
+    if remaining is None:
+        return Markup('<span style="color:#94A3B8;">—</span>')
+    if remaining < 0:
+        return Markup('<span style="color:#DC2626;font-weight:700;">Over by {v}</span>').format(v=_hours_text(-remaining))
+    return Markup('<span style="color:#047857;font-weight:700;">{v} left</span>').format(v=_hours_text(remaining))
+
+
+def _remaining_text(project: dict[str, Any]) -> str:
+    remaining = project.get("remaining_seconds")
+    if remaining is None:
+        return "—"
+    return f"Over by {_hours_text(-remaining)}" if remaining < 0 else f"{_hours_text(remaining)} left"
+
+
+def _summary_cards(totals: dict[str, Any]) -> Markup:
+    cards = [
+        ("Projects", str(int(totals.get("projects_worked") or 0))),
+        ("Total Hours Used", _hours_text(totals.get("total_seconds"))),
+        ("Internal Hours", _hours_text(totals.get("internal_seconds"))),
+        ("Billable Hours", _hours_text(totals.get("billable_seconds"))),
+    ]
+    cell = Markup(
+        '<td width="50%" valign="top" style="padding:6px;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;">'
+        '<tr><td style="padding:14px 16px;">'
+        '<p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;'
+        'letter-spacing:0.06em;text-transform:uppercase;color:#64748B;">{label}</p>'
+        '<p style="margin:4px 0 0 0;font-family:Helvetica,Arial,sans-serif;font-size:22px;'
+        'font-weight:700;color:#0F172A;">{value}</p></td></tr></table></td>'
+    )
+    rows = Markup("")
+    for index in range(0, len(cards), 2):
+        pair = Markup("").join(cell.format(label=label, value=value) for label, value in cards[index:index + 2])
+        rows += Markup("<tr>{pair}</tr>").format(pair=pair)
+    return Markup(
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="margin:0 -6px;">{rows}</table>'
+    ).format(rows=rows)
+
+
+def _highlight_rows(totals: dict[str, Any]) -> list[tuple[str, Any]]:
+    """Highlights: the fixed budgets in play, the flexible hours used, and four
+    at-a-glance facts. Project counts live in each table's heading, and each
+    fixed project's used-to-date and remaining live in its own row."""
+    rows: list[tuple[str, Any]] = []
+    if totals.get("fixed_projects"):
+        rows.append(("Fixed hours allocated", _hours_text(totals.get("fixed_allocated_seconds"))))
+    if totals.get("flexible_projects"):
+        rows.append(("Flexible hours used", _hours_text(totals.get("flexible_total_seconds"))))
+    if totals.get("projects_worked"):
+        highest = totals.get("highest_project") or {}
+        highest_billable = totals.get("highest_billable_project") or {}
+        rows += [
+            ("Contributors", str(int(totals.get("contributors") or 0))),
+            ("Average hours per project", _hours_text(totals.get("average_seconds_per_project"))),
+            ("Most hours", f"{highest.get('name')} ({_hours_text(highest.get('total_seconds'))})" if highest else None),
+            ("Most billable hours",
+             f"{highest_billable.get('name')} ({_hours_text(highest_billable.get('billable_seconds'))})"
+             if highest_billable else None),
+        ]
+    return rows
+
+
+def _project_table(projects: list[dict[str, Any]], *, fixed: bool) -> Markup:
+    """One compact, email-safe table. Every value escaped; no raw HTML from data."""
+    if not projects:
+        return Markup("")
+    headers = ["Project", "Internal", "Billable", "Total"] + (["Remaining"] if fixed else [])
+    head = Markup("").join(
+        Markup('<th align="{a}" style="{s}">{h}</th>').format(a="left" if i == 0 else "right", s=_HEAD, h=h)
+        for i, h in enumerate(headers)
+    )
+    body = Markup("")
+    for project in projects:
+        name_cell = Markup('<span style="font-weight:600;color:#0F172A;">{n}</span>').format(n=project.get("name"))
+        if fixed:
+            name_cell += Markup(
+                '<br><span style="font-size:11px;color:#64748B;">{alloc} allocated · {used} used to date</span>'
+            ).format(alloc=_hours_text(project.get("allocation_seconds")),
+                     used=_hours_text(project.get("used_to_date_seconds")))
+        cells = [
+            Markup('<td style="{s}">{v}</td>').format(s=_CELL, v=name_cell),
+            Markup('<td align="right" style="{s}color:#475569;">{v}</td>').format(s=_CELL, v=_hours_text(project.get("internal_seconds"))),
+            Markup('<td align="right" style="{s}color:#475569;">{v}</td>').format(s=_CELL, v=_hours_text(project.get("billable_seconds"))),
+            Markup('<td align="right" style="{s}font-weight:700;color:#0F172A;">{v}</td>').format(s=_CELL, v=_hours_text(project.get("total_seconds"))),
+        ]
+        if fixed:
+            cells.append(Markup('<td align="right" style="{s}">{v}</td>').format(s=_CELL, v=_remaining_markup(project)))
+        body += Markup("<tr>{c}</tr>").format(c=Markup("").join(cells))
+    return Markup(
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="border:1px solid #E2E8F0;border-radius:10px;border-collapse:separate;overflow:hidden;">'
+        '<tr>{head}</tr>{body}</table>'
+    ).format(head=head, body=body)
+
+
+def _section(title: str, note: str, table: Markup) -> Markup:
+    if not table:
+        return Markup("")
+    return Markup(
+        '<h2 style="margin:30px 0 4px 0;font-family:Helvetica,Arial,sans-serif;font-size:17px;'
+        'font-weight:700;color:#0F172A;">{title}</h2>'
+        '<p style="margin:0 0 12px 0;font-family:Helvetica,Arial,sans-serif;font-size:13px;'
+        'line-height:20px;color:#64748B;">{note}</p>{table}'
+    ).format(title=title, note=note, table=table)
+
+
+def _summary_cta(url: Optional[str]) -> Markup:
+    if url is None:
+        return Markup("")
+    return Markup(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" class="st-cta" '
+        'style="margin:24px 0 0 0;"><tr><td align="center" style="background-color:#2563EB;border-radius:8px;">'
+        '<a href="{url}" style="display:inline-block;padding:13px 30px;font-family:Helvetica,Arial,sans-serif;'
+        'font-size:15px;font-weight:700;color:#FFFFFF;text-decoration:none;">View Detailed Project Report</a>'
+        '</td></tr></table>'
+    ).format(url=url)
+
+
+def _summary_text_lines(payload: dict[str, Any], url: Optional[str]) -> list[str]:
+    totals = payload.get("totals") or {}
+    lines = [
+        "MONTHLY PROJECT SUMMARY",
+        f"Project performance summary for {payload.get('month_label') or ''}",
+        "",
+        _greeting(payload.get("name")),
+        "",
+        f"Reporting period: {payload.get('period_label') or ''}",
+        "Covers every project in the organisation." if payload.get("company_wide")
+        else "Covers the projects you lead or work on.",
+        "",
+        f"  Projects                 {int(totals.get('projects_worked') or 0)}",
+        f"  Total hours used         {_hours_text(totals.get('total_seconds'))}",
+        f"  Internal hours           {_hours_text(totals.get('internal_seconds'))}",
+        f"  Billable hours           {_hours_text(totals.get('billable_seconds'))}",
+    ]
+    for label, value in _highlight_rows(totals):
+        if value:
+            lines.append(f"  {label}{' ' * max(1, 25 - len(label))}{value}")
+    if not totals.get("projects_worked"):
+        lines += ["", "No project activity was recorded during this reporting period."]
+    if payload.get("fixed_projects"):
+        lines += ["", f"FIXED HOURS PROJECTS ({len(payload['fixed_projects'])})", "(Remaining = allocation minus billable hours used to date; internal hours do not use the allocation.)"]
+        for p in payload["fixed_projects"]:
+            lines.append(
+                f"- {p.get('name')}: internal {_hours_text(p.get('internal_seconds'))}, "
+                f"billable {_hours_text(p.get('billable_seconds'))}, total {_hours_text(p.get('total_seconds'))}, "
+                f"allocated {_hours_text(p.get('allocation_seconds'))}, used to date {_hours_text(p.get('used_to_date_seconds'))}, "
+                f"remaining {_remaining_text(p)}"
+            )
+    if payload.get("flexible_projects"):
+        lines += ["", f"FLEXIBLE TIME PROJECTS ({len(payload['flexible_projects'])})", "(No fixed allocation, so no remaining hours.)"]
+        for p in payload["flexible_projects"]:
+            lines.append(
+                f"- {p.get('name')}: internal {_hours_text(p.get('internal_seconds'))}, "
+                f"billable {_hours_text(p.get('billable_seconds'))}, total {_hours_text(p.get('total_seconds'))}"
+            )
+    if url:
+        lines += ["", f"View Detailed Project Report: {url}"]
+    lines += ["", "Monitra — Staff Management System", "Store Transform"]
+    return lines
+
+
+def build_monthly_project_summary_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    """One recipient's monthly project summary, from the payload frozen at queue time.
+
+    No database session is in scope here: everything shown was computed for
+    this recipient's scope before it was queued.
+    """
+    subject = monthly_project_summary_subject(payload)
+    totals = payload.get("totals") or {}
+    month = str(payload.get("month_label") or "")
+    url = monthly_project_summary_url(payload)
+    worked = int(totals.get("projects_worked") or 0)
+
+    frame = _frame_context(
+        subject=subject,
+        preheader=(
+            f"{worked} project{'s' if worked != 1 else ''}, {_hours_text(totals.get('total_seconds'))} "
+            f"tracked in {month}." if worked else f"No project activity was recorded in {month}."
+        ),
+        footer_note=(
+            "You are receiving this because you are an administrator, an owner or a leader in "
+            "Monitra. It is sent once a month and covers only the previous completed month."
+        ),
+    )
+    scope_note = (
+        "This summary covers every project in your organisation."
+        if payload.get("company_wide")
+        else "This summary covers only the projects you lead or work on."
+    )
+    empty_note = (
+        Markup('<p style="margin:22px 0 0 0;padding:14px 16px;background-color:#F8FAFC;border:1px solid #E2E8F0;'
+               'border-radius:10px;font-family:Helvetica,Arial,sans-serif;font-size:14px;color:#475569;">'
+               'No project activity was recorded during this reporting period.</p>')
+        if not worked else Markup("")
+    )
+    highlights = Markup(
+        '<h2 style="margin:30px 0 12px 0;font-family:Helvetica,Arial,sans-serif;font-size:17px;'
+        'font-weight:700;color:#0F172A;">Highlights</h2>'
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" '
+        'style="margin:0;border:1px solid #EDF0F5;border-radius:10px;">{rows}</table>'
+    ).format(rows=detail_rows(_highlight_rows(totals)))
+
+    html = render_page(
+        "monthly_project_summary.html",
+        {
+            **frame,
+            "greeting": _greeting(payload.get("name")),
+            "month_label": month,
+            "period_label": str(payload.get("period_label") or ""),
+            "scope_note": scope_note,
+            "summary_cards": _summary_cards(totals),
+            "empty_note": empty_note,
+            "highlights": highlights,
+            "fixed_section": _section(
+                f"Fixed Hours Projects ({len(payload.get('fixed_projects') or [])})",
+                "Remaining is the allocation minus billable hours used from the project's start "
+                f"through the end of {month}. Internal hours do not use the allocation.",
+                _project_table(list(payload.get("fixed_projects") or []), fixed=True),
+            ),
+            "flexible_section": _section(
+                f"Flexible Time Projects ({len(payload.get('flexible_projects') or [])})",
+                "No fixed allocation, so there are no remaining hours.",
+                _project_table(list(payload.get("flexible_projects") or []), fixed=False),
+            ),
+            "cta_bottom": _summary_cta(url),
+        },
+    )
+    return OutgoingEmail(
+        to=recipients,
+        subject=subject,
+        html=html,
+        text="\n".join(_summary_text_lines(payload, url)),
+        reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
+        inline_images=frame["_inline_images"],
+    )
+
+
+BUILDERS[TYPE_MONTHLY_PROJECT_SUMMARY] = build_monthly_project_summary_email
+
+
+# ----------------------------------------------------------------------
+# Workflow 12 — fixed-hours budget alert
+# ----------------------------------------------------------------------
+
+PROJECT_MANAGEMENT_PATH = "/admin/project-management"
+MEMBER_PROJECTS_PATH = "/member/projects"
+
+#: Per state: the badge text (the state never depends on colour alone), the
+#: badge colours, the heading, and the message.
+BUDGET_ALERT_PRESENTATION: dict[str, dict[str, str]] = {
+    "remaining_50": {
+        "label": "50% Hours Remaining", "subject": "50% Hours Remaining",
+        # Dark text on yellow: white on a yellow this bright is unreadable.
+        "accent": "#1F2937", "bg": "#FACC15", "border": "#EAB308",
+        "headline": "Half of the allocated project hours remain.",
+        "message": "Half of the allocated hours for this project have been used. "
+                   "It is a good moment to review progress and the work still planned.",
+    },
+    "remaining_20": {
+        "label": "20% Hours Remaining", "subject": "20% Hours Remaining",
+        "accent": "#FFFFFF", "bg": "#EA580C", "border": "#EA580C",
+        "headline": "20% of the allocated project hours remain.",
+        "message": "Only 20% of the allocated hours are left. The remaining work may "
+                   "need closer monitoring against the budget.",
+    },
+    "remaining_10": {
+        "label": "10% Hours Remaining", "subject": "10% Hours Remaining",
+        "accent": "#FFFFFF", "bg": "#DC2626", "border": "#DC2626",
+        "headline": "10% of the allocated project hours remain.",
+        "message": "Only 10% of the allocated hours are left. Please review the remaining "
+                   "scope and progress with the team.",
+    },
+    "consumed": {
+        "label": "100% Hours Consumed", "subject": "100% Hours Consumed",
+        "accent": "#FFFFFF", "bg": "#991B1B", "border": "#991B1B",
+        "headline": "All of the allocated project hours have been used.",
+        "message": "The project's allocated hours are fully consumed. Any further tracked "
+                   "work will take the project over its approved allocation.",
+    },
+    "over_budget": {
+        "label": "OVER BUDGET", "subject": "Project Over Budget",
+        "accent": "#FFFFFF", "bg": "#991B1B", "border": "#991B1B",
+        "headline": "This project is over its allocated hours.",
+        "message": "The project's allocated hours are fully consumed and tracked work has "
+                   "gone beyond the approved allocation.",
+    },
+}
+
+
+def _budget_presentation(payload: dict[str, Any]) -> dict[str, str]:
+    presentation = BUDGET_ALERT_PRESENTATION.get(str(payload.get("state") or ""))
+    if presentation is None:
+        raise KeyError(f"No budget alert email is defined for state {payload.get('state')!r}.")
+    return presentation
+
+
+def project_budget_alert_subject(payload: dict[str, Any]) -> str:
+    """"Monitra — 20% Hours Remaining: Project Alpha" / "Monitra — Project Over Budget: …"."""
+    name = str(payload.get("project_name") or "").strip()
+    return clean_subject(f"Monitra — {_budget_presentation(payload)['subject']}: {name}")
+
+
+def project_budget_alert_url(payload: dict[str, Any]) -> Optional[str]:
+    """Project Management, where Used, Internal and Remaining are shown per
+    project; members without directory access get their own Projects page,
+    the only project screen their account can open. Existing routes only."""
+    return _app_url(PROJECT_MANAGEMENT_PATH if payload.get("can_view_directory") else MEMBER_PROJECTS_PATH)
+
+
+def _budget_rows(payload: dict[str, Any]) -> list[tuple[str, Any]]:
+    over = int(payload.get("over_budget_seconds") or 0)
+    rows: list[tuple[str, Any]] = [
+        ("Project", payload.get("project_name")),
+        ("Project type", "Fixed Hours"),
+        ("Project status", payload.get("project_status")),
+        ("Fixed hours", _hours_text(payload.get("allocation_seconds"))),
+        ("Used hours", _hours_text(payload.get("used_seconds"))),
+        ("Remaining hours", _hours_text(payload.get("remaining_seconds"))),
+    ]
+    if over > 0:
+        rows.append(("Over budget by", _hours_text(over)))
+    rows += [
+        ("Internal hours", f"{_hours_text(payload.get('internal_seconds'))} (not counted against the budget)"
+         if payload.get("internal_seconds") else None),
+        ("Generated", _display_times(payload.get("generated_at"))[2]),
+    ]
+    return rows
+
+
+def build_project_budget_alert_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    presentation = _budget_presentation(payload)
+    subject = project_budget_alert_subject(payload)
+    url = project_budget_alert_url(payload)
+    frame = _frame_context(
+        subject=subject,
+        preheader=f"{payload.get('project_name')}: {presentation['label']}. {presentation['headline']}",
+        footer_note=(
+            "You are receiving this because you are an administrator, an owner or a leader "
+            "for this project in Monitra. Each alert is sent once per project budget."
+        ),
+    )
+    # A solid, centred capsule: the state is the first thing the reader sees.
+    badge = Markup(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" '
+        'style="margin:4px 0 24px 0;"><tr><td align="center">'
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>'
+        '<td align="center" style="padding:14px 34px;background-color:{bg};border:2px solid {border};'
+        'border-radius:999px;font-family:Helvetica,Arial,sans-serif;font-size:18px;line-height:22px;'
+        'font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:{accent};">{label}</td>'
+        '</tr></table></td></tr></table>'
+    ).format(**presentation)
+    cta = Markup("")
+    if url:
+        cta = Markup(
+            '<table role="presentation" cellpadding="0" cellspacing="0" border="0" class="st-cta" '
+            'style="margin:28px 0 0 0;"><tr><td align="center" style="background-color:#2563EB;border-radius:8px;">'
+            '<a href="{url}" style="display:inline-block;padding:13px 30px;font-family:Helvetica,Arial,sans-serif;'
+            'font-size:15px;font-weight:700;color:#FFFFFF;text-decoration:none;">View Project</a></td></tr></table>'
+        ).format(url=url)
+    rows = _budget_rows(payload)
+    html = render_page(
+        "project_budget_alert.html",
+        {
+            **frame,
+            "status_badge": badge,
+            "project_name": str(payload.get("project_name") or ""),
+            "headline": presentation["headline"],
+            "greeting": _greeting(payload.get("name")),
+            "message": presentation["message"],
+            "detail_rows": detail_rows(rows),
+            "cta_block": cta,
+        },
+    )
+    text = [
+        presentation["label"].upper(),
+        str(payload.get("project_name") or ""),
+        "",
+        _greeting(payload.get("name")),
+        "",
+        presentation["headline"],
+        presentation["message"],
+        "",
+        *[f"  {label}{' ' * max(1, 17 - len(label))}{value}" for label, value in rows if value],
+        "",
+        "Remaining is the fixed allocation minus used (billable) hours. Internal hours do not use the allocation.",
+    ]
+    if url:
+        text += ["", f"View Project: {url}"]
+    text += ["", "Monitra — Staff Management System", "Store Transform"]
+    return OutgoingEmail(
+        to=recipients,
+        subject=subject,
+        html=html,
+        text="\n".join(text),
+        reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
+        inline_images=frame["_inline_images"],
+    )
+
+
+BUILDERS[TYPE_PROJECT_BUDGET_ALERT] = build_project_budget_alert_email

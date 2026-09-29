@@ -358,15 +358,25 @@ class BillingProgressTests(unittest.TestCase):
         self.assertIn("projects.id IN", sql)
 
     def test_repository_completed_seconds_query_ignores_the_dashboard_date_range(self):
-        # session_seconds_by is called with the epoch/far-future sentinel for
-        # completed_seconds, never anything derived from the caller's range.
+        # completed_seconds comes from the shared all-time calculation, called
+        # with no bound derived from the caller's range -- so it runs from the
+        # epoch sentinel to the far-future one.
         db = RecordingSession()
-        with patch("app.react_apis.dashboard.repository.ReportsRepository.session_seconds_by",
-                   return_value={}) as seconds:
+        with patch("app.react_apis.dashboard.repository.all_time_project_hours",
+                   return_value={}) as all_time:
             DashboardRepository.billing_progress(db, _filters())
-        called_start_date, called_end_date = seconds.call_args.args[6], seconds.call_args.args[7]
-        self.assertEqual(called_start_date.year, 1970)
-        self.assertEqual(called_end_date.year, 2999)
+        self.assertEqual(all_time.call_count, 1)
+        self.assertEqual(set(all_time.call_args.kwargs) - {"through_time", "through_date"}, set())
+        self.assertIsNone(all_time.call_args.kwargs.get("through_time"))
+        self.assertIsNone(all_time.call_args.kwargs.get("through_date"))
+
+    def test_the_all_time_window_runs_from_the_epoch_to_the_far_future(self):
+        from app.services import project_hours
+
+        with patch.object(project_hours, "project_hours", return_value={}) as window:
+            project_hours.all_time_project_hours(None, 1, [5])
+        self.assertEqual(window.call_args.kwargs["start_date"].year, 1970)
+        self.assertEqual(window.call_args.kwargs["end_date"].year, 2999)
 
 
 class RouterTests(unittest.TestCase):

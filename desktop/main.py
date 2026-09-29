@@ -39,6 +39,7 @@ from app.api.exceptions import (
     ApiHttpError,
     SessionExpiredError,
     SESSION_EXPIRED_MESSAGE,
+    LOGIN_DISABLED_CODE, LOGIN_DISABLED_MESSAGE,
 )
 from app.config import settings
 from background_services.public_api import (
@@ -442,13 +443,26 @@ class MainWindow(QMainWindow):
         """The backend rejected our credentials."""
         if self._stack.currentWidget() is self._login:
             return
-        log.info("session expired; returning to login")
+        excluded = self.runtime.api_client.session_end_reason == LOGIN_DISABLED_CODE
+        self.runtime.api_client.session_end_reason = None
+        log.info(
+            "%s; returning to login",
+            "an administrator excluded this account from signing in" if excluded else "session expired",
+        )
+        # Stops a running timer locally too; the backend already stopped the
+        # entry on its own clock when the administrator excluded the account.
         self.runtime.on_logout()
         self.runtime.auth_service.logout()
         self._dashboard.reset_state()
         self._login.reset()
-        self._login.error_label.setText(SESSION_EXPIRED_MESSAGE)
         self._stack.setCurrentWidget(self._login)
+        if excluded:
+            self._login.show_login_disabled()
+            self.api.notify(
+                LOGIN_DISABLED_MESSAGE, NotificationLevel.ERROR, key="login-disabled",
+            )
+            return
+        self._login.error_label.setText(SESSION_EXPIRED_MESSAGE)
         self.api.notify(
             SESSION_EXPIRED_MESSAGE,
             NotificationLevel.ERROR, key="session-expired",

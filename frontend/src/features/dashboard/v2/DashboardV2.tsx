@@ -47,16 +47,18 @@ type ProjectFilterTab = "top" | "billable" | "internal";
 
 /**
  * Budget-usage color for a Billable project's progress bar, against the
- * project's own fixed_hours -- not a generic 0-100 gauge. Under 80% is still
- * early days, 80-99% is closing in, 100-109% landed on target, 110%+ is
- * meaningfully over budget. Bands, not a gradient: a project is either in one
- * state or another, never "a bit of both".
+ * project's own fixed_hours -- not a generic 0-100 gauge. Under 80% is in
+ * progress, 80-99% is closing in, exactly 100% landed on budget, and above
+ * 100% is over budget. Bands, not a gradient: a project is either in one
+ * state or another, never "a bit of both". Banded on the same rounded value
+ * the row prints, so the label and its color always agree.
  */
 const usageColor = (pct: number): string => {
-  if (pct >= 110) return "#F43F5E"; // rose-500 -- over budget
-  if (pct >= 100) return "#10B981"; // emerald-500 -- on target
-  if (pct >= 80) return "#F97316"; // orange-500 -- closing in
-  return "#EAB308"; // yellow-500 -- just started
+  const shown = Math.round(pct);
+  if (shown > 100) return "#EF4444"; // red-500 -- over budget
+  if (shown === 100) return "#10B981"; // emerald-500 -- on budget
+  if (shown >= 80) return "#EAB308"; // yellow-500 -- closing in
+  return "#3B82F6"; // blue-500 -- in progress
 };
 
 const HoverStat: React.FC<{ label: string; value: string }> = ({ label, value }) => (
@@ -71,7 +73,9 @@ const HoverStat: React.FC<{ label: string; value: string }> = ({ label, value })
 const BillableProjectRow: React.FC<{ project: ReactDashboardProjectBilling }> = ({ project }) => {
   const fixedHours = project.fixed_hours ?? 0;
   const fixedSeconds = Math.round(fixedHours * 3600);
-  const remainingSeconds = fixedSeconds - project.completed_seconds;
+  // Server-computed with the one definition Project Management and client
+  // Billing use: fixed hours minus Used, internal time not counted.
+  const remainingSeconds = project.remaining_seconds ?? fixedSeconds - project.completed_seconds;
   const pct = project.usage_percentage ?? 0;
   const color = usageColor(pct);
   const barWidth = Math.min(Math.max(pct, 0), 100);
@@ -84,7 +88,13 @@ const BillableProjectRow: React.FC<{ project: ReactDashboardProjectBilling }> = 
           {pct.toFixed(0)}%
         </span>
       </div>
-      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#F1F5F9]">
+      {/* The whole track carries the band color as a light tint, so a project's
+          state reads at a glance even at 0%; the solid fill is still the true
+          usage and never grows past what was actually used. */}
+      <div
+        className="mt-2 h-1.5 w-full overflow-hidden rounded-full"
+        style={{ backgroundColor: `${color}33` }}
+      >
         <div
           className="h-full rounded-full transition-all duration-500 ease-out"
           style={{ width: `${barWidth}%`, backgroundColor: color }}
@@ -96,7 +106,8 @@ const BillableProjectRow: React.FC<{ project: ReactDashboardProjectBilling }> = 
           one carries several figures rather than one. */}
       <div className="pointer-events-none absolute left-1/2 top-0 z-20 hidden w-60 -translate-x-1/2 -translate-y-full rounded-xl border border-[#E2E8F0] bg-white px-3 py-2.5 shadow-lg group-hover:block">
         <div className="mb-1.5 truncate text-[12px] font-bold text-slate-800">{project.project_name}</div>
-        <HoverStat label="Completed Hours" value={formatHMS(project.completed_seconds)} />
+        <HoverStat label="Used Hours" value={formatHMS(project.completed_seconds)} />
+        <HoverStat label="Internal Hours" value={formatHMS(project.internal_seconds ?? 0)} />
         <HoverStat
           label={remainingSeconds >= 0 ? "Remaining Hours" : "Over Budget By"}
           value={formatHMS(Math.abs(remainingSeconds))}

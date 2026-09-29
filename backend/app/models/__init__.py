@@ -2,6 +2,7 @@ from app.core.database import Base
 from app.models.user import User
 from app.models.refresh_token import RefreshToken
 from app.models.project import Project
+from app.models.project_budget_alert import ProjectBudgetAlert
 from app.models.task import Task
 from app.models.project_member import ProjectMember
 from app.models.task_assignee import TaskAssignee
@@ -57,6 +58,7 @@ __all__ = [
     "ServiceCredential",
     "SystemSetting",
     "ActivityLog",
+    "ProjectBudgetAlert",
     "DailyActivitySummary",
     "ScreenshotApplication",
     "ScreenshotUrl",

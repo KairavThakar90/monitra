@@ -1,0 +1,15 @@
+[Unit]
+Description=Monitra scheduled job: %i
+After=network-online.target monitra-backend.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=monitra
+Group=monitra
+EnvironmentFile=/etc/monitra/backend.env
+ExecStart=/opt/monitra/bin/monitra-job %i
+TimeoutStartSec=900
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

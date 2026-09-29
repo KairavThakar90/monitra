@@ -5,6 +5,8 @@ import { clearSessionStorage, ensureSessionExpiry, getSessionExpiresAt, storeSes
 import { store } from "../../store";
 import { baseApi } from "../../store/api/baseApi";
 import { clearPersistedApiCache } from "../../store/persist";
+import { sessionApi } from "../../store/api/sessionApi";
+import { isLoginDisabledError, markLoginDisabled } from "../../auth/loginAccess";
 import type { UserRead } from "../../api/auth";
 
 interface AuthContextType {
@@ -23,6 +25,9 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const PROFILE_KEY = "monitra.session.user.v1";
+
+/** How often a visible tab re-reads the signed-in user's profile. */
+const SESSION_CHECK_INTERVAL_MS = 5_000;
 
 /**
  * The profile from the last verified session.
@@ -176,6 +181,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           }
         } catch (err) {
           console.error("Failed to restore session, clearing invalid tokens:", err);
+          if (isLoginDisabledError(err)) markLoginDisabled();
           clearSessionStorage();
           writeCachedProfile(null);
           clearPersistedApiCache();
@@ -194,6 +200,43 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return () => window.removeEventListener("auth:session-expired", handleSessionExpired);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Real-time session check. While this tab is visible the signed-in user's
+  // own profile is re-read every few seconds (and at once when the tab comes
+  // back to the front), through the shared base query. That is what makes an
+  // administrator's changes reach an open tab without a reload: an Exclude
+  // from signing in ends the session here within seconds (baseApi sees the
+  // `login_disabled` refusal and signs out with the reason), and any other
+  // change to this account -- Add Task switched off, a new role -- replaces
+  // `currentUser` in place. A hidden tab makes no requests at all.
+  useEffect(() => {
+    if (!accessToken) return;
+    let cancelled = false;
+    const check = async () => {
+      if (cancelled || document.visibilityState !== "visible") return;
+      const result = await store.dispatch(
+        sessionApi.endpoints.getSessionProfile.initiate(undefined, { forceRefetch: true, subscribe: false })
+      );
+      if (cancelled || !result.data) return;
+      const fresh = result.data;
+      setCurrentUser((previous) =>
+        previous && JSON.stringify(previous) === JSON.stringify(fresh) ? previous : fresh
+      );
+      writeCachedProfile(fresh);
+    };
+    const timer = window.setInterval(() => void check(), SESSION_CHECK_INTERVAL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void check();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [accessToken]);
 
   const login = async (email: string, password: string) => {
     const response = await loginAPI({ email, password });

@@ -1,3 +1,4 @@
+import logging
 import math
 
 from fastapi import HTTPException, status
@@ -8,6 +9,8 @@ from app.models.user import User
 from app.repositories.member import MemberRepository
 from app.schemas.member import MemberCreate, MemberUpdate
 from app.services.member_scope import may_view_member, visible_member_ids
+
+logger = logging.getLogger(__name__)
 
 
 class MemberService:
@@ -47,6 +50,15 @@ class MemberService:
     def update(db: Session, current_user: User, member_id: int, payload: MemberUpdate):
         member = MemberService.get(db, current_user, member_id)
         data = payload.model_dump(exclude_unset=True, mode="python")
+        if data.get("can_login") is None:
+            data.pop("can_login", None)
+        if data.get("can_add_tasks") is None:
+            data.pop("can_add_tasks", None)
+        # An administrator excluding their own account would sign themselves
+        # out with nobody left able to let them back in.
+        if data.get("can_login") is False and member.id == current_user.id:
+            raise HTTPException(status.HTTP_409_CONFLICT, "You cannot exclude your own account from logging in.")
+        excluding = data.get("can_login") is False and member.can_login is not False
         if "email" in data:
             existing = MemberRepository.get_by_email(db, data["email"])
             if existing and existing.id != member.id:
@@ -58,10 +70,39 @@ class MemberService:
         if dates["date_of_joining"] and dates["date_of_joining"] > date.today():
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Date of joining cannot be in the future")
         try:
-            return MemberRepository.save(db, member, data)
+            saved = MemberRepository.save(db, member, data)
         except IntegrityError:
             db.rollback()
             raise HTTPException(status.HTTP_409_CONFLICT, "A member with this email already exists.")
+        if excluding:
+            MemberService._end_member_access(db, saved)
+        return saved
+
+    @staticmethod
+    def _end_member_access(db: Session, member: User) -> None:
+        """The member was just excluded from signing in: stop the timer they
+        have running, on the server's clock, and revoke every session they
+        hold. Their clients are refused on their next request and sign out.
+
+        The stop goes through `TimeEntryService.stop_timer` -- the one place a
+        running entry is finalized -- as the member, so the entry ends exactly
+        as if they had pressed Stop themselves at this instant.
+        """
+        from app.repositories.time_entry import TimeEntryRepository
+        from app.services.auth import AuthService
+        from app.services.time_entry import TimeEntryService
+
+        running = TimeEntryRepository.get_active_for_user(db, member.id)
+        if running is not None:
+            try:
+                TimeEntryService.stop_timer(db, running.id, None, member)
+                logger.info("MEMBER_LOGIN_EXCLUDED: stopped running entry %s for user %s", running.id, member.id)
+            except Exception:  # noqa: BLE001 -- the exclusion itself must still stand
+                db.rollback()
+                logger.exception("MEMBER_LOGIN_EXCLUDED: could not stop entry %s for user %s", running.id, member.id)
+        ended = AuthService.revoke_all_sessions(db, member.id)
+        db.commit()
+        logger.info("MEMBER_LOGIN_EXCLUDED: revoked %d session(s) for user %s", ended, member.id)
 
     @staticmethod
     def delete(db: Session, current_user: User, member_id: int):

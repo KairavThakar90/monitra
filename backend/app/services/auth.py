@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.models.user import User
 from app.models.refresh_token import RefreshToken
 from app.models.sso_handoff_token import SsoHandoffToken
+from app.core.login_access import login_disabled, refuse_if_login_disabled
 from app.core.permissions import ROLE_PERMISSIONS, resolve_role_alias
 from fastapi import HTTPException, status
 from app.services.external_auth_service import ExternalAuthService
@@ -241,6 +242,9 @@ class AuthService:
         if not user or not user.is_active or user.status != "active":
             logger.info("AUTH_REFRESH_REJECTED: user %s is no longer active", row.user_id)
             raise HTTPException(status_code=401, detail=SESSION_ENDED_DETAIL)
+        if login_disabled(user):
+            logger.info("AUTH_REFRESH_REJECTED: user %s is excluded from signing in", row.user_id)
+            refuse_if_login_disabled(user, 401)
 
         started_at = _as_utc(row.session_started_at) or _as_utc(row.created_at) or now
         row.revoked_at = now
@@ -263,6 +267,19 @@ class AuthService:
             session_created_at=started_at,
             session_expires_at=expires_at,
         )
+
+    @staticmethod
+    def revoke_all_sessions(db: Session, user_id: int) -> int:
+        """End every session `user_id` holds, on every device. Used when an
+        administrator excludes the member from signing in; the caller commits.
+        Returns how many sessions were ended."""
+        now = datetime.now(timezone.utc)
+        rows = db.scalars(
+            select(RefreshToken).where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
+        ).all()
+        for row in rows:
+            row.revoked_at = now
+        return len(rows)
 
     @staticmethod
     def revoke_session(db: Session, refresh_token: str | None) -> None:
@@ -471,6 +488,9 @@ class AuthService:
                 logger.info("Local user provisioning race resolved to id %s", user.id)
 
         logger.info("Local authentication identity ready with id %s", user.id)
+        if login_disabled(user):
+            logger.info("AUTH_LOGIN_REJECTED: user %s is excluded from signing in", user.id)
+            refuse_if_login_disabled(user, 403)
         # Issue the SMS JWT only after local provisioning succeeds.
         access_token = create_access_token(AuthService._access_claims(user))
         logger.info("JWT_GENERATED: Local access token generated for user id %s", user.id)
@@ -517,6 +537,9 @@ class AuthService:
     @staticmethod
     def _issue_token_pair(db: Session, user: User) -> TokenPair:
         """Mint the local access/refresh pair for an already-authenticated user."""
+        if login_disabled(user):
+            logger.info("AUTH_LOGIN_REJECTED: user %s is excluded from signing in", user.id)
+            refuse_if_login_disabled(user, 403)
         access_token = create_access_token(AuthService._access_claims(user))
         refresh_token_plain, started_at, expires_at = AuthService._persist_session_token(db, user.id)
         return TokenPair(

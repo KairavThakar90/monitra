@@ -25,6 +25,7 @@ from app.core.time_format import ist_day_end_utc, ist_day_start_utc
 from app.models.project import Project
 from app.react_apis.reports_page.repository import ReportFilters, ReportsPageRepository
 from app.repositories.reports import ReportsRepository
+from app.services.project_hours import all_time_project_hours
 
 #: Projects in this status are excluded from the "active projects" card. The
 #: projects table already carries active/todo/pending/completed/archived --
@@ -147,11 +148,10 @@ class DashboardRepository:
         )
         page_ids = [project.id for project in projects]
 
-        completed_seconds = ReportsRepository.session_seconds_by(
-            db, organization_id, page_ids, None,
-            ist_day_start_utc(_EPOCH_DATE), ist_day_end_utc(_FAR_FUTURE_DATE),
-            _EPOCH_DATE, _FAR_FUTURE_DATE, "project_id",
-        )
+        # All-time Used and Internal from the shared calculation -- the same
+        # figures the Project Management table shows. A fixed budget is spent
+        # by Used only; Internal (the four default tasks) does not consume it.
+        all_time = all_time_project_hours(db, organization_id, page_ids)
 
         entries = ReportsPageRepository.entry_grain_subquery(filters)
         range_query = (
@@ -164,9 +164,11 @@ class DashboardRepository:
         result = []
         for project in projects:
             range_row = range_by_project.get(project.id)
+            split = all_time.get(project.id)
             result.append({
                 "project": project,
-                "completed_seconds": completed_seconds.get(project.id, 0),
+                "completed_seconds": split.used_seconds if split else 0,
+                "internal_seconds": split.internal_seconds if split else 0,
                 "tracked_seconds": float(range_row.total_seconds) if range_row else 0.0,
                 "avg_activity": (
                     float(range_row.avg_activity)

@@ -17,7 +17,9 @@ class ManualTimeEntryCreate(BaseModel):
     total_seconds: int = Field(..., gt=0, le=MAX_MANUAL_ENTRY_SECONDS)
     user_id: OptionalIdentifier = None
     description: OptionalDescription = None
-    is_billable: bool | None = True
+    #: Omitted means "whatever the project is": billable on a fixed-hours
+    #: project, not on a free one. `True` against a free project is refused.
+    is_billable: bool | None = None
     # Optional real clock-time slot. If omitted, behavior is unchanged from
     # before this field existed: start_time defaults to midnight UTC on
     # work_date and end_time = start_time + total_seconds. If provided, both

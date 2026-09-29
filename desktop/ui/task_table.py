@@ -697,6 +697,10 @@ class ManualTimeEntryDialog(QDialog):
             idx = self.project_combo.findData(initial_project_id)
             if idx >= 0:
                 self.project_combo.setCurrentIndex(idx)
+        # The combo box's own default first item selects no index change, so
+        # the Billable row is set for the opening project here, not left to
+        # currentIndexChanged.
+        self._apply_project_billing()
         # No project_changed emit here: __init__ runs before the caller has
         # had a chance to connect to this signal, so an emit at this point
         # is silently lost -- exactly why the task dropdown never populated
@@ -782,9 +786,14 @@ class ManualTimeEntryDialog(QDialog):
         self.duration_label.setObjectName("DurationLabel")
         form.addRow("", self.duration_label)
 
+        # Only a fixed-hours project bills its time -- the billing type is
+        # chosen when the project is created -- so the box is shown only for
+        # one, and starts ticked there. `_apply_project_billing` keeps it in
+        # step with the selected project.
         self.billable_check = QCheckBox("Billable", self)
         self.billable_check.setChecked(True)
         form.addRow("", self.billable_check)
+        self._form = form
 
         self.desc_input = QTextEdit(self)
         self.desc_input.setPlaceholderText("What did you work on?")
@@ -895,9 +904,28 @@ class ManualTimeEntryDialog(QDialog):
     def _on_project_changed(self, _index: int) -> None:
         self.task_combo.clear()
         self.task_combo.setEnabled(False)
+        self._apply_project_billing()
         project_id = self.project_combo.currentData()
         if project_id is not None:
             self.project_changed.emit(project_id)
+
+    def _selected_project_is_billable(self) -> bool:
+        """Whether the selected project bills its time (`billing_type` 'fixed').
+
+        A project without a `billing_type` is treated as not billable: the
+        box then stays hidden and the backend decides, rather than this
+        dialog claiming the time is billable on a guess.
+        """
+        project_id = self.project_combo.currentData()
+        project = next((p for p in self._projects if p.get("id") == project_id), None)
+        return bool(project) and project.get("billing_type") == "fixed"
+
+    def _apply_project_billing(self) -> None:
+        billable = self._selected_project_is_billable()
+        self._form.setRowVisible(self.billable_check, billable)
+        # Re-ticked on every change of project: the default belongs to the
+        # project now selected, not to whatever was chosen for the last one.
+        self.billable_check.setChecked(billable)
 
     def set_tasks_loading(self) -> None:
         self.task_combo.clear()
@@ -991,7 +1019,8 @@ class ManualTimeEntryDialog(QDialog):
             "end_time": end_utc.isoformat(),
             "total_seconds": int((end_utc - start_utc).total_seconds()),
             "description": self.desc_input.toPlainText().strip() or None,
-            "is_billable": self.billable_check.isChecked(),
+            # Never billable on a free project, whatever the (hidden) box says.
+            "is_billable": self._selected_project_is_billable() and self.billable_check.isChecked(),
         }
 
 

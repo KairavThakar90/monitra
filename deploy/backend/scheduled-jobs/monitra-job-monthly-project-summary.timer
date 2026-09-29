@@ -1,0 +1,11 @@
+[Unit]
+Description=Monitra: monthly project summary, 1st 09:00 IST
+
+[Timer]
+OnCalendar=*-*-01 03:30:00 UTC
+Persistent=true
+AccuracySec=1s
+Unit=monitra-job@monthly-project-summary.service
+
+[Install]
+WantedBy=timers.target

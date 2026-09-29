@@ -77,6 +77,28 @@ TYPE_WEEKLY_REPORT = "weekly_report"
 #: same reason the weekly key is the week start: every retry and re-run of
 #: the same month computes `month:2026-08-01:user:42` and collapses onto it.
 TYPE_MONTHLY_REPORT = "monthly_report"
+#: A manual time request is waiting for review. One row per approver (the
+#: organisation's admins and the requester's leaders), keyed
+#: `manual:<entry id>:approver:<user id>`, so each approver is told once.
+TYPE_MANUAL_TIME_REQUEST = "manual_time_request"
+#: "Your manual time request was submitted", to the requester. Keyed
+#: `manual:<entry id>:receipt`.
+TYPE_MANUAL_TIME_RECEIPT = "manual_time_receipt"
+#: "Your manual time request was approved / rejected", to the requester.
+#: Keyed `manual:<entry id>:<status>`: a request is decided once, and a
+#: double click or a retried PATCH collapses onto the same row.
+TYPE_MANUAL_TIME_DECISION = "manual_time_decision"
+#: "Monitra Monthly Project Summary", one per recipient per calendar month,
+#: queued on the 1st for the month just completed. Keyed on the *month
+#: start*: `month:2026-09-01:user:42`, so every retry and re-run of the same
+#: month collapses onto the one row. A distinct type from TYPE_MONTHLY_REPORT
+#: (the personal report), whose keys have the same shape.
+TYPE_MONTHLY_PROJECT_SUMMARY = "monthly_project_summary"
+#: A fixed-hours project crossed 50% / 20% / 10% remaining, or used its
+#: whole allocation. One row per recipient per event, keyed
+#: `project:<id>:v<budget version>:<event>:user:<id>`; the event itself is
+#: claimed once in `project_budget_alerts` before any row is queued.
+TYPE_PROJECT_BUDGET_ALERT = "project_budget_alert"
 #: "You're invited to Monitra" -- one per invitation, carrying its own
 #: Approve/Reject links. Keyed on the invitation row, never the client: a
 #: resend creates a new invitation row (a new token) and must be a distinct,

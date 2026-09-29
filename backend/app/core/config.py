@@ -208,6 +208,21 @@ class Settings(BaseSettings):
     MONTHLY_REPORT_HOUR: int = 9
     MONTHLY_REPORT_MINUTE: int = 0
 
+    # ── Monthly project summary ──────────────────────────────────────────
+    #: Queue the company-level "Monthly Project Summary" for admins, owners and
+    #: (scoped to their projects) leaders on the 1st of each month. It shares
+    #: the reporting calendar (WEEKLY_REPORT_TIMEZONE) and the send time
+    #: (MONTHLY_REPORT_HOUR/MINUTE) with the personal monthly report, so the
+    #: two are always cut on the same month and fire from the same cron line.
+    MONTHLY_PROJECT_SUMMARY_ENABLED: bool = True
+
+    # ── Fixed-hours budget alerts ──────────────────────────────────────────
+    #: Email admins, owners and the project's leaders when a fixed-hours
+    #: project reaches 50% / 20% / 10% remaining or uses its whole budget.
+    #: Evaluated after timer stops and manual approvals, and every five
+    #: minutes by /internal/project-budget-alerts/run (vercel.json).
+    PROJECT_BUDGET_ALERTS_ENABLED: bool = True
+
     # ── Email delivery mechanics ──────────────────────────────────────────
     #: How many times one notification may be attempted before it is parked as
     #: `failed`. With the backoff below, six attempts span roughly six hours.

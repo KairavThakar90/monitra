@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { V2Shell } from '../dashboard/v2/V2Shell';
 import { useGetTimeTrackingDetailsQuery, useGetTimeTrackingQuery, type TimeTrackingProject } from '../../store/api/timeTrackingApi';
 import { useGetAllMembersQuery, useGetMembersQuery } from '../../store/api/membersApi';
@@ -356,7 +357,12 @@ export const AdminTimeTracking: React.FC = () => {
   const { showToast } = useFeedback();
   const { currentUser } = useAuth();
 
-  const [activeTab, setActiveTab] = useState<'entries' | 'requests'>('entries');
+  // `?tab=requests` opens the Manual Requests tab directly: it is where the
+  // "Review Request" button in the manual time request email lands.
+  const [searchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState<'entries' | 'requests'>(
+    () => (searchParams.get('tab') === 'requests' ? 'requests' : 'entries'),
+  );
   const [requestsPage, setRequestsPage] = useState(1);
   // Deliberately independent of `search` and `selectedEmployeeId`: those
   // belong to the Time Entries table and its per-employee details dialog.
@@ -561,7 +567,8 @@ export const AdminTimeTracking: React.FC = () => {
         start_time: istWallClockToUtcISO(formDate, formClockIn),
         end_time: istWallClockToUtcISO(formDate, formClockOut),
         description: 'Manual entry created from admin panel.',
-        is_billable: true,
+        // No is_billable: the backend takes it from the project's billing
+        // type (fixed hours bill, free ones do not).
       }).unwrap();
 
       showToast('Manual time entry requested successfully.', 'success');

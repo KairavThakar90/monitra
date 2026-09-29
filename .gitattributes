@@ -12,3 +12,7 @@
 
 # Inno Setup's compiler is Windows-only and its own examples ship CRLF.
 *.iss text eol=crlf
+
+# systemd units are read on Linux; keep them LF like the scripts that install them.
+*.service text eol=lf
+*.timer text eol=lf

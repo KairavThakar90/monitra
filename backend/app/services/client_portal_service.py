@@ -14,6 +14,7 @@ from app.models.user import User
 from app.repositories.client import ClientRepository
 from app.repositories.client_project import ClientProjectRepository
 from app.repositories.reports import ReportsRepository
+from app.services.project_hours import all_time_project_hours
 from app.repositories.time_entry_screenshot import TimeEntryScreenshotRepository
 from app.services.google_drive_service import GoogleDriveError, drive_service
 from app.services.time_entry_screenshot import TimeEntryScreenshotService, _build_windows, _overlap_seconds
@@ -523,10 +524,13 @@ class ClientPortalService:
         billable_ids = [project.id for project in billable_projects]
         start_time = ist_day_start_utc(_EPOCH_DATE)
         end_time = ist_day_end_utc(_FAR_FUTURE_DATE)
-        seconds_by_project = ReportsRepository.session_seconds_by(
-            db, client.organization_id, billable_ids, None,
-            start_time, end_time, _EPOCH_DATE, _FAR_FUTURE_DATE, "project_id",
-        )
+        # A project's Used and Internal come from the shared calculation the
+        # admin's Project Management table reads, so the client sees exactly
+        # the Remaining the admin sees: internal time (the four default tasks)
+        # does not consume the budget. Task rows below keep each task's own
+        # all-time seconds, internal tasks included, against that task's
+        # own estimate.
+        project_split = all_time_project_hours(db, client.organization_id, billable_ids)
         seconds_by_task = ReportsRepository.session_seconds_by(
             db, client.organization_id, billable_ids, None,
             start_time, end_time, _EPOCH_DATE, _FAR_FUTURE_DATE, "task_id",
@@ -594,8 +598,10 @@ class ClientPortalService:
                 "billing_type": project.billing_type,
                 **_usage(
                     float(project.fixed_hours) if project.fixed_hours is not None else None,
-                    seconds_by_project.get(project.id, 0),
+                    project_split[project.id].used_seconds,
                 ),
+                "internal_seconds": project_split[project.id].internal_seconds,
+                "internal_hours": round(project_split[project.id].internal_seconds / 3600, 2),
                 "tasks": task_items,
             })
         return {"permissions": permissions, "items": items}

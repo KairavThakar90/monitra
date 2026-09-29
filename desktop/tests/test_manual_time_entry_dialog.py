@@ -145,3 +145,88 @@ def test_duration_updates_and_rejects_end_before_start(qapp):
 
     dialog.end_input.setTime(QTime(8, 0))
     assert dialog.duration_label.text() == "Duration: —"
+
+
+# ── Billable follows the project's billing type ──────────────────────────────
+#
+# Only a fixed-hours project bills its time; the billing type is chosen when
+# the project is created. The dialog used to show a ticked "Billable" box for
+# every project, so time on a free project went up as billable.
+
+BILLING_PROJECTS = [
+    {"id": 1, "project_name": "Client Retainer", "billing_type": "fixed", "fixed_hours": "120.00"},
+    {"id": 2, "project_name": "Beta Launch", "billing_type": "free", "fixed_hours": None},
+    {"id": 3, "project_name": "Legacy", "fixed_hours": None},  # no billing_type at all
+]
+
+
+def _billable_row_shown(dialog) -> bool:
+    return dialog._form.isRowVisible(dialog.billable_check)
+
+
+def test_fixed_project_shows_billable_ticked(qapp):
+    dialog = ManualTimeEntryDialog(BILLING_PROJECTS, initial_project_id=1)
+    assert _billable_row_shown(dialog)
+    assert dialog.billable_check.isChecked()
+
+
+def test_fixed_project_first_in_list_is_applied_without_an_index_change(qapp):
+    """No initial_project_id: the combo box's default item never fires
+    currentIndexChanged, and the row must still reflect that project."""
+    dialog = ManualTimeEntryDialog(BILLING_PROJECTS)
+    assert dialog.project_combo.currentData() == 1
+    assert _billable_row_shown(dialog)
+    assert dialog.billable_check.isChecked()
+
+
+def test_free_project_hides_billable(qapp):
+    dialog = ManualTimeEntryDialog(BILLING_PROJECTS, initial_project_id=2)
+    assert not _billable_row_shown(dialog)
+
+
+def test_free_project_first_in_list_hides_billable(qapp):
+    dialog = ManualTimeEntryDialog(list(reversed(BILLING_PROJECTS[:2])))
+    assert dialog.project_combo.currentData() == 2
+    assert not _billable_row_shown(dialog)
+
+
+def test_project_without_billing_type_is_not_treated_as_billable(qapp):
+    dialog = ManualTimeEntryDialog(BILLING_PROJECTS, initial_project_id=3)
+    assert not _billable_row_shown(dialog)
+    assert dialog.get_data()["is_billable"] is False
+
+
+def test_switching_projects_shows_and_hides_the_row(qapp):
+    dialog = ManualTimeEntryDialog(BILLING_PROJECTS, initial_project_id=2)
+    assert not _billable_row_shown(dialog)
+    dialog.project_combo.setCurrentIndex(dialog.project_combo.findData(1))
+    assert _billable_row_shown(dialog)
+    assert dialog.billable_check.isChecked()
+    dialog.project_combo.setCurrentIndex(dialog.project_combo.findData(2))
+    assert not _billable_row_shown(dialog)
+
+
+def test_returning_to_a_fixed_project_re_ticks_the_default(qapp):
+    dialog = ManualTimeEntryDialog(BILLING_PROJECTS, initial_project_id=1)
+    dialog.billable_check.setChecked(False)
+    dialog.project_combo.setCurrentIndex(dialog.project_combo.findData(2))
+    dialog.project_combo.setCurrentIndex(dialog.project_combo.findData(1))
+    assert dialog.billable_check.isChecked()
+
+
+def test_submitted_billable_follows_the_project(qapp):
+    dialog = ManualTimeEntryDialog(BILLING_PROJECTS, initial_project_id=1)
+    assert dialog.get_data()["is_billable"] is True
+    dialog.billable_check.setChecked(False)
+    assert dialog.get_data()["is_billable"] is False
+
+    dialog.project_combo.setCurrentIndex(dialog.project_combo.findData(2))
+    assert dialog.get_data()["is_billable"] is False
+
+
+def test_free_project_is_never_submitted_as_billable(qapp):
+    """The hidden box is not what enforces the rule: even if something ticks
+    it, a free project's entry does not go up as billable."""
+    dialog = ManualTimeEntryDialog(BILLING_PROJECTS, initial_project_id=2)
+    dialog.billable_check.setChecked(True)
+    assert dialog.get_data()["is_billable"] is False

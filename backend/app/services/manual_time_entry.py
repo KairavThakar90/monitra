@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from fastapi import HTTPException, status
+from fastapi import BackgroundTasks, HTTPException, status
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 from app.models.manual_time_entry import ManualTimeEntry
@@ -8,8 +8,10 @@ from app.models.task import Task
 from app.models.user import User
 from app.core.time_format import ist_today
 from app.repositories.manual_time_entry import ManualTimeEntryRepository
+from app.repositories.project import ProjectRepository
 from app.services.task import TaskService
 from app.schemas.manual_time_entry import ManualTimeEntryCreate, ManualTimeEntryUpdate
+from app.schemas.project_management import BillingType
 from app.services.member_scope import may_view_member, visible_member_ids
 
 class ManualTimeEntryService:
@@ -24,6 +26,30 @@ class ManualTimeEntryService:
         start = datetime.combine(work_date, datetime.min.time()).replace(tzinfo=timezone.utc)
         end = start + timedelta(seconds=total_seconds)
         return start, end, total_seconds
+
+    @staticmethod
+    def _resolve_billable(db: Session, project_id: int, requested: Optional[bool]) -> bool:
+        """Whether an entry against `project_id` is billable.
+
+        Billable is a property of the project, set when it is created: only a
+        fixed-hours project (`billing_type == 'fixed'`) bills its time. On such
+        a project the entry is billable unless the caller says otherwise;
+        on a free project it never is. A request to bill time to a free
+        project is refused rather than quietly stored as non-billable -- the
+        caller asked for something the project does not allow, and an older
+        client that still shows the checkbox for every project gets a reason
+        it can act on.
+        """
+        project = ProjectRepository.get_by_id(db, project_id)
+        if project is None or project.billing_type != BillingType.fixed.value:
+            if requested:
+                name = project.project_name if project is not None else "This project"
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"{name} is not a billable project, so time logged against it cannot be marked billable."
+                )
+            return False
+        return True if requested is None else requested
 
     @staticmethod
     def _check_no_conflict(db: Session, organization_id: int, user_id: int, start_time: datetime, end_time: datetime, exclude_manual_id: Optional[int] = None) -> None:
@@ -48,7 +74,8 @@ class ManualTimeEntryService:
     def create_manual_entry(
         db: Session,
         entry_in: ManualTimeEntryCreate,
-        current_user: User
+        current_user: User,
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> ManualTimeEntry:
         target_user_id = current_user.id
         if entry_in.user_id and entry_in.user_id != current_user.id:
@@ -63,6 +90,7 @@ class ManualTimeEntryService:
 
         # 1. Verify project and task ownership
         TaskService.get_task(db, entry_in.project_id, entry_in.task_id, current_user)
+        is_billable = ManualTimeEntryService._resolve_billable(db, entry_in.project_id, entry_in.is_billable)
 
         # 2. work_date cannot be a future date
         # "Today" is the IST calendar day, the same one every date filter in
@@ -93,7 +121,7 @@ class ManualTimeEntryService:
         #    entry.user_id.
         ManualTimeEntryService._check_no_conflict(db, current_user.organization_id, target_user_id, start_time, end_time)
 
-        return ManualTimeEntryRepository.create(
+        entry = ManualTimeEntryRepository.create(
             db=db,
             organization_id=current_user.organization_id,
             user_id=target_user_id,
@@ -104,8 +132,20 @@ class ManualTimeEntryService:
             end_time=end_time,
             total_seconds=total_seconds,
             description=entry_in.description,
-            is_billable=entry_in.is_billable if entry_in.is_billable is not None else True
+            is_billable=is_billable
         )
+
+        # The request is committed. Emails follow from it and cannot fail it:
+        # the workflow never raises, the rows are queued durably, and the
+        # background task is only the fast path -- the dispatch sweeper
+        # delivers anything it does not.
+        from app.services.email import deliver_in_background
+        from app.services.email.workflows import queue_manual_time_request_notifications
+
+        for notification_id in queue_manual_time_request_notifications(db, entry):
+            if background_tasks is not None:
+                background_tasks.add_task(deliver_in_background, notification_id)
+        return entry
 
     @staticmethod
     def list_manual_entries(
@@ -194,6 +234,13 @@ class ManualTimeEntryService:
         task_id = update_data.get("task_id", entry.task_id)
         if "project_id" in update_data or "task_id" in update_data:
             TaskService.get_task(db, project_id, task_id, current_user)
+        # An edit that moves the entry to another project without restating
+        # `is_billable` gets that project's default, the same as a new request
+        # would: the earlier choice was made against a different project.
+        if "is_billable" in update_data or "project_id" in update_data:
+            update_data["is_billable"] = ManualTimeEntryService._resolve_billable(
+                db, project_id, update_data.get("is_billable")
+            )
 
         work_date = update_data.get("work_date", entry.work_date)
         if work_date > ist_today():
@@ -246,7 +293,8 @@ class ManualTimeEntryService:
         db: Session,
         entry_id: int,
         approval_status: str,
-        current_user: User
+        current_user: User,
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> ManualTimeEntry:
         # TODO: Confirm with senior whether these role-based checks should later be unified into a granular permission-key system.
         is_privileged = current_user.permissions.get("manual_time_entries:approve", False)
@@ -299,7 +347,7 @@ class ManualTimeEntryService:
             )
             mirrored_time_entry_id = mirror.id
 
-        return ManualTimeEntryRepository.update_approval_status(
+        decided = ManualTimeEntryRepository.update_approval_status(
             db=db,
             manual_entry=entry,
             approval_status=approval_status,
@@ -307,6 +355,21 @@ class ManualTimeEntryService:
             approved_at=datetime.now(timezone.utc),
             mirrored_time_entry_id=mirrored_time_entry_id,
         )
+
+        # Committed above. The requester is told the outcome; this cannot undo
+        # or fail the decision (see create_manual_entry).
+        from app.services.email import deliver_in_background
+        from app.services.email.workflows import queue_manual_time_decision_notification
+
+        notification_id = queue_manual_time_decision_notification(db, decided, reviewer=current_user)
+        if notification_id is not None and background_tasks is not None:
+            background_tasks.add_task(deliver_in_background, notification_id)
+        if approval_status == "approved" and background_tasks is not None:
+            # Approved time now counts toward the project: check its budget.
+            from app.services.project_budget_alerts import evaluate_project_in_background
+
+            background_tasks.add_task(evaluate_project_in_background, decided.project_id, "manual_approval")
+        return decided
 
     @staticmethod
     def list_for_review(

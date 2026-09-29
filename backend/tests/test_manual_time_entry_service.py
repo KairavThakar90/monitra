@@ -39,9 +39,20 @@ class SlotResolutionTests(unittest.TestCase):
         self.assertEqual((start, end, secs), (s, e, 5400))
 
 
+def make_project(billing_type="fixed", **overrides):
+    base = dict(id=1272, organization_id=1, project_name="Beta Launch", billing_type=billing_type)
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
 class CreateConflictTests(unittest.TestCase):
     def setUp(self):
         self.user = make_user()
+        project_patch = patch(
+            "app.services.manual_time_entry.ProjectRepository.get_by_id", return_value=make_project()
+        )
+        project_patch.start()
+        self.addCleanup(project_patch.stop)
 
     def test_rejects_when_overlapping_time_entry_exists(self):
         payload = ManualTimeEntryCreate(project_id=1272, task_id=239, work_date=date(2026, 8, 10), total_seconds=3600)
@@ -78,6 +89,84 @@ class CreateConflictTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as error:
                 ManualTimeEntryService.create_manual_entry(None, payload, self.user)
         self.assertEqual(error.exception.status_code, 400)
+
+
+class BillableTests(unittest.TestCase):
+    """Billable follows the project's billing type, fixed at project creation.
+
+    Only a fixed-hours project bills its time. The desktop dialog showed a
+    ticked "Billable" box for every project and the web sent `is_billable:
+    true` unconditionally, so free-project time was being recorded as
+    billable.
+    """
+
+    def setUp(self):
+        self.user = make_user()
+
+    def _create(self, project, **fields):
+        payload = ManualTimeEntryCreate(
+            project_id=1272, task_id=239, work_date=date(2026, 8, 10), total_seconds=3600, **fields
+        )
+        with patch("app.services.manual_time_entry.TaskService.get_task"),              patch("app.services.manual_time_entry.ProjectRepository.get_by_id", return_value=project),              patch("app.services.manual_time_entry.ManualTimeEntryRepository.find_overlapping_time_entries", return_value=[]),              patch("app.services.manual_time_entry.ManualTimeEntryRepository.find_overlapping_manual_entries", return_value=[]),              patch("app.services.manual_time_entry.ManualTimeEntryRepository.create", return_value=make_entry()) as create:
+            ManualTimeEntryService.create_manual_entry(None, payload, self.user)
+        return create.call_args.kwargs["is_billable"]
+
+    def test_fixed_project_defaults_to_billable(self):
+        self.assertIs(self._create(make_project("fixed")), True)
+
+    def test_fixed_project_honours_an_unticked_box(self):
+        self.assertIs(self._create(make_project("fixed"), is_billable=False), False)
+
+    def test_free_project_defaults_to_not_billable(self):
+        self.assertIs(self._create(make_project("free")), False)
+
+    def test_free_project_accepts_explicit_not_billable(self):
+        self.assertIs(self._create(make_project("free"), is_billable=False), False)
+
+    def test_free_project_refuses_billable_rather_than_scrubbing_it(self):
+        with self.assertRaises(HTTPException) as error:
+            self._create(make_project("free"), is_billable=True)
+        self.assertEqual(error.exception.status_code, 400)
+        self.assertIn("Beta Launch", error.exception.detail)
+        self.assertIn("not a billable project", error.exception.detail)
+
+    def test_omitted_is_billable_is_left_for_the_project_to_decide(self):
+        payload = ManualTimeEntryCreate(project_id=1, task_id=2, work_date=date(2026, 8, 10), total_seconds=60)
+        self.assertIsNone(payload.is_billable)
+
+    def _edit(self, entry, update, project):
+        with patch("app.services.manual_time_entry.ManualTimeEntryRepository.get_by_id", return_value=entry),              patch("app.services.manual_time_entry.TaskService.get_task"),              patch("app.services.manual_time_entry.ProjectRepository.get_by_id", return_value=project),              patch("app.services.manual_time_entry.ManualTimeEntryRepository.update_fields",
+                   side_effect=lambda db, e, **kw: SimpleNamespace(**{**vars(e), **kw})):
+            return ManualTimeEntryService.update_manual_entry(None, 1, update, make_user(uid=54))
+
+    def test_edit_cannot_make_free_project_time_billable(self):
+        with self.assertRaises(HTTPException) as error:
+            self._edit(make_entry(is_billable=False), ManualTimeEntryUpdate(is_billable=True), make_project("free"))
+        self.assertEqual(error.exception.status_code, 400)
+
+    def test_moving_an_entry_to_a_free_project_clears_billable(self):
+        result = self._edit(make_entry(is_billable=True), ManualTimeEntryUpdate(project_id=2214), make_project("free"))
+        self.assertIs(result.is_billable, False)
+
+    def test_moving_an_entry_to_a_fixed_project_defaults_to_billable(self):
+        result = self._edit(make_entry(is_billable=False), ManualTimeEntryUpdate(project_id=2215), make_project("fixed"))
+        self.assertIs(result.is_billable, True)
+
+    def test_editing_only_the_description_does_not_revisit_billable(self):
+        # A pending entry whose project has since become free must still be
+        # editable; nothing about its billable flag was asked to change.
+        with patch("app.services.manual_time_entry.ManualTimeEntryRepository.get_by_id",
+                   return_value=make_entry(is_billable=True)), \
+             patch("app.services.manual_time_entry.ProjectRepository.get_by_id",
+                   return_value=make_project("free")) as get_project, \
+             patch("app.services.manual_time_entry.ManualTimeEntryRepository.update_fields",
+                   side_effect=lambda db, e, **kw: SimpleNamespace(**{**vars(e), **kw})):
+            result = ManualTimeEntryService.update_manual_entry(
+                None, 1, ManualTimeEntryUpdate(description="new"), make_user(uid=54)
+            )
+        self.assertEqual(result.description, "new")
+        self.assertIs(result.is_billable, True)
+        self.assertFalse(get_project.called)
 
 
 class ApprovalMirrorTests(unittest.TestCase):
