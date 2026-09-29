@@ -11,7 +11,8 @@ import {
   useCreateProjectMutation,
   useUpdateProjectMutation,
   useDeleteProjectMutation,
-  type Project
+  type Project,
+  type ProjectHoursSummary
 } from '../../store/api/projectsApi';
 import { useFeedback } from '../../components/FeedbackProvider';
 import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
@@ -446,7 +447,7 @@ const StatusPillDropdown = ({
   );
 };
 
-type ColumnKey = 'project' | 'status' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'remainingHours' | 'started' | 'manage';
+type ColumnKey = 'project' | 'status' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'started' | 'manage';
 const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'project', label: 'Project' },
   { key: 'status', label: 'Status' },
@@ -455,6 +456,7 @@ const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'tasks', label: 'Tasks' },
   { key: 'billing', label: 'Billing' },
   { key: 'usedHours', label: 'Used Hours' },
+  { key: 'internalHours', label: 'Internal Hours' },
   { key: 'remainingHours', label: 'Remaining Hours' },
   { key: 'started', label: 'Started' },
   { key: 'manage', label: 'Manage' },
@@ -510,7 +512,7 @@ export const AdminProjectManagement: React.FC = () => {
 
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>({
     project: true, status: true, leader: true, team: true, tasks: true, billing: true,
-    usedHours: true, remainingHours: true, started: true, manage: true
+    usedHours: true, internalHours: true, remainingHours: true, started: true, manage: true
   });
   const [showColumnDropdown, setShowColumnDropdown] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
@@ -848,7 +850,7 @@ export const AdminProjectManagement: React.FC = () => {
     skip: currentPageProjectIds.length === 0,
   });
   const hoursByProject = useMemo(() => {
-    const map = new Map<number, { total_used_seconds: number; started_at: string | null }>();
+    const map = new Map<number, ProjectHoursSummary>();
     (hoursSummary || []).forEach((row) => map.set(row.project_id, row));
     return map;
   }, [hoursSummary]);
@@ -981,6 +983,7 @@ export const AdminProjectManagement: React.FC = () => {
                   {visibleColumns.tasks && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Tasks</th>}
                   {visibleColumns.billing && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Billing</th>}
                   {visibleColumns.usedHours && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Used Hours</th>}
+                  {visibleColumns.internalHours && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Internal Hours</th>}
                   {visibleColumns.remainingHours && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Remaining Hours</th>}
                   {visibleColumns.started && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Started</th>}
                   {visibleColumns.manage && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Manage</th>}
@@ -1034,6 +1037,9 @@ export const AdminProjectManagement: React.FC = () => {
                     </td>}
                     {visibleColumns.usedHours && <td className="px-6 py-4 font-semibold text-slate-700">
                       {formatHoursValue((hoursByProject.get(proj.id)?.total_used_seconds ?? 0) / 3600)}
+                    </td>}
+                    {visibleColumns.internalHours && <td className="px-6 py-4 font-semibold text-slate-500">
+                      {formatHoursValue((hoursByProject.get(proj.id)?.internal_seconds ?? 0) / 3600)}
                     </td>}
                     {visibleColumns.remainingHours && <td className="px-6 py-4">
                       <RemainingHoursCell project={proj} usedSeconds={hoursByProject.get(proj.id)?.total_used_seconds ?? 0} />

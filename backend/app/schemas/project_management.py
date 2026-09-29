@@ -232,8 +232,18 @@ class ProjectHoursSummaryItem(BaseModel):
     which the desktop also consumes; see `ProjectManagementService.hours_summary`
     for why this stays a separate response rather than a field added there."""
     project_id: int
+    #: Time on ordinary work tasks -- excludes the project's seeded default
+    #: (internal) tasks. This is what a fixed budget's Remaining is measured
+    #: against.
     total_used_seconds: int
     total_used_hours: float
+    #: Time on the four seeded default tasks (DEFAULT_PROJECT_TASKS) --
+    #: client updates, internal discussion and the like.
+    internal_seconds: int = 0
+    internal_hours: float = 0.0
+    #: Used + internal.
+    total_tracked_seconds: int = 0
+    total_tracked_hours: float = 0.0
     #: When tracking against this project first happened (earliest time entry
     #: across all its tasks) -- distinct from `Project.created_at`, which is
     #: only when the project record itself was made. `None` when nothing has

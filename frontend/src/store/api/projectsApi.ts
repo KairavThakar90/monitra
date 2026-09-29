@@ -79,8 +79,18 @@ export interface ProjectListResponse {
  * change shape to carry it. See `ProjectManagementService.hours_summary`. */
 export interface ProjectHoursSummary {
   project_id: number;
+  /** Time on ordinary work tasks — excludes the four seeded default
+   * (internal) tasks. This is the figure a fixed budget is measured
+   * against. */
   total_used_seconds: number;
   total_used_hours: number;
+  /** Time on the project's seeded default tasks (client updates, internal
+   * discussion…). Optional so a backend predating the split still renders. */
+  internal_seconds?: number;
+  internal_hours?: number;
+  /** Used + internal. */
+  total_tracked_seconds?: number;
+  total_tracked_hours?: number;
   /** Earliest tracked session against the project -- distinct from its
    * `created_at`. `null` when nothing has ever been tracked against it. */
   started_at: string | null;
