@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import gc
 import json
+import sys
 from unittest.mock import MagicMock
 
 import httpx
@@ -108,7 +109,12 @@ def test_a_refused_sign_in_shows_the_message_with_the_note_in_bold(login, qapp):
     box = login._login_disabled_box
     assert isinstance(box, QMessageBox) and box.isVisible()
     assert f"<b>{LOGIN_DISABLED_NOTE}</b>" in box.text()
-    assert box.windowTitle() == "Login not allowed"
+    # Qt ignores a QMessageBox's window title on macOS ("as required by the
+    # macOS Guidelines") and reads it back as "" -- which failed both macOS
+    # release builds of 1.3.0. The message and the bold note above are what
+    # a Mac user sees, and they are asserted on every platform.
+    if sys.platform != "darwin":
+        assert box.windowTitle() == "Login not allowed"
 
 
 def test_other_sign_in_errors_stay_plain_text(login):
