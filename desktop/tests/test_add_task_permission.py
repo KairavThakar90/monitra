@@ -401,6 +401,58 @@ def test_without_a_project_the_button_is_simply_off(dashboard):
     widget.api.notify.assert_not_called()
 
 
+def test_the_probe_runs_every_few_seconds_while_the_window_is_on_screen(dashboard):
+    from ui.dashboard_window import SYNC_PROBE_FOREGROUND_INTERVAL_MS, SYNC_PROBE_INTERVAL_MS
+
+    widget, _ = dashboard
+    widget.on_login(_profile())
+    assert SYNC_PROBE_FOREGROUND_INTERVAL_MS <= 5_000
+
+    widget._window_on_screen = lambda: True
+    widget._retune_probe_interval()
+    assert widget._sync_probe_timer.interval() == SYNC_PROBE_FOREGROUND_INTERVAL_MS
+
+    widget._window_on_screen = lambda: False
+    widget._retune_probe_interval()
+    assert widget._sync_probe_timer.interval() == SYNC_PROBE_INTERVAL_MS
+
+
+def test_switching_to_the_window_probes_at_once(dashboard):
+    from PySide6.QtCore import Qt
+
+    widget, runner = dashboard
+    widget.on_login(_profile())
+    runner.calls.clear()
+    widget._refresh_outstanding = 0
+
+    widget._on_application_state_changed(Qt.ApplicationState.ApplicationInactive)
+    assert "sync-probe" not in runner.calls
+
+    widget._on_application_state_changed(Qt.ApplicationState.ApplicationActive)
+    assert "sync-probe" in runner.calls
+
+
+def test_an_admin_change_reaches_the_button_through_the_probe(dashboard):
+    """The whole automatic path: the probe sees the profile component move,
+    the refresh round re-reads /auth/me, and the button follows -- no
+    Refresh press, no restart."""
+    widget, runner = dashboard
+    widget.on_login(_profile())
+    widget._task_section.set_tasks(TASKS, ACTIVE_PROJECT, "#3B82F6")
+    runner.calls.clear()
+    widget._refresh_outstanding = 0
+
+    widget._probe_sync_revision()
+    runner.succeed("sync-probe", {"revision": "a", "components": {"profile": "1:t1:5"}})
+    runner.calls.clear()
+    widget._probe_sync_revision()
+    runner.succeed("sync-probe", {"revision": "b", "components": {"profile": "1:t2:5"}})
+    assert "load-profile" in runner.calls
+    runner.succeed("load-profile", _profile(can_add_tasks=False))
+
+    assert _blocked(widget)
+
+
 def test_logout_resets_the_switch_for_the_next_user(dashboard):
     widget, _ = dashboard
     widget.on_login(_profile(can_add_tasks=False))

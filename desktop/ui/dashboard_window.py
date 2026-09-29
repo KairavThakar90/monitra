@@ -23,7 +23,7 @@ from time import monotonic
 from typing import Any, Callable, Dict, List, Optional
 
 from PySide6.QtCore import QTimer, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QFont
+from PySide6.QtGui import QDesktopServices, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QMessageBox, QSplitter, QVBoxLayout, QWidget,
 )
@@ -82,6 +82,16 @@ REFRESH_INTERVAL_WITH_PROBE_MS = 300_000
 #: half a minute without anyone pressing Refresh -- and without the lists
 #: being polled.
 SYNC_PROBE_INTERVAL_MS = 30_000
+
+#: The probe's cadence while the window is actually on screen (visible and not
+#: minimized). An administrator's change on the web -- switching Add Task off
+#: for this member, reassigning a task -- has to show up while the user is
+#: looking at the app, not half a minute later. Still one fingerprint request
+#: with no rows; a window in the tray or minimized drops back to
+#: SYNC_PROBE_INTERVAL_MS, so an idle fleet costs what it did before. Bringing
+#: the window to the front also probes at once (see
+#: `_on_application_state_changed`).
+SYNC_PROBE_FOREGROUND_INTERVAL_MS = 5_000
 
 #: A refresh round that has not reported back after this long is abandoned so
 #: the next one can run. Every fetch in a round has a 10s request timeout, so
@@ -378,6 +388,11 @@ class DashboardWindow(QWidget):
         # signed in.
         self._sync_probe_timer = QTimer(self)
         self._sync_probe_timer.timeout.connect(self._probe_sync_revision)
+        # Edge-triggered: Qt emits this only when the application becomes
+        # active or inactive, never on a poll.
+        gui_app = QGuiApplication.instance()
+        if gui_app is not None:
+            gui_app.applicationStateChanged.connect(self._on_application_state_changed)
 
     # ── Construction ──────────────────────────────────────────────────────────
 
@@ -1040,7 +1055,7 @@ class DashboardWindow(QWidget):
         # yet: the first probe records it, later ones compare against it.
         self._sync_revision = None
         self._sync_probe_supported = None
-        self._sync_probe_timer.start(SYNC_PROBE_INTERVAL_MS)
+        self._sync_probe_timer.start(self._probe_interval_ms())
 
         # One bootstrap, not three. refresh_data() already fans out projects,
         # task statuses, the day's time entries and today's activity -- and
@@ -2039,6 +2054,7 @@ class DashboardWindow(QWidget):
         """
         if not self._active or self._sync_probe_supported is False:
             return
+        self._retune_probe_interval()
         if self.api.network_state() not in NetworkState.WORTH_TRYING:
             return
         if self._refresh_outstanding:
@@ -2049,6 +2065,37 @@ class DashboardWindow(QWidget):
             on_error=self._on_sync_revision_error,
             key="sync-probe",
         )
+
+    def _window_on_screen(self) -> bool:
+        window = self.window()
+        return window.isVisible() and not window.isMinimized()
+
+    def _probe_interval_ms(self) -> int:
+        """Fast while the user can see the window, the ordinary cadence
+        otherwise. See SYNC_PROBE_FOREGROUND_INTERVAL_MS."""
+        if self._window_on_screen():
+            return SYNC_PROBE_FOREGROUND_INTERVAL_MS
+        return SYNC_PROBE_INTERVAL_MS
+
+    def _retune_probe_interval(self) -> None:
+        """Follow the window between on-screen and hidden. Re-evaluated on
+        every probe and on activation; the timer is touched only when the
+        answer changes."""
+        if not self._sync_probe_timer.isActive():
+            return
+        interval = self._probe_interval_ms()
+        if self._sync_probe_timer.interval() != interval:
+            self._sync_probe_timer.setInterval(interval)
+            self._sync_log("probe.cadence", interval_ms=interval)
+
+    def _on_application_state_changed(self, state) -> None:
+        """The user switched to Monitra: check for web-side changes now
+        rather than at the next tick, so what an administrator just changed
+        is already on screen."""
+        if state != Qt.ApplicationState.ApplicationActive or not self._active:
+            return
+        self._retune_probe_interval()
+        self._probe_sync_revision()
 
     def _on_sync_revision(self, payload: Optional[Dict[str, Any]]) -> None:
         if not self._active:
