@@ -73,6 +73,7 @@ export const ENDPOINTS = {
     DELETE: (id: string | number) => `${API_BASE_URL}/projects/${id}`,
     HOURS_SUMMARY: `${API_BASE_URL}/projects/hours-summary`,
     ASSIGNABLE_LEADERS: `${API_BASE_URL}/projects/assignable-leaders`,
+    ASSIGNABLE_OWNERS: `${API_BASE_URL}/projects/assignable-owners`,
     ASSIGNABLE_EMPLOYEES: `${API_BASE_URL}/projects/assignable-employees`,
     TASKS: (projectId: string | number) => `${API_BASE_URL}/projects/${projectId}/tasks`,
     TASK_BY_ID: (projectId: string | number, taskId: string | number) =>

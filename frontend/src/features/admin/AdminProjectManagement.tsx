@@ -7,11 +7,13 @@ import {
   useLazyGetProjectsQuery,
   useGetProjectHoursSummaryQuery,
   useGetAssignableLeadersQuery,
+  useGetAssignableOwnersQuery,
   useGetAssignableEmployeesQuery,
   useCreateProjectMutation,
   useUpdateProjectMutation,
   useDeleteProjectMutation,
-  type Project
+  type Project,
+  type ProjectUser
 } from '../../store/api/projectsApi';
 import { useFeedback } from '../../components/FeedbackProvider';
 import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
@@ -446,10 +448,11 @@ const StatusPillDropdown = ({
   );
 };
 
-type ColumnKey = 'project' | 'status' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'remainingHours' | 'started' | 'manage';
+type ColumnKey = 'project' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'remainingHours' | 'started' | 'manage';
 const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'project', label: 'Project' },
   { key: 'status', label: 'Status' },
+  { key: 'owner', label: 'Owner' },
   { key: 'leader', label: 'Leader' },
   { key: 'team', label: 'Team' },
   { key: 'tasks', label: 'Tasks' },
@@ -460,11 +463,12 @@ const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'manage', label: 'Manage' },
 ];
 
-type ExportColumnKey = 'project' | 'description' | 'status' | 'leader' | 'team' | 'tasks' | 'billing' | 'deadline';
+type ExportColumnKey = 'project' | 'description' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'deadline';
 const EXPORT_COLUMNS: { key: ExportColumnKey; label: string }[] = [
   { key: 'project', label: 'Project' },
   { key: 'description', label: 'Description' },
   { key: 'status', label: 'Status' },
+  { key: 'owner', label: 'Owner' },
   { key: 'leader', label: 'Leader' },
   { key: 'team', label: 'Team Members' },
   { key: 'tasks', label: 'Tasks' },
@@ -509,7 +513,7 @@ export const AdminProjectManagement: React.FC = () => {
   );
 
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>({
-    project: true, status: true, leader: true, team: true, tasks: true, billing: true,
+    project: true, status: true, owner: true, leader: true, team: true, tasks: true, billing: true,
     usedHours: true, remainingHours: true, started: true, manage: true
   });
   const [showColumnDropdown, setShowColumnDropdown] = useState(false);
@@ -525,6 +529,7 @@ export const AdminProjectManagement: React.FC = () => {
   // RTK Query Hooks
   const { data: metadata } = useGetProjectMetadataQuery();
   const { data: assignableLeaders } = useGetAssignableLeadersQuery();
+  const { data: assignableOwners } = useGetAssignableOwnersQuery();
   const { data: assignableEmployees } = useGetAssignableEmployeesQuery();
   // One request for the finished search term instead of one per keystroke.
   const debouncedSearch = useDebouncedValue(search);
@@ -554,6 +559,10 @@ export const AdminProjectManagement: React.FC = () => {
   // Form state
   const [formName, setFormName] = useState('');
   const [formDescription, setFormDescription] = useState('');
+  const [formOwner, setFormOwner] = useState<number | string>('');
+  const [ownerError, setOwnerError] = useState<string | null>(null);
+  /** The owner the project had when the edit drawer opened — see `ownerOptions`. */
+  const [editingOwner, setEditingOwner] = useState<ProjectUser | null>(null);
   const [formLeader, setFormLeader] = useState<number | string>('');
   const [formDeadline, setFormDeadline] = useState('');
   const [formStatusId, setFormStatusId] = useState<number>(1);
@@ -591,9 +600,34 @@ export const AdminProjectManagement: React.FC = () => {
     },
   });
 
+  /**
+   * Choosing a project's owner is an administrator's decision: the backend
+   * refuses a leader's attempt to change it with a 403, so the field is shown
+   * but locked for them rather than offering a change that cannot be saved.
+   */
+  const ownerIsFixed = drawerMode === 'edit' && isTeamScoped(currentUser);
+
+  /**
+   * Who the Owner field offers: exactly the members the backend lists as
+   * eligible. The one addition is the project's current owner when they are
+   * no longer on that list (eligibility withdrawn since), so an existing
+   * assignment still displays — the backend accepts re-sending an unchanged
+   * owner, and only a *change* has to name somebody eligible.
+   */
+  const ownerOptions = useMemo(() => {
+    const eligible = assignableOwners || [];
+    if (editingOwner && !eligible.some((owner) => owner.id === editingOwner.id)) {
+      return [...eligible, editingOwner];
+    }
+    return eligible;
+  }, [assignableOwners, editingOwner]);
+
   const resetForm = () => {
     setFormName('');
     setFormDescription('');
+    setFormOwner('');
+    setOwnerError(null);
+    setEditingOwner(null);
     setFormLeader(leaderIsFixed && currentUser ? currentUser.id : '');
     setFormDeadline('');
     setFormStatusId(metadata?.project_statuses?.[0]?.id || 1);
@@ -614,6 +648,9 @@ export const AdminProjectManagement: React.FC = () => {
   const openEditDrawer = (proj: Project) => {
     setFormName(proj.project_name);
     setFormDescription(proj.description || '');
+    setFormOwner(proj.owner?.id || '');
+    setOwnerError(null);
+    setEditingOwner(proj.owner || null);
     setFormLeader(proj.leader?.id || (leaderIsFixed && currentUser ? currentUser.id : ''));
     setFormDeadline(proj.deadline ? proj.deadline.split('T')[0] : '');
     setFormStatusId(proj.status?.id || 1);
@@ -646,7 +683,12 @@ export const AdminProjectManagement: React.FC = () => {
       deadline: formDeadline,
       billingHours: formBillingType === 'fixed' ? formBillingHours : '',
     });
-    if (!check.ok) {
+    // A new project must name its owner; the backend refuses one without
+    // ("Project owner is required."), so this only saves the round trip. An
+    // edit may leave a project that predates owners without one.
+    const ownerMissing = drawerMode === 'create' && formOwner === '';
+    setOwnerError(ownerMissing ? 'Project owner is required.' : null);
+    if (!check.ok || ownerMissing) {
       showToast('Please correct the highlighted fields.', 'error');
       return;
     }
@@ -666,6 +708,9 @@ export const AdminProjectManagement: React.FC = () => {
       project_name: check.values.name as string,
       description: check.values.description as string,
       status_id: formStatusId,
+      // Omitted rather than sent as null when no owner is chosen: on an edit
+      // that means "keep the current owner", and the backend refuses a null.
+      ...(formOwner === '' ? {} : { owner_id: Number(formOwner) }),
       leader_id: formLeader === '' ? null : Number(formLeader),
       employee_ids: formEmployees,
       deadline: (check.values.deadline as string) || null,
@@ -801,6 +846,7 @@ export const AdminProjectManagement: React.FC = () => {
         project: (project) => project.project_name,
         description: (project) => project.description || '',
         status: (project) => project.status?.name || '',
+        owner: (project) => project.owner?.name || 'Unassigned',
         leader: (project) => project.leader?.name || 'Unassigned',
         team: (project) => (project.employees || []).map((employee) => employee.name).join('; '),
         tasks: (project) => project.task_count ?? (project.tasks || []).length,
@@ -978,6 +1024,7 @@ export const AdminProjectManagement: React.FC = () => {
                 <tr>
                   {visibleColumns.project && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Project</th>}
                   {visibleColumns.status && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Status</th>}
+                  {visibleColumns.owner && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Owner</th>}
                   {visibleColumns.leader && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Leader</th>}
                   {visibleColumns.team && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Team</th>}
                   {visibleColumns.tasks && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Tasks</th>}
@@ -1001,6 +1048,14 @@ export const AdminProjectManagement: React.FC = () => {
                         options={metadata?.project_statuses || []}
                         onChange={(val) => handleUpdateProjectInline(proj, val, undefined)}
                       />
+                    </td>}
+                    {visibleColumns.owner && <td className="px-6 py-4">
+                      <div className="flex items-center gap-2">
+                        <div className={`flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold text-white shadow-sm ${GRADIENT_CYAN_PURPLE}`}>
+                          {(proj.owner?.name || 'U').substring(0, 2).toUpperCase()}
+                        </div>
+                        <div className="font-semibold text-slate-700">{proj.owner?.name || 'Unassigned'}</div>
+                      </div>
                     </td>}
                     {visibleColumns.leader && <td className="px-6 py-4">
                       <div className="flex items-center gap-2">
@@ -1174,6 +1229,10 @@ export const AdminProjectManagement: React.FC = () => {
             <div className="max-h-[calc(90vh-86px)] overflow-y-auto p-6">
               <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
                 <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Owner</div>
+                  <div className="mt-2 text-sm font-bold text-slate-800">{viewingProject.owner?.name || 'Unassigned'}</div>
+                </div>
+                <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Leader</div>
                   <div className="mt-2 text-sm font-bold text-slate-800">{viewingProject.leader?.name || 'Unassigned'}</div>
                 </div>
@@ -1292,6 +1351,25 @@ export const AdminProjectManagement: React.FC = () => {
                         id={projectForm.errorId('description')}
                         message={projectForm.errors.description}
                       />
+                    </div>
+                    <div>
+                      <label htmlFor="project-owner" className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Owner</label>
+                      <select
+                        id="project-owner"
+                        value={formOwner}
+                        onChange={e => { setFormOwner(e.target.value); setOwnerError(null); }}
+                        disabled={ownerIsFixed}
+                        title={ownerIsFixed ? 'Only an administrator can change the project owner.' : undefined}
+                        aria-invalid={ownerError ? true : undefined}
+                        aria-describedby={ownerError ? 'project-owner-error' : undefined}
+                        className={`w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6] ${ownerIsFixed ? 'bg-slate-100 cursor-not-allowed' : 'bg-white'}`}
+                      >
+                        <option value="" disabled hidden>{drawerMode === 'edit' ? 'No owner assigned' : 'Select the owner...'}</option>
+                        {ownerOptions.map(o => (
+                          <option key={o.id} value={o.id}>{o.name}</option>
+                        ))}
+                      </select>
+                      <FieldError id="project-owner-error" message={ownerError} />
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       <div>

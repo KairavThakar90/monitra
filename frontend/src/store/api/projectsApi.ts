@@ -43,6 +43,12 @@ export interface Project {
   project_name: string;
   description: string;
   status: { id: number; name: string; color: string };
+  /**
+   * The member responsible for this project — a project-level relationship,
+   * not a role, shaped exactly like `leader`. `null` for projects that predate
+   * owners. Optional so a cached row from before the field existed still reads.
+   */
+  owner?: ProjectUser | null;
   leader: ProjectUser | null;
   employees: ProjectUser[];
   deadline: string | null;
@@ -87,6 +93,8 @@ export interface CreateProjectPayload {
   project_name: string;
   description: string;
   status_id: number;
+  /** Required by the backend when creating; omitted on an edit that keeps the current owner. */
+  owner_id?: number;
   leader_id: number | null;
   employee_ids: number[];
   deadline: string | null;
@@ -264,6 +272,15 @@ export const projectsApi = baseApi.injectEndpoints({
       query: () => ENDPOINTS.PROJECTS.ASSIGNABLE_LEADERS,
     }),
 
+    /**
+     * Members the backend says may own a project (`users.can_own_projects`).
+     * The list is the server's, never assembled here — and the same rule
+     * validates `owner_id` on save, so this is a convenience, not a gate.
+     */
+    getAssignableOwners: builder.query<ProjectUser[], void>({
+      query: () => ENDPOINTS.PROJECTS.ASSIGNABLE_OWNERS,
+    }),
+
     getAssignableEmployees: builder.query<ProjectUser[], void>({
       query: () => ENDPOINTS.PROJECTS.ASSIGNABLE_EMPLOYEES,
     }),
@@ -311,6 +328,11 @@ export const projectsApi = baseApi.injectEndpoints({
           body.leader_id !== undefined
             ? assignableLeaders?.find((leader) => leader.id === body.leader_id) ?? null
             : undefined;
+        const assignableOwners = projectsApi.endpoints.getAssignableOwners.select(undefined)(getState())?.data;
+        const nextOwner =
+          body.owner_id !== undefined
+            ? assignableOwners?.find((owner) => owner.id === body.owner_id)
+            : undefined;
 
         // Paint the fields we can derive locally on the very next frame.
         const optimistic = patchProjectLists({ dispatch, getState }, (items) => {
@@ -327,6 +349,7 @@ export const projectsApi = baseApi.injectEndpoints({
             project.status = { id: nextStatus.id, name: nextStatus.project_status, color: nextStatus.color };
           }
           if (nextLeader !== undefined) project.leader = nextLeader;
+          if (nextOwner) project.owner = nextOwner;
           if (body.employee_ids !== undefined) project.employee_count = body.employee_ids.length;
         });
 
@@ -452,6 +475,7 @@ export const {
   useGetAllProjectsQuery,
   useGetProjectByIdQuery,
   useGetAssignableLeadersQuery,
+  useGetAssignableOwnersQuery,
   useGetAssignableEmployeesQuery,
   useCreateProjectMutation,
   useUpdateProjectMutation,
