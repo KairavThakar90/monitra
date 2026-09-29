@@ -375,12 +375,6 @@ export const ExportDialog: React.FC<{
     }
   };
 
-  const chip = (text: string) => (
-    <span key={text} className="rounded-md bg-[#EFF6FF] px-2 py-1 text-[11px] font-bold text-[#2563EB]">
-      {text}
-    </span>
-  );
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
@@ -455,36 +449,9 @@ export const ExportDialog: React.FC<{
             </div>
           </section>
 
-          {/* Applied filters — the exact scope of the file being written. */}
-          <section>
-            <h3 className="text-[11px] font-bold uppercase tracking-wider text-[#64748B]">Applied filters</h3>
-            <dl className="mt-3 space-y-2.5">
-              <div className="flex items-start gap-3">
-                <dt className="w-20 shrink-0 pt-1 text-[12px] font-semibold text-[#94A3B8]">Report</dt>
-                <dd className="flex flex-wrap gap-1.5">{chip(reportTitle)}</dd>
-              </div>
-              <div className="flex items-start gap-3">
-                <dt className="w-20 shrink-0 pt-1 text-[12px] font-semibold text-[#94A3B8]">Dates</dt>
-                <dd className="flex flex-wrap gap-1.5">{chip(`${range.from} → ${range.to}`)}</dd>
-              </div>
-              <div className="flex items-start gap-3">
-                <dt className="w-20 shrink-0 pt-1 text-[12px] font-semibold text-[#94A3B8]">Projects</dt>
-                <dd className="flex flex-wrap gap-1.5">
-                  {projectNames.length ? projectNames.map(chip) : chip("All projects")}
-                </dd>
-              </div>
-              <div className="flex items-start gap-3">
-                <dt className="w-20 shrink-0 pt-1 text-[12px] font-semibold text-[#94A3B8]">Members</dt>
-                <dd className="flex flex-wrap gap-1.5">
-                  {memberNames.length ? memberNames.map(chip) : chip("All members")}
-                </dd>
-              </div>
-            </dl>
-          </section>
-
           {/* Columns. The timesheet's columns are its days, which are fixed
               by the selected range, so there is nothing to choose. */}
-          <section className={"mt-6 " + (format === "timesheet" ? "hidden" : "")}>
+          <section className={format === "timesheet" ? "hidden" : ""}>
             <div className="flex items-center justify-between">
               <h3 className="text-[11px] font-bold uppercase tracking-wider text-[#64748B]">
                 Columns ({activeColumns.length}/{columns.length})

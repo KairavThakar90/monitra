@@ -25,6 +25,11 @@ export interface MyProjectSummary {
   status: string;
   deadline: string | null;
   project_start_date: string | null;
+  /** When the project record was created. */
+  created_date?: string | null;
+  /** IST date work first started on the project (earliest tracked session,
+   * all-time); null when nothing was ever tracked or Timing is withheld. */
+  first_tracked_date?: string | null;
   total_tracked_seconds: number | null;
   total_tracked_hours: number | null;
   member_count: number | null;
@@ -70,6 +75,9 @@ export interface MyTaskHours {
   assignee?: string | null;
   total_tracked_seconds: number | null;
   total_tracked_hours: number | null;
+  /** Average timer activity over the range; null when Timing is withheld or
+   * the timer recorded no samples (e.g. manual entries only). */
+  activity_percentage?: number | null;
 }
 
 export interface MyTaskHoursResponse {

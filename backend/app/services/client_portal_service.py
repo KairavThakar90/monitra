@@ -143,6 +143,14 @@ class ClientPortalService:
         for pid, uid, _tid in triples:
             members_by_project[pid].add(uid)
 
+        # When work first started on each project -- the earliest tracked
+        # instant across its tasks, all-time (the admin's own "Started"
+        # column). A timing fact, so it honours `share_timing`.
+        first_tracked = (
+            ReportsRepository.first_tracked_at_by(db, client.organization_id, project_ids, "project_id")
+            if client.share_timing else {}
+        )
+
         # The assigned roster (not merely who tracked in range): the same
         # people the admin sees on each project. Identity is Member Details'
         # concern, so it is withheld entirely when that flag is off.
@@ -165,6 +173,11 @@ class ClientPortalService:
                 "status": project.status,
                 "deadline": project.deadline,
                 "project_start_date": project.start_date,
+                "created_date": project.created_at.date().isoformat() if project.created_at else None,
+                "first_tracked_date": (
+                    to_ist(first_tracked[project.id]).date().isoformat()
+                    if project.id in first_tracked else None
+                ),
                 "total_tracked_seconds": seconds_by_project.get(project.id, 0) if client.share_timing else None,
                 "total_tracked_hours": (
                     round(seconds_by_project.get(project.id, 0) / 3600, 2) if client.share_timing else None
@@ -418,6 +431,17 @@ class ClientPortalService:
                     ).all()
                 }
 
+        # Average activity percentage per task over the range -- timer
+        # telemetry, so it honours `share_timing` exactly as the durations
+        # do. Manual entries carry no samples, so a task worked only through
+        # manual entries stays None rather than a fabricated figure.
+        activity_by_task = (
+            ReportsRepository.session_activity_by(
+                db, client.organization_id, scoped_project_ids, member_ids, start_time, end_time, "task_id",
+            )
+            if client.share_timing else {}
+        )
+
         member_filter = set(member_ids) if member_ids else None
         items = []
         for task in all_tasks:
@@ -438,6 +462,10 @@ class ClientPortalService:
                 ),
                 "total_tracked_seconds": seconds if client.share_timing else None,
                 "total_tracked_hours": round(seconds / 3600, 2) if client.share_timing else None,
+                "activity_percentage": (
+                    round(activity_by_task[task.id][0], 1)
+                    if task.id in activity_by_task else None
+                ),
             })
         items.sort(key=lambda item: (-(item["total_tracked_seconds"] or 0), item["task_name"].lower()))
         return {"start_date": start.isoformat(), "end_date": end.isoformat(), "permissions": permissions, "items": items}

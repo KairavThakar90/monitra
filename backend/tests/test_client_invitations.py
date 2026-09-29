@@ -28,6 +28,7 @@ from app.models.refresh_token import RefreshToken
 from app.models.sso_handoff_token import SsoHandoffToken
 from app.models.task import Task
 from app.models.time_entry import TimeEntry
+from app.models.time_entry_activity import TimeEntryActivity
 from app.models.time_entry_adjustment import TimeEntryAdjustment
 from app.models.time_entry_screenshot import TimeEntryScreenshot
 from app.models.user import User
@@ -250,7 +251,7 @@ class ClientPortalAccessCase(unittest.TestCase):
         self.engine = create_engine("sqlite://")
         _sqlite_schema(
             self.engine, User, Project, ProjectMember, Task, TimeEntry,
-            ManualTimeEntry, TimeEntryAdjustment, Client, ClientProject,
+            ManualTimeEntry, TimeEntryAdjustment, TimeEntryActivity, Client, ClientProject,
         )
         self.db = Session(self.engine)
 
@@ -291,6 +292,11 @@ class ClientPortalAccessCase(unittest.TestCase):
     def test_list_my_projects_returns_only_shared_projects(self):
         result = ClientPortalService.list_my_projects(self.db, self.client_user)
         self.assertEqual([item["id"] for item in result["items"]], [self.project_shared.id])
+        item = result["items"][0]
+        # The export's project facts: created date always present; the
+        # first-tracked date honestly None while nothing has been tracked.
+        self.assertIsNotNone(item["created_date"])
+        self.assertIsNone(item["first_tracked_date"])
 
     def test_member_and_task_hours_are_scoped_to_shared_projects(self):
         members = ClientPortalService.list_member_hours(self.db, self.client_user)
@@ -418,7 +424,7 @@ class ClientPortalPermissionsCase(unittest.TestCase):
         self.engine = create_engine("sqlite://")
         _sqlite_schema(
             self.engine, User, Project, ProjectMember, Task, TimeEntry,
-            ManualTimeEntry, TimeEntryAdjustment, Client, ClientProject,
+            ManualTimeEntry, TimeEntryAdjustment, TimeEntryActivity, Client, ClientProject,
             TimeEntryScreenshot,
         )
         self.db = Session(self.engine)
@@ -537,6 +543,10 @@ class ClientPortalPermissionsCase(unittest.TestCase):
         self.assertEqual(by_name["Not started"]["total_tracked_seconds"], 0)
         self.assertIsNotNone(by_name["Do the thing"]["created_date"])
         self.assertEqual(by_name["Do the thing"]["project_name"], "Permissioned")
+        # Activity: the plumbing is present, and honestly None when the timer
+        # recorded no samples -- never a fabricated percentage.
+        self.assertIn("activity_percentage", by_name["Do the thing"])
+        self.assertIsNone(by_name["Do the thing"]["activity_percentage"])
 
     def test_task_listing_withholds_assignee_when_member_details_disabled(self):
         self.client_row.share_tasks = True
