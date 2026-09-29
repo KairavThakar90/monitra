@@ -33,6 +33,7 @@ Usage, from desktop/::
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -46,6 +47,27 @@ TESTS_DIR = DESKTOP_ROOT / "tests"
 def _count(summary: str, word: str) -> int:
     match = re.search(rf"(\d+) {word}", summary)
     return int(match.group(1)) if match else 0
+
+
+def _annotate(rel: str, status: str, output: str) -> None:
+    """Report a failed module as a GitHub Actions error annotation.
+
+    A job's log can only be read by someone signed in with access to the
+    repository, but its annotations are served with the check run. A macOS
+    failure reported only in the log could not be diagnosed without that
+    access (v1.3.0's first build). This puts the failing test ids and the
+    assertion or crash lines beside it. Test output only: no environment
+    and no secrets are in it.
+    """
+    lines = output.splitlines()
+    picked = [l for l in lines if l.startswith(("FAILED ", "ERROR "))]
+    picked += [l for l in lines if l.lstrip().startswith("E ")][:25]
+    picked += [l for l in lines if "Fatal Python error" in l or "Current thread" in l]
+    picked += [l for l in lines if re.search(r'File ".*", line \d+ in ', l)][:15]
+    message = "\n".join(picked[:60]) or "\n".join(lines[-30:])
+    # Workflow-command escaping: %, CR and LF must be encoded in the message.
+    message = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::error file=desktop/{rel},title={status} {rel}::{message}", flush=True)
 
 
 def main(argv: list[str]) -> int:
@@ -94,6 +116,8 @@ def main(argv: list[str]) -> int:
             # its name rather than only in a summary.
             tail = output.strip().splitlines()[-60:]
             print("\n".join("        " + l for l in tail), flush=True)
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                _annotate(rel, status, output)
 
     elapsed = time.monotonic() - started
     print()
