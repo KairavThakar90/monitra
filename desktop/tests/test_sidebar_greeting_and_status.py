@@ -33,7 +33,8 @@ import pytest
 from PySide6.QtCore import Qt
 
 from core.time_format import IST, ist_greeting, ist_part_of_day
-from ui.sidebar import GREETING_CHECK_MS, SidebarWidget
+from ui import icons
+from ui.sidebar import GREETING_CHECK_MS, GREETING_ICONS, SidebarWidget
 from ui.styles import ERROR, SUCCESS
 
 
@@ -323,15 +324,41 @@ def test_the_watchdog_follows_a_crossing_into_the_next_part_of_day(sidebar, qapp
     sidebar._check_greeting_rollover()
     assert sidebar._greeting_label.text() == "Good morning"
 
-    for hour, expected in ((12, "Good afternoon"), (17, "Good evening"), (21, "Good night")):
+    assert sidebar._greeting_icon_name == "wb_twilight"
+
+    for hour, expected, glyph in (
+        (12, "Good afternoon", "sunny"),
+        (17, "Good evening", "routine"),
+        (21, "Good night", "bedtime"),
+    ):
         clock["now"] = datetime(2026, 9, 15, hour, 0, tzinfo=IST)
         sidebar._check_greeting_rollover()
         assert sidebar._greeting_label.text() == expected
+        assert sidebar._greeting_icon_name == glyph, "the icon must move with the words"
 
     # Overnight into the next morning — the case a machine left signed in hits.
     clock["now"] = datetime(2026, 9, 16, 7, 0, tzinfo=IST)
     sidebar._check_greeting_rollover()
     assert sidebar._greeting_label.text() == "Good morning"
+    assert sidebar._greeting_icon_name == "wb_twilight"
+
+
+def test_every_part_of_day_has_a_vendored_greeting_icon():
+    """Each part `ist_part_of_day` can return maps to a glyph that exists."""
+    parts = {
+        ist_part_of_day(datetime(2026, 9, 15, hour, 0, tzinfo=IST)) for hour in range(24)
+    }
+    assert parts == set(GREETING_ICONS)
+    for name, _color in GREETING_ICONS.values():
+        assert not icons.pixmap(name, "#FFFFFF", 16).isNull()
+
+
+def test_the_greeting_icon_is_shown_beside_the_text(sidebar, qapp):
+    sidebar.set_user({"name": "Kairav Thakar", "email": "k@example.com"})
+    _drain(qapp)
+    assert sidebar._greeting_icon.isVisibleTo(sidebar)
+    assert not sidebar._greeting_icon.pixmap().isNull()
+    assert sidebar._greeting_icon.geometry().right() < sidebar._greeting_label.geometry().left()
 
 
 def test_the_watchdog_does_not_reveal_the_block_for_a_signed_out_sidebar(sidebar, monkeypatch):

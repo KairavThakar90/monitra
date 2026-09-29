@@ -46,6 +46,18 @@ STATUS_DOT_SIZE = 8
 # Greeting block ("Welcome Sam!" / "Good morning") sizing
 WELCOME_FONT_SIZE = 14
 GREETING_FONT_SIZE = 11
+GREETING_ICON_SIZE = 16
+
+#: The glyph and tint shown beside each greeting, keyed by the greeting's
+#: last word -- which is exactly `ist_part_of_day`, since `ist_greeting` is
+#: "Good <part>". Keying on the text on screen rather than re-reading the
+#: clock means the icon can never disagree with the words beside it.
+GREETING_ICONS = {
+    "morning": ("wb_twilight", "#F59E0B"),   # sunrise, amber
+    "afternoon": ("sunny", "#FBBF24"),       # full sun, bright yellow
+    "evening": ("routine", "#FB923C"),       # sun turning to moon, orange
+    "night": ("bedtime", "#A5B4FC"),         # moon, soft indigo
+}
 
 #: How often the sidebar re-checks the IST time-of-day greeting.
 #:
@@ -589,14 +601,30 @@ class SidebarWidget(QWidget):
         )
         gr_layout.addWidget(self._welcome_label)
 
-        self._greeting_label = QLabel(self._greeting, self._greeting_section)
+        # The greeting line is an icon beside the text, centred as a pair.
+        greeting_row = QWidget(self._greeting_section)
+        greeting_row.setStyleSheet("background: transparent;")
+        row_layout = QHBoxLayout(greeting_row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        row_layout.addStretch(1)
+
+        self._greeting_icon = QLabel(greeting_row)
+        self._greeting_icon.setFixedSize(GREETING_ICON_SIZE, GREETING_ICON_SIZE)
+        self._greeting_icon.setStyleSheet("background: transparent;")
+        row_layout.addWidget(self._greeting_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._greeting_label = QLabel(self._greeting, greeting_row)
         self._greeting_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._greeting_label.setFont(QFont("Segoe UI", GREETING_FONT_SIZE, QFont.Weight.DemiBold))
         self._greeting_label.setStyleSheet(
             f"color: {SIDEBAR_MUTED}; background: transparent; "
             f"font-size: {GREETING_FONT_SIZE}pt;"
         )
-        gr_layout.addWidget(self._greeting_label)
+        row_layout.addWidget(self._greeting_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        row_layout.addStretch(1)
+        gr_layout.addWidget(greeting_row)
+        self._set_greeting_icon(self._greeting)
 
         # Hidden until a session supplies a name: "Welcome User!" is a
         # placeholder wearing a real user's slot.
@@ -1142,6 +1170,7 @@ class SidebarWidget(QWidget):
             f"Welcome {self._user_first_name}!" if self._user_first_name else ""
         )
         self._greeting_label.setText(self._greeting)
+        self._set_greeting_icon(self._greeting)
         self._greeting_section.setVisible(
             bool(self._user_first_name) and not self._collapsed
         )
@@ -1160,6 +1189,23 @@ class SidebarWidget(QWidget):
             return
         self._greeting = greeting
         self._greeting_label.setText(greeting)
+        self._set_greeting_icon(greeting)
+
+    def _set_greeting_icon(self, greeting: str) -> None:
+        """Show the glyph for `greeting`'s part of the day beside it.
+
+        An unrecognised greeting gets no icon rather than a guessed one.
+        """
+        part = greeting.rsplit(" ", 1)[-1]
+        entry = GREETING_ICONS.get(part)
+        self._greeting_icon_name = entry[0] if entry else ""
+        if entry is None:
+            self._greeting_icon.clear()
+            self._greeting_icon.hide()
+            return
+        name, color = entry
+        self._greeting_icon.setPixmap(icons.pixmap(name, color, GREETING_ICON_SIZE))
+        self._greeting_icon.show()
 
     def _prev_page(self) -> None:
         if self._current_page > 1:
