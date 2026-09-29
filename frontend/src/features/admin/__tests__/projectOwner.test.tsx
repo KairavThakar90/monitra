@@ -143,9 +143,13 @@ const setValue = async (element: HTMLInputElement | HTMLSelectElement | HTMLText
   });
 };
 
+/** A drawer label's text with the required marker ("*") stripped, so a
+ * field gaining or losing the asterisk does not break the lookup. */
+const labelText = (item: Element) => (item.textContent ?? '').replace(/\s*\*\s*$/, '').trim();
+
 /** The control that follows a drawer label ("Owner", "Leader", "Deadline"). */
 const field = <T extends Element>(label: string) => {
-  const node = Array.from(container.querySelectorAll('#project-form label')).find((item) => item.textContent?.trim() === label);
+  const node = Array.from(container.querySelectorAll('#project-form label')).find((item) => labelText(item) === label);
   expect(node, `label ${label}`).toBeTruthy();
   return node!.nextElementSibling as unknown as T;
 };
@@ -218,7 +222,7 @@ describe('Owner field — create', () => {
     await renderPage();
     await openCreateDrawer();
     const labels = Array.from(container.querySelectorAll('#project-form label'))
-      .map((label) => label.textContent?.trim())
+      .map(labelText)
       .filter((text) => ['Project Name', 'Description', 'Owner', 'Leader', 'Deadline', 'Status', 'Project Members'].includes(text || ''));
     expect(labels).toEqual(['Project Name', 'Description', 'Owner', 'Leader', 'Deadline', 'Status', 'Project Members']);
     expect(ownerSelect()).toBeTruthy();
