@@ -59,12 +59,9 @@ _FAR_FUTURE_DATE = date(2999, 12, 31)
 # migrated; introducing a legacy value outside that set would 500 on write.
 PROJECT_STATUS_NAMES = {"active": "active", "paused": "pending", "completed": "completed"}
 TASK_STATUS_NAMES = {"todo": "todo", "inprogress": "in_progress", "completed": "completed"}
-DEFAULT_PROJECT_TASKS = (
-    "Project Setup / Understanding",
-    "Review Client Update",
-    "Send Client Update",
-    "Internal Discussion"
-)
+# The four seeded default tasks now live beside the one calculation that
+# classifies their time as Internal; re-exported here for project creation.
+from app.services.project_hours import DEFAULT_PROJECT_TASKS, all_time_project_hours  # noqa: E402
 
 
 
@@ -441,49 +438,18 @@ class ProjectManagementService:
         if not ids:
             return []
 
-        seconds_by_project = ReportsRepository.session_seconds_by(
-            db, user.organization_id, ids, None,
-            ist_day_start_utc(_EPOCH_DATE), ist_day_end_utc(_FAR_FUTURE_DATE),
-            _EPOCH_DATE, _FAR_FUTURE_DATE, "project_id",
-        )
-
-        # Internal vs used: time on a project's four seeded default tasks
-        # (DEFAULT_PROJECT_TASKS) is *internal* -- overhead like client
-        # updates and internal discussion -- and everything else is Used
-        # Hours, the figure a fixed budget's Remaining is measured against.
-        # A default task is identified by name, the only signal it carries
-        # (see the CLAUDE.md §5 note); a renamed default therefore counts as
-        # ordinary work, which is the honest reading of an admin renaming it.
-        seconds_by_task = ReportsRepository.session_seconds_by(
-            db, user.organization_id, ids, None,
-            ist_day_start_utc(_EPOCH_DATE), ist_day_end_utc(_FAR_FUTURE_DATE),
-            _EPOCH_DATE, _FAR_FUTURE_DATE, "task_id",
-        )
-        internal_task_project = {
-            task_id: project_id
-            for task_id, project_id in db.execute(
-                select(Task.id, Task.project_id).where(
-                    Task.project_id.in_(ids),
-                    Task.task_name.in_(DEFAULT_PROJECT_TASKS),
-                )
-            ).all()
-        }
-        internal_by_project: dict[int, int] = {}
-        for task_id, secs in seconds_by_task.items():
-            project_id = internal_task_project.get(task_id)
-            if project_id is not None:
-                internal_by_project[project_id] = internal_by_project.get(project_id, 0) + int(secs)
+        # Internal vs used vs total comes from the one shared calculation
+        # (app.services.project_hours) that the Dashboard billing card, the
+        # client Billing page and the monthly project email also read, so a
+        # project's Remaining cannot differ between any of them.
+        hours = all_time_project_hours(db, user.organization_id, ids)
 
         started_by_project = ReportsRepository.first_tracked_at_by(db, user.organization_id, ids, "project_id")
 
         items = []
         for project_id in ids:
-            total = int(seconds_by_project.get(project_id, 0))
-            # Per-task and per-project sums are each clamped at zero after
-            # adjustments, so they can disagree by the clamped amount; the
-            # split must still never report used < 0.
-            internal = min(internal_by_project.get(project_id, 0), total)
-            used = total - internal
+            split = hours[project_id]
+            total, internal, used = split.total_seconds, split.internal_seconds, split.used_seconds
             items.append({
                 "project_id": project_id,
                 "total_used_seconds": used,

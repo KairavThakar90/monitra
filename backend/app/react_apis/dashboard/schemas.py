@@ -146,12 +146,27 @@ class ProjectBillingProgress(BaseModel):
     )
     completed_seconds: int = Field(
         ...,
-        description="All-time tracked seconds (timer + approved manual), not scoped to the "
-                    "dashboard's selected date range -- what a fixed-hour budget is measured "
-                    "against over the project's whole life, not a viewing window.",
+        description="All-time Used seconds (timer + approved manual, net of adjustments) on the "
+                    "project's work tasks -- time on its four default (internal) tasks excluded. "
+                    "Not scoped to the dashboard's selected date range: this is what a fixed-hour "
+                    "budget is spent by, the same figure as Project Management's Used Hours.",
         examples=[3888000],
     )
     completed_hours: float = Field(..., description="completed_seconds as hours, 2dp.", examples=[1080.0])
+    internal_seconds: int = Field(
+        0,
+        description="All-time seconds on the project's four default (internal) tasks. Shown "
+                    "for context; internal time does not consume a fixed-hour budget.",
+        examples=[36000],
+    )
+    internal_hours: float = Field(0.0, description="internal_seconds as hours, 2dp.", examples=[10.0])
+    remaining_seconds: Optional[int] = Field(
+        None,
+        description="fixed_hours minus completed (Used) -- negative when over budget, never "
+                    "clamped. Null when the project has no fixed budget. The same definition as "
+                    "Project Management's Remaining Hours and the client Billing page.",
+        examples=[432000],
+    )
     usage_percentage: Optional[float] = Field(
         None,
         description="completed_hours / fixed_hours * 100, 2dp. Null when fixed_hours is null -- "

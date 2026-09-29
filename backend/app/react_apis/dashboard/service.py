@@ -9,6 +9,7 @@ from datetime import timedelta
 
 from sqlalchemy.orm import Session
 
+from app.services.project_hours import remaining_seconds
 from app.react_apis.dashboard.repository import DashboardRepository
 from app.react_apis.reports_page.repository import ReportFilters, ReportsPageRepository
 from app.react_apis.reports_page.service import ReportsPageService
@@ -159,6 +160,8 @@ class DashboardService:
             tracked_hours = _hours(row["tracked_seconds"])
             fixed_hours = float(project.fixed_hours) if project.fixed_hours is not None else None
             avg_activity = row["avg_activity"]
+            internal_seconds = int(row.get("internal_seconds", 0) or 0)
+            remaining = remaining_seconds(project.billing_type, project.fixed_hours, int(row["completed_seconds"]))
             item = {
                 "project_id": project.id,
                 "project_name": project.project_name,
@@ -166,6 +169,9 @@ class DashboardService:
                 "fixed_hours": fixed_hours,
                 "completed_seconds": int(row["completed_seconds"]),
                 "completed_hours": completed_hours,
+                "internal_seconds": internal_seconds,
+                "internal_hours": _hours(internal_seconds),
+                "remaining_seconds": remaining,
                 "usage_percentage": round(completed_hours / fixed_hours * 100, 2) if fixed_hours else None,
                 "tracked_seconds": int(row["tracked_seconds"]),
                 "tracked_hours": tracked_hours,
