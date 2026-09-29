@@ -172,6 +172,32 @@ class _Base(unittest.TestCase):
         }
 
 
+    def budget_alerts(self):
+        """Budget alert service: the figures a threshold email reports for this
+        project (the project is past 50%/20% remaining, so it alerts). A
+        flexible project is never evaluated, so it has no Remaining here."""
+        from app.models.project_budget_alert import ProjectBudgetAlert
+        from app.services.project_budget_alerts import ProjectBudgetAlertService
+
+        _sqlite_schema(self.engine, ProjectBudgetAlert)
+        captured = []
+        with patch("app.services.email.workflows.queue_project_budget_alert",
+                   side_effect=lambda db, **kw: captured.append(kw["payload"]) or len(captured)),                 patch.object(__import__("app.core.config", fromlist=["settings"]).settings,
+                             "PROJECT_BUDGET_ALERTS_ENABLED", True):
+            ProjectBudgetAlertService.run(self.db, deliver_now=False)
+        if not captured:
+            split = all_time_project_hours(self.db, ORG, [1])[1]
+            return {"used": split.used_seconds, "internal": split.internal_seconds,
+                    "total": split.total_seconds, "remaining": None}
+        payload = captured[-1]
+        return {
+            "used": payload["used_seconds"],
+            "internal": payload["internal_seconds"],
+            "total": payload["used_seconds"] + payload["internal_seconds"],
+            "remaining": payload["allocation_seconds"] - payload["used_seconds"],
+        }
+
+
 class TestEverySurfaceAgrees(_Base):
 
     def test_the_split_and_the_remaining_are_identical_on_every_surface(self):
@@ -180,21 +206,24 @@ class TestEverySurfaceAgrees(_Base):
         for name, reader in (("Project Management", self.project_management),
                              ("Dashboard billing", self.dashboard),
                              ("Client Billing", self.client_billing),
-                             ("Monthly Project Summary", self.monthly_summary)):
+                             ("Monthly Project Summary", self.monthly_summary),
+                             ("Budget alerts", self.budget_alerts)):
             with self.subTest(surface=name):
                 self.assertEqual(reader(), expected)
 
     def test_internal_time_does_not_consume_the_fixed_budget(self):
         """The regression itself: with internal counted, Remaining would be -2h."""
         _seed(self.db)
-        for reader in (self.project_management, self.dashboard, self.client_billing, self.monthly_summary):
+        for reader in (self.project_management, self.dashboard, self.client_billing, self.monthly_summary,
+                       self.budget_alerts):
             with self.subTest(surface=reader.__name__):
                 self.assertEqual(reader()["remaining"], 2 * HOUR)
                 self.assertNotEqual(reader()["remaining"], -2 * HOUR)
 
     def test_an_overspend_is_negative_everywhere_and_never_clamped(self):
         _seed(self.db, work_hours=11)   # 11h used of 10h
-        for reader in (self.project_management, self.dashboard, self.client_billing, self.monthly_summary):
+        for reader in (self.project_management, self.dashboard, self.client_billing, self.monthly_summary,
+                       self.budget_alerts):
             with self.subTest(surface=reader.__name__):
                 self.assertEqual(reader()["remaining"], -1 * HOUR)
 
@@ -203,6 +232,7 @@ class TestEverySurfaceAgrees(_Base):
         self.assertIsNone(self.project_management()["remaining"])
         self.assertIsNone(self.dashboard()["remaining"])
         self.assertIsNone(self.monthly_summary()["remaining"])
+        self.assertIsNone(self.budget_alerts()["remaining"])
         # Client Billing lists fixed projects only; a flexible one is absent.
         self.assertIsNone(self.client_billing())
 

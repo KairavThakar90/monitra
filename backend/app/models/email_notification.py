@@ -94,6 +94,11 @@ TYPE_MANUAL_TIME_DECISION = "manual_time_decision"
 #: month collapses onto the one row. A distinct type from TYPE_MONTHLY_REPORT
 #: (the personal report), whose keys have the same shape.
 TYPE_MONTHLY_PROJECT_SUMMARY = "monthly_project_summary"
+#: A fixed-hours project crossed 50% / 20% / 10% remaining, or used its
+#: whole allocation. One row per recipient per event, keyed
+#: `project:<id>:v<budget version>:<event>:user:<id>`; the event itself is
+#: claimed once in `project_budget_alerts` before any row is queued.
+TYPE_PROJECT_BUDGET_ALERT = "project_budget_alert"
 #: "You're invited to Monitra" -- one per invitation, carrying its own
 #: Approve/Reject links. Keyed on the invitation row, never the client: a
 #: resend creates a new invitation row (a new token) and must be a distinct,

@@ -139,6 +139,14 @@ There is one row per recipient per month, keyed `month:<start>:user:<id>`.
 Its hours come from the same `project_hours` calculation as the Project
 Management page. See [Monthly_Project_Summary.md](Monthly_Project_Summary.md).
 
+### Fixed-hours budget alerts — event-driven plus a five-minute reconciliation
+
+When a fixed-hours project reaches 50%, 20% or 10% remaining, or uses its
+whole allocation, admins, owners and the project's leaders are emailed once
+for each budget version. Events are claimed atomically in
+`project_budget_alerts`, then queued as `project_budget_alert` rows. See
+[Project_Budget_Alerts.md](Project_Budget_Alerts.md).
+
 ---
 
 ## 4. Retry and failure

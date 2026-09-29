@@ -30,6 +30,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/internal/project-budget-alerts/run",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/internal/reports/weekly/run",
       "schedule": "30 3 * * 1"
     },

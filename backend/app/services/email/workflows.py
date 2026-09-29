@@ -25,7 +25,8 @@ from app.core.config import settings
 from app.models.email_notification import (
     TYPE_FEEDBACK, TYPE_FEEDBACK_STATUS, TYPE_RELEASE, TYPE_WELCOME,
     TYPE_MANUAL_TIME_DECISION, TYPE_MANUAL_TIME_RECEIPT, TYPE_MANUAL_TIME_REQUEST,
-    TYPE_MONTHLY_PROJECT_SUMMARY, TYPE_MONTHLY_REPORT, TYPE_WEEKLY_REPORT,
+    TYPE_MONTHLY_PROJECT_SUMMARY, TYPE_MONTHLY_REPORT, TYPE_PROJECT_BUDGET_ALERT,
+    TYPE_WEEKLY_REPORT,
 )
 from app.repositories.email_notification import EmailNotificationRepository
 from app.repositories.user import UserRepository
@@ -884,6 +885,46 @@ def queue_monthly_project_summary(db: Session, *, user, period, payload: dict[st
         len(payload.get("fixed_projects") or []) + len(payload.get("flexible_projects") or []),
     )
     return row.id, True
+
+
+# ----------------------------------------------------------------------
+# Workflow 12 — fixed-hours budget alert
+# ----------------------------------------------------------------------
+
+def project_budget_alert_dedupe_key(project_id: int, budget_version: int, event: str, user_id: int) -> str:
+    return f"project:{project_id}:v{budget_version}:{event}:user:{user_id}"
+
+
+def queue_project_budget_alert(db: Session, *, user, project, event: str, payload: dict[str, Any]) -> Optional[int]:
+    """Queue one recipient's copy of one budget event. Returns the outbox id.
+
+    Only ever called for an event its caller has just claimed in
+    `project_budget_alerts`; the per-recipient dedupe key additionally makes
+    a re-queue after a crash collapse onto the row that already exists.
+    """
+    if payload.get("user_id") != getattr(user, "id", None) or payload.get("project_id") != project.id:
+        raise ValueError("Budget alert payload does not belong to this recipient and project.")
+    recipients = resolve_user_recipient(getattr(user, "email", "") or "")
+    if not recipients:
+        logger.warning("PROJECT_BUDGET_ALERT_SKIPPED: user=%s reason=no_usable_email", getattr(user, "id", None))
+        return None
+    row = EmailOutboxService.enqueue(
+        db,
+        notification_type=TYPE_PROJECT_BUDGET_ALERT,
+        dedupe_key=project_budget_alert_dedupe_key(project.id, int(payload["budget_version"]), event, user.id),
+        recipients=recipients,
+        subject=messages.project_budget_alert_subject(payload),
+        payload=payload,
+        organization_id=project.organization_id,
+        user_id=user.id,
+    )
+    if row is None:
+        return None
+    logger.info(
+        "PROJECT_BUDGET_ALERT_QUEUED: project=%s event=%s user=%s notification=%s",
+        project.id, event, user.id, row.id,
+    )
+    return row.id
 
 
 # ----------------------------------------------------------------------

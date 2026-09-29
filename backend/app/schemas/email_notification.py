@@ -49,6 +49,28 @@ class WeeklyReportRunResult(BaseModel):
     )
 
 
+class ProjectBudgetAlertRunResult(BaseModel):
+    """What one budget-alert evaluation did. Counts only -- no project names or figures."""
+
+    execution_id: str
+    source: str
+    timestamp: str
+    projects_scanned: int = Field(0, description="Monitored fixed-hours projects evaluated.")
+    thresholds_detected: int = Field(0, description="Crossed events not yet recorded when this run started.")
+    claimed: int = Field(0, description="Events this run claimed and notified.")
+    baselined: int = Field(0, description="Events already passed when a budget was first evaluated; recorded silently.")
+    would_notify: int = Field(0, description="Dry run only: events that would be notified.")
+    queued: int = Field(0, description="Recipient emails queued.")
+    requeued: int = Field(0, description="Earlier events whose emails were finished by this run.")
+    sent: int = Field(0, description="Emails this run delivered itself.")
+    send_failed: int = Field(0, description="Immediate deliveries that failed; the sweeper retries them.")
+    skipped: int = Field(0, description="Projects another evaluation was initialising.")
+    failed: int = Field(0, description="Projects or recipients that errored; logged.")
+    dry_run: bool = False
+    disabled: bool = Field(False, description="PROJECT_BUDGET_ALERTS_ENABLED is false.")
+    duration_ms: int = 0
+
+
 class MonthlyProjectSummaryRunResult(BaseModel):
     """What one monthly-project-summary run queued. Counts and a period only —
     never a recipient, a project name or a figure."""

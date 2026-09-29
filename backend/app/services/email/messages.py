@@ -22,7 +22,8 @@ from app.core.config import settings
 from app.core.time_format import IST, to_ist
 from app.models.email_notification import (
     TYPE_MANUAL_TIME_DECISION, TYPE_MANUAL_TIME_RECEIPT, TYPE_MANUAL_TIME_REQUEST,
-    TYPE_MONTHLY_PROJECT_SUMMARY, TYPE_MONTHLY_REPORT, TYPE_WEEKLY_REPORT,
+    TYPE_MONTHLY_PROJECT_SUMMARY, TYPE_MONTHLY_REPORT, TYPE_PROJECT_BUDGET_ALERT,
+    TYPE_WEEKLY_REPORT,
 )
 from app.services.email import assets
 from app.services.email.provider import (
@@ -1979,3 +1980,162 @@ def build_monthly_project_summary_email(payload: dict[str, Any], recipients: lis
 
 
 BUILDERS[TYPE_MONTHLY_PROJECT_SUMMARY] = build_monthly_project_summary_email
+
+
+# ----------------------------------------------------------------------
+# Workflow 12 — fixed-hours budget alert
+# ----------------------------------------------------------------------
+
+PROJECT_MANAGEMENT_PATH = "/admin/project-management"
+MEMBER_PROJECTS_PATH = "/member/projects"
+
+#: Per state: the badge text (the state never depends on colour alone), the
+#: badge colours, the heading, and the message.
+BUDGET_ALERT_PRESENTATION: dict[str, dict[str, str]] = {
+    "remaining_50": {
+        "label": "50% Hours Remaining", "subject": "50% Hours Remaining",
+        "accent": "#92400E", "bg": "#FFFBEB", "border": "#FCD34D",
+        "headline": "Half of the allocated project hours remain.",
+        "message": "Half of the allocated hours for this project have been used. "
+                   "It is a good moment to review progress and the work still planned.",
+    },
+    "remaining_20": {
+        "label": "20% Hours Remaining", "subject": "20% Hours Remaining",
+        "accent": "#9A3412", "bg": "#FFF7ED", "border": "#FDBA74",
+        "headline": "20% of the allocated project hours remain.",
+        "message": "Only 20% of the allocated hours are left. The remaining work may "
+                   "need closer monitoring against the budget.",
+    },
+    "remaining_10": {
+        "label": "10% Hours Remaining", "subject": "10% Hours Remaining",
+        "accent": "#B91C1C", "bg": "#FEF2F2", "border": "#FCA5A5",
+        "headline": "10% of the allocated project hours remain.",
+        "message": "Only 10% of the allocated hours are left. Please review the remaining "
+                   "scope and progress with the team.",
+    },
+    "consumed": {
+        "label": "100% Hours Consumed", "subject": "100% Hours Consumed",
+        "accent": "#FFFFFF", "bg": "#991B1B", "border": "#991B1B",
+        "headline": "All of the allocated project hours have been used.",
+        "message": "The project's allocated hours are fully consumed. Any further tracked "
+                   "work will take the project over its approved allocation.",
+    },
+    "over_budget": {
+        "label": "OVER BUDGET", "subject": "Project Over Budget",
+        "accent": "#FFFFFF", "bg": "#991B1B", "border": "#991B1B",
+        "headline": "This project is over its allocated hours.",
+        "message": "The project's allocated hours are fully consumed and tracked work has "
+                   "gone beyond the approved allocation.",
+    },
+}
+
+
+def _budget_presentation(payload: dict[str, Any]) -> dict[str, str]:
+    presentation = BUDGET_ALERT_PRESENTATION.get(str(payload.get("state") or ""))
+    if presentation is None:
+        raise KeyError(f"No budget alert email is defined for state {payload.get('state')!r}.")
+    return presentation
+
+
+def project_budget_alert_subject(payload: dict[str, Any]) -> str:
+    """"Monitra — 20% Hours Remaining: Project Alpha" / "Monitra — Project Over Budget: …"."""
+    name = str(payload.get("project_name") or "").strip()
+    return clean_subject(f"Monitra — {_budget_presentation(payload)['subject']}: {name}")
+
+
+def project_budget_alert_url(payload: dict[str, Any]) -> Optional[str]:
+    """Project Management, where Used, Internal and Remaining are shown per
+    project; members without directory access get their own Projects page,
+    the only project screen their account can open. Existing routes only."""
+    return _app_url(PROJECT_MANAGEMENT_PATH if payload.get("can_view_directory") else MEMBER_PROJECTS_PATH)
+
+
+def _budget_rows(payload: dict[str, Any]) -> list[tuple[str, Any]]:
+    over = int(payload.get("over_budget_seconds") or 0)
+    rows: list[tuple[str, Any]] = [
+        ("Project", payload.get("project_name")),
+        ("Project type", "Fixed Hours"),
+        ("Project status", payload.get("project_status")),
+        ("Fixed hours", _hours_text(payload.get("allocation_seconds"))),
+        ("Used hours", _hours_text(payload.get("used_seconds"))),
+        ("Remaining hours", _hours_text(payload.get("remaining_seconds"))),
+        ("Remaining", f"{payload.get('remaining_percent')}%"),
+        ("Budget used", f"{payload.get('used_percent')}%"),
+    ]
+    if over > 0:
+        rows.append(("Over budget by", _hours_text(over)))
+    rows += [
+        ("Internal hours", f"{_hours_text(payload.get('internal_seconds'))} (not counted against the budget)"
+         if payload.get("internal_seconds") else None),
+        ("Generated", _display_times(payload.get("generated_at"))[2]),
+    ]
+    return rows
+
+
+def build_project_budget_alert_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    presentation = _budget_presentation(payload)
+    subject = project_budget_alert_subject(payload)
+    url = project_budget_alert_url(payload)
+    frame = _frame_context(
+        subject=subject,
+        preheader=f"{payload.get('project_name')}: {presentation['label']}. {presentation['headline']}",
+        footer_note=(
+            "You are receiving this because you are an administrator, an owner or a leader "
+            "for this project in Monitra. Each alert is sent once per project budget."
+        ),
+    )
+    badge = Markup(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px 0;"><tr>'
+        '<td style="padding:8px 16px;background-color:{bg};border:1px solid {border};border-radius:999px;'
+        'font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:700;letter-spacing:0.06em;'
+        'text-transform:uppercase;color:{accent};">{label}</td></tr></table>'
+    ).format(**presentation)
+    cta = Markup("")
+    if url:
+        cta = Markup(
+            '<table role="presentation" cellpadding="0" cellspacing="0" border="0" class="st-cta" '
+            'style="margin:28px 0 0 0;"><tr><td align="center" style="background-color:#2563EB;border-radius:8px;">'
+            '<a href="{url}" style="display:inline-block;padding:13px 30px;font-family:Helvetica,Arial,sans-serif;'
+            'font-size:15px;font-weight:700;color:#FFFFFF;text-decoration:none;">View Project</a></td></tr></table>'
+        ).format(url=url)
+    rows = _budget_rows(payload)
+    html = render_page(
+        "project_budget_alert.html",
+        {
+            **frame,
+            "status_badge": badge,
+            "project_name": str(payload.get("project_name") or ""),
+            "headline": presentation["headline"],
+            "greeting": _greeting(payload.get("name")),
+            "message": presentation["message"],
+            "detail_rows": detail_rows(rows),
+            "cta_block": cta,
+        },
+    )
+    text = [
+        presentation["label"].upper(),
+        str(payload.get("project_name") or ""),
+        "",
+        _greeting(payload.get("name")),
+        "",
+        presentation["headline"],
+        presentation["message"],
+        "",
+        *[f"  {label}{' ' * max(1, 17 - len(label))}{value}" for label, value in rows if value],
+        "",
+        "Remaining is the fixed allocation minus used (billable) hours. Internal hours do not use the allocation.",
+    ]
+    if url:
+        text += ["", f"View Project: {url}"]
+    text += ["", "Monitra — Staff Management System", "Store Transform"]
+    return OutgoingEmail(
+        to=recipients,
+        subject=subject,
+        html=html,
+        text="\n".join(text),
+        reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
+        inline_images=frame["_inline_images"],
+    )
+
+
+BUILDERS[TYPE_PROJECT_BUDGET_ALERT] = build_project_budget_alert_email

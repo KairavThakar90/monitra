@@ -6,6 +6,7 @@
 # tests/test_project_service_annotations.py.
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date
 from math import ceil
@@ -36,6 +37,8 @@ from app.services.task_scope import (
 from app.core.permissions import LEADER_ROLE_NAMES
 from app.core.time_format import ist_day_end_utc, ist_day_start_utc
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
+
+logger = logging.getLogger("uvicorn.error")
 
 # Stand-in bounds for "every entry there has ever been" -- the same sentinel
 # span `DashboardRepository.billing_progress` measures a fixed-hour budget
@@ -510,8 +513,18 @@ class ProjectManagementService:
             db.execute(delete(ProjectMember).where(ProjectMember.project_id == project.id))
             for employee in employees:
                 db.add(ProjectMember(project_id=project.id, organization_id=user.organization_id, user_id=employee.id, created_by=user.id))
+        previous_version = project.budget_version
         db.commit()
         db.refresh(project)
+        if project.budget_version != previous_version:
+            # A new budget: record, silently, every threshold already behind the
+            # project under it -- now, so later usage cannot be mistaken for it.
+            try:
+                from app.services.project_budget_alerts import ProjectBudgetAlertService
+
+                ProjectBudgetAlertService.run(db, project_ids=[project.id], deliver_now=False, source="budget_change")
+            except Exception:  # noqa: BLE001 - the edit succeeded; reconciliation retries
+                logger.warning("PROJECT_BUDGET_ALERT_BASELINE_FAILED: project=%s", project.id, exc_info=True)
         return ProjectManagementService._detail_payload(db, project, user)
 
     @staticmethod

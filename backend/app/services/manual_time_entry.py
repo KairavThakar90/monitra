@@ -364,6 +364,11 @@ class ManualTimeEntryService:
         notification_id = queue_manual_time_decision_notification(db, decided, reviewer=current_user)
         if notification_id is not None and background_tasks is not None:
             background_tasks.add_task(deliver_in_background, notification_id)
+        if approval_status == "approved" and background_tasks is not None:
+            # Approved time now counts toward the project: check its budget.
+            from app.services.project_budget_alerts import evaluate_project_in_background
+
+            background_tasks.add_task(evaluate_project_in_background, decided.project_id, "manual_approval")
         return decided
 
     @staticmethod
