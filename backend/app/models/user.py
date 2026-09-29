@@ -43,6 +43,11 @@ class User(Base):
     #: sign-in, which is exactly why this lives in its own column). Enforced by
     #: `require_permission` through PER_MEMBER_PERMISSION_OVERRIDES.
     can_add_tasks: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('true'))
+    #: Whether this member may be chosen as a project's owner. A capability,
+    #: not a role: an owner keeps whatever role they have. Off by default and
+    #: granted per member (`PATCH /members/{id}`); read by
+    #: `app/services/project_ownership.py`, the only place eligibility is decided.
+    can_own_projects: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('false'))
     idle_minutes: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('5'))
     capture_frequency: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'active'"))

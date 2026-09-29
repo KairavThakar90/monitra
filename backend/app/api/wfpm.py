@@ -61,7 +61,9 @@ def create_project(payload: WfpmProjectCreate, user: User = Depends(get_current_
         fixed_hours=None,
         **payload.model_dump(),
     )
-    return ProjectManagementService.create(db, user, full_payload)
+    # No owner either: a WFPM caller has no notion of one, and the project
+    # starts unowned -- see `ProjectManagementService.create`.
+    return ProjectManagementService.create(db, user, full_payload, owner_required=False)
 
 
 @router.get("/projects/{project_id}", response_model=ProjectRead, dependencies=[Depends(require_permission("projects:view"))], summary="Get a project")

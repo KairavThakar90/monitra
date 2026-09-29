@@ -41,6 +41,13 @@ def _user():
     return User(id=1, organization_id=1, role_name="administrator", permissions={})
 
 
+def _eligible_owner():
+    """An active member holding `can_own_projects` -- what `resolve_owner`
+    reads with `db.scalar` before anything else in `create` runs."""
+    return User(id=9, organization_id=1, role_name="administrator", permissions={},
+                is_active=True, can_own_projects=True)
+
+
 class StatusKeyTests(unittest.TestCase):
     def test_spacing_and_case_do_not_change_the_status(self):
         for name in ("To Do", "Todo", "to do", "TODO", " to-do "):
@@ -69,6 +76,7 @@ class CreateProjectTests(unittest.TestCase):
 
     def _create(self, project_status_id, project_status_name, todo_id, todo_name):
         db = MagicMock()
+        db.scalar.return_value = _eligible_owner()
         leader = User(id=2, organization_id=1, role_name="project_leader", permissions={})
         # In order: _users(leader), then the membership read-back after the
         # flush. _users(employees) returns early on an empty id list and never
@@ -79,7 +87,7 @@ class CreateProjectTests(unittest.TestCase):
         answers = [[leader], []]
         db.scalars.return_value.all.side_effect = lambda: answers.pop(0) if answers else []
         payload = ProjectCreate(
-            project_name="Migration", status_id=project_status_id, leader_id=2,
+            project_name="Migration", status_id=project_status_id, owner_id=9, leader_id=2,
             employee_ids=[], deadline=date.today() + timedelta(days=30),
             billing_type=BillingType.free,
         )

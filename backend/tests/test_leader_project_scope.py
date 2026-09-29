@@ -35,6 +35,7 @@ from fastapi import HTTPException
 
 from app.api.project_management import assignable_employees, assignable_leaders
 from app.core.permissions import ROLE_PERMISSIONS
+from app.models.user import User
 from app.schemas.project_management import BillingType, ProjectCreate, ProjectUpdate
 from app.services.project import ProjectService
 from app.services.project_management import ProjectManagementService
@@ -214,15 +215,19 @@ class LeaderAssignmentTests(unittest.TestCase):
 
     def _create(self, user):
         payload = ProjectCreate(
-            project_name="Nova", description=None, status_id=1, leader_id=999,
+            project_name="Nova", description=None, status_id=1, owner_id=77, leader_id=999,
             employee_ids=[], deadline=date(2099, 1, 1), billing_type=BillingType.free,
             fixed_hours=None,
         )
+        # The owner lookup comes first and is not what these tests are about.
+        db = MagicMock()
+        db.scalar.return_value = User(id=77, organization_id=1, role_name="administrator",
+                                      permissions={}, is_active=True, can_own_projects=True)
         # Stop at validation: the argument it is handed is the whole assertion.
         with patch.object(ProjectManagementService, "_validate_project_fields",
                           side_effect=HTTPException(418, "stop")) as validated:
             with self.assertRaises(HTTPException):
-                ProjectManagementService.create(MagicMock(), user, payload)
+                ProjectManagementService.create(db, user, payload)
         # _validate_project_fields(db, user, status_id, leader_id, ...)
         return validated.call_args.args[3]
 

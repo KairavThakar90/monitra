@@ -33,16 +33,25 @@ from tests.status_catalog_stub import rows, status_catalog
 ACTOR_ID = 1
 LEADER_ID = 2
 OTHER_ID = 3
+OWNER_ID = 9
 
 
 def _actor():
     return User(id=ACTOR_ID, organization_id=1, role_name="administrator", permissions={})
 
 
+def _eligible_owner(owner_id=OWNER_ID):
+    """An active member holding `can_own_projects` -- what `resolve_owner`
+    reads with `db.scalar` before anything else in `create` runs."""
+    return User(id=owner_id, organization_id=1, role_name="administrator", permissions={},
+                is_active=True, can_own_projects=True)
+
+
 def _create(existing_member_ids, employee_ids):
     """Run create() with the database reporting `existing_member_ids` already
     present on the new project -- which is what the trigger leaves behind."""
     db = MagicMock()
+    db.scalar.return_value = _eligible_owner()
 
     leader = User(id=LEADER_ID, organization_id=1, role_name="project_leader", permissions={})
     employees = [
@@ -57,7 +66,7 @@ def _create(existing_member_ids, employee_ids):
     db.scalars.return_value.all.side_effect = lambda: answers.pop(0) if answers else []
 
     payload = ProjectCreate(
-        project_name="Beta launch", status_id=1, leader_id=LEADER_ID,
+        project_name="Beta launch", status_id=1, owner_id=OWNER_ID, leader_id=LEADER_ID,
         employee_ids=list(employee_ids),
         deadline=date.today() + timedelta(days=20),
         billing_type=BillingType.free,

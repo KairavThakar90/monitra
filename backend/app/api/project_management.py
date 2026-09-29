@@ -12,6 +12,7 @@ from app.repositories.status_catalog import StatusCatalog
 from app.schemas.project_management import BillingType, ProjectCreate, ProjectHoursSummaryResponse, ProjectListResponse, ProjectManagementMetadata, ProjectMetadataStatusRead, ProjectRead, ProjectUpdate, RoleRead, StatusRead, SyncRevisionRead, TaskCreate, TaskMetadataStatusRead, TaskRead, TaskUpdate
 from app.schemas.project_member import ProjectMembersAddRequest, ProjectMembersAddResponse, ProjectMemberRead, ProjectMemberUpdate, ProjectMembersListResponse
 from app.services.member_scope import is_team_scoped
+from app.services import project_ownership
 from app.services.project_member import ProjectMemberService
 from app.services.project_management import ProjectManagementService
 from app.services.sync_revision import scope_revision
@@ -108,6 +109,14 @@ def assignable_leaders(search: Optional[str] = Query(None, max_length=100), user
             User.name.ilike(like_pattern(search), escape=LIKE_ESCAPE_CHARACTER)
         )
     return [{"id": item.id, "name": item.name, "email": item.email, "role": item.role_name} for item in db.scalars(query).all()]
+
+
+@router.get("/projects/assignable-owners", dependencies=[Depends(require_permission("projects:update"))], summary="List members eligible to own a project")
+def assignable_owners(search: Optional[str] = Query(None, max_length=100), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # The Owner picker. Who appears here is decided by the same condition
+    # `ProjectManagementService` validates `owner_id` against, so the list is
+    # a convenience for the form, never the authorization boundary.
+    return [{"id": item.id, "name": item.name, "email": item.email, "role": item.role_name} for item in project_ownership.assignable_owners(db, user, search)]
 
 
 @router.get("/projects/assignable-employees", summary="List assignable project members")

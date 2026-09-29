@@ -55,6 +55,10 @@ class ProjectCreate(BaseModel):
     project_name: str = Field(..., max_length=150)
     description: Optional[str] = Field(None, max_length=5000)
     status_id: int = Field(..., gt=0)
+    #: Optional in the schema only because the WFPM route builds this model
+    #: and has no owner to name. `ProjectManagementService.create` requires it
+    #: for every other caller, with a message rather than a bare 422.
+    owner_id: Optional[int] = Field(None, gt=0)
     leader_id: int = Field(..., gt=0)
     employee_ids: list[int] = Field(default_factory=list)
     deadline: date
@@ -98,6 +102,9 @@ class ProjectUpdate(BaseModel):
     project_name: Optional[str] = Field(None, max_length=150)
     description: Optional[str] = Field(None, max_length=5000)
     status_id: Optional[int] = Field(None, gt=0)
+    #: Omitted means "keep the current owner". An explicit null is refused:
+    #: a project that has an owner cannot be left without one.
+    owner_id: Optional[int] = Field(None, gt=0)
     leader_id: Optional[int] = Field(None, gt=0)
     employee_ids: Optional[list[int]] = None
     deadline: Optional[date] = None
@@ -183,6 +190,9 @@ class ProjectRead(BaseModel):
     project_name: str
     description: Optional[str]
     status: Optional[StatusRead] = None
+    #: Same shape as `leader`. `None` for a project with no owner assigned,
+    #: which every project that predates owners is.
+    owner: Optional[PersonRead] = None
     leader: Optional[PersonRead]
     employees: list[PersonRead]
     deadline: Optional[date]

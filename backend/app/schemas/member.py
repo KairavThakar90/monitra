@@ -100,6 +100,19 @@ class MemberUpdate(BaseModel):
     capture_frequency: CaptureFrequencyMinutes = None
     #: The Members directory's Allow / Not allow switch for task creation.
     can_add_tasks: Optional[bool] = None
+    #: Whether this member may be chosen as a project's Owner. Withdrawing it
+    #: does not unassign the projects they already own; it only stops them
+    #: being chosen again. See app/services/project_ownership.py.
+    can_own_projects: Optional[bool] = None
+
+    @field_validator("can_own_projects")
+    @classmethod
+    def owner_switch_is_a_boolean(cls, value: Optional[bool]):
+        # Runs only when the key was sent. Omitting it leaves the switch as it
+        # is; an explicit null would reach a NOT NULL column as a 500.
+        if value is None:
+            raise ValueError("can_own_projects must be true or false")
+        return value
 
     @field_validator("name", "designation")
     @classmethod
@@ -132,10 +145,18 @@ class MemberResponse(BaseModel):
     idle_minutes: int
     capture_frequency: int
     can_add_tasks: bool = True
+    can_own_projects: bool = False
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("can_own_projects", mode="before")
+    @classmethod
+    def unset_means_not_eligible(cls, value):
+        # The opposite default to `can_add_tasks`: eligibility is granted,
+        # never assumed.
+        return False if value is None else value
 
     @field_validator("can_add_tasks", mode="before")
     @classmethod

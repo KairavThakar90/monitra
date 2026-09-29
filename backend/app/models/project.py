@@ -14,6 +14,10 @@ class Project(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'planning'"))
     status_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     leader_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    #: The member responsible for this project -- a project-level relationship,
+    #: not a role, and it grants no permissions of its own. NULL on projects
+    #: that predate it; required for new ones (see ProjectManagementService).
+    owner_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     deadline: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     billing_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'free'"))
     fixed_hours: Mapped[Optional[float]] = mapped_column(Numeric(8, 2), nullable=True)

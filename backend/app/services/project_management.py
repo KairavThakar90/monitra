@@ -28,6 +28,7 @@ from app.schemas.project_management import (
     BillingType, ProjectCreate, ProjectUpdate, TaskCreate, TaskUpdate,
 )
 from app.services.member_scope import is_team_scoped
+from app.services.project_ownership import resolve_owner
 from app.services.project_scope import may_view_project, visible_project_ids
 from app.services.task_scope import (
     is_task_scoped, may_view_task, scoped_task_query, visible_task_condition,
@@ -205,6 +206,7 @@ class ProjectManagementService:
     def _detail_payload(db: Session, project: Project, user: User):
         project_status = StatusCatalog.project_status(db, project.status_id)
         leader = db.get(User, project.leader_id) if project.leader_id else None
+        owner = db.get(User, project.owner_id) if project.owner_id else None
         members = list(db.scalars(select(ProjectMember).where(ProjectMember.project_id == project.id)).all())
         employee_ids = [member.user_id for member in members]
         employees = list(db.scalars(select(User).where(User.id.in_(employee_ids))).all()) if employee_ids else []
@@ -220,7 +222,7 @@ class ProjectManagementService:
         assignees = list(db.scalars(select(User).where(User.id.in_(assignee_ids))).all()) if assignee_ids else []
         assignee_by_id = {item.id: item for item in assignees}
         task_statuses = StatusCatalog.task_statuses(db) if tasks else {}
-        return {"id": project.id, "project_name": project.project_name, "description": project.description, "status": project_status, "leader": ProjectManagementService._person(leader), "employees": [ProjectManagementService._person(employee_by_id[item_id]) for item_id in employee_ids if item_id in employee_by_id], "deadline": project.deadline, "billing_type": project.billing_type, "fixed_hours": project.fixed_hours, "organization_id": project.organization_id, "created_at": project.created_at, "updated_at": project.updated_at, "tasks": [ProjectManagementService._task_payload(task, task_statuses.get(task.status_id), assignee_by_id.get(task.assignee_id)) for task in tasks]}
+        return {"id": project.id, "project_name": project.project_name, "description": project.description, "status": project_status, "owner": ProjectManagementService._person(owner), "leader": ProjectManagementService._person(leader), "employees": [ProjectManagementService._person(employee_by_id[item_id]) for item_id in employee_ids if item_id in employee_by_id], "deadline": project.deadline, "billing_type": project.billing_type, "fixed_hours": project.fixed_hours, "organization_id": project.organization_id, "created_at": project.created_at, "updated_at": project.updated_at, "tasks": [ProjectManagementService._task_payload(task, task_statuses.get(task.status_id), assignee_by_id.get(task.assignee_id)) for task in tasks]}
 
     @staticmethod
     def _task_counts(db: Session, project_ids: list[int], user: User) -> dict[int, int]:
@@ -266,7 +268,7 @@ class ProjectManagementService:
             if include_tasks
             else ProjectManagementService._task_counts(db, project_ids, user)
         )
-        user_ids = member_ids | {project.leader_id for project in projects if project.leader_id} | {task.assignee_id for task in tasks if task.assignee_id}
+        user_ids = member_ids | {project.leader_id for project in projects if project.leader_id} | {project.owner_id for project in projects if project.owner_id} | {task.assignee_id for task in tasks if task.assignee_id}
         users = list(db.scalars(select(User).where(User.id.in_(user_ids))).all()) if user_ids else []
         users_by_id = {item.id: item for item in users}
         project_statuses = StatusCatalog.project_statuses(db)
@@ -278,7 +280,7 @@ class ProjectManagementService:
         payloads = []
         for project in projects:
             employees = [ProjectManagementService._person(users_by_id[user_id]) for user_id in memberships_by_project.get(project.id, []) if user_id in users_by_id]
-            payloads.append({"id": project.id, "project_name": project.project_name, "description": project.description, "status": project_statuses.get(project.status_id), "leader": ProjectManagementService._person(users_by_id.get(project.leader_id)), "employees": employees, "deadline": project.deadline, "billing_type": project.billing_type, "fixed_hours": project.fixed_hours, "organization_id": project.organization_id, "created_at": project.created_at, "updated_at": project.updated_at,
+            payloads.append({"id": project.id, "project_name": project.project_name, "description": project.description, "status": project_statuses.get(project.status_id), "owner": ProjectManagementService._person(users_by_id.get(project.owner_id)), "leader": ProjectManagementService._person(users_by_id.get(project.leader_id)), "employees": employees, "deadline": project.deadline, "billing_type": project.billing_type, "fixed_hours": project.fixed_hours, "organization_id": project.organization_id, "created_at": project.created_at, "updated_at": project.updated_at,
                              # `None` rather than `[]` when the caller opted out:
                              # an empty array is a real answer ("this project has
                              # no tasks") and must not be how "you did not ask"
@@ -289,7 +291,21 @@ class ProjectManagementService:
         return payloads
 
     @staticmethod
-    def create(db: Session, user: User, payload: ProjectCreate):
+    def create(db: Session, user: User, payload: ProjectCreate, owner_required: bool = True):
+        """Create a project.
+
+        `owner_required=False` is for the WFPM integration alone: its callers
+        have no notion of an owner, and inventing one would record a decision
+        nobody made, so its projects start without one -- exactly like every
+        project that predates owners. Every other caller must name an eligible
+        owner.
+        """
+        if payload.owner_id is not None:
+            owner = resolve_owner(db, user, payload.owner_id)
+        elif owner_required:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Project owner is required.")
+        else:
+            owner = None
         # A leader creating a project leads it. The drawer already defaults the
         # Leader field to the signed-in leader and locks it, and this is the
         # same rule stated where it is enforced: without it a leader could hand
@@ -298,7 +314,7 @@ class ProjectManagementService:
         leader_id = user.id if is_team_scoped(user) else payload.leader_id
         project_status, leader, employees = ProjectManagementService._validate_project_fields(db, user, payload.status_id, leader_id, payload.employee_ids, payload.deadline, payload.billing_type, payload.fixed_hours)
         try:
-            project = Project(organization_id=user.organization_id, project_name=payload.project_name, description=payload.description, status=ProjectManagementService._legacy_status(project_status, PROJECT_STATUS_NAMES, "project"), status_id=project_status.id, leader_id=leader.id, deadline=payload.deadline, billing_type=payload.billing_type.value, fixed_hours=payload.fixed_hours, is_billable=payload.billing_type == BillingType.fixed, created_by=user.id)
+            project = Project(organization_id=user.organization_id, project_name=payload.project_name, description=payload.description, status=ProjectManagementService._legacy_status(project_status, PROJECT_STATUS_NAMES, "project"), status_id=project_status.id, owner_id=owner.id if owner else None, leader_id=leader.id, deadline=payload.deadline, billing_type=payload.billing_type.value, fixed_hours=payload.fixed_hours, is_billable=payload.billing_type == BillingType.fixed, created_by=user.id)
             db.add(project)
             db.flush()
             # The project may already have members by the time the flush returns.
@@ -460,12 +476,27 @@ class ProjectManagementService:
         fixed_hours = values.get("fixed_hours", project.fixed_hours)
         if leader_id is None:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "leader_id is required.")
+        # Only a *change* of owner is checked. Re-sending the current owner --
+        # which a full edit form does -- stays valid even if that person has
+        # since lost eligibility, so it cannot lock the rest of the project
+        # against edits the way a stale leader does.
+        owner = None
+        if "owner_id" in values and values["owner_id"] != project.owner_id:
+            if values["owner_id"] is None:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "A project's owner cannot be removed. Choose a different owner instead.")
+            # Refused rather than silently kept, unlike the leader above: the
+            # caller asked for a change they may not make, and pretending it
+            # succeeded is worse than saying so.
+            if is_team_scoped(user):
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "Leaders cannot change a project's owner.")
+            owner = resolve_owner(db, user, values["owner_id"])
         project_status, leader, employees = ProjectManagementService._validate_project_fields(db, user, status_id, leader_id, employee_ids if employee_ids is not None else [item.user_id for item in db.scalars(select(ProjectMember).where(ProjectMember.project_id == project.id)).all()], values.get("deadline", project.deadline), billing_type, fixed_hours)
         if "project_name" in values: project.project_name = values["project_name"]
         if "description" in values: project.description = values["description"]
         project.status_id = status_id
         project.status = ProjectManagementService._legacy_status(project_status, PROJECT_STATUS_NAMES, "project")
         project.leader_id = leader.id
+        if owner is not None: project.owner_id = owner.id
         if "deadline" in values: project.deadline = values["deadline"]
         project.billing_type = billing_type.value
         project.fixed_hours = fixed_hours
