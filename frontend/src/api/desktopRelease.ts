@@ -1,14 +1,12 @@
 /**
  * Desktop downloads for the website.
  *
- * The rule this module exists to enforce: **the download link is never a
- * versioned filename baked into the site.** Each platform has one stable link
- * (`DOWNLOAD_LINKS`) that always serves the current build, so a release
- * published six months from now is served without the frontend being touched —
- * which is the whole difference between "Download Monitra" and "Download
- * Monitra 1.0.0 forever". The release metadata shown beside a button (version,
- * size, notes, checksum) still comes from the backend, and is omitted rather
- * than guessed when it is not there.
+ * Each platform has exactly one link (`DOWNLOAD_LINKS`) and every download
+ * button goes through it. As of 2026-09-29 those links point at versioned
+ * artifacts on GitHub, so shipping a new build means updating them (see the
+ * note on `DOWNLOAD_LINKS`). The release metadata shown beside a button
+ * (version, size, notes, checksum) still comes from the backend, and is
+ * omitted rather than guessed when it is not there.
  *
  * Unauthenticated by design: someone installing Monitra for the first time has
  * no account yet. The backend only ever exposes *published* releases here, so
@@ -53,21 +51,24 @@ export const DOWNLOAD_TARGETS: Record<DownloadKey, { platform: string; arch?: st
 /**
  * Where each platform's installer is served from.
  *
- * These are distribution links, not artifact filenames: each one names a
- * platform and nothing else, so the file behind it can be replaced for a new
- * release without this file being edited. That is the property the download
- * page has always depended on — it used to come from the backend's
- * "latest release" redirect, and now it comes from the host these point at.
+ * These currently point at versioned artifacts in the `release-monitra`
+ * GitHub repository (a deliberate decision, 2026-09-29). The cost of that
+ * choice: **publishing a new release now requires editing these three links**
+ * — and the pinned URLs in `__tests__/desktopRelease.test.ts` — or the
+ * download page keeps serving the old build forever.
  *
- * Because the file is no longer served by our backend, the page can no longer
- * learn a download's size or checksum from the link. Version and size are
- * still shown when `GET /desktop/releases/downloads` knows them, and simply
- * omitted when it does not — the download itself never depends on that call.
+ * Because the file is not served by our backend, the page cannot learn a
+ * download's size or checksum from the link. Version and size are still shown
+ * when `GET /desktop/releases/downloads` knows them, and simply omitted when
+ * it does not — the download itself never depends on that call.
  */
 export const DOWNLOAD_LINKS: Record<DownloadKey, string> = {
-  windows: 'https://storetransform.com/?window_download_monitra',
-  'macos-arm64': 'https://storetransform.com/?macARM64_download_monitra',
-  'macos-x86_64': 'https://storetransform.com/?macX8664_download_monitra',
+  windows:
+    'https://github.com/KairavThakar90/release-monitra/raw/refs/heads/main/1.2.7/Monitra-Windows-1.2.7.zip',
+  'macos-arm64':
+    'https://github.com/KairavThakar90/release-monitra/raw/refs/heads/main/1.2.7/Monitra-macOS-arm64-1.2.7.zip',
+  'macos-x86_64':
+    'https://github.com/KairavThakar90/release-monitra/raw/refs/heads/main/1.2.7/Monitra-macOS-x86_64-1.2.7.zip',
 };
 
 /**
