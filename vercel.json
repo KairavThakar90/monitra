@@ -38,6 +38,10 @@
       "schedule": "30 3 1 * *"
     },
     {
+      "path": "/internal/reports/monthly-projects/run",
+      "schedule": "30 3 1 * *"
+    },
+    {
       "path": "/internal/activity/daily-rollup",
       "schedule": "50 18 * * *"
     }

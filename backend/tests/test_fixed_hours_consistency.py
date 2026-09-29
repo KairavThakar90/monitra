@@ -155,6 +155,23 @@ class _Base(unittest.TestCase):
         }
 
 
+    def monthly_summary(self):
+        """Monthly Project Summary email: the project's row for the month its
+        time was tracked in (1 Jan 2026 IST), with Remaining as of that month's
+        end -- identical to all-time here, since nothing is tracked later."""
+        from app.services.monthly_project_summary import build_organization_summary
+        from app.services.monthly_report import month_containing
+
+        rows = build_organization_summary(self.db, ORG, month_containing(datetime(2026, 1, 15).date())).projects
+        [row] = [row for row in rows if row.project_id == 1]
+        return {
+            "used": row.used_to_date_seconds if row.used_to_date_seconds is not None else row.billable_seconds,
+            "internal": row.internal_seconds,
+            "total": row.total_seconds,
+            "remaining": row.remaining_seconds,
+        }
+
+
 class TestEverySurfaceAgrees(_Base):
 
     def test_the_split_and_the_remaining_are_identical_on_every_surface(self):
@@ -162,21 +179,22 @@ class TestEverySurfaceAgrees(_Base):
         expected = {"used": 8 * HOUR, "internal": 4 * HOUR, "total": 12 * HOUR, "remaining": 2 * HOUR}
         for name, reader in (("Project Management", self.project_management),
                              ("Dashboard billing", self.dashboard),
-                             ("Client Billing", self.client_billing)):
+                             ("Client Billing", self.client_billing),
+                             ("Monthly Project Summary", self.monthly_summary)):
             with self.subTest(surface=name):
                 self.assertEqual(reader(), expected)
 
     def test_internal_time_does_not_consume_the_fixed_budget(self):
         """The regression itself: with internal counted, Remaining would be -2h."""
         _seed(self.db)
-        for reader in (self.project_management, self.dashboard, self.client_billing):
+        for reader in (self.project_management, self.dashboard, self.client_billing, self.monthly_summary):
             with self.subTest(surface=reader.__name__):
                 self.assertEqual(reader()["remaining"], 2 * HOUR)
                 self.assertNotEqual(reader()["remaining"], -2 * HOUR)
 
     def test_an_overspend_is_negative_everywhere_and_never_clamped(self):
         _seed(self.db, work_hours=11)   # 11h used of 10h
-        for reader in (self.project_management, self.dashboard, self.client_billing):
+        for reader in (self.project_management, self.dashboard, self.client_billing, self.monthly_summary):
             with self.subTest(surface=reader.__name__):
                 self.assertEqual(reader()["remaining"], -1 * HOUR)
 
@@ -184,6 +202,7 @@ class TestEverySurfaceAgrees(_Base):
         _seed(self.db, billing_type="free", fixed_hours=None)
         self.assertIsNone(self.project_management()["remaining"])
         self.assertIsNone(self.dashboard()["remaining"])
+        self.assertIsNone(self.monthly_summary()["remaining"])
         # Client Billing lists fixed projects only; a flexible one is absent.
         self.assertIsNone(self.client_billing())
 

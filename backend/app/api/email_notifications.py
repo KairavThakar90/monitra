@@ -53,10 +53,12 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.email_notification import (
-    DispatchResult, MonthlyReportRunResult, WeeklyReportRunResult,
+    DispatchResult, MonthlyProjectSummaryRunResult, MonthlyReportRunResult,
+    WeeklyReportRunResult,
 )
 from app.services.email import EmailOutboxService
 from app.services.email import assets as email_assets
+from app.services.monthly_project_summary import MonthlyProjectSummaryService
 from app.services.monthly_report import MonthlyReportService
 from app.services.weekly_report import WeeklyReportService
 
@@ -364,6 +366,86 @@ def preview_monthly_report(
             status_code=status.HTTP_404_NOT_FOUND, detail="No eligible user with that id.",
         )
     message = messages.build_monthly_report_email(payload, ["preview@example.invalid"])
+    return HTMLResponse(content=message.html)
+
+
+@router.post(
+    "/internal/reports/monthly-projects/run",
+    response_model=MonthlyProjectSummaryRunResult,
+    summary="Queue the monthly project summary for admins, owners and leaders (scheduler only).",
+    description=(
+        "Resolves the previous completed calendar month, computes each "
+        "organisation's project summary once, and queues one email per "
+        "recipient: company-wide for administrators and owners, scoped to "
+        "their own projects for leaders. It does **not** send: the dispatch "
+        "sweeper delivers what this queues.\n\n"
+        "Safe to call twice: each summary is keyed on `(monthly_project_summary, "
+        "month:<start>:user:<id>)`.\n\n"
+        "`month_start` reports a specific month (any date inside it); "
+        "`user_id` restricts the run to one recipient; `dry_run` queues nothing.\n\n"
+        "Authenticate with `EMAIL_DISPATCH_TOKEN`."
+    ),
+    responses={
+        401: {"description": "Missing or incorrect dispatch token."},
+        503: {"description": "EMAIL_DISPATCH_TOKEN is not configured."},
+    },
+)
+def run_monthly_project_summary(
+    month_start: Optional[date] = Query(None, description="Any date inside the month. Defaults to the previous month."),
+    user_id: Optional[int] = Query(None, ge=1, description="Restrict the run to one recipient."),
+    dry_run: bool = Query(False, description="Compute and report the tally without queueing."),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    return MonthlyProjectSummaryRunResult(**{
+        key: value
+        for key, value in MonthlyProjectSummaryService.run(
+            db, month_start=month_start, user_id=user_id, dry_run=dry_run,
+        ).items()
+        if key in MonthlyProjectSummaryRunResult.model_fields
+    })
+
+
+@router.get(
+    "/internal/reports/monthly-projects/run",
+    response_model=MonthlyProjectSummaryRunResult,
+    include_in_schema=False,
+    summary="Queue the monthly project summary (scheduler only).",
+)
+def run_monthly_project_summary_get(
+    month_start: Optional[date] = Query(None),
+    user_id: Optional[int] = Query(None, ge=1),
+    dry_run: bool = Query(False),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    """GET alias for Vercel Cron, which can only issue a GET. Same operation as the POST."""
+    return run_monthly_project_summary(
+        month_start=month_start, user_id=user_id, dry_run=dry_run, _=None, db=db,
+    )
+
+
+@router.get(
+    "/internal/reports/monthly-projects/preview",
+    include_in_schema=False,
+    summary="Render one recipient's monthly project summary without queueing or sending it.",
+    response_class=HTMLResponse,
+)
+def preview_monthly_project_summary(
+    user_id: int = Query(..., ge=1, description="The recipient whose summary to render."),
+    month_start: Optional[date] = Query(None, description="Any date inside the month."),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db),
+):
+    """The exact HTML that recipient would be sent. Queues, sends and writes nothing.
+    404 for anyone who is not an eligible recipient, so it cannot be used to
+    read the summary as somebody who would never receive it."""
+    from app.services.email import messages
+
+    payload = MonthlyProjectSummaryService.preview_payload(db, user_id=user_id, month_start=month_start)
+    if payload is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No eligible recipient with that id.")
+    message = messages.build_monthly_project_summary_email(payload, ["preview@example.invalid"])
     return HTMLResponse(content=message.html)
 
 

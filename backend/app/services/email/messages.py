@@ -22,7 +22,7 @@ from app.core.config import settings
 from app.core.time_format import IST, to_ist
 from app.models.email_notification import (
     TYPE_MANUAL_TIME_DECISION, TYPE_MANUAL_TIME_RECEIPT, TYPE_MANUAL_TIME_REQUEST,
-    TYPE_MONTHLY_REPORT, TYPE_WEEKLY_REPORT,
+    TYPE_MONTHLY_PROJECT_SUMMARY, TYPE_MONTHLY_REPORT, TYPE_WEEKLY_REPORT,
 )
 from app.services.email import assets
 from app.services.email.provider import (
@@ -1700,3 +1700,288 @@ def build_manual_time_decision_email(payload: dict[str, Any], recipients: list[s
 BUILDERS[TYPE_MANUAL_TIME_REQUEST] = build_manual_time_request_email
 BUILDERS[TYPE_MANUAL_TIME_RECEIPT] = build_manual_time_receipt_email
 BUILDERS[TYPE_MANUAL_TIME_DECISION] = build_manual_time_decision_email
+
+
+# ----------------------------------------------------------------------
+# Workflow 11 — monthly project summary
+# ----------------------------------------------------------------------
+
+_CELL = "padding:9px 8px;border-bottom:1px solid #EDF0F5;font-family:Helvetica,Arial,sans-serif;font-size:13px;line-height:18px;"
+_HEAD = ("padding:8px 8px;border-bottom:1px solid #E2E8F0;background-color:#F8FAFC;"
+         "font-family:Helvetica,Arial,sans-serif;font-size:10px;font-weight:700;letter-spacing:0.06em;"
+         "text-transform:uppercase;color:#64748B;")
+
+
+def monthly_project_summary_subject(payload: dict[str, Any]) -> str:
+    """"Monitra Monthly Project Summary — Sep 2026". No figures in the subject:
+    a lock screen is not the place for a company's hours."""
+    period = str(payload.get("month_short") or "").strip()
+    return clean_subject(
+        f"Monitra Monthly Project Summary — {period}" if period else "Monitra Monthly Project Summary"
+    )
+
+
+def monthly_project_summary_url(payload: dict[str, Any]) -> Optional[str]:
+    """The Reports page's Projects report, filtered to the reported month.
+
+    An existing route with its existing ``?start=&end=`` parameters. Readers
+    with ``time_entries:view_all`` open the organisation screen (which a
+    leader's own scope already narrows); anyone else opens their own Reports
+    screen, the only one their account can open.
+    """
+    return _report_dashboard_url(payload, start_key="month_start", end_key="month_end")
+
+
+def _hours_text(seconds: Any) -> str:
+    return format_duration(seconds)
+
+
+def _remaining_markup(project: dict[str, Any]) -> Markup:
+    remaining = project.get("remaining_seconds")
+    if remaining is None:
+        return Markup('<span style="color:#94A3B8;">—</span>')
+    if remaining < 0:
+        return Markup('<span style="color:#DC2626;font-weight:700;">Over by {v}</span>').format(v=_hours_text(-remaining))
+    return Markup('<span style="color:#047857;font-weight:700;">{v} left</span>').format(v=_hours_text(remaining))
+
+
+def _remaining_text(project: dict[str, Any]) -> str:
+    remaining = project.get("remaining_seconds")
+    if remaining is None:
+        return "—"
+    return f"Over by {_hours_text(-remaining)}" if remaining < 0 else f"{_hours_text(remaining)} left"
+
+
+def _summary_cards(totals: dict[str, Any]) -> Markup:
+    cards = [
+        ("Projects", str(int(totals.get("projects_worked") or 0))),
+        ("Total Hours Used", _hours_text(totals.get("total_seconds"))),
+        ("Internal Hours", _hours_text(totals.get("internal_seconds"))),
+        ("Billable Hours", _hours_text(totals.get("billable_seconds"))),
+    ]
+    cell = Markup(
+        '<td width="50%" valign="top" style="padding:6px;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;">'
+        '<tr><td style="padding:14px 16px;">'
+        '<p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;'
+        'letter-spacing:0.06em;text-transform:uppercase;color:#64748B;">{label}</p>'
+        '<p style="margin:4px 0 0 0;font-family:Helvetica,Arial,sans-serif;font-size:22px;'
+        'font-weight:700;color:#0F172A;">{value}</p></td></tr></table></td>'
+    )
+    rows = Markup("")
+    for index in range(0, len(cards), 2):
+        pair = Markup("").join(cell.format(label=label, value=value) for label, value in cards[index:index + 2])
+        rows += Markup("<tr>{pair}</tr>").format(pair=pair)
+    return Markup(
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="margin:0 -6px;">{rows}</table>'
+    ).format(rows=rows)
+
+
+def _highlight_rows(totals: dict[str, Any]) -> list[tuple[str, Any]]:
+    rows: list[tuple[str, Any]] = [
+        ("Fixed-Hours projects", str(int(totals.get("fixed_projects") or 0))),
+        ("Flexible-Time projects", str(int(totals.get("flexible_projects") or 0))),
+    ]
+    if totals.get("fixed_projects"):
+        remaining = int(totals.get("fixed_remaining_seconds") or 0)
+        rows += [
+            ("Fixed hours allocated", _hours_text(totals.get("fixed_allocated_seconds"))),
+            ("Fixed hours used to date", _hours_text(totals.get("fixed_used_to_date_seconds"))),
+            ("Fixed hours remaining",
+             f"Over by {_hours_text(-remaining)}" if remaining < 0 else _hours_text(remaining)),
+            ("Projects over allocation", str(int(totals.get("over_allocation_projects") or 0))),
+        ]
+    if totals.get("projects_worked"):
+        highest = totals.get("highest_project") or {}
+        highest_billable = totals.get("highest_billable_project") or {}
+        rows += [
+            ("Contributors", str(int(totals.get("contributors") or 0))),
+            ("Average hours per project", _hours_text(totals.get("average_seconds_per_project"))),
+            ("Most hours", f"{highest.get('name')} ({_hours_text(highest.get('total_seconds'))})" if highest else None),
+            ("Most billable hours",
+             f"{highest_billable.get('name')} ({_hours_text(highest_billable.get('billable_seconds'))})"
+             if highest_billable else None),
+        ]
+    return rows
+
+
+def _project_table(projects: list[dict[str, Any]], *, fixed: bool) -> Markup:
+    """One compact, email-safe table. Every value escaped; no raw HTML from data."""
+    if not projects:
+        return Markup("")
+    headers = ["Project", "Internal", "Billable", "Total"] + (["Remaining"] if fixed else [])
+    head = Markup("").join(
+        Markup('<th align="{a}" style="{s}">{h}</th>').format(a="left" if i == 0 else "right", s=_HEAD, h=h)
+        for i, h in enumerate(headers)
+    )
+    body = Markup("")
+    for project in projects:
+        name_cell = Markup('<span style="font-weight:600;color:#0F172A;">{n}</span>').format(n=project.get("name"))
+        if fixed:
+            name_cell += Markup(
+                '<br><span style="font-size:11px;color:#64748B;">{alloc} allocated · {used} used to date</span>'
+            ).format(alloc=_hours_text(project.get("allocation_seconds")),
+                     used=_hours_text(project.get("used_to_date_seconds")))
+        cells = [
+            Markup('<td style="{s}">{v}</td>').format(s=_CELL, v=name_cell),
+            Markup('<td align="right" style="{s}color:#475569;">{v}</td>').format(s=_CELL, v=_hours_text(project.get("internal_seconds"))),
+            Markup('<td align="right" style="{s}color:#475569;">{v}</td>').format(s=_CELL, v=_hours_text(project.get("billable_seconds"))),
+            Markup('<td align="right" style="{s}font-weight:700;color:#0F172A;">{v}</td>').format(s=_CELL, v=_hours_text(project.get("total_seconds"))),
+        ]
+        if fixed:
+            cells.append(Markup('<td align="right" style="{s}">{v}</td>').format(s=_CELL, v=_remaining_markup(project)))
+        body += Markup("<tr>{c}</tr>").format(c=Markup("").join(cells))
+    return Markup(
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="border:1px solid #E2E8F0;border-radius:10px;border-collapse:separate;overflow:hidden;">'
+        '<tr>{head}</tr>{body}</table>'
+    ).format(head=head, body=body)
+
+
+def _section(title: str, note: str, table: Markup) -> Markup:
+    if not table:
+        return Markup("")
+    return Markup(
+        '<h2 style="margin:30px 0 4px 0;font-family:Helvetica,Arial,sans-serif;font-size:17px;'
+        'font-weight:700;color:#0F172A;">{title}</h2>'
+        '<p style="margin:0 0 12px 0;font-family:Helvetica,Arial,sans-serif;font-size:13px;'
+        'line-height:20px;color:#64748B;">{note}</p>{table}'
+    ).format(title=title, note=note, table=table)
+
+
+def _summary_cta(url: Optional[str]) -> Markup:
+    if url is None:
+        return Markup("")
+    return Markup(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" class="st-cta" '
+        'style="margin:24px 0 0 0;"><tr><td align="center" style="background-color:#2563EB;border-radius:8px;">'
+        '<a href="{url}" style="display:inline-block;padding:13px 30px;font-family:Helvetica,Arial,sans-serif;'
+        'font-size:15px;font-weight:700;color:#FFFFFF;text-decoration:none;">View Detailed Project Report</a>'
+        '</td></tr></table>'
+    ).format(url=url)
+
+
+def _summary_text_lines(payload: dict[str, Any], url: Optional[str]) -> list[str]:
+    totals = payload.get("totals") or {}
+    lines = [
+        "MONTHLY PROJECT SUMMARY",
+        f"Project performance summary for {payload.get('month_label') or ''}",
+        "",
+        _greeting(payload.get("name")),
+        "",
+        f"Reporting period: {payload.get('period_label') or ''}",
+        "Covers every project in the organisation." if payload.get("company_wide")
+        else "Covers the projects you lead or work on.",
+        "",
+        f"  Projects                 {int(totals.get('projects_worked') or 0)}",
+        f"  Total hours used         {_hours_text(totals.get('total_seconds'))}",
+        f"  Internal hours           {_hours_text(totals.get('internal_seconds'))}",
+        f"  Billable hours           {_hours_text(totals.get('billable_seconds'))}",
+    ]
+    for label, value in _highlight_rows(totals):
+        if value:
+            lines.append(f"  {label}{' ' * max(1, 25 - len(label))}{value}")
+    if not totals.get("projects_worked"):
+        lines += ["", "No project activity was recorded during this reporting period."]
+    if payload.get("fixed_projects"):
+        lines += ["", "FIXED HOURS PROJECTS", "(Remaining = allocation minus billable hours used to date; internal hours do not use the allocation.)"]
+        for p in payload["fixed_projects"]:
+            lines.append(
+                f"- {p.get('name')}: internal {_hours_text(p.get('internal_seconds'))}, "
+                f"billable {_hours_text(p.get('billable_seconds'))}, total {_hours_text(p.get('total_seconds'))}, "
+                f"allocated {_hours_text(p.get('allocation_seconds'))}, used to date {_hours_text(p.get('used_to_date_seconds'))}, "
+                f"remaining {_remaining_text(p)}"
+            )
+    if payload.get("flexible_projects"):
+        lines += ["", "FLEXIBLE TIME PROJECTS", "(No fixed allocation, so no remaining hours.)"]
+        for p in payload["flexible_projects"]:
+            lines.append(
+                f"- {p.get('name')}: internal {_hours_text(p.get('internal_seconds'))}, "
+                f"billable {_hours_text(p.get('billable_seconds'))}, total {_hours_text(p.get('total_seconds'))}"
+            )
+    if url:
+        lines += ["", f"View Detailed Project Report: {url}"]
+    lines += ["", "Monitra — Staff Management System", "Store Transform"]
+    return lines
+
+
+def build_monthly_project_summary_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    """One recipient's monthly project summary, from the payload frozen at queue time.
+
+    No database session is in scope here: everything shown was computed for
+    this recipient's scope before it was queued.
+    """
+    subject = monthly_project_summary_subject(payload)
+    totals = payload.get("totals") or {}
+    month = str(payload.get("month_label") or "")
+    url = monthly_project_summary_url(payload)
+    worked = int(totals.get("projects_worked") or 0)
+
+    frame = _frame_context(
+        subject=subject,
+        preheader=(
+            f"{worked} project{'s' if worked != 1 else ''}, {_hours_text(totals.get('total_seconds'))} "
+            f"tracked in {month}." if worked else f"No project activity was recorded in {month}."
+        ),
+        footer_note=(
+            "You are receiving this because you are an administrator, an owner or a leader in "
+            "Monitra. It is sent once a month and covers only the previous completed month."
+        ),
+    )
+    scope_note = (
+        "This summary covers every project in your organisation."
+        if payload.get("company_wide")
+        else "This summary covers only the projects you lead or work on."
+    )
+    empty_note = (
+        Markup('<p style="margin:22px 0 0 0;padding:14px 16px;background-color:#F8FAFC;border:1px solid #E2E8F0;'
+               'border-radius:10px;font-family:Helvetica,Arial,sans-serif;font-size:14px;color:#475569;">'
+               'No project activity was recorded during this reporting period.</p>')
+        if not worked else Markup("")
+    )
+    highlights = Markup(
+        '<h2 style="margin:30px 0 12px 0;font-family:Helvetica,Arial,sans-serif;font-size:17px;'
+        'font-weight:700;color:#0F172A;">Highlights</h2>'
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" '
+        'style="margin:0;border:1px solid #EDF0F5;border-radius:10px;">{rows}</table>'
+    ).format(rows=detail_rows(_highlight_rows(totals)))
+
+    html = render_page(
+        "monthly_project_summary.html",
+        {
+            **frame,
+            "greeting": _greeting(payload.get("name")),
+            "month_label": month,
+            "period_label": str(payload.get("period_label") or ""),
+            "scope_note": scope_note,
+            "summary_cards": _summary_cards(totals),
+            "cta_top": _summary_cta(url),
+            "empty_note": empty_note,
+            "highlights": highlights,
+            "fixed_section": _section(
+                "Fixed Hours Projects",
+                "Remaining is the allocation minus billable hours used from the project's start "
+                f"through the end of {month}. Internal hours do not use the allocation.",
+                _project_table(list(payload.get("fixed_projects") or []), fixed=True),
+            ),
+            "flexible_section": _section(
+                "Flexible Time Projects",
+                "No fixed allocation, so there are no remaining hours.",
+                _project_table(list(payload.get("flexible_projects") or []), fixed=False),
+            ),
+            "cta_bottom": _summary_cta(url),
+        },
+    )
+    return OutgoingEmail(
+        to=recipients,
+        subject=subject,
+        html=html,
+        text="\n".join(_summary_text_lines(payload, url)),
+        reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
+        inline_images=frame["_inline_images"],
+    )
+
+
+BUILDERS[TYPE_MONTHLY_PROJECT_SUMMARY] = build_monthly_project_summary_email

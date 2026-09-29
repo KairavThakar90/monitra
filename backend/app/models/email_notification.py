@@ -88,6 +88,12 @@ TYPE_MANUAL_TIME_RECEIPT = "manual_time_receipt"
 #: Keyed `manual:<entry id>:<status>`: a request is decided once, and a
 #: double click or a retried PATCH collapses onto the same row.
 TYPE_MANUAL_TIME_DECISION = "manual_time_decision"
+#: "Monitra Monthly Project Summary", one per recipient per calendar month,
+#: queued on the 1st for the month just completed. Keyed on the *month
+#: start*: `month:2026-09-01:user:42`, so every retry and re-run of the same
+#: month collapses onto the one row. A distinct type from TYPE_MONTHLY_REPORT
+#: (the personal report), whose keys have the same shape.
+TYPE_MONTHLY_PROJECT_SUMMARY = "monthly_project_summary"
 #: "You're invited to Monitra" -- one per invitation, carrying its own
 #: Approve/Reject links. Keyed on the invitation row, never the client: a
 #: resend creates a new invitation row (a new token) and must be a distinct,

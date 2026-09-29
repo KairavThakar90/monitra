@@ -1,0 +1,48 @@
+<!--
+  Monitra Monthly Project Summary — sent on the 1st of every month to
+  administrators and owners (company-wide) and leaders (their own projects
+  only), covering the previous completed calendar month.
+
+  Every section is markup built in `messages.build_monthly_project_summary_email`
+  from a payload computed for this one recipient's scope, and every value in
+  it is escaped there. The call to action appears directly under the summary
+  cards as well as at the end: a long month can be shortened by some mail
+  clients, and the complete report must always be one click away.
+-->
+<h1 class="st-h1" style="margin:0 0 6px 0;font-family:Helvetica,Arial,sans-serif;font-size:28px;line-height:36px;font-weight:700;color:#0F172A;letter-spacing:-0.4px;">
+  Monthly Project Summary
+</h1>
+
+<p style="margin:0 0 18px 0;font-family:Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;font-weight:600;color:#1F2937;">
+  Project performance summary for {{ month_label }}
+</p>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 18px 0;">
+  <tr>
+    <td style="padding:8px 16px;background-color:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;">
+      <p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#1D4ED8;">Reporting period</p>
+      <p style="margin:2px 0 0 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;color:#1E3A8A;">{{ period_label }}</p>
+    </td>
+  </tr>
+</table>
+
+<p style="margin:0 0 6px 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:24px;color:#374151;">
+  {{ greeting }}
+</p>
+<p style="margin:0 0 20px 0;font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:22px;color:#4B5563;">
+  {{ scope_note }}
+</p>
+
+{{ summary_cards }}
+
+{{ cta_top }}
+
+{{ empty_note }}
+
+{{ highlights }}
+
+{{ fixed_section }}
+
+{{ flexible_section }}
+
+{{ cta_bottom }}

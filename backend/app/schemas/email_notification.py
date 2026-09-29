@@ -49,6 +49,26 @@ class WeeklyReportRunResult(BaseModel):
     )
 
 
+class MonthlyProjectSummaryRunResult(BaseModel):
+    """What one monthly-project-summary run queued. Counts and a period only —
+    never a recipient, a project name or a figure."""
+
+    execution_id: str = Field(..., description="Identifies this run in the logs.")
+    month_start: str = Field(..., description="First day of the reported month.")
+    month_end: str = Field(..., description="Last day of the reported month.")
+    timezone: str = Field(..., description="Calendar the period was cut on.")
+    organizations: int = Field(0, description="Organisations summarised.")
+    projects: int = Field(0, description="Projects with activity in the month, across organisations.")
+    eligible_recipients: int = Field(0, description="Admins, owners and leaders to be sent a summary.")
+    queued: int = Field(0, description="Summaries newly queued by this run.")
+    already_queued: int = Field(0, description="Summaries this month already had — a retry or re-run.")
+    skipped: int = Field(0, description="No usable address, or no organization.")
+    failed: int = Field(0, description="Could not be queued. Logged, and retryable by re-running.")
+    dry_run: bool = Field(False, description="Whether the run computed without queueing anything.")
+    disabled: bool = Field(False, description="MONTHLY_PROJECT_SUMMARY_ENABLED is false.")
+    duration_ms: int = Field(0, description="Wall-clock time the run took.")
+
+
 class MonthlyReportRunResult(BaseModel):
     """What one monthly-report run queued. Counts and a period only."""
 

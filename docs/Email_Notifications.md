@@ -130,6 +130,15 @@ There is deliberately **no feature flag**. The welcome and release emails have
 one because they fire automatically; this one fires because an administrator
 pressed a button, and a flag would make that press silently do nothing.
 
+### Monthly Project Summary — scheduled, per recipient scope
+
+On the 1st of each month, `/internal/reports/monthly-projects/run` queues a
+company-level summary of the previous month's projects. Administrators and
+owners get the whole organisation, and leaders get only their own projects.
+There is one row per recipient per month, keyed `month:<start>:user:<id>`.
+Its hours come from the same `project_hours` calculation as the Project
+Management page. See [Monthly_Project_Summary.md](Monthly_Project_Summary.md).
+
 ---
 
 ## 4. Retry and failure

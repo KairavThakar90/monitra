@@ -25,7 +25,7 @@ from app.core.config import settings
 from app.models.email_notification import (
     TYPE_FEEDBACK, TYPE_FEEDBACK_STATUS, TYPE_RELEASE, TYPE_WELCOME,
     TYPE_MANUAL_TIME_DECISION, TYPE_MANUAL_TIME_RECEIPT, TYPE_MANUAL_TIME_REQUEST,
-    TYPE_MONTHLY_REPORT, TYPE_WEEKLY_REPORT,
+    TYPE_MONTHLY_PROJECT_SUMMARY, TYPE_MONTHLY_REPORT, TYPE_WEEKLY_REPORT,
 )
 from app.repositories.email_notification import EmailNotificationRepository
 from app.repositories.user import UserRepository
@@ -830,6 +830,60 @@ def queue_manual_time_decision_notification(db: Session, entry, reviewer=None) -
             "MANUAL_TIME_DECISION_EMAIL_QUEUE_FAILED: entry=%s", getattr(entry, "id", "?"), exc_info=True,
         )
         return None
+
+
+# ----------------------------------------------------------------------
+# Workflow 11 — monthly project summary
+# ----------------------------------------------------------------------
+
+def queue_monthly_project_summary(db: Session, *, user, period, payload: dict[str, Any]) -> tuple[Optional[int], bool]:
+    """Queue one recipient's monthly project summary. Returns ``(id, created)``.
+
+    `payload` was built for *this* user's scope by
+    `monthly_project_summary.summary_payload`; the pairing is checked here so
+    a leader can never be sent a payload built for somebody else's scope.
+    One notification per recipient, addressed to them alone.
+    """
+    if payload.get("user_id") != getattr(user, "id", None):
+        raise ValueError(
+            "Monthly project summary payload does not belong to the recipient "
+            f"(payload user {payload.get('user_id')!r}, recipient {getattr(user, 'id', None)!r})."
+        )
+    recipients = resolve_user_recipient(getattr(user, "email", "") or "")
+    if not recipients:
+        logger.warning(
+            "MONTHLY_PROJECT_SUMMARY_SKIPPED: user=%s reason=no_usable_email", getattr(user, "id", None),
+        )
+        return None, False
+
+    dedupe_key = monthly_report_dedupe_key(period.start_date, user.id)
+    existing = EmailNotificationRepository.get_by_event(
+        db, notification_type=TYPE_MONTHLY_PROJECT_SUMMARY, dedupe_key=dedupe_key,
+    )
+    row = EmailOutboxService.enqueue(
+        db,
+        notification_type=TYPE_MONTHLY_PROJECT_SUMMARY,
+        dedupe_key=dedupe_key,
+        recipients=recipients,
+        subject=messages.monthly_project_summary_subject(payload),
+        payload=payload,
+        organization_id=getattr(user, "organization_id", None),
+        user_id=user.id,
+    )
+    if row is None:
+        return None, False
+    if existing is not None:
+        logger.info(
+            "MONTHLY_PROJECT_SUMMARY_ALREADY_QUEUED: user=%s month=%s notification=%s status=%s",
+            user.id, period.start_date, row.id, existing.status,
+        )
+        return row.id, False
+    logger.info(
+        "MONTHLY_PROJECT_SUMMARY_QUEUED: user=%s month=%s notification=%s projects=%d",
+        user.id, period.start_date, row.id,
+        len(payload.get("fixed_projects") or []) + len(payload.get("flexible_projects") or []),
+    )
+    return row.id, True
 
 
 # ----------------------------------------------------------------------
