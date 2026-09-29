@@ -20,6 +20,37 @@ re-grant a permission.
 
 ## [Unreleased]
 
+## [1.3.0]
+
+The installer and the macOS bundles are still unsigned: Windows SmartScreen
+will warn on first run ("More info" → "Run anyway"), and macOS will refuse
+the app until you allow it under System Settings → Privacy & Security.
+
+### Added
+
+- **Changes made on the web show up in the app within seconds.** While the
+  Monitra window is on screen, new or edited projects and tasks, and your
+  admin's settings for you, appear without a restart or a manual refresh.
+- **Your admin can let you add tasks, or not.** When adding tasks is turned
+  off for you, the Add Task button is greyed out, and clicking it tells you
+  why.
+- **If your admin removes your sign-in access, Monitra signs you out within
+  seconds** and tells you why, rather than failing quietly on the next
+  request.
+- A small time-of-day icon beside the greeting in the sidebar.
+
+### Fixed
+
+- **Screenshots are never lost when an upload fails.** A failed upload is
+  retried until it succeeds, and the local copy is only deleted once the
+  server confirms it has stored the image.
+- **Break In right after Start reaches the server straight away.** Before,
+  the stop could take several seconds to arrive, and in a rare timing case
+  the entry kept running on the server until the next launch.
+- The manual time entry dialog only shows the Billable option for projects
+  that are billed that way.
+- The screenshot card fits its content instead of using a fixed height.
+
 ## [1.2.7]
 
 ### Fixed
