@@ -278,18 +278,24 @@ class TaskSummaryScopeTests(unittest.TestCase):
     """/reports/project-task-summary -- the Task Listing screen."""
 
     def _summary(self, user, project_ids):
+        """What the scoped project filter narrows to. The scope's choke point
+        is `project_ids_tracked_between` -- the first repository read, whose
+        result then bounds the pagination -- so that is where the scoped ids
+        must arrive intact."""
         db = MagicMock()
         db.scalars.return_value.all.side_effect = [list(LED), list(STAFFED)]
         with patch("app.services.reports.ReportsRepository.existing_project_ids",
                    side_effect=lambda _db, _org, ids: set(ids)), \
+             patch("app.services.reports.ReportsRepository.project_ids_tracked_between",
+                   return_value=set()) as tracked, \
              patch("app.services.reports.ReportsRepository.paginated_projects",
-                   return_value=([], 0)) as paged, \
+                   return_value=([], 0)), \
              patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}), \
              patch("app.services.reports.ReportsRepository.active_tasks_by_project", return_value={}), \
              patch("app.services.reports.ReportsRepository.tasks_touched_today", return_value=set()), \
              patch("app.services.reports.ReportsRepository.project_statuses_lookup", return_value={}):
             ReportsService.build_project_task_summary(db, user, 1, 5, project_ids, None, None, None)
-        return paged.call_args.args[2]
+        return tracked.call_args.args[2]
 
     def test_an_unfiltered_leader_pages_through_their_own_projects(self):
         self.assertEqual(self._summary(_leader(), None), sorted(LED | STAFFED))

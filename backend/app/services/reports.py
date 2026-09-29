@@ -386,7 +386,26 @@ class ReportsService:
         # know about" shape the project routes use.
         project_ids = ReportsService._scoped(project_ids, visible_project_ids(db, current_user))
 
-        projects, total_projects = ReportsRepository.paginated_projects(db, organization_id, project_ids, page, limit)
+        # Only projects somebody has actually started today appear at all --
+        # the Task Listing is "what is being worked on today", so a project
+        # with no tracking today is absent, not listed with an empty task
+        # list. Resolved against today's own boundary regardless of the
+        # requested range, exactly like `tasks_touched_today` below; the
+        # range only affects the displayed hour totals.
+        today = ist_today()
+        today_start, today_end = _utc_start(today), _utc_end(today)
+        active_ids = ReportsRepository.project_ids_tracked_between(
+            db, organization_id, project_ids, today_start, today_end, today, today
+        )
+        if not active_ids:
+            return {
+                "projects": [],
+                "pagination": {"page": page, "limit": limit, "total_projects": 0, "total_pages": 0},
+            }
+
+        projects, total_projects = ReportsRepository.paginated_projects(
+            db, organization_id, sorted(active_ids), page, limit
+        )
         page_ids = [project.id for project in projects]
 
         start_time = _utc_start(effective_start)
@@ -401,12 +420,8 @@ class ReportsService:
         status_ids = {project.status_id for project in projects if project.status_id}
         statuses = ReportsRepository.project_statuses_lookup(db, status_ids)
 
-        # The Task Listing screen shows only what's actively being worked on
-        # today, not every task a project has ever had -- resolved against
-        # today's own boundary regardless of `effective_start`/`effective_end`
-        # above, which stays the range the displayed hours are totalled over.
-        today = ist_today()
-        today_start, today_end = _utc_start(today), _utc_end(today)
+        # The same "today" rule, one level down: within a shown project, only
+        # tasks actively worked on today appear, not every task it ever had.
         touched_today = ReportsRepository.tasks_touched_today(
             db, organization_id, page_ids, today_start, today_end, today, today
         )

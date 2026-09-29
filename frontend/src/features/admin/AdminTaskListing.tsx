@@ -602,10 +602,11 @@ export const AdminTaskListing: React.FC = () => {
                   />
                 </svg>
                 <h3 className="mt-4 text-sm font-bold text-slate-800">
-                  No projects found
+                  Nothing worked on today
                 </h3>
                 <p className="mt-1 text-xs font-medium text-slate-500">
-                  Try adjusting your filters or date range.
+                  A project appears here once someone starts one of its tasks today.
+                  If you filtered by project, that filter applies too.
                 </p>
               </div>
             ) : (

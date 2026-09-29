@@ -337,6 +337,42 @@ class ReportsRepository:
         return dict(combined)
 
     @staticmethod
+    def project_ids_tracked_between(
+        db: Session,
+        organization_id: int,
+        project_ids: Optional[list[int]],
+        start_time: datetime,
+        end_time: datetime,
+        start_date: date,
+        end_date: date,
+    ) -> set[int]:
+        """Which projects had any tracking in the window -- auto entries plus
+        approved unmirrored manual entries, the same two session sources every
+        other read here combines. `project_ids=None` means the whole
+        organization; a list narrows to it. Feeds the Task Listing's "only
+        what was worked on today" project filter."""
+        auto_filters = [
+            TimeEntry.organization_id == organization_id,
+            TimeEntry.start_time >= start_time,
+            TimeEntry.start_time < end_time,
+        ]
+        manual_filters = [
+            ManualTimeEntry.organization_id == organization_id,
+            ManualTimeEntry.approval_status == "approved",
+            # Mirrored rows are already counted through time_entries.
+            ManualTimeEntry.mirrored_time_entry_id.is_(None),
+            ManualTimeEntry.work_date >= start_date,
+            ManualTimeEntry.work_date <= end_date,
+        ]
+        if project_ids is not None:
+            auto_filters.append(TimeEntry.project_id.in_(project_ids))
+            manual_filters.append(ManualTimeEntry.project_id.in_(project_ids))
+        tracked = set(db.scalars(select(TimeEntry.project_id).where(*auto_filters).distinct()).all())
+        tracked.update(db.scalars(select(ManualTimeEntry.project_id).where(*manual_filters).distinct()).all())
+        tracked.discard(None)
+        return tracked
+
+    @staticmethod
     def member_sessions(
         db: Session,
         organization_id: int,
