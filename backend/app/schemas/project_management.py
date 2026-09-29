@@ -57,7 +57,10 @@ class ProjectCreate(BaseModel):
     status_id: int = Field(..., gt=0)
     leader_id: int = Field(..., gt=0)
     employee_ids: list[int] = Field(default_factory=list)
-    deadline: date
+    #: Optional: `projects.deadline` is a nullable column and the rest of the
+    #: app already renders "No Deadline" for it -- requiring it at create
+    #: only forced the admin to invent a date they did not have.
+    deadline: Optional[date] = None
     billing_type: BillingType
     fixed_hours: Optional[Decimal] = Field(None, gt=0, le=100000)
 
@@ -85,7 +88,7 @@ class ProjectCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_business_rules(self):
-        if self.deadline < date.today():
+        if self.deadline is not None and self.deadline < date.today():
             raise ValueError("Deadline cannot be in the past")
         if self.billing_type == BillingType.fixed and self.fixed_hours is None:
             raise ValueError("Fixed hours are required for fixed billing")

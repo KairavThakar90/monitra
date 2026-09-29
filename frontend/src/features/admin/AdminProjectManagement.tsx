@@ -574,13 +574,11 @@ export const AdminProjectManagement: React.FC = () => {
   const projectForm = useFormValidation({
     name: { rule: 'name', label: 'Project name', required: true },
     description: { rule: 'description', label: 'Description' },
-    // Required: the backend's `ProjectCreate.deadline` is a plain `date`
-    // field, not `Optional`, so a project without one was rejected with a
-    // 422 the moment "Create Project" was pressed -- with every other
-    // field filled in correctly. Marking it required here catches that
-    // before the request is even sent, with a message next to the field
-    // itself rather than a generic failure after the round trip.
-    deadline: { rule: 'date', label: 'Deadline', required: true },
+    // Optional, matching the backend: `ProjectCreate.deadline` is
+    // `Optional[date]` (the column is nullable and the app already renders
+    // "No Deadline"). The rule still validates the format of a date that
+    // *is* entered.
+    deadline: { rule: 'date', label: 'Deadline', required: false },
     billingHours: {
       rule: 'decimal',
       label: 'Hour budget',
@@ -1264,7 +1262,7 @@ export const AdminProjectManagement: React.FC = () => {
                   <h3 className="mb-4 text-xs font-black uppercase tracking-widest text-[#3B82F6]">Basic Details</h3>
                   <div className="space-y-4">
                     <div>
-                      <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Project Name</label>
+                      <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Project Name <span className="text-rose-500">*</span></label>
                       <input
                         type="text"
                         required
@@ -1295,7 +1293,9 @@ export const AdminProjectManagement: React.FC = () => {
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Leader</label>
+                        <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">
+                          Leader{!leaderIsFixed && <> <span className="text-rose-500">*</span></>}
+                        </label>
                         <select
                           value={formLeader}
                           onChange={e => setFormLeader(e.target.value)}
@@ -1395,7 +1395,7 @@ export const AdminProjectManagement: React.FC = () => {
 
                     {formBillingType === 'fixed' && (
                       <div className="animate-in fade-in slide-in-from-top-2">
-                        <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Hour Budget</label>
+                        <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Hour Budget <span className="text-rose-500">*</span></label>
                         <div className="relative">
                           <input
                             type="number"
