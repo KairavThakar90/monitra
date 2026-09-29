@@ -5,9 +5,8 @@
 
   Every section is markup built in `messages.build_monthly_project_summary_email`
   from a payload computed for this one recipient's scope, and every value in
-  it is escaped there. The call to action appears directly under the summary
-  cards as well as at the end: a long month can be shortened by some mail
-  clients, and the complete report must always be one click away.
+  it is escaped there. The one call to action sits at the end, after every
+  project.
 -->
 <h1 class="st-h1" style="margin:0 0 6px 0;font-family:Helvetica,Arial,sans-serif;font-size:28px;line-height:36px;font-weight:700;color:#0F172A;letter-spacing:-0.4px;">
   Monthly Project Summary
@@ -34,8 +33,6 @@
 </p>
 
 {{ summary_cards }}
-
-{{ cta_top }}
 
 {{ empty_note }}
 

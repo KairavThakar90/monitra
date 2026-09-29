@@ -278,6 +278,7 @@ class TestFigures(_Db):
         self.assertEqual(totals["fixed_allocated_seconds"], 60 * HOUR)
         self.assertEqual(totals["fixed_used_to_date_seconds"], 6 * HOUR)
         self.assertEqual(totals["fixed_remaining_seconds"], 54 * HOUR)
+        self.assertEqual(totals["flexible_total_seconds"], 8 * HOUR)
         self.assertEqual(totals["total_seconds"], 6 * HOUR + 8 * HOUR)
 
     def test_contributors_and_highlights(self):
@@ -544,13 +545,27 @@ class TestRendering(unittest.TestCase):
         for expected in ("Monthly Project Summary", "Project performance summary for September 2026",
                          "1 September 2026 – 30 September 2026", "Total Hours Used", "Internal Hours",
                          "Billable Hours", "23h 0m", "19h 0m", "4h 0m",
-                         "Fixed Hours Projects", "Flexible Time Projects",
+                         "Fixed Hours Projects (2)", "Flexible Time Projects (1)",
                          "64h 0m left", "Over by 8h 0m", "100h 0m allocated", "36h 0m used to date",
                          "No fixed allocation", "every project in your organisation"):
             self.assertIn(expected, message.html, f"missing {expected!r}")
         self.assertEqual(message.subject, "Monitra Monthly Project Summary — Sep 2026")
         self.assertIn("Alpha: internal 3h 0m, billable 6h 0m, total 9h 0m", message.text)
         self.assertIn("remaining Over by 8h 0m", message.text)
+
+    def test_the_highlights_are_exactly_the_agreed_rows(self):
+        totals = {**_payload()["totals"], "flexible_total_seconds": 6 * HOUR}
+        rows = [label for label, _value in messages._highlight_rows(totals)]
+        self.assertEqual(rows, ["Fixed hours allocated", "Flexible hours used", "Contributors",
+                                "Average hours per project", "Most hours", "Most billable hours"])
+        message = self.render(_payload(totals=totals))
+        self.assertIn("Flexible hours used", message.html)
+        self.assertIn("6h 0m", message.html)
+        self.assertIn("Flexible hours used", message.text)
+        for removed in ("Fixed-Hours projects", "Flexible-Time projects", "Fixed hours used to date",
+                        "Fixed hours remaining", "Projects over allocation"):
+            self.assertNotIn(removed, message.html, removed)
+            self.assertNotIn(removed, message.text, removed)
 
     def test_the_flexible_table_has_no_remaining_column(self):
         flexible_table = str(messages._project_table(_payload()["flexible_projects"], fixed=False))
@@ -594,7 +609,9 @@ class TestRendering(unittest.TestCase):
                 "https://staff.peakworkos.com/member/reports/projects?start=2026-09-01&end=2026-09-30",
             )
         message = self.render()
-        self.assertEqual(message.html.count("View Detailed Project Report"), 2, "top and bottom")
+        self.assertEqual(message.html.count("View Detailed Project Report"), 1, "one button, at the end")
+        self.assertGreater(message.html.index("View Detailed Project Report"),
+                           message.html.index("Flexible Time Projects"), "after the tables")
 
     def test_the_cta_route_exists_in_the_frontend_and_reads_the_range(self):
         root = Path(__file__).resolve().parents[2] / "frontend" / "src"

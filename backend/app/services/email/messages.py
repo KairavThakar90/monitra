@@ -1780,19 +1780,14 @@ def _summary_cards(totals: dict[str, Any]) -> Markup:
 
 
 def _highlight_rows(totals: dict[str, Any]) -> list[tuple[str, Any]]:
-    rows: list[tuple[str, Any]] = [
-        ("Fixed-Hours projects", str(int(totals.get("fixed_projects") or 0))),
-        ("Flexible-Time projects", str(int(totals.get("flexible_projects") or 0))),
-    ]
+    """Highlights: the fixed budgets in play, the flexible hours used, and four
+    at-a-glance facts. Project counts live in each table's heading, and each
+    fixed project's used-to-date and remaining live in its own row."""
+    rows: list[tuple[str, Any]] = []
     if totals.get("fixed_projects"):
-        remaining = int(totals.get("fixed_remaining_seconds") or 0)
-        rows += [
-            ("Fixed hours allocated", _hours_text(totals.get("fixed_allocated_seconds"))),
-            ("Fixed hours used to date", _hours_text(totals.get("fixed_used_to_date_seconds"))),
-            ("Fixed hours remaining",
-             f"Over by {_hours_text(-remaining)}" if remaining < 0 else _hours_text(remaining)),
-            ("Projects over allocation", str(int(totals.get("over_allocation_projects") or 0))),
-        ]
+        rows.append(("Fixed hours allocated", _hours_text(totals.get("fixed_allocated_seconds"))))
+    if totals.get("flexible_projects"):
+        rows.append(("Flexible hours used", _hours_text(totals.get("flexible_total_seconds"))))
     if totals.get("projects_worked"):
         highest = totals.get("highest_project") or {}
         highest_billable = totals.get("highest_billable_project") or {}
@@ -1886,7 +1881,7 @@ def _summary_text_lines(payload: dict[str, Any], url: Optional[str]) -> list[str
     if not totals.get("projects_worked"):
         lines += ["", "No project activity was recorded during this reporting period."]
     if payload.get("fixed_projects"):
-        lines += ["", "FIXED HOURS PROJECTS", "(Remaining = allocation minus billable hours used to date; internal hours do not use the allocation.)"]
+        lines += ["", f"FIXED HOURS PROJECTS ({len(payload['fixed_projects'])})", "(Remaining = allocation minus billable hours used to date; internal hours do not use the allocation.)"]
         for p in payload["fixed_projects"]:
             lines.append(
                 f"- {p.get('name')}: internal {_hours_text(p.get('internal_seconds'))}, "
@@ -1895,7 +1890,7 @@ def _summary_text_lines(payload: dict[str, Any], url: Optional[str]) -> list[str
                 f"remaining {_remaining_text(p)}"
             )
     if payload.get("flexible_projects"):
-        lines += ["", "FLEXIBLE TIME PROJECTS", "(No fixed allocation, so no remaining hours.)"]
+        lines += ["", f"FLEXIBLE TIME PROJECTS ({len(payload['flexible_projects'])})", "(No fixed allocation, so no remaining hours.)"]
         for p in payload["flexible_projects"]:
             lines.append(
                 f"- {p.get('name')}: internal {_hours_text(p.get('internal_seconds'))}, "
@@ -1957,17 +1952,16 @@ def build_monthly_project_summary_email(payload: dict[str, Any], recipients: lis
             "period_label": str(payload.get("period_label") or ""),
             "scope_note": scope_note,
             "summary_cards": _summary_cards(totals),
-            "cta_top": _summary_cta(url),
             "empty_note": empty_note,
             "highlights": highlights,
             "fixed_section": _section(
-                "Fixed Hours Projects",
+                f"Fixed Hours Projects ({len(payload.get('fixed_projects') or [])})",
                 "Remaining is the allocation minus billable hours used from the project's start "
                 f"through the end of {month}. Internal hours do not use the allocation.",
                 _project_table(list(payload.get("fixed_projects") or []), fixed=True),
             ),
             "flexible_section": _section(
-                "Flexible Time Projects",
+                f"Flexible Time Projects ({len(payload.get('flexible_projects') or [])})",
                 "No fixed allocation, so there are no remaining hours.",
                 _project_table(list(payload.get("flexible_projects") or []), fixed=False),
             ),

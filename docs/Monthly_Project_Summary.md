@@ -72,16 +72,18 @@ work was done is still reported. A fixed project with no activity in the
 month is not listed: this is a report of the month's activity, and its
 budget is unchanged from the previous month's report.
 
-**Totals.** The summary shows these totals:
+**Totals.** The summary cards show Projects worked, Total, Internal and
+Billable Hours. The Highlights show:
 
-- Projects worked
-- Total, Internal and Billable Hours
-- Fixed and Flexible project counts
-- Fixed hours allocated, used to date and remaining
-- Projects over their allocation
+- Fixed hours allocated: the budgets of the fixed projects worked this month
+- Flexible hours used: the flexible projects' total hours for the month
 - Contributors (distinct members with positive time)
 - Average hours per project
 - The project with the most hours and the project with the most billable hours
+
+Each table's heading carries its project count, for example
+"Fixed Hours Projects (2)". Each fixed project's used-to-date and remaining
+figures are in its own row.
 
 ## The email
 
@@ -91,17 +93,16 @@ button style. From top to bottom it contains:
 1. The title, the month and the reporting period.
 2. A note saying whether it is company-wide or scoped.
 3. Four summary cards.
-4. The **View Detailed Project Report** button.
-5. Highlights.
-6. The **Fixed Hours Projects** table: Internal, Billable, Total and
+4. Highlights.
+5. The **Fixed Hours Projects (N)** table: Internal, Billable, Total and
    Remaining, with the allocation and used-to-date under each name.
-7. The **Flexible Time Projects** table: Internal, Billable and Total.
-8. The button again.
+6. The **Flexible Time Projects (N)** table: Internal, Billable and Total.
+7. The **View Detailed Project Report** button.
 
-Every project is listed, however many there are. The tables are compact, and
-the button appears before them. Some mail clients shorten very long messages,
-but the complete report is always one click away. The plain-text alternative
-carries every row. Every value is HTML-escaped.
+Every project is listed, however many there are. The plain-text alternative
+carries every row. Every value is HTML-escaped. Gmail shortens messages
+larger than about 100 KB; for a very large month, the full email remains
+available through Gmail's "View entire message" link.
 
 An empty month still sends. It shows zeroes and says "No project activity
 was recorded during this reporting period."

@@ -162,6 +162,10 @@ class ProjectSummary:
             "fixed_used_to_date_seconds": sum(p.used_to_date_seconds or 0 for p in fixed),
             "fixed_remaining_seconds": sum(p.remaining_seconds or 0 for p in fixed),
             "fixed_used_this_month_seconds": sum(p.billable_seconds for p in fixed),
+            #: Every flexible project's total hours for the month, added up --
+            #: the flexible counterpart of `fixed_allocated_seconds` in the
+            #: email's Highlights.
+            "flexible_total_seconds": sum(p.total_seconds for p in self.flexible),
             "over_allocation_projects": sum(1 for p in fixed if p.is_over_allocation),
             "contributors": len(contributors),
             "average_seconds_per_project": int(round(total_seconds / len(projects))) if projects else 0,
