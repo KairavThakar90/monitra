@@ -763,14 +763,7 @@ class TimerService(BaseService):
             "start for %s landed after its session ended; entry %s needs stopping",
             client_op, entry_id,
         )
-        resolved = 0
-        if self._cache:
-            try:
-                resolved = self._cache.resolve_entry_id_for_client_op(client_op, entry_id)
-            except Exception:  # noqa: BLE001
-                self.log.exception("could not resolve entry %s onto its queued stop", entry_id)
-        if resolved:
-            self.log.info("entry %s handed to %d queued action(s)", entry_id, resolved)
+        if self._resolve_queued_stop(client_op, entry_id):
             return
 
         # Nothing was waiting for it -- the stop was cancelled before this
@@ -794,6 +787,27 @@ class TimerService(BaseService):
             )
         except Exception:  # noqa: BLE001
             self.log.exception("could not queue a stop for orphaned entry %s", entry_id)
+
+    def _resolve_queued_stop(self, client_op: str, entry_id: int) -> int:
+        """Write a landed start's entry id onto the queued actions awaiting it.
+
+        The resolved rows are ready at once, so the consumer is woken rather
+        than left to find them at its idle cadence.
+
+        :return: how many queued actions were resolved.
+        """
+        resolved = 0
+        if self._cache:
+            try:
+                resolved = self._cache.resolve_entry_id_for_client_op(client_op, entry_id)
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not resolve entry %s onto its queued stop", entry_id)
+        if resolved:
+            self.log.info("entry %s handed to %d queued action(s)", entry_id, resolved)
+            wake = getattr(self.runtime.sync, "wake", None)
+            if callable(wake):
+                wake()
+        return resolved
 
     def _bind_trackers_to_entry(self, entry_id: int) -> None:
         """Give sub-trackers the backend entry id once it is known."""
@@ -1364,6 +1378,14 @@ class TimerService(BaseService):
                 "queued start for %s landed as entry %s after its session ended",
                 client_op, entry_id,
             )
+            # But the stop may not have had its id. `_enqueue_stop` writes the
+            # start and then the stop, and the consumer, woken by the first,
+            # can complete the start before the second exists -- so the
+            # resolution in `_handle_start_timer` found nothing to resolve.
+            # This signal is delivered on this thread, after `_enqueue_stop`
+            # returned, so the stop is queued by now. Idempotent: only rows
+            # still missing an entry id are touched.
+            self._resolve_queued_stop(client_op, entry_id)
             return
         self.log.info(
             "queued start for %s landed as entry %s; binding the live session",

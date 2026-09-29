@@ -538,6 +538,68 @@ def test_a_resolved_stop_then_claims_the_entry_it_was_given(cache):
     assert cache.has_pending_stop_for_entry(4242) is True
 
 
+def test_a_deferred_stop_is_sent_the_moment_its_entry_id_arrives(cache):
+    """A stop deferred for its start must not sit out the deferral once the
+    id it was waiting for is written onto it.
+
+    The deferral delay exists to wait for a start that has not landed. Once
+    the start has landed and its id is on the stop, the stop is ready: kept
+    behind the delay, it sat idle for one to two consumer ticks -- measured
+    at two to four seconds between Break In and the stop reaching the
+    backend, which is also what made
+    `test_break_in_out.py::test_5_rapid_clicks...` fail intermittently.
+    """
+    action_id = cache.enqueue_action(
+        "stop_timer", {"entry_id": None, "client_op": "timer:7:t"},
+        priority=1, idempotency_key="stop:timer:7:t",
+    )
+    claimed = cache.get_next_pending_action()
+    assert claimed["id"] == action_id
+    cache.defer_action(action_id, "waiting for the queued start")
+    assert cache.get_next_pending_action() is None, "deferred: not ready yet"
+
+    assert cache.resolve_entry_id_for_client_op("timer:7:t", 4242) == 1
+
+    ready = cache.get_next_pending_action()
+    assert ready is not None and ready["id"] == action_id, (
+        "the resolved stop waited out a deferral whose reason no longer holds"
+    )
+    assert ready["payload"]["entry_id"] == 4242
+
+
+def test_a_queued_start_landing_before_its_stop_was_queued_still_resolves_it(qapp, runtime):
+    """The start can land before the stop that waits for it is written.
+
+    `TimerService._enqueue_stop` queues the session's start and then its stop
+    as two writes, and the consumer is woken by the first. It can complete the
+    start in between, when `_handle_start_timer` finds no stop to hand the id
+    to. The id reaches the timer through `action_completed`; for a session
+    that has already ended, that handler used to only log -- so unless the
+    in-process start *also* succeeded, nothing ever wrote the id onto the
+    stop. It deferred out its budget, was cancelled as unresolvable, and the
+    entry ran on the backend until the next launch adopted it.
+    """
+    client_op = "timer:7:2026-09-29T14:04:20+00:00"
+    cache = runtime.cache
+    # The stop, queued after its start had already completed.
+    cache.enqueue_action(
+        "stop_timer", {"entry_id": None, "task_id": 7, "client_op": client_op},
+        priority=1, idempotency_key=f"stop:{client_op}",
+    )
+    assert runtime.timer.active_session() is None, "the session has already ended"
+
+    runtime.timer._on_sync_action_completed(
+        "start-action", "start_timer",
+        {"entry_id": 4242, "client_op": client_op, "project_id": 1, "task_id": 7},
+    )
+
+    assert cache.has_pending_stop_for_entry(4242) is True, (
+        "the landed start's entry id never reached the stop waiting for it"
+    )
+    ready = cache.get_next_pending_action()
+    assert ready is not None and ready["payload"]["entry_id"] == 4242
+
+
 def test_a_completed_stop_no_longer_claims_its_entry(cache):
     """Only unfinished work speaks for an entry; a sent stop is done."""
     action_id = cache.enqueue_action(

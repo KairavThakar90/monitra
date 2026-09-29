@@ -945,10 +945,15 @@ class LocalCache:
                 if "entry_id" not in payload or payload.get("entry_id"):
                     continue
                 payload["entry_id"] = entry_id
+                # Ready now. A row still missing its entry id can only have
+                # been *deferred* for it -- it was never sent -- and the
+                # reason for the deferral is gone the moment the id arrives.
+                # Left behind the deferral delay, a stop issued just after
+                # its start reached the backend seconds late.
                 conn.execute(
-                    "UPDATE pending_actions SET payload = ?, entity_id = ?, updated_at = ? "
-                    "WHERE id = ?",
-                    (json.dumps(payload), str(entry_id), now, row["id"]),
+                    "UPDATE pending_actions SET payload = ?, entity_id = ?, "
+                    "next_retry_at = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(payload), str(entry_id), now, now, row["id"]),
                 )
                 resolved += 1
         if resolved:
