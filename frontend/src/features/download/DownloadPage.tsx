@@ -1,10 +1,9 @@
 /**
  * The Monitra desktop download page.
  *
- * The one thing this page must get right: **it never links to a versioned
- * file.** Every button points at its platform's stable distribution link
- * (`DOWNLOAD_LINKS`), so the build behind it can change without this file being
- * edited.
+ * Every button points at its platform's entry in `DOWNLOAD_LINKS` — that
+ * module is the single place a download link lives, so a new release is
+ * shipped by updating those links, never by editing this page.
  *
  * Public and unauthenticated: a new member installing Monitra for the first
  * time has no account yet, and asking them to sign in before they can download

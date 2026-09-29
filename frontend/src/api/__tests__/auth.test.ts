@@ -23,7 +23,9 @@ const SESSION = {
   access_token: 'monitra-access',
   refresh_token: 'monitra-refresh',
   token_type: 'Bearer',
-  user: { id: 172, email: 'someone@example.com' },
+  // Realistic shape: the backend's UserRead always carries role_name, and
+  // loginAPI normalises the profile on the way through.
+  user: { id: 172, email: 'someone@example.com', role_name: 'employee' },
 };
 
 function jsonResponse(status: number, body: unknown): Response {

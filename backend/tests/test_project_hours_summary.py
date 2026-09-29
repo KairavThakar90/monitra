@@ -74,14 +74,14 @@ def _project(project_id: int, organization_id=ORG, billing_type="fixed", fixed_h
     )
 
 
-def _entry(entry_id: int, project_id: int, seconds: int, organization_id=ORG, user_id=None, start=None) -> TimeEntry:
+def _entry(entry_id: int, project_id: int, seconds: int, organization_id=ORG, user_id=None, start=None, task_id=1) -> TimeEntry:
     """`time_entries` carries a unique index on `user_id` scoped to `end_time
     IS NULL` in Postgres; SQLAlchemy's `postgresql_where` is dropped on
     SQLite, so the index becomes unconditionally unique there. Each entry
     therefore gets its own user unless the test asks otherwise."""
     start = start or datetime(2026, 1, 1, tzinfo=timezone.utc)
     return TimeEntry(
-        id=entry_id, organization_id=organization_id, user_id=user_id or (ALICE + entry_id), project_id=project_id, task_id=1,
+        id=entry_id, organization_id=organization_id, user_id=user_id or (ALICE + entry_id), project_id=project_id, task_id=task_id,
         start_time=start, end_time=start, total_seconds=seconds, status="completed", is_manual=False,
         is_billable=True,
     )
@@ -143,6 +143,65 @@ class ProjectHoursSummaryTests(unittest.TestCase):
 
     def test_no_projects_in_scope_returns_an_empty_list(self):
         self.assertEqual(ProjectManagementService.hours_summary(self.db, _admin()), [])
+
+    def test_time_on_default_tasks_counts_as_internal_not_used(self):
+        """Time against the four seeded default tasks is Internal Hours;
+        everything else is Used Hours; the grand total carries both."""
+        self.db.add(_project(1, fixed_hours=10))
+        self.db.add_all([
+            Task(id=1, organization_id=ORG, project_id=1, task_name="Internal Discussion", created_by=ADMIN),
+            Task(id=2, organization_id=ORG, project_id=1, task_name="Send Client Update", created_by=ADMIN),
+            Task(id=3, organization_id=ORG, project_id=1, task_name="Build the feature", created_by=ADMIN),
+        ])
+        self.db.add_all([
+            _entry(1, 1, 3600, task_id=1),   # internal
+            _entry(2, 1, 1800, task_id=2),   # internal
+            _entry(3, 1, 7200, task_id=3),   # real work
+        ])
+        self.db.commit()
+
+        [summary] = ProjectManagementService.hours_summary(self.db, _admin())
+        self.assertEqual(summary["internal_seconds"], 5400)
+        self.assertEqual(summary["internal_hours"], 1.5)
+        self.assertEqual(summary["total_used_seconds"], 7200)
+        self.assertEqual(summary["total_used_hours"], 2.0)
+        self.assertEqual(summary["total_tracked_seconds"], 12600)
+
+    def test_the_split_survives_the_route_response_schema(self):
+        """The route serialises through `ProjectHoursSummaryResponse`, which
+        silently *drops* any field it does not declare -- exactly how the
+        internal/used split reached the service but never the browser. This
+        pushes the service payload through the real schema so a field added
+        to one but not the other fails here instead of in production."""
+        from app.schemas.project_management import ProjectHoursSummaryResponse
+
+        self.db.add(_project(1, fixed_hours=10))
+        self.db.add(Task(id=1, organization_id=ORG, project_id=1, task_name="Internal Discussion", created_by=ADMIN))
+        self.db.add(_entry(1, 1, 3600, task_id=1))
+        self.db.commit()
+
+        payload = ProjectHoursSummaryResponse(
+            items=ProjectManagementService.hours_summary(self.db, _admin())
+        )
+        item = payload.items[0]
+        self.assertEqual(item.internal_seconds, 3600)
+        self.assertEqual(item.internal_hours, 1.0)
+        self.assertEqual(item.total_used_seconds, 0)
+        self.assertEqual(item.total_tracked_seconds, 3600)
+
+    def test_a_default_task_name_on_another_project_does_not_bleed_over(self):
+        """The internal bucket is matched per project: a default-named task
+        on project 2 must not classify project 1's time."""
+        self.db.add_all([_project(1), _project(2)])
+        self.db.add_all([
+            Task(id=1, organization_id=ORG, project_id=2, task_name="Internal Discussion", created_by=ADMIN),
+        ])
+        self.db.add(_entry(1, 1, 3600, task_id=99))  # project 1, unknown task
+        self.db.commit()
+
+        summaries = {row["project_id"]: row for row in ProjectManagementService.hours_summary(self.db, _admin())}
+        self.assertEqual(summaries[1]["total_used_seconds"], 3600)
+        self.assertEqual(summaries[1]["internal_seconds"], 0)
 
     def test_started_at_is_the_earliest_tracked_session_not_the_project_created_date(self):
         # Project row created 2026-01-01 (see _project's default created_at),

@@ -275,6 +275,132 @@ class ReportsRepository:
         return dict(combined)
 
     @staticmethod
+    def session_seconds_by_task_and_member(
+        db: Session,
+        organization_id: int,
+        project_ids: list[int],
+        start_time: datetime,
+        end_time: datetime,
+        start_date: date,
+        end_date: date,
+    ) -> dict[tuple[int, int], int]:
+        """Sum tracked seconds grouped by (task_id, user_id) -- who worked on
+        each task and for how long. The two-column sibling of
+        `session_seconds_by`, combining the same three sources the same way:
+        auto time_entries, approved unmirrored manual_time_entries, and signed
+        time adjustments bucketed by the adjusted entry's own window, clamped
+        at zero per group."""
+        if not project_ids:
+            return {}
+        auto_filters = [
+            TimeEntry.organization_id == organization_id,
+            TimeEntry.project_id.in_(project_ids),
+            TimeEntry.start_time >= start_time,
+            TimeEntry.start_time < end_time,
+        ]
+        manual_filters = [
+            ManualTimeEntry.organization_id == organization_id,
+            ManualTimeEntry.project_id.in_(project_ids),
+            ManualTimeEntry.approval_status == "approved",
+            # Mirrored rows are already counted through time_entries; see
+            # session_seconds_by.
+            ManualTimeEntry.mirrored_time_entry_id.is_(None),
+            ManualTimeEntry.work_date >= start_date,
+            ManualTimeEntry.work_date <= end_date,
+        ]
+
+        auto_rows = db.execute(
+            select(TimeEntry.task_id, TimeEntry.user_id,
+                   func.sum(TimeTrackingRepository._duration_expression()).label("secs"))
+            .where(*auto_filters).group_by(TimeEntry.task_id, TimeEntry.user_id)
+        ).all()
+        manual_rows = db.execute(
+            select(ManualTimeEntry.task_id, ManualTimeEntry.user_id,
+                   func.sum(ManualTimeEntry.total_seconds).label("secs"))
+            .where(*manual_filters).group_by(ManualTimeEntry.task_id, ManualTimeEntry.user_id)
+        ).all()
+
+        combined: dict[tuple[int, int], int] = defaultdict(int)
+        for task_id, user_id, secs in (*auto_rows, *manual_rows):
+            combined[(task_id, user_id)] += int(secs or 0)
+
+        adjustment_rows = db.execute(
+            select(TimeEntry.task_id, TimeEntry.user_id,
+                   func.sum(TimeEntryAdjustment.adjustment_seconds).label("adj"))
+            .join(TimeEntry, TimeEntry.id == TimeEntryAdjustment.time_entry_id)
+            .where(*auto_filters)
+            .group_by(TimeEntry.task_id, TimeEntry.user_id)
+        ).all()
+        for task_id, user_id, adj in adjustment_rows:
+            key = (task_id, user_id)
+            combined[key] = max(0, combined[key] + int(adj or 0))
+        return dict(combined)
+
+    @staticmethod
+    def member_sessions(
+        db: Session,
+        organization_id: int,
+        project_ids: list[int],
+        member_id: int,
+        start_time: datetime,
+        end_time: datetime,
+        start_date: date,
+        end_date: date,
+    ) -> list[tuple[datetime, Optional[datetime], int]]:
+        """One member's individual tracked sessions against these projects, as
+        (start_time, end_time, reportable_seconds) rows -- the raw material
+        for a date-wise activity view (first activity, last activity and
+        total per day). Combines the same three sources as
+        `session_seconds_by`: auto entries, approved unmirrored manual
+        entries, and signed adjustments -- here applied per entry, clamped at
+        zero, so a day's total agrees with the grouped reads."""
+        if not project_ids:
+            return []
+        adjustments = (
+            select(
+                TimeEntryAdjustment.time_entry_id,
+                func.sum(TimeEntryAdjustment.adjustment_seconds).label("adj"),
+            )
+            .group_by(TimeEntryAdjustment.time_entry_id)
+            .subquery()
+        )
+        auto_rows = db.execute(
+            select(
+                TimeEntry.start_time,
+                TimeEntry.end_time,
+                TimeTrackingRepository._duration_expression().label("secs"),
+                func.coalesce(adjustments.c.adj, 0).label("adj"),
+            )
+            .outerjoin(adjustments, adjustments.c.time_entry_id == TimeEntry.id)
+            .where(
+                TimeEntry.organization_id == organization_id,
+                TimeEntry.project_id.in_(project_ids),
+                TimeEntry.user_id == member_id,
+                TimeEntry.start_time >= start_time,
+                TimeEntry.start_time < end_time,
+            )
+        ).all()
+        manual_rows = db.execute(
+            select(ManualTimeEntry.start_time, ManualTimeEntry.end_time, ManualTimeEntry.total_seconds)
+            .where(
+                ManualTimeEntry.organization_id == organization_id,
+                ManualTimeEntry.project_id.in_(project_ids),
+                ManualTimeEntry.user_id == member_id,
+                ManualTimeEntry.approval_status == "approved",
+                # Mirrored rows are already counted through time_entries.
+                ManualTimeEntry.mirrored_time_entry_id.is_(None),
+                ManualTimeEntry.work_date >= start_date,
+                ManualTimeEntry.work_date <= end_date,
+            )
+        ).all()
+        sessions = [
+            (started, ended, max(0, int(secs or 0) + int(adj or 0)))
+            for started, ended, secs, adj in auto_rows
+        ]
+        sessions.extend((started, ended, int(secs or 0)) for started, ended, secs in manual_rows)
+        return sessions
+
+    @staticmethod
     def first_tracked_at_by(
         db: Session,
         organization_id: int,

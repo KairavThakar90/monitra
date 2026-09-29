@@ -13,6 +13,7 @@ export interface ClientPermissions {
   share_screenshots: boolean;
   share_tasks: boolean;
   share_timing: boolean;
+  share_billing: boolean;
 }
 
 export const DEFAULT_CLIENT_PERMISSIONS: ClientPermissions = {
@@ -20,6 +21,9 @@ export const DEFAULT_CLIENT_PERMISSIONS: ClientPermissions = {
   share_screenshots: false,
   share_tasks: true,
   share_timing: true,
+  // Off by default, like screenshots: budget figures are the most sensitive
+  // section, so an admin grants them per client deliberately.
+  share_billing: false,
 };
 
 export interface ClientListItem {

@@ -34,6 +34,9 @@ export interface ProjectTask {
   name: string;
   assignee: ProjectUser | null;
   status: { id: number; name: string; color: string };
+  /** The task's budgeted hours — what the client portal's Billing page shows
+   * as the task's total. `null` when no budget was set. */
+  estimated_hours: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -82,8 +85,18 @@ export interface ProjectListResponse {
  * change shape to carry it. See `ProjectManagementService.hours_summary`. */
 export interface ProjectHoursSummary {
   project_id: number;
+  /** Time on ordinary work tasks — excludes the four seeded default
+   * (internal) tasks. This is the figure a fixed budget is measured
+   * against. */
   total_used_seconds: number;
   total_used_hours: number;
+  /** Time on the project's seeded default tasks (client updates, internal
+   * discussion…). Optional so a backend predating the split still renders. */
+  internal_seconds?: number;
+  internal_hours?: number;
+  /** Used + internal. */
+  total_tracked_seconds?: number;
+  total_tracked_hours?: number;
   /** Earliest tracked session against the project -- distinct from its
    * `created_at`. `null` when nothing has ever been tracked against it. */
   started_at: string | null;
@@ -177,6 +190,7 @@ const patchTaskSummaries = (
       total_tracked_seconds: 0,
       total_tracked_hours: 0,
       total_tracked_time: '00:00:00',
+      estimated_hours: task.estimated_hours ?? null,
     });
     project.total_task_count = (project.total_task_count || 0) + 1;
   });
@@ -393,7 +407,7 @@ export const projectsApi = baseApi.injectEndpoints({
 
     createTask: builder.mutation<
       ProjectTask,
-      { projectId: number; body: { project_id?: number; name: string; assignee_id: number | null; status_id: number } }
+      { projectId: number; body: { project_id?: number; name: string; assignee_id: number | null; status_id: number; estimated_hours?: number | null } }
     >({
       query: ({ projectId, body }) => ({
         url: ENDPOINTS.PROJECTS.TASKS(projectId),
@@ -424,7 +438,7 @@ export const projectsApi = baseApi.injectEndpoints({
 
     updateTask: builder.mutation<
       ProjectTask,
-      { projectId: number; taskId: number; body: { name?: string; assignee_id?: number | null; status_id?: number } }
+      { projectId: number; taskId: number; body: { name?: string; assignee_id?: number | null; status_id?: number; estimated_hours?: number | null } }
     >({
       query: ({ projectId, taskId, body }) => ({
         url: ENDPOINTS.PROJECTS.TASK_BY_ID(projectId, taskId),

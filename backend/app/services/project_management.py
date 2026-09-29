@@ -200,7 +200,7 @@ class ProjectManagementService:
 
     @staticmethod
     def _task_payload(task: Task, task_status: TaskStatus, assignee: Optional[User]):
-        return {"id": task.id, "project_id": task.project_id, "name": task.task_name, "assignee_id": task.assignee_id, "assignee": ProjectManagementService._person(assignee), "status": task_status, "created_at": task.created_at, "updated_at": task.updated_at}
+        return {"id": task.id, "project_id": task.project_id, "name": task.task_name, "assignee_id": task.assignee_id, "assignee": ProjectManagementService._person(assignee), "status": task_status, "estimated_hours": float(task.estimated_hours) if task.estimated_hours is not None else None, "created_at": task.created_at, "updated_at": task.updated_at}
 
     @staticmethod
     def _detail_payload(db: Session, project: Project, user: User):
@@ -446,16 +446,55 @@ class ProjectManagementService:
             ist_day_start_utc(_EPOCH_DATE), ist_day_end_utc(_FAR_FUTURE_DATE),
             _EPOCH_DATE, _FAR_FUTURE_DATE, "project_id",
         )
+
+        # Internal vs used: time on a project's four seeded default tasks
+        # (DEFAULT_PROJECT_TASKS) is *internal* -- overhead like client
+        # updates and internal discussion -- and everything else is Used
+        # Hours, the figure a fixed budget's Remaining is measured against.
+        # A default task is identified by name, the only signal it carries
+        # (see the CLAUDE.md §5 note); a renamed default therefore counts as
+        # ordinary work, which is the honest reading of an admin renaming it.
+        seconds_by_task = ReportsRepository.session_seconds_by(
+            db, user.organization_id, ids, None,
+            ist_day_start_utc(_EPOCH_DATE), ist_day_end_utc(_FAR_FUTURE_DATE),
+            _EPOCH_DATE, _FAR_FUTURE_DATE, "task_id",
+        )
+        internal_task_project = {
+            task_id: project_id
+            for task_id, project_id in db.execute(
+                select(Task.id, Task.project_id).where(
+                    Task.project_id.in_(ids),
+                    Task.task_name.in_(DEFAULT_PROJECT_TASKS),
+                )
+            ).all()
+        }
+        internal_by_project: dict[int, int] = {}
+        for task_id, secs in seconds_by_task.items():
+            project_id = internal_task_project.get(task_id)
+            if project_id is not None:
+                internal_by_project[project_id] = internal_by_project.get(project_id, 0) + int(secs)
+
         started_by_project = ReportsRepository.first_tracked_at_by(db, user.organization_id, ids, "project_id")
-        return [
-            {
+
+        items = []
+        for project_id in ids:
+            total = int(seconds_by_project.get(project_id, 0))
+            # Per-task and per-project sums are each clamped at zero after
+            # adjustments, so they can disagree by the clamped amount; the
+            # split must still never report used < 0.
+            internal = min(internal_by_project.get(project_id, 0), total)
+            used = total - internal
+            items.append({
                 "project_id": project_id,
-                "total_used_seconds": int(seconds_by_project.get(project_id, 0)),
-                "total_used_hours": round(seconds_by_project.get(project_id, 0) / 3600, 2),
+                "total_used_seconds": used,
+                "total_used_hours": round(used / 3600, 2),
+                "internal_seconds": internal,
+                "internal_hours": round(internal / 3600, 2),
+                "total_tracked_seconds": total,
+                "total_tracked_hours": round(total / 3600, 2),
                 "started_at": started_by_project.get(project_id),
-            }
-            for project_id in ids
-        ]
+            })
+        return items
 
     @staticmethod
     def get(db: Session, user: User, project_id: int):
@@ -601,7 +640,7 @@ class ProjectManagementService:
         # legacy route has always done.
         if assignee is None and is_task_scoped(user):
             assignee = user
-        task = Task(organization_id=user.organization_id, project_id=project.id, task_name=payload.name, assignee_id=assignee.id if assignee else None, status_id=task_status.id, status=ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task"), created_by=user.id, client_op=payload.client_op)
+        task = Task(organization_id=user.organization_id, project_id=project.id, task_name=payload.name, assignee_id=assignee.id if assignee else None, status_id=task_status.id, status=ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task"), created_by=user.id, client_op=payload.client_op, estimated_hours=payload.estimated_hours)
         db.add(task)
         try:
             db.flush()
@@ -656,6 +695,7 @@ class ProjectManagementService:
             db.add(TaskAssignee(task_id=task.id, user_id=assignee.id, assigned_by=user.id))
             task.assignee_id = assignee.id
         if "name" in values: task.task_name = values["name"]
+        if "estimated_hours" in values: task.estimated_hours = values["estimated_hours"]
         db.commit()
         db.refresh(task)
         return ProjectManagementService._task_payload(task, task_status, assignee)

@@ -26,6 +26,7 @@ DEFAULT_CLIENT_PERMISSIONS = {
     "share_screenshots": False,
     "share_tasks": True,
     "share_timing": True,
+    "share_billing": False,
 }
 
 
@@ -147,6 +148,7 @@ class ClientInvitationService:
             "share_screenshots": client.share_screenshots,
             "share_tasks": client.share_tasks,
             "share_timing": client.share_timing,
+            "share_billing": client.share_billing,
         }
         return ClientInvitationService.create_invitation(
             db, admin_user, client.email, project_ids, permissions=current_permissions,
@@ -215,6 +217,7 @@ class ClientInvitationService:
                     "share_screenshots": row.share_screenshots,
                     "share_tasks": row.share_tasks,
                     "share_timing": row.share_timing,
+                    "share_billing": row.share_billing,
                 },
                 "created_at": row.created_at,
             }

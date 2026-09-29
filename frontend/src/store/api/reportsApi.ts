@@ -177,6 +177,9 @@ export interface ProjectTaskSummaryTask {
   total_tracked_seconds: number;
   total_tracked_hours: number;
   total_tracked_time: string;
+  /** The task's budgeted hours (`null` when none is set) — editable inline
+   * on the Task Listing screen. */
+  estimated_hours: number | null;
 }
 
 export interface ProjectTaskSummaryStatus {

@@ -467,13 +467,22 @@ class MigrationShapeTests(unittest.TestCase):
     def test_it_follows_the_previous_head(self):
         self.assertEqual(self.module.down_revision, "f9a1c3e5b7d2")
 
-    def test_it_is_the_only_head(self):
+    def test_the_history_has_one_head_and_this_migration_is_on_it(self):
+        """Written as "7c65a7896bab is the only head" before the share-billing
+        branch landed its own migration on the same parent; mergepoint
+        067560e19c4d now unifies the two. The property that matters is
+        unchanged: exactly one head, with this migration in its lineage, so
+        `alembic upgrade head` stays unambiguous."""
         from alembic.config import Config
         from alembic.script import ScriptDirectory
         backend = Path(__file__).resolve().parents[1]
         config = Config(str(backend / "alembic.ini"))
         config.set_main_option("script_location", str(backend / "alembic"))
-        self.assertEqual(ScriptDirectory.from_config(config).get_heads(), ["7c65a7896bab"])
+        script = ScriptDirectory.from_config(config)
+        heads = script.get_heads()
+        self.assertEqual(len(heads), 1, f"multiple alembic heads: {heads}")
+        lineage = {rev.revision for rev in script.walk_revisions(base="base", head=heads[0])}
+        self.assertIn("7c65a7896bab", lineage)
 
     def _ops(self, fn):
         recorded = []

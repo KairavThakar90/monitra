@@ -225,10 +225,12 @@ export interface UserRead {
   is_active: boolean;
 }
 
-/** Keep profiles from older deployments compatible with the canonical role name. */
+/** Keep profiles from older deployments compatible with the canonical role
+ * name. Tolerates a missing `role_name` rather than turning a malformed
+ * response into a TypeError mid-sign-in. */
 const normalizeUserProfile = (user: UserRead): UserRead => ({
   ...user,
-  role_name: user.role_name.trim().toLowerCase() === "admin" ? "administrator" : user.role_name,
+  role_name: (user.role_name ?? "").trim().toLowerCase() === "admin" ? "administrator" : user.role_name,
 });
 
 export async function getMeAPI(token: string): Promise<UserRead> {

@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { V2Shell } from "../dashboard/v2/V2Shell";
 import { useGetProjectTaskSummaryQuery } from "../../store/api/reportsApi";
-import { 
+import {
   useGetAllProjectsQuery,
   useGetProjectMetadataQuery,
   useGetAssignableEmployeesQuery,
-  useCreateTaskMutation
+  useCreateTaskMutation,
+  useUpdateTaskMutation
 } from "../../store/api/projectsApi";
+import type { ProjectTaskSummaryTask } from "../../store/api/reportsApi";
 import { useFeedback } from "../../components/FeedbackProvider";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
 import { formatHMS } from "../../utils/duration";
@@ -188,6 +190,91 @@ const ProjectPicker: React.FC<{
 };
 
 
+/**
+ * The task's budgeted hours, shown and edited in place on its row.
+ *
+ * The saved value is kept in local state after a successful PATCH rather
+ * than re-fetching the whole task-summary report: the report takes the
+ * better part of a second to answer, and its cache is not invalidated by
+ * `updateTask` (see `patchTaskSummaries` for the same reasoning on create).
+ */
+const TaskBudgetCell: React.FC<{ projectId: number; task: ProjectTaskSummaryTask }> = ({ projectId, task }) => {
+  const [updateTask, { isLoading: isSaving }] = useUpdateTaskMutation();
+  const { showToast } = useFeedback();
+  const [saved, setSaved] = useState<number | null>(task.estimated_hours ?? null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const startEditing = () => {
+    setDraft(saved === null ? '' : String(saved));
+    setEditing(true);
+  };
+
+  const save = async () => {
+    const trimmed = draft.trim();
+    // An empty field clears the budget (sent as an explicit null).
+    const value = trimmed === '' ? null : Number(trimmed);
+    if (value !== null && (!Number.isFinite(value) || value < 0)) {
+      showToast('Estimated hours must be a number of 0 or more.', 'error');
+      return;
+    }
+    try {
+      await updateTask({ projectId, taskId: task.id, body: { estimated_hours: value } }).unwrap();
+      setSaved(value);
+      setEditing(false);
+    } catch (err: any) {
+      showToast(err?.data?.detail || 'Could not save the estimated hours.', 'error');
+    }
+  };
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <input
+          type="number"
+          min={0}
+          step={0.25}
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { e.preventDefault(); void save(); }
+            if (e.key === 'Escape') setEditing(false);
+          }}
+          placeholder="hours"
+          className="w-20 rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 outline-none focus:border-[#3B82F6]"
+        />
+        <button
+          type="button"
+          disabled={isSaving}
+          onClick={() => void save()}
+          className="rounded-md bg-[#3B82F6] px-2 py-1 text-xs font-bold text-white hover:bg-blue-600 disabled:opacity-50"
+        >
+          {isSaving ? '…' : 'Save'}
+        </button>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          className="rounded-md px-2 py-1 text-xs font-bold text-slate-500 hover:bg-slate-100"
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={startEditing}
+      title="Edit the task's estimated (budgeted) hours"
+      className="rounded-md px-2 py-1 text-xs font-semibold text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
+    >
+      {saved === null ? 'Set budget' : `Budget: ${saved}h`}
+    </button>
+  );
+};
+
 export const AdminTaskListing: React.FC = () => {
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
@@ -221,6 +308,7 @@ export const AdminTaskListing: React.FC = () => {
   const [formTaskName, setFormTaskName] = useState("");
   const [formAssigneeId, setFormAssigneeId] = useState<number | "">("");
   const [formStatusId, setFormStatusId] = useState<number>(1);
+  const [formEstimatedHours, setFormEstimatedHours] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
 
   // The project is picked from a list, so it is validated as an identifier: the
@@ -295,6 +383,12 @@ export const AdminTaskListing: React.FC = () => {
       return;
     }
 
+    const estimated = formEstimatedHours.trim();
+    if (estimated !== '' && (!Number.isFinite(Number(estimated)) || Number(estimated) < 0)) {
+      setFormError('Estimated hours must be a number of 0 or more.');
+      return;
+    }
+
     try {
       await createTask({
         projectId: check.values.projectId as number,
@@ -302,10 +396,12 @@ export const AdminTaskListing: React.FC = () => {
           name: check.values.name as string,
           assignee_id: formAssigneeId === "" ? null : Number(formAssigneeId),
           status_id: formStatusId,
+          ...(estimated !== '' ? { estimated_hours: Number(estimated) } : {}),
         },
       }).unwrap();
       setIsDrawerOpen(false);
       setFormTaskName("");
+      setFormEstimatedHours("");
       setFormError(null);
       taskForm.clear();
       showToast("Task created successfully.", "success");
@@ -351,6 +447,7 @@ export const AdminTaskListing: React.FC = () => {
                 setFormError(null);
                 setFormAssigneeId("");
                 setFormStatusId(metadata?.task_statuses?.[0]?.id || 1);
+                setFormEstimatedHours("");
                 setIsDrawerOpen(true);
               }}
               className="rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90"
@@ -605,6 +702,7 @@ export const AdminTaskListing: React.FC = () => {
                                 </div>
                               </div>
                               <div className="flex items-center gap-4 text-right">
+                                <TaskBudgetCell projectId={project.id} task={task} />
                                 <div className="text-sm font-bold text-slate-800">
                                   {formatHMS(task.total_tracked_seconds)}
                                 </div>
@@ -713,6 +811,24 @@ export const AdminTaskListing: React.FC = () => {
                     </select>
                   </div>
   
+                  <div>
+                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">
+                      Estimated Hours
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.25}
+                      value={formEstimatedHours}
+                      onChange={(e) => setFormEstimatedHours(e.target.value)}
+                      placeholder="Optional — the task's budgeted hours"
+                      className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-[#3B82F6]"
+                    />
+                    <p className="mt-1 text-[11px] font-medium text-slate-400">
+                      Shown on the client Billing page as the task's total, with remaining hours measured against it.
+                    </p>
+                  </div>
+
                   <div>
                     <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">
                       Status
