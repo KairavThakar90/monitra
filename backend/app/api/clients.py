@@ -211,6 +211,23 @@ def list_my_members(
     )
 
 
+@router.get(
+    "/clients/me/members/{member_id}",
+    summary="One member's detail: shared projects they are on, and date-wise activity records",
+)
+def get_my_member(
+    member_id: int,
+    start_date: Optional[str] = _START_DATE_Q,
+    end_date: Optional[str] = _END_DATE_Q,
+    current_user: User = Depends(_require_client),
+    db: Session = Depends(get_db),
+):
+    return ClientPortalService.get_member_detail(
+        db, current_user, member_id,
+        _parse_date(start_date, field_label="start_date"), _parse_date(end_date, field_label="end_date"),
+    )
+
+
 @router.get("/clients/me/tasks", summary="Hours by task across shared projects, for a date range")
 def list_my_tasks(
     start_date: Optional[str] = _START_DATE_Q,
@@ -225,6 +242,20 @@ def list_my_tasks(
         _parse_date(start_date, field_label="start_date"), _parse_date(end_date, field_label="end_date"),
         project_ids, member_ids,
     )
+
+
+@router.get(
+    "/clients/me/billing",
+    summary="Billing usage for the shared billable projects: budgeted, used and remaining hours, per project and per task",
+)
+def list_my_billing(
+    project_ids: Optional[list[int]] = _PROJECT_IDS_Q,
+    current_user: User = Depends(_require_client),
+    db: Session = Depends(get_db),
+):
+    # No date range: a budget is spent across the project's whole life, so
+    # used hours here are always all-time (see ClientPortalService.list_billing).
+    return ClientPortalService.list_billing(db, current_user, project_ids)
 
 
 @router.get("/clients/me/projects/{project_id}", summary="One shared project's detail, for a date range")

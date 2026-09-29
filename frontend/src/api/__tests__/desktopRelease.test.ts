@@ -3,12 +3,12 @@
  *
  * Two properties matter here and neither is visual:
  *
- * 1. **A download link is never a versioned filename.** The whole point of the
- *    page is that publishing a release does not require editing the frontend,
- *    and the way that regresses is someone "simplifying" a link to point
- *    straight at an artifact. These tests fail if that happens. They also pin
- *    the three links themselves: a typo in one of them is a download that
- *    hands a Mac user the Windows installer, and nothing else would catch it.
+ * 1. **Each platform's button points at exactly the artifact it should.**
+ *    These tests pin the three links themselves: a typo in one of them is a
+ *    download that hands a Mac user the Windows installer, and nothing else
+ *    would catch it. Since 2026-09-29 the links point at versioned GitHub
+ *    artifacts, so publishing a new release means updating `DOWNLOAD_LINKS`
+ *    and the pinned URLs here together.
  * 2. **Detection only ever picks a default.** It must never be the thing that
  *    decides what a user is allowed to download — browsers cannot report the
  *    CPU, so a Mac visitor has to be able to reach the other architecture.
@@ -37,15 +37,6 @@ afterEach(() => {
 describe('downloadUrlFor', () => {
   const keys = Object.keys(DOWNLOAD_TARGETS) as DownloadKey[];
 
-  it('names a platform rather than a version', () => {
-    for (const key of keys) {
-      const url = downloadUrlFor(key);
-      // No artifact filename, and no version number, anywhere in the link.
-      expect(url).not.toMatch(/\.(exe|dmg|zip)/i);
-      expect(url).not.toMatch(/\d+\.\d+\.\d+/);
-    }
-  });
-
   it('is an absolute https link the browser can follow on its own', () => {
     // The installer is hosted away from our backend, so these have to be
     // complete URLs: a relative path would resolve against the dashboard.
@@ -63,13 +54,13 @@ describe('downloadUrlFor', () => {
 
   it('serves each platform the build it asks for', () => {
     expect(downloadUrlFor('windows')).toBe(
-      'https://storetransform.com/?window_download_monitra',
+      'https://github.com/KairavThakar90/release-monitra/raw/refs/heads/main/1.2.7/Monitra-Windows-1.2.7.zip',
     );
     expect(downloadUrlFor('macos-arm64')).toBe(
-      'https://storetransform.com/?macARM64_download_monitra',
+      'https://github.com/KairavThakar90/release-monitra/raw/refs/heads/main/1.2.7/Monitra-macOS-arm64-1.2.7.zip',
     );
     expect(downloadUrlFor('macos-x86_64')).toBe(
-      'https://storetransform.com/?macX8664_download_monitra',
+      'https://github.com/KairavThakar90/release-monitra/raw/refs/heads/main/1.2.7/Monitra-macOS-x86_64-1.2.7.zip',
     );
   });
 

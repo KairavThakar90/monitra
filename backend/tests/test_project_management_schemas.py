@@ -40,6 +40,12 @@ class ProjectManagementSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             ProjectCreate(**project_values(employee_ids=[21, 21]))
 
+    def test_a_missing_deadline_is_accepted(self):
+        # Deadline is optional: the column is nullable and the app renders
+        # "No Deadline" -- only a *past* date is refused, never an absent one.
+        project = ProjectCreate(**project_values(deadline=None))
+        self.assertIsNone(project.deadline)
+
     def test_task_name_and_ids_are_validated(self):
         with self.assertRaises(ValidationError):
             TaskCreate(name=" ", assignee_id=21, status_id=1)

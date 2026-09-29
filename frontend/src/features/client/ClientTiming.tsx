@@ -5,8 +5,7 @@ import { ClientProjectFilter } from './ClientFilters';
 import { ClientExportButton } from './ClientExportButton';
 import { ClientExportDialog } from './ClientExportDialog';
 import { Card, EmptyState, ErrorNote } from '../member/MemberUi';
-import { RankedBars } from '../dashboard/v2/charts';
-import { series } from '../dashboard/v2/theme';
+import { ClientTable } from './ClientTable';
 import { DateRangeFilter } from '../dashboard/v2/filters';
 import { useGetMyProjectsQuery } from '../../store/api/clientPortalApi';
 import { CLIENT_DEFAULT_RANGE, formatSharedHMS, longDate } from './clientRange';
@@ -52,29 +51,47 @@ export const ClientTiming: React.FC = () => {
         {isError && <ErrorNote message="Timing could not be loaded. Please try again." />}
 
         <div className={`space-y-6 transition-opacity ${isFetching ? 'opacity-60' : ''}`}>
-          <ClientKpiCard title="Total Tracked" value={formatSharedHMS(totalSeconds)} />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <ClientKpiCard title="Total Tracked" value={formatSharedHMS(totalSeconds)} />
+            <ClientKpiCard title="Projects With Time" value={projects.filter((p) => (p.total_tracked_seconds ?? 0) > 0).length} />
+          </div>
 
-          <Card title="Time by Project">
-            {!timingShared ? (
+          {!timingShared ? (
+            <Card title="Time by Project">
               <EmptyState message="Timing is not shared for your account." hint="Ask your admin to enable it if you need this." />
-            ) : projects.length === 0 ? (
+            </Card>
+          ) : projects.length === 0 ? (
+            <Card title="Time by Project">
               <EmptyState message="No tracked time for this range." hint="Try a different date range or filter." />
-            ) : (
-              <RankedBars
-                items={projects
-                  .slice()
-                  .sort((a, b) => (b.total_tracked_seconds ?? 0) - (a.total_tracked_seconds ?? 0))
-                  .map((project) => ({
-                    id: String(project.id),
-                    name: project.project_name,
-                    value: project.total_tracked_hours ?? 0,
-                    meta: project.member_count == null ? '' : `${project.member_count} member${project.member_count === 1 ? '' : 's'} active`,
-                  }))}
-                color={series[0]}
-                formatValue={(n) => `${n}h`}
-              />
-            )}
-          </Card>
+            </Card>
+          ) : (
+            <ClientTable
+              headers={[
+                { label: 'Project' },
+                { label: 'Members Active' },
+                { label: 'Hours', align: 'right' },
+                { label: 'Tracked Time', align: 'right' },
+              ]}
+            >
+              {projects
+                .slice()
+                .sort((a, b) => (b.total_tracked_seconds ?? 0) - (a.total_tracked_seconds ?? 0))
+                .map((project) => (
+                  <tr key={project.id}>
+                    <td className="px-4 py-3 font-medium text-[#0F172A]">{project.project_name}</td>
+                    <td className="px-4 py-3 text-[#475569]">
+                      {project.member_count == null ? '—' : project.member_count}
+                    </td>
+                    <td className="px-4 py-3 text-right font-semibold text-[#0F172A]">
+                      {project.total_tracked_hours ?? 0}h
+                    </td>
+                    <td className="px-4 py-3 text-right text-[#475569]">
+                      {formatSharedHMS(project.total_tracked_seconds)}
+                    </td>
+                  </tr>
+                ))}
+            </ClientTable>
+          )}
         </div>
       </div>
 

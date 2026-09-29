@@ -449,6 +449,7 @@ class ClientPortalPermissionsCase(unittest.TestCase):
             id=9, organization_id=ORG, user_id=self.client_user.id, name="Client Nine",
             email="client9@example.com", status="active", invited_by=1,
             share_member_details=False, share_screenshots=True, share_tasks=False, share_timing=False,
+            share_billing=False,
         )
         self.db.add(self.client_row)
         self.db.add(ClientProject(client_id=self.client_row.id, project_id=self.project.id))
@@ -501,6 +502,179 @@ class ClientPortalPermissionsCase(unittest.TestCase):
         self.assertIsNone(detail["tasks"][0]["total_tracked_hours"])
         self.assertEqual(len(detail["members"]), 1)
         self.assertIsNone(detail["members"][0]["total_tracked_hours"])
+
+    def test_member_hours_name_the_projects_worked_on(self):
+        self.client_row.share_member_details = True
+        self.client_row.share_timing = True
+        self.db.commit()
+        result = ClientPortalService.list_member_hours(self.db, self.client_user)
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(result["items"][0]["project_names"], ["Permissioned"])
+
+    # ------------------------------------------------------- task listing
+
+    def test_task_listing_includes_untracked_tasks_with_details(self):
+        """The client's task listing is the complete active set -- a task
+        nobody worked on in range still appears, with its status, created
+        date and (member details permitting) assignee."""
+        self.client_row.share_tasks = True
+        self.client_row.share_timing = True
+        self.client_row.share_member_details = True
+        self.task.assignee_id = self.member.id
+        untracked = Task(
+            id=41, organization_id=ORG, project_id=self.project.id,
+            task_name="Not started", created_by=1,
+        )
+        self.db.add(untracked)
+        self.db.commit()
+
+        result = ClientPortalService.list_task_hours(self.db, self.client_user)
+        by_name = {item["task_name"]: item for item in result["items"]}
+        self.assertIn("Do the thing", by_name)
+        self.assertIn("Not started", by_name)
+        self.assertEqual(by_name["Do the thing"]["assignee"], "Member One")
+        self.assertEqual(by_name["Do the thing"]["total_tracked_seconds"], 60)
+        self.assertEqual(by_name["Not started"]["total_tracked_seconds"], 0)
+        self.assertIsNotNone(by_name["Do the thing"]["created_date"])
+        self.assertEqual(by_name["Do the thing"]["project_name"], "Permissioned")
+
+    def test_task_listing_withholds_assignee_when_member_details_disabled(self):
+        self.client_row.share_tasks = True
+        self.task.assignee_id = self.member.id
+        self.db.commit()
+        result = ClientPortalService.list_task_hours(self.db, self.client_user)
+        self.assertIsNone(result["items"][0]["assignee"])
+
+    # ------------------------------------------------------ member detail
+
+    def test_member_detail_refused_when_member_details_disabled(self):
+        with self.assertRaises(HTTPException) as ctx:
+            ClientPortalService.get_member_detail(self.db, self.client_user, self.member.id)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_member_detail_shows_date_wise_activity(self):
+        self.client_row.share_member_details = True
+        self.client_row.share_timing = True
+        self.db.commit()
+        detail = ClientPortalService.get_member_detail(self.db, self.client_user, self.member.id)
+        self.assertEqual(detail["name"], "Member One")
+        self.assertEqual(detail["total_tracked_seconds"], 60)
+        self.assertEqual(detail["days_active"], 1)
+        self.assertEqual(len(detail["days"]), 1)
+        day = detail["days"][0]
+        self.assertEqual(day["total_tracked_seconds"], 60)
+        self.assertEqual(day["session_count"], 1)
+        self.assertTrue(day["first_activity"])
+        self.assertEqual([p["project_name"] for p in detail["projects"]], ["Permissioned"])
+
+    def test_member_detail_withholds_days_when_timing_disabled(self):
+        self.client_row.share_member_details = True
+        self.db.commit()
+        detail = ClientPortalService.get_member_detail(self.db, self.client_user, self.member.id)
+        self.assertEqual(detail["name"], "Member One")
+        self.assertEqual(detail["days"], [])
+        self.assertIsNone(detail["total_tracked_seconds"])
+        self.assertIsNone(detail["days_active"])
+
+    def test_member_detail_refuses_a_member_outside_the_shared_projects(self):
+        self.client_row.share_member_details = True
+        outsider = User(
+            id=72, organization_id=ORG, username="outsider", email="outsider@example.com",
+            name="Outsider", role_name="employee", permissions={},
+            is_active=True, status="active", capture_frequency=10,
+        )
+        self.db.add(outsider)
+        self.db.commit()
+        with self.assertRaises(HTTPException) as ctx:
+            ClientPortalService.get_member_detail(self.db, self.client_user, outsider.id)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    # ------------------------------------------------------------- billing
+
+    def test_billing_disabled_returns_empty_with_permissions_saying_so(self):
+        result = ClientPortalService.list_billing(self.db, self.client_user)
+        self.assertEqual(result["items"], [])
+        self.assertFalse(result["permissions"]["share_billing"])
+
+    def test_billing_excludes_free_projects(self):
+        """A `free` (internal) project has no budget and no billable time --
+        it must be absent, not shown with fabricated zeros."""
+        self.client_row.share_billing = True
+        self.project.billing_type = "free"
+        self.db.commit()
+        result = ClientPortalService.list_billing(self.db, self.client_user)
+        self.assertEqual(result["items"], [])
+        self.assertTrue(result["permissions"]["share_billing"])
+
+    def test_billing_reports_budget_used_and_remaining_per_project_and_task(self):
+        self.client_row.share_billing = True
+        self.project.billing_type = "fixed"
+        self.project.fixed_hours = 10
+        self.task.estimated_hours = 2
+        self.db.commit()
+
+        result = ClientPortalService.list_billing(self.db, self.client_user)
+        self.assertEqual(len(result["items"]), 1)
+        project = result["items"][0]
+        self.assertEqual(project["id"], self.project.id)
+        self.assertEqual(project["billing_type"], "fixed")
+        self.assertEqual(project["total_hours"], 10.0)
+        # The 60-second entry from setUp: all-time used, measured against the budget.
+        self.assertEqual(project["used_seconds"], 60)
+        self.assertEqual(project["used_hours"], 0.02)
+        self.assertEqual(project["remaining_hours"], 9.98)
+
+        self.assertEqual(len(project["tasks"]), 1)
+        task = project["tasks"][0]
+        self.assertEqual(task["id"], self.task.id)
+        self.assertEqual(task["total_hours"], 2.0)
+        self.assertEqual(task["used_seconds"], 60)
+        self.assertEqual(task["remaining_hours"], 1.98)
+        # Member details are off in this fixture, so the who-worked-on-it
+        # breakdown is withheld even though billing itself is granted.
+        self.assertEqual(task["members"], [])
+
+    def test_billing_breaks_each_task_down_by_member_when_member_details_shared(self):
+        self.client_row.share_billing = True
+        self.client_row.share_member_details = True
+        self.project.billing_type = "fixed"
+        self.project.fixed_hours = 10
+        self.db.commit()
+
+        result = ClientPortalService.list_billing(self.db, self.client_user)
+        task = result["items"][0]["tasks"][0]
+        self.assertEqual(len(task["members"]), 1)
+        worker = task["members"][0]
+        self.assertEqual(worker["id"], self.member.id)
+        self.assertEqual(worker["name"], "Member One")
+        self.assertEqual(worker["used_seconds"], 60)
+        self.assertEqual(worker["used_hours"], 0.02)
+
+    def test_a_task_without_an_estimate_shows_used_hours_but_no_remaining(self):
+        """No budget on the task means no `total_hours` and no
+        `remaining_hours` -- never a guessed allocation."""
+        self.client_row.share_billing = True
+        self.project.billing_type = "fixed"
+        self.project.fixed_hours = 10
+        self.db.commit()
+
+        result = ClientPortalService.list_billing(self.db, self.client_user)
+        task = result["items"][0]["tasks"][0]
+        self.assertIsNone(task["total_hours"])
+        self.assertIsNone(task["remaining_hours"])
+        self.assertEqual(task["used_seconds"], 60)
+
+    def test_billing_only_covers_shared_projects(self):
+        """A billable project in the same org that was never shared with
+        this client must not appear, budget or not."""
+        self.client_row.share_billing = True
+        self.db.add(Project(
+            id=32, organization_id=ORG, project_name="Unshared Billable",
+            created_by=1, billing_type="fixed", fixed_hours=50,
+        ))
+        self.db.commit()
+        result = ClientPortalService.list_billing(self.db, self.client_user)
+        self.assertEqual([item["id"] for item in result["items"]], [])
 
     def test_screenshots_are_listed_when_enabled(self):
         result = ClientPortalService.list_project_screenshots(self.db, self.client_user, self.project.id)

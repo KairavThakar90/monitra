@@ -41,6 +41,13 @@ class Client(Base):
     #: this off, the client still sees project names, tasks and members (per
     #: the other three flags) but never a duration figure.
     share_timing: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    #: Billing details: each fixed-billing (billable) project's budgeted,
+    #: used and remaining hours, broken down by task. The one flag that
+    #: defaults to *false* alongside screenshots -- billing figures are the
+    #: most sensitive section, so an admin grants them per client
+    #: deliberately rather than an existing client gaining them the moment
+    #: the column ships.
+    share_billing: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),

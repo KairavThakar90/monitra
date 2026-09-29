@@ -6,7 +6,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.time_format import to_ist
+from app.core.time_format import ist_day_end_utc, ist_day_start_utc, to_ist
 from app.models.client import Client
 from app.models.project import Project
 from app.models.project_member import ProjectMember
@@ -21,6 +21,13 @@ from app.services.time_tracking import TimeTrackingService
 
 _utc_start = TimeTrackingService._utc_start
 _utc_end = TimeTrackingService._utc_end
+
+#: Stand-in bounds for "every entry there has ever been" -- the same sentinel
+#: span `ProjectManagementService.hours_summary` and the dashboard's billing
+#: card measure a fixed-hour budget against, so the client portal's Used
+#: Hours always agrees with the admin's own view of the same project.
+_EPOCH_DATE = date(1970, 1, 1)
+_FAR_FUTURE_DATE = date(2999, 12, 31)
 
 
 def _today_ist() -> date:
@@ -48,6 +55,7 @@ def _permissions_payload(client: Client) -> dict:
         "share_screenshots": client.share_screenshots,
         "share_tasks": client.share_tasks,
         "share_timing": client.share_timing,
+        "share_billing": client.share_billing,
     }
 
 
@@ -63,7 +71,7 @@ class ClientPortalService:
     staff/member dashboards use, so the client portal's date filter is the
     same `DateRangeFilter` component rather than a bespoke one.
 
-    Beyond project scoping, every response also respects the four
+    Beyond project scoping, every response also respects the five
     `Client.share_*` flags an admin sets per client (see that model): a
     section a client was not granted comes back empty with `permissions`
     saying so, never zeroed-out or fabricated data pretending the section is
@@ -84,7 +92,7 @@ class ClientPortalService:
     @staticmethod
     def get_my_profile(db: Session, user: User) -> dict:
         """Just enough to drive the portal's own navigation: the client's
-        name and which of the four sections they were granted. Deliberately
+        name and which of the shared sections they were granted. Deliberately
         its own cheap read rather than folded into `list_my_projects` --
         every client-portal page needs this to decide what to show in its
         shell, and none of them should have to fetch a project list just to
@@ -135,17 +143,34 @@ class ClientPortalService:
         for pid, uid, _tid in triples:
             members_by_project[pid].add(uid)
 
+        # The assigned roster (not merely who tracked in range): the same
+        # people the admin sees on each project. Identity is Member Details'
+        # concern, so it is withheld entirely when that flag is off.
+        roster_by_project: dict[int, list[dict]] = defaultdict(list)
+        if client.share_member_details:
+            roster_rows = db.execute(
+                select(ProjectMember.project_id, User.id, User.name, User.designation)
+                .join(User, User.id == ProjectMember.user_id)
+                .where(ProjectMember.project_id.in_(project_ids))
+                .order_by(User.name)
+            ).all()
+            for pid, uid, name, designation in roster_rows:
+                roster_by_project[pid].append({"id": uid, "name": name, "designation": designation})
+
         items = [
             {
                 "id": project.id,
                 "project_name": project.project_name,
                 "description": project.description,
                 "status": project.status,
+                "deadline": project.deadline,
+                "project_start_date": project.start_date,
                 "total_tracked_seconds": seconds_by_project.get(project.id, 0) if client.share_timing else None,
                 "total_tracked_hours": (
                     round(seconds_by_project.get(project.id, 0) / 3600, 2) if client.share_timing else None
                 ),
                 "member_count": len(members_by_project.get(project.id, set())) if client.share_member_details else None,
+                "members": roster_by_project.get(project.id, []),
             }
             for project in projects
         ]
@@ -190,21 +215,146 @@ class ClientPortalService:
             projects_by_member[uid].add(pid)
 
         member_ids = [uid for uid, secs in seconds_by_member.items() if secs > 0]
-        users = ReportsRepository.users_lookup(db, client.organization_id, member_ids)
+        users = {
+            row.id: (row.name, row.designation)
+            for row in db.execute(
+                select(User.id, User.name, User.designation)
+                .where(User.organization_id == client.organization_id, User.id.in_(member_ids))
+            ).all()
+        } if member_ids else {}
+        # Names for the "which projects did they work on" column -- only ever
+        # the shared projects already in scope, so no new information leaks.
+        project_names = {
+            pid: name
+            for pid, name in db.execute(
+                select(Project.id, Project.project_name).where(Project.id.in_(scoped_project_ids))
+            ).all()
+        }
 
         items = [
             {
                 "id": member_id,
                 "name": (users.get(member_id) or (f"Member {member_id}", None))[0],
+                "designation": (users.get(member_id) or (None, None))[1],
                 "total_tracked_seconds": seconds if client.share_timing else None,
                 "total_tracked_hours": round(seconds / 3600, 2) if client.share_timing else None,
                 "project_count": len(projects_by_member.get(member_id, set())),
+                "project_names": sorted(
+                    project_names[pid]
+                    for pid in projects_by_member.get(member_id, set())
+                    if pid in project_names
+                ),
             }
             for member_id, seconds in seconds_by_member.items()
             if seconds > 0
         ]
         items.sort(key=lambda item: -(item["total_tracked_seconds"] or 0))
         return {"start_date": start.isoformat(), "end_date": end.isoformat(), "permissions": permissions, "items": items}
+
+    @staticmethod
+    def get_member_detail(
+        db: Session,
+        user: User,
+        member_id: int,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> dict:
+        """One member, as this client may know them: name, designation, the
+        shared projects they are staffed on, and a date-wise record of their
+        activity against those projects in the range -- per IST day, the
+        first activity instant, the last, the session count and the total.
+
+        "Activity" is tracked time against *shared projects*, never the
+        member's whole day: this can only ever detail work the client was
+        already shown in aggregate. 404 (not 403) when Member Details is not
+        granted or the member has nothing to do with this client's projects
+        -- whether the member id exists is not this client's to learn,
+        matching the screenshot reads. Durations and instants are timing,
+        so with `share_timing` off the `days` list is empty and totals are
+        None while the member's identity card still shows.
+        """
+        client = ClientPortalService._client_for(db, user)
+        if not client.share_member_details:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Member not found.")
+
+        start, end = _resolve_range(start_date, end_date)
+        shared_ids = ClientPortalService._shared_project_ids(db, client)
+        if not shared_ids:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Member not found.")
+        start_time, end_time = _utc_start(start), _utc_end(end)
+
+        roster_project_ids = set(
+            db.scalars(
+                select(ProjectMember.project_id).where(
+                    ProjectMember.project_id.in_(shared_ids),
+                    ProjectMember.user_id == member_id,
+                )
+            ).all()
+        )
+        triples = ReportsRepository.session_triples(
+            db, client.organization_id, shared_ids, [member_id], start_time, end_time, start, end,
+        )
+        worked_project_ids = {pid for pid, uid, _tid in triples if uid == member_id}
+        relevant_project_ids = roster_project_ids | worked_project_ids
+        if not relevant_project_ids:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Member not found.")
+
+        member = db.scalar(
+            select(User).where(User.id == member_id, User.organization_id == client.organization_id)
+        )
+        if member is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Member not found.")
+
+        projects = [
+            {"id": pid, "project_name": name, "assigned": pid in roster_project_ids}
+            for pid, name in db.execute(
+                select(Project.id, Project.project_name)
+                .where(Project.id.in_(relevant_project_ids))
+                .order_by(Project.project_name)
+            ).all()
+        ]
+
+        days: list[dict] = []
+        total_seconds = None
+        if client.share_timing:
+            sessions = ReportsRepository.member_sessions(
+                db, client.organization_id, shared_ids, member_id, start_time, end_time, start, end,
+            )
+            by_day: dict[date, list[tuple[datetime, Optional[datetime], int]]] = defaultdict(list)
+            for started, ended, secs in sessions:
+                by_day[to_ist(started).date()].append((started, ended, secs))
+            total_seconds = 0
+            for day, day_sessions in sorted(by_day.items(), reverse=True):
+                day_total = sum(secs for _s, _e, secs in day_sessions)
+                total_seconds += day_total
+                first_start = min(s for s, _e, _secs in day_sessions)
+                ends = [e for _s, e, _secs in day_sessions if e is not None]
+                last_end = max(ends) if ends else None
+                days.append({
+                    "date": day.isoformat(),
+                    # Pre-formatted in IST, the calendar every day-wise figure
+                    # in this system is expressed in -- so the client reads
+                    # the same clock the admin's day views use.
+                    "first_activity": to_ist(first_start).strftime("%I:%M %p"),
+                    "last_activity": to_ist(last_end).strftime("%I:%M %p") if last_end else None,
+                    "session_count": len(day_sessions),
+                    "total_tracked_seconds": day_total,
+                    "total_tracked_hours": round(day_total / 3600, 2),
+                })
+
+        return {
+            "id": member.id,
+            "name": member.name,
+            "designation": member.designation,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "permissions": _permissions_payload(client),
+            "projects": projects,
+            "days": days,
+            "days_active": len(days) if client.share_timing else None,
+            "total_tracked_seconds": total_seconds,
+            "total_tracked_hours": round(total_seconds / 3600, 2) if total_seconds is not None else None,
+        }
 
     @staticmethod
     def list_task_hours(
@@ -215,10 +365,19 @@ class ClientPortalService:
         project_ids: Optional[list[int]] = None,
         member_ids: Optional[list[int]] = None,
     ) -> dict:
-        """Every task's tracked time across every project shared with this
-        client (or a subset of them, and/or a subset of members, when the
-        caller filters). Empty (with `permissions` saying so) when this
-        client was not granted task visibility at all."""
+        """The complete task listing across every project shared with this
+        client (or a subset of them, when the caller filters): every active
+        task -- tracked in range or not -- with its status, created date,
+        assignee and the time tracked against it in the range. The same set
+        of tasks the admin's own Task Listing knows about for these
+        projects, so a task the admin can see is never silently missing
+        here merely because nobody worked on it this week.
+
+        A `member_ids` filter narrows to tasks that member is assigned to
+        or tracked time on in range. Assignee identity honours
+        `share_member_details`; durations honour `share_timing`. Empty
+        (with `permissions` saying so) when this client was not granted
+        task visibility at all."""
         client = ClientPortalService._client_for(db, user)
         start, end = _resolve_range(start_date, end_date)
         permissions = _permissions_payload(client)
@@ -235,22 +394,183 @@ class ClientPortalService:
         seconds_by_task = ReportsRepository.session_seconds_by(
             db, client.organization_id, scoped_project_ids, member_ids, start_time, end_time, start, end, "task_id",
         )
-        task_ids = [tid for tid, secs in seconds_by_task.items() if secs > 0]
-        tasks = ReportsRepository.tasks_lookup(db, client.organization_id, task_ids)
+        tasks_by_project = ReportsRepository.active_tasks_by_project(
+            db, client.organization_id, scoped_project_ids,
+        )
+        project_names = {
+            pid: name
+            for pid, name in db.execute(
+                select(Project.id, Project.project_name).where(Project.id.in_(scoped_project_ids))
+            ).all()
+        }
 
-        items = [
-            {
-                "id": task_id,
-                "task_name": tasks.get(task_id, (f"Task {task_id}", None, "Unknown project"))[0],
-                "project_name": tasks.get(task_id, (None, None, "Unknown project"))[2],
+        all_tasks = [task for tasks in tasks_by_project.values() for task in tasks]
+        assignee_names: dict[int, str] = {}
+        if client.share_member_details:
+            assignee_ids = {task.assignee_id for task in all_tasks if task.assignee_id}
+            if assignee_ids:
+                assignee_names = {
+                    row.id: row.name
+                    for row in db.execute(
+                        select(User.id, User.name).where(
+                            User.organization_id == client.organization_id, User.id.in_(assignee_ids),
+                        )
+                    ).all()
+                }
+
+        member_filter = set(member_ids) if member_ids else None
+        items = []
+        for task in all_tasks:
+            if member_filter is not None:
+                worked = seconds_by_task.get(task.id, 0) > 0
+                if task.assignee_id not in member_filter and not worked:
+                    continue
+            seconds = seconds_by_task.get(task.id, 0)
+            items.append({
+                "id": task.id,
+                "task_name": task.task_name,
+                "project_name": project_names.get(task.project_id, "Unknown project"),
+                "status": task.status,
+                "created_date": task.created_at.date().isoformat() if task.created_at else None,
+                "assignee": (
+                    assignee_names.get(task.assignee_id)
+                    if client.share_member_details and task.assignee_id else None
+                ),
                 "total_tracked_seconds": seconds if client.share_timing else None,
                 "total_tracked_hours": round(seconds / 3600, 2) if client.share_timing else None,
-            }
-            for task_id, seconds in seconds_by_task.items()
-            if seconds > 0
-        ]
-        items.sort(key=lambda item: -(item["total_tracked_seconds"] or 0))
+            })
+        items.sort(key=lambda item: (-(item["total_tracked_seconds"] or 0), item["task_name"].lower()))
         return {"start_date": start.isoformat(), "end_date": end.isoformat(), "permissions": permissions, "items": items}
+
+    @staticmethod
+    def list_billing(
+        db: Session,
+        user: User,
+        project_ids: Optional[list[int]] = None,
+    ) -> dict:
+        """Billing usage for every *billable* project shared with this client:
+        the project's budgeted (`fixed_hours`), used and remaining hours, and
+        the same three figures per task.
+
+        Only fixed-billing projects appear -- a `free` (internal) project has
+        no budget and no billable time, so it is excluded rather than shown
+        with fabricated zeros. Used hours are all-time (the sentinel
+        epoch-to-far-future span every budget figure in this system is
+        measured over), not the portal's usual date range: a budget is spent
+        across the project's whole life, so a range-limited figure would
+        understate usage against it.
+
+        A task's own budget is its `estimated_hours`; a task without one
+        shows used hours with `total_hours`/`remaining_hours` as None --
+        never a guessed allocation. Empty (with `permissions` saying so)
+        when this client was not granted billing at all -- the same "empty,
+        never 403" contract every other section here follows.
+
+        Each task also carries `members`: who worked on it and for how many
+        hours. Member identity is Member Details' concern, not Billing's, so
+        that breakdown honours `share_member_details` exactly as the roster
+        and member-hours reads do -- with it off, every `members` list is
+        empty and `permissions` says why, while the task's own figures stay.
+        """
+        client = ClientPortalService._client_for(db, user)
+        permissions = _permissions_payload(client)
+        if not client.share_billing:
+            return {"permissions": permissions, "items": []}
+
+        scoped_project_ids = ClientPortalService._scope_project_ids(
+            project_ids, ClientPortalService._shared_project_ids(db, client),
+        )
+        billable_projects = list(
+            db.scalars(
+                select(Project).where(
+                    Project.id.in_(scoped_project_ids),
+                    Project.organization_id == client.organization_id,
+                    Project.billing_type == "fixed",
+                ).order_by(Project.project_name, Project.id)
+            ).all()
+        ) if scoped_project_ids else []
+        if not billable_projects:
+            return {"permissions": permissions, "items": []}
+
+        billable_ids = [project.id for project in billable_projects]
+        start_time = ist_day_start_utc(_EPOCH_DATE)
+        end_time = ist_day_end_utc(_FAR_FUTURE_DATE)
+        seconds_by_project = ReportsRepository.session_seconds_by(
+            db, client.organization_id, billable_ids, None,
+            start_time, end_time, _EPOCH_DATE, _FAR_FUTURE_DATE, "project_id",
+        )
+        seconds_by_task = ReportsRepository.session_seconds_by(
+            db, client.organization_id, billable_ids, None,
+            start_time, end_time, _EPOCH_DATE, _FAR_FUTURE_DATE, "task_id",
+        )
+        tasks_by_project = ReportsRepository.active_tasks_by_project(
+            db, client.organization_id, billable_ids,
+        )
+
+        # Who worked on each task, and for how long -- only assembled when
+        # this client may see member identity at all.
+        members_by_task: dict[int, list[dict]] = {}
+        if client.share_member_details:
+            pair_seconds = ReportsRepository.session_seconds_by_task_and_member(
+                db, client.organization_id, billable_ids,
+                start_time, end_time, _EPOCH_DATE, _FAR_FUTURE_DATE,
+            )
+            member_ids = list({user_id for (_tid, user_id), secs in pair_seconds.items() if secs > 0})
+            users = ReportsRepository.users_lookup(db, client.organization_id, member_ids)
+            for (task_id, user_id), secs in pair_seconds.items():
+                if secs <= 0:
+                    continue
+                members_by_task.setdefault(task_id, []).append({
+                    "id": user_id,
+                    "name": (users.get(user_id) or (f"Member {user_id}", None))[0],
+                    "used_seconds": int(secs),
+                    "used_hours": round(secs / 3600, 2),
+                })
+            for member_list in members_by_task.values():
+                member_list.sort(key=lambda item: -item["used_seconds"])
+
+        def _usage(total_hours: Optional[float], used_seconds: int) -> dict:
+            used_hours = round(used_seconds / 3600, 2)
+            return {
+                "total_hours": total_hours,
+                "used_seconds": int(used_seconds),
+                "used_hours": used_hours,
+                # May be negative when a budget is overspent -- reported as
+                # the true figure, never clamped to zero, so the client sees
+                # the same overage the admin's project table shows.
+                "remaining_hours": (
+                    round(total_hours - used_hours, 2) if total_hours is not None else None
+                ),
+            }
+
+        items = []
+        for project in billable_projects:
+            task_items = [
+                {
+                    "id": task.id,
+                    "task_name": task.task_name,
+                    "status": task.status,
+                    **_usage(
+                        float(task.estimated_hours) if task.estimated_hours is not None else None,
+                        seconds_by_task.get(task.id, 0),
+                    ),
+                    "members": members_by_task.get(task.id, []),
+                }
+                for task in tasks_by_project.get(project.id, [])
+            ]
+            task_items.sort(key=lambda item: -item["used_seconds"])
+            items.append({
+                "id": project.id,
+                "project_name": project.project_name,
+                "status": project.status,
+                "billing_type": project.billing_type,
+                **_usage(
+                    float(project.fixed_hours) if project.fixed_hours is not None else None,
+                    seconds_by_project.get(project.id, 0),
+                ),
+                "tasks": task_items,
+            })
+        return {"permissions": permissions, "items": items}
 
     @staticmethod
     def get_project_detail(

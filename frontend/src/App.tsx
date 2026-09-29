@@ -23,7 +23,9 @@ import { ClientDashboard } from './features/client/ClientDashboard'
 import { ClientProjectDetail } from './features/client/ClientProjectDetail'
 import { ClientTiming } from './features/client/ClientTiming'
 import { ClientMembers } from './features/client/ClientMembers'
+import { ClientMemberDetail } from './features/client/ClientMemberDetail'
 import { ClientTasks } from './features/client/ClientTasks'
+import { ClientBilling } from './features/client/ClientBilling'
 import { ClientScreenshots } from './features/client/ClientScreenshots'
 import { MemberDashboard } from './features/member/MemberDashboard'
 import { MemberReports } from './features/member/MemberReports'
@@ -379,10 +381,26 @@ const AppRoutes: React.FC = () => {
         }
       />
       <Route
+        path="/client/members/:memberId"
+        element={
+          <ClientPortalRoute>
+            <ClientMemberDetail />
+          </ClientPortalRoute>
+        }
+      />
+      <Route
         path="/client/tasks"
         element={
           <ClientPortalRoute>
             <ClientTasks />
+          </ClientPortalRoute>
+        }
+      />
+      <Route
+        path="/client/billing"
+        element={
+          <ClientPortalRoute>
+            <ClientBilling />
           </ClientPortalRoute>
         }
       />

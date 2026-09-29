@@ -61,7 +61,10 @@ class ProjectCreate(BaseModel):
     owner_id: Optional[int] = Field(None, gt=0)
     leader_id: int = Field(..., gt=0)
     employee_ids: list[int] = Field(default_factory=list)
-    deadline: date
+    #: Optional: `projects.deadline` is a nullable column and the rest of the
+    #: app already renders "No Deadline" for it -- requiring it at create
+    #: only forced the admin to invent a date they did not have.
+    deadline: Optional[date] = None
     billing_type: BillingType
     fixed_hours: Optional[Decimal] = Field(None, gt=0, le=100000)
 
@@ -89,7 +92,7 @@ class ProjectCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_business_rules(self):
-        if self.deadline < date.today():
+        if self.deadline is not None and self.deadline < date.today():
             raise ValueError("Deadline cannot be in the past")
         if self.billing_type == BillingType.fixed and self.fixed_hours is None:
             raise ValueError("Fixed hours are required for fixed billing")
@@ -148,6 +151,11 @@ class TaskCreate(BaseModel):
     #: the organization has already seen is answered with the task that key
     #: produced, never with a second task -- see `Task.client_op`.
     client_op: OptionalIdempotencyKey = None
+    #: The task's budgeted hours -- what the client portal's Billing page
+    #: shows as the task's total, and what its remaining hours are measured
+    #: against. Optional: a task without one shows used hours only, never a
+    #: guessed allocation. Bounded by the column type (Numeric(5,2)).
+    estimated_hours: Optional[float] = Field(None, ge=0, le=999.99)
 
     @field_validator("name")
     @classmethod
@@ -162,6 +170,9 @@ class TaskUpdate(BaseModel):
     name: Optional[str] = Field(None, max_length=150)
     assignee_id: Optional[int] = Field(None, gt=0)
     status_id: Optional[int] = Field(None, gt=0)
+    #: Sent explicitly as null, this *clears* the budget (the service applies
+    #: `exclude_unset`, so an omitted field leaves it alone).
+    estimated_hours: Optional[float] = Field(None, ge=0, le=999.99)
 
     @field_validator("name")
     @classmethod
@@ -181,6 +192,7 @@ class TaskRead(BaseModel):
     assignee_id: Optional[int]
     assignee: Optional[PersonRead]
     status: Optional[StatusRead] = None
+    estimated_hours: Optional[float] = None
     created_at: datetime
     updated_at: datetime
 
@@ -230,8 +242,18 @@ class ProjectHoursSummaryItem(BaseModel):
     which the desktop also consumes; see `ProjectManagementService.hours_summary`
     for why this stays a separate response rather than a field added there."""
     project_id: int
+    #: Time on ordinary work tasks -- excludes the project's seeded default
+    #: (internal) tasks. This is what a fixed budget's Remaining is measured
+    #: against.
     total_used_seconds: int
     total_used_hours: float
+    #: Time on the four seeded default tasks (DEFAULT_PROJECT_TASKS) --
+    #: client updates, internal discussion and the like.
+    internal_seconds: int = 0
+    internal_hours: float = 0.0
+    #: Used + internal.
+    total_tracked_seconds: int = 0
+    total_tracked_hours: float = 0.0
     #: When tracking against this project first happened (earliest time entry
     #: across all its tasks) -- distinct from `Project.created_at`, which is
     #: only when the project record itself was made. `None` when nothing has

@@ -13,7 +13,8 @@ import {
   useUpdateProjectMutation,
   useDeleteProjectMutation,
   type Project,
-  type ProjectUser
+  type ProjectUser,
+  type ProjectHoursSummary
 } from '../../store/api/projectsApi';
 import { useFeedback } from '../../components/FeedbackProvider';
 import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
@@ -448,7 +449,7 @@ const StatusPillDropdown = ({
   );
 };
 
-type ColumnKey = 'project' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'remainingHours' | 'started' | 'manage';
+type ColumnKey = 'project' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'started' | 'manage';
 const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'project', label: 'Project' },
   { key: 'status', label: 'Status' },
@@ -458,6 +459,7 @@ const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'tasks', label: 'Tasks' },
   { key: 'billing', label: 'Billing' },
   { key: 'usedHours', label: 'Used Hours' },
+  { key: 'internalHours', label: 'Internal Hours' },
   { key: 'remainingHours', label: 'Remaining Hours' },
   { key: 'started', label: 'Started' },
   { key: 'manage', label: 'Manage' },
@@ -514,7 +516,7 @@ export const AdminProjectManagement: React.FC = () => {
 
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>({
     project: true, status: true, owner: true, leader: true, team: true, tasks: true, billing: true,
-    usedHours: true, remainingHours: true, started: true, manage: true
+    usedHours: true, internalHours: true, remainingHours: true, started: true, manage: true
   });
   const [showColumnDropdown, setShowColumnDropdown] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
@@ -583,13 +585,11 @@ export const AdminProjectManagement: React.FC = () => {
   const projectForm = useFormValidation({
     name: { rule: 'name', label: 'Project name', required: true },
     description: { rule: 'description', label: 'Description' },
-    // Required: the backend's `ProjectCreate.deadline` is a plain `date`
-    // field, not `Optional`, so a project without one was rejected with a
-    // 422 the moment "Create Project" was pressed -- with every other
-    // field filled in correctly. Marking it required here catches that
-    // before the request is even sent, with a message next to the field
-    // itself rather than a generic failure after the round trip.
-    deadline: { rule: 'date', label: 'Deadline', required: true },
+    // Optional, matching the backend: `ProjectCreate.deadline` is
+    // `Optional[date]` (the column is nullable and the app already renders
+    // "No Deadline"). The rule still validates the format of a date that
+    // *is* entered.
+    deadline: { rule: 'date', label: 'Deadline', required: false },
     billingHours: {
       rule: 'decimal',
       label: 'Hour budget',
@@ -896,7 +896,7 @@ export const AdminProjectManagement: React.FC = () => {
     skip: currentPageProjectIds.length === 0,
   });
   const hoursByProject = useMemo(() => {
-    const map = new Map<number, { total_used_seconds: number; started_at: string | null }>();
+    const map = new Map<number, ProjectHoursSummary>();
     (hoursSummary || []).forEach((row) => map.set(row.project_id, row));
     return map;
   }, [hoursSummary]);
@@ -1030,6 +1030,7 @@ export const AdminProjectManagement: React.FC = () => {
                   {visibleColumns.tasks && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Tasks</th>}
                   {visibleColumns.billing && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Billing</th>}
                   {visibleColumns.usedHours && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Used Hours</th>}
+                  {visibleColumns.internalHours && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Internal Hours</th>}
                   {visibleColumns.remainingHours && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Remaining Hours</th>}
                   {visibleColumns.started && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Started</th>}
                   {visibleColumns.manage && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Manage</th>}
@@ -1040,7 +1041,7 @@ export const AdminProjectManagement: React.FC = () => {
                   <tr key={proj.id} className="group transition hover:bg-slate-50/80">
                     {visibleColumns.project && <td className="px-6 py-4">
                       <div className="font-bold text-slate-800">{proj.project_name}</div>
-                      {proj.description && <div className="text-xs text-slate-500 truncate max-w-[200px]">{proj.description}</div>}
+                      {/* {proj.description && <div className="text-xs text-slate-500 truncate max-w-[200px]">{proj.description}</div>} */}
                     </td>}
                     {visibleColumns.status && <td className="px-6 py-4 overflow-visible">
                       <StatusPillDropdown
@@ -1091,6 +1092,9 @@ export const AdminProjectManagement: React.FC = () => {
                     </td>}
                     {visibleColumns.usedHours && <td className="px-6 py-4 font-semibold text-slate-700">
                       {formatHoursValue((hoursByProject.get(proj.id)?.total_used_seconds ?? 0) / 3600)}
+                    </td>}
+                    {visibleColumns.internalHours && <td className="px-6 py-4 font-semibold text-slate-500">
+                      {formatHoursValue((hoursByProject.get(proj.id)?.internal_seconds ?? 0) / 3600)}
                     </td>}
                     {visibleColumns.remainingHours && <td className="px-6 py-4">
                       <RemainingHoursCell project={proj} usedSeconds={hoursByProject.get(proj.id)?.total_used_seconds ?? 0} />
@@ -1323,7 +1327,7 @@ export const AdminProjectManagement: React.FC = () => {
                   <h3 className="mb-4 text-xs font-black uppercase tracking-widest text-[#3B82F6]">Basic Details</h3>
                   <div className="space-y-4">
                     <div>
-                      <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Project Name</label>
+                      <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Project Name <span className="text-rose-500">*</span></label>
                       <input
                         type="text"
                         required
@@ -1373,7 +1377,9 @@ export const AdminProjectManagement: React.FC = () => {
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Leader</label>
+                        <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">
+                          Leader{!leaderIsFixed && <> <span className="text-rose-500">*</span></>}
+                        </label>
                         <select
                           value={formLeader}
                           onChange={e => setFormLeader(e.target.value)}
@@ -1473,7 +1479,7 @@ export const AdminProjectManagement: React.FC = () => {
 
                     {formBillingType === 'fixed' && (
                       <div className="animate-in fade-in slide-in-from-top-2">
-                        <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Hour Budget</label>
+                        <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Hour Budget <span className="text-rose-500">*</span></label>
                         <div className="relative">
                           <input
                             type="number"
