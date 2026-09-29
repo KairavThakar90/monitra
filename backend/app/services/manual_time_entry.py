@@ -8,8 +8,10 @@ from app.models.task import Task
 from app.models.user import User
 from app.core.time_format import ist_today
 from app.repositories.manual_time_entry import ManualTimeEntryRepository
+from app.repositories.project import ProjectRepository
 from app.services.task import TaskService
 from app.schemas.manual_time_entry import ManualTimeEntryCreate, ManualTimeEntryUpdate
+from app.schemas.project_management import BillingType
 from app.services.member_scope import may_view_member, visible_member_ids
 
 class ManualTimeEntryService:
@@ -24,6 +26,30 @@ class ManualTimeEntryService:
         start = datetime.combine(work_date, datetime.min.time()).replace(tzinfo=timezone.utc)
         end = start + timedelta(seconds=total_seconds)
         return start, end, total_seconds
+
+    @staticmethod
+    def _resolve_billable(db: Session, project_id: int, requested: Optional[bool]) -> bool:
+        """Whether an entry against `project_id` is billable.
+
+        Billable is a property of the project, set when it is created: only a
+        fixed-hours project (`billing_type == 'fixed'`) bills its time. On such
+        a project the entry is billable unless the caller says otherwise;
+        on a free project it never is. A request to bill time to a free
+        project is refused rather than quietly stored as non-billable -- the
+        caller asked for something the project does not allow, and an older
+        client that still shows the checkbox for every project gets a reason
+        it can act on.
+        """
+        project = ProjectRepository.get_by_id(db, project_id)
+        if project is None or project.billing_type != BillingType.fixed.value:
+            if requested:
+                name = project.project_name if project is not None else "This project"
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"{name} is not a billable project, so time logged against it cannot be marked billable."
+                )
+            return False
+        return True if requested is None else requested
 
     @staticmethod
     def _check_no_conflict(db: Session, organization_id: int, user_id: int, start_time: datetime, end_time: datetime, exclude_manual_id: Optional[int] = None) -> None:
@@ -63,6 +89,7 @@ class ManualTimeEntryService:
 
         # 1. Verify project and task ownership
         TaskService.get_task(db, entry_in.project_id, entry_in.task_id, current_user)
+        is_billable = ManualTimeEntryService._resolve_billable(db, entry_in.project_id, entry_in.is_billable)
 
         # 2. work_date cannot be a future date
         # "Today" is the IST calendar day, the same one every date filter in
@@ -104,7 +131,7 @@ class ManualTimeEntryService:
             end_time=end_time,
             total_seconds=total_seconds,
             description=entry_in.description,
-            is_billable=entry_in.is_billable if entry_in.is_billable is not None else True
+            is_billable=is_billable
         )
 
     @staticmethod
@@ -194,6 +221,13 @@ class ManualTimeEntryService:
         task_id = update_data.get("task_id", entry.task_id)
         if "project_id" in update_data or "task_id" in update_data:
             TaskService.get_task(db, project_id, task_id, current_user)
+        # An edit that moves the entry to another project without restating
+        # `is_billable` gets that project's default, the same as a new request
+        # would: the earlier choice was made against a different project.
+        if "is_billable" in update_data or "project_id" in update_data:
+            update_data["is_billable"] = ManualTimeEntryService._resolve_billable(
+                db, project_id, update_data.get("is_billable")
+            )
 
         work_date = update_data.get("work_date", entry.work_date)
         if work_date > ist_today():

@@ -147,6 +147,8 @@ class ManualEntryForAnotherUserTests(unittest.TestCase):
         payload = ManualTimeEntryCreate(project_id=1, task_id=2, work_date=date(2026, 8, 10),
                                         total_seconds=3600, user_id=9)
         with patch("app.services.manual_time_entry.TaskService.get_task"), \
+             patch("app.services.manual_time_entry.ProjectRepository.get_by_id",
+                   return_value=SimpleNamespace(id=1, project_name="Retainer", billing_type="fixed")), \
              patch("app.services.manual_time_entry.ManualTimeEntryRepository.find_overlapping_time_entries",
                    return_value=overlapping_time_entries) as overlap, \
              patch("app.services.manual_time_entry.ManualTimeEntryRepository.find_overlapping_manual_entries",
