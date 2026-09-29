@@ -71,7 +71,9 @@ const HoverStat: React.FC<{ label: string; value: string }> = ({ label, value })
 const BillableProjectRow: React.FC<{ project: ReactDashboardProjectBilling }> = ({ project }) => {
   const fixedHours = project.fixed_hours ?? 0;
   const fixedSeconds = Math.round(fixedHours * 3600);
-  const remainingSeconds = fixedSeconds - project.completed_seconds;
+  // Server-computed with the one definition Project Management and client
+  // Billing use: fixed hours minus Used, internal time not counted.
+  const remainingSeconds = project.remaining_seconds ?? fixedSeconds - project.completed_seconds;
   const pct = project.usage_percentage ?? 0;
   const color = usageColor(pct);
   const barWidth = Math.min(Math.max(pct, 0), 100);
@@ -96,7 +98,8 @@ const BillableProjectRow: React.FC<{ project: ReactDashboardProjectBilling }> = 
           one carries several figures rather than one. */}
       <div className="pointer-events-none absolute left-1/2 top-0 z-20 hidden w-60 -translate-x-1/2 -translate-y-full rounded-xl border border-[#E2E8F0] bg-white px-3 py-2.5 shadow-lg group-hover:block">
         <div className="mb-1.5 truncate text-[12px] font-bold text-slate-800">{project.project_name}</div>
-        <HoverStat label="Completed Hours" value={formatHMS(project.completed_seconds)} />
+        <HoverStat label="Used Hours" value={formatHMS(project.completed_seconds)} />
+        <HoverStat label="Internal Hours" value={formatHMS(project.internal_seconds ?? 0)} />
         <HoverStat
           label={remainingSeconds >= 0 ? "Remaining Hours" : "Over Budget By"}
           value={formatHMS(Math.abs(remainingSeconds))}

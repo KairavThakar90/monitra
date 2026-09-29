@@ -70,8 +70,14 @@ export interface ReactDashboardProjectBilling {
   /** The project's fixed-hour budget. Null for every 'free'-billing project. */
   fixed_hours: number | null;
   /** All-time tracked seconds -- not scoped to the dashboard's selected date range. */
+  /** All-time Used seconds: work tasks only, the four default (internal) tasks excluded. */
   completed_seconds: number;
   completed_hours: number;
+  /** All-time seconds on the four default tasks. Does not consume the fixed budget. */
+  internal_seconds: number;
+  internal_hours: number;
+  /** fixed_hours - Used, negative when over budget; null without a fixed budget. */
+  remaining_seconds: number | null;
   /** completed_hours / fixed_hours * 100. Null when fixed_hours is null. */
   usage_percentage: number | null;
   /** Tracked seconds within the dashboard's selected date range. */

@@ -58,6 +58,15 @@ const ProjectBillingCard: React.FC<{ project: MyBillingProject }> = ({ project }
           <div className="text-[10px] font-bold uppercase tracking-wider text-[#94A3B8]">Used</div>
           <div className="font-semibold text-[#0F172A]">{project.used_hours}h</div>
         </div>
+        {/* Internal time (the project's default tasks) is shown for context but
+            is not taken from the budget -- the same rule the admin's Project
+            Management table applies to Remaining. */}
+        {project.internal_hours !== undefined && (
+          <div className="text-right" title="Time on internal tasks. Not counted against the budget.">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-[#94A3B8]">Internal</div>
+            <div className="font-semibold text-[#64748B]">{project.internal_hours}h</div>
+          </div>
+        )}
         <div className="text-right">
           <div className="text-[10px] font-bold uppercase tracking-wider text-[#94A3B8]">Remaining</div>
           <RemainingLabel remaining={project.remaining_hours} />
