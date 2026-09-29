@@ -1,0 +1,34 @@
+<!--
+  Manual time request emails: the review request to admins and leaders, the
+  receipt to the requester, and the approved / rejected decision.
+
+  Same frame, type and spacing as the feedback status email, so every Monitra
+  email reads as one product. Every value is escaped: `detail_rows` escapes
+  each field and `note_block` renders the requester's own description through
+  `paragraphs()`, so what they typed appears as text, exactly as written.
+-->
+{{ status_chip }}
+
+<h1 class="st-h1" style="margin:0 0 16px 0;font-family:Helvetica,Arial,sans-serif;font-size:26px;line-height:34px;font-weight:700;color:#0F172A;letter-spacing:-0.3px;">
+  {{ heading }}
+</h1>
+
+<p style="margin:0 0 18px 0;font-family:Helvetica,Arial,sans-serif;font-size:16px;line-height:26px;color:#374151;">
+  {{ greeting }}
+</p>
+
+<p style="margin:0 0 14px 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:25px;color:#374151;">
+  {{ lead }}
+</p>
+
+<p style="margin:0 0 24px 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:25px;color:#4B5563;">
+  {{ body }}
+</p>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0;border:1px solid #E8ECF3;border-radius:10px;border-collapse:separate;overflow:hidden;">
+  {{ detail_rows }}
+</table>
+
+{{ note_block }}
+
+{{ cta_block }}

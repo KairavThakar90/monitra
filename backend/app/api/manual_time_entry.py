@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, status, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import date
@@ -13,10 +13,11 @@ router = APIRouter(prefix="/manual-time-entries", tags=["Manual Time Entries"])
 @router.post("", response_model=ManualTimeEntryRead, status_code=status.HTTP_201_CREATED)
 def create_manual_entry(
     payload: ManualTimeEntryCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    return ManualTimeEntryService.create_manual_entry(db, payload, current_user)
+    return ManualTimeEntryService.create_manual_entry(db, payload, current_user, background_tasks)
 
 @router.get("", response_model=List[ManualTimeEntryRead])
 def list_manual_entries(
@@ -55,16 +56,16 @@ def get_manual_entry(
 
 @router.patch("/{id}/approve", response_model=ManualTimeEntryRead)
 def approve_manual_entry(
-    id: int,
+    id: int, background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    return ManualTimeEntryService.update_approval(db, id, "approved", current_user)
+    return ManualTimeEntryService.update_approval(db, id, "approved", current_user, background_tasks)
 
 @router.patch("/{id}/reject", response_model=ManualTimeEntryRead)
 def reject_manual_entry(
-    id: int,
+    id: int, background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    return ManualTimeEntryService.update_approval(db, id, "rejected", current_user)
+    return ManualTimeEntryService.update_approval(db, id, "rejected", current_user, background_tasks)

@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from fastapi import HTTPException, status
+from fastapi import BackgroundTasks, HTTPException, status
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 from app.models.manual_time_entry import ManualTimeEntry
@@ -74,7 +74,8 @@ class ManualTimeEntryService:
     def create_manual_entry(
         db: Session,
         entry_in: ManualTimeEntryCreate,
-        current_user: User
+        current_user: User,
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> ManualTimeEntry:
         target_user_id = current_user.id
         if entry_in.user_id and entry_in.user_id != current_user.id:
@@ -120,7 +121,7 @@ class ManualTimeEntryService:
         #    entry.user_id.
         ManualTimeEntryService._check_no_conflict(db, current_user.organization_id, target_user_id, start_time, end_time)
 
-        return ManualTimeEntryRepository.create(
+        entry = ManualTimeEntryRepository.create(
             db=db,
             organization_id=current_user.organization_id,
             user_id=target_user_id,
@@ -133,6 +134,18 @@ class ManualTimeEntryService:
             description=entry_in.description,
             is_billable=is_billable
         )
+
+        # The request is committed. Emails follow from it and cannot fail it:
+        # the workflow never raises, the rows are queued durably, and the
+        # background task is only the fast path -- the dispatch sweeper
+        # delivers anything it does not.
+        from app.services.email import deliver_in_background
+        from app.services.email.workflows import queue_manual_time_request_notifications
+
+        for notification_id in queue_manual_time_request_notifications(db, entry):
+            if background_tasks is not None:
+                background_tasks.add_task(deliver_in_background, notification_id)
+        return entry
 
     @staticmethod
     def list_manual_entries(
@@ -280,7 +293,8 @@ class ManualTimeEntryService:
         db: Session,
         entry_id: int,
         approval_status: str,
-        current_user: User
+        current_user: User,
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> ManualTimeEntry:
         # TODO: Confirm with senior whether these role-based checks should later be unified into a granular permission-key system.
         is_privileged = current_user.permissions.get("manual_time_entries:approve", False)
@@ -333,7 +347,7 @@ class ManualTimeEntryService:
             )
             mirrored_time_entry_id = mirror.id
 
-        return ManualTimeEntryRepository.update_approval_status(
+        decided = ManualTimeEntryRepository.update_approval_status(
             db=db,
             manual_entry=entry,
             approval_status=approval_status,
@@ -341,6 +355,16 @@ class ManualTimeEntryService:
             approved_at=datetime.now(timezone.utc),
             mirrored_time_entry_id=mirrored_time_entry_id,
         )
+
+        # Committed above. The requester is told the outcome; this cannot undo
+        # or fail the decision (see create_manual_entry).
+        from app.services.email import deliver_in_background
+        from app.services.email.workflows import queue_manual_time_decision_notification
+
+        notification_id = queue_manual_time_decision_notification(db, decided, reviewer=current_user)
+        if notification_id is not None and background_tasks is not None:
+            background_tasks.add_task(deliver_in_background, notification_id)
+        return decided
 
     @staticmethod
     def list_for_review(

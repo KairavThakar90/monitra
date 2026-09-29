@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -31,10 +31,11 @@ router = APIRouter(prefix="/api/v1/manual-time-entry-requests", tags=["Manual Ti
 @router.post("", response_model=ManualTimeEntryRead, status_code=status.HTTP_201_CREATED, summary="Request a manual time entry")
 def create_manual_entry_v2(
     payload: ManualTimeEntryCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return ManualTimeEntryService.create_manual_entry(db, payload, current_user)
+    return ManualTimeEntryService.create_manual_entry(db, payload, current_user, background_tasks)
 
 
 @router.get("", response_model=ManualTimeEntryListResponse, summary="Review manual time entry requests")
@@ -68,13 +69,13 @@ def update_manual_entry(id: int, payload: ManualTimeEntryUpdate, current_user: U
 
 
 @router.patch("/{id}/approve", response_model=ManualTimeEntryRead, dependencies=[Depends(require_permission("manual_time_entries:approve"))], summary="Approve a manual time entry")
-def approve_manual_entry_v2(id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return ManualTimeEntryService.update_approval(db, id, "approved", current_user)
+def approve_manual_entry_v2(id: int, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return ManualTimeEntryService.update_approval(db, id, "approved", current_user, background_tasks)
 
 
 @router.patch("/{id}/reject", response_model=ManualTimeEntryRead, dependencies=[Depends(require_permission("manual_time_entries:approve"))], summary="Reject a manual time entry")
-def reject_manual_entry_v2(id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return ManualTimeEntryService.update_approval(db, id, "rejected", current_user)
+def reject_manual_entry_v2(id: int, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return ManualTimeEntryService.update_approval(db, id, "rejected", current_user, background_tasks)
 
 
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT, summary="Withdraw a pending manual time entry (soft delete)")

@@ -77,6 +77,17 @@ TYPE_WEEKLY_REPORT = "weekly_report"
 #: same reason the weekly key is the week start: every retry and re-run of
 #: the same month computes `month:2026-08-01:user:42` and collapses onto it.
 TYPE_MONTHLY_REPORT = "monthly_report"
+#: A manual time request is waiting for review. One row per approver (the
+#: organisation's admins and the requester's leaders), keyed
+#: `manual:<entry id>:approver:<user id>`, so each approver is told once.
+TYPE_MANUAL_TIME_REQUEST = "manual_time_request"
+#: "Your manual time request was submitted", to the requester. Keyed
+#: `manual:<entry id>:receipt`.
+TYPE_MANUAL_TIME_RECEIPT = "manual_time_receipt"
+#: "Your manual time request was approved / rejected", to the requester.
+#: Keyed `manual:<entry id>:<status>`: a request is decided once, and a
+#: double click or a retried PATCH collapses onto the same row.
+TYPE_MANUAL_TIME_DECISION = "manual_time_decision"
 #: "You're invited to Monitra" -- one per invitation, carrying its own
 #: Approve/Reject links. Keyed on the invitation row, never the client: a
 #: resend creates a new invitation row (a new token) and must be a distinct,

@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.email_notification import (
     TYPE_FEEDBACK, TYPE_FEEDBACK_STATUS, TYPE_RELEASE, TYPE_WELCOME,
+    TYPE_MANUAL_TIME_DECISION, TYPE_MANUAL_TIME_RECEIPT, TYPE_MANUAL_TIME_REQUEST,
     TYPE_MONTHLY_REPORT, TYPE_WEEKLY_REPORT,
 )
 from app.repositories.email_notification import EmailNotificationRepository
@@ -644,6 +645,191 @@ def build_monthly_report_preview(db: Session, *, user_id: int, month_start=None)
         db, organization_id=organization_id, user_ids=[user.id], period=period,
     )[user.id]
     return _monthly_report_payload(user=user, period=period, metrics=metrics)
+
+
+# ----------------------------------------------------------------------
+# Workflow 9 & 10 — manual time request, and its decision
+#
+# Submitting a request tells the people who can decide it (admins, and the
+# requester's leaders) and gives the requester a receipt. Deciding it tells
+# the requester the outcome. The request row is committed before any of this
+# runs and nothing here can undo it or fail the request: like every other
+# entry point in this module these log and return, never raise.
+# ----------------------------------------------------------------------
+
+def manual_time_dedupe_key(entry_id: int, suffix: str) -> str:
+    return f"manual:{entry_id}:{suffix}"
+
+
+def _iso(value) -> Optional[str]:
+    return value.isoformat() if hasattr(value, "isoformat") else (str(value) if value else None)
+
+
+def _manual_time_payload(db: Session, entry, requester) -> dict[str, Any]:
+    """Everything the three emails show about one request, exactly as filed.
+
+    Project and task are resolved to their names here, inside the entry's own
+    organisation, and frozen into the payload — so the email describes the
+    request as it was submitted even if a project is renamed before delivery.
+    The description is carried verbatim; the template escapes it on render.
+    """
+    from app.models.project import Project
+    from app.models.task import Task
+
+    project = db.get(Project, entry.project_id)
+    task = db.get(Task, entry.task_id)
+    if project is not None and project.organization_id != entry.organization_id:
+        project = None
+    if task is not None and getattr(task, "organization_id", entry.organization_id) != entry.organization_id:
+        task = None
+
+    permissions = getattr(requester, "permissions", None) or {}
+    return {
+        "request_id": entry.id,
+        "user_id": getattr(requester, "id", None),
+        "name": getattr(requester, "name", None),
+        "email": getattr(requester, "email", None),
+        "project_name": getattr(project, "project_name", None) or f"Project {entry.project_id}",
+        "task_name": getattr(task, "task_name", None) or f"Task {entry.task_id}",
+        "work_date": _iso(entry.work_date),
+        "start_time": _iso(entry.start_time),
+        "end_time": _iso(entry.end_time),
+        "total_seconds": int(entry.total_seconds or 0),
+        "is_billable": bool(entry.is_billable),
+        "description": entry.description or "",
+        "submitted_at": _iso(getattr(entry, "created_at", None) or datetime.now(timezone.utc)),
+        "status": str(entry.approval_status or "pending"),
+        "decided_at": _iso(getattr(entry, "approved_at", None)),
+        # Which Time Tracking screen the requester's own button should open.
+        # A plain boolean — the permission map never goes into an outbox row.
+        "requester_can_view_directory": bool(permissions.get("view_employees")),
+    }
+
+
+def queue_manual_time_request_notifications(db: Session, entry) -> list[int]:
+    """Queue the review request to every approver and the receipt to the requester.
+
+    Returns the ids of the rows this call created or found, for the caller to
+    schedule an immediate delivery attempt. Never raises.
+
+    One row per recipient rather than one message to everybody: an address
+    that bounces costs that one person their copy, and each approver's copy
+    retries on its own schedule.
+    """
+    from app.repositories.manual_time_notification import ManualTimeNotificationRepository
+
+    ids: list[int] = []
+    try:
+        from app.models.user import User
+        requester = db.get(User, entry.user_id)
+        payload = _manual_time_payload(db, entry, requester)
+
+        approvers = ManualTimeNotificationRepository.list_approvers(
+            db,
+            organization_id=entry.organization_id,
+            requester_id=entry.user_id,
+            project_id=entry.project_id,
+        )
+        if not approvers:
+            logger.warning(
+                "MANUAL_TIME_REQUEST_EMAIL_NO_APPROVERS: entry=%s user=%s org=%s",
+                entry.id, entry.user_id, entry.organization_id,
+            )
+
+        for approver in approvers:
+            try:
+                recipients = resolve_user_recipient(getattr(approver, "email", "") or "")
+                if not recipients:
+                    continue
+                row = EmailOutboxService.enqueue(
+                    db,
+                    notification_type=TYPE_MANUAL_TIME_REQUEST,
+                    dedupe_key=manual_time_dedupe_key(entry.id, f"approver:{approver.id}"),
+                    recipients=recipients,
+                    subject=messages.manual_time_request_subject(payload),
+                    payload={**payload, "recipient_name": getattr(approver, "name", None)},
+                    organization_id=entry.organization_id,
+                    user_id=approver.id,
+                )
+                if row is not None:
+                    ids.append(row.id)
+            except Exception:  # noqa: BLE001 - one approver must not cost the others
+                logger.warning(
+                    "MANUAL_TIME_REQUEST_EMAIL_QUEUE_FAILED: entry=%s approver=%s",
+                    entry.id, getattr(approver, "id", "?"), exc_info=True,
+                )
+
+        receipt_to = resolve_user_recipient(getattr(requester, "email", "") or "")
+        if receipt_to:
+            row = EmailOutboxService.enqueue(
+                db,
+                notification_type=TYPE_MANUAL_TIME_RECEIPT,
+                dedupe_key=manual_time_dedupe_key(entry.id, "receipt"),
+                recipients=receipt_to,
+                subject=messages.manual_time_receipt_subject(payload),
+                payload=payload,
+                organization_id=entry.organization_id,
+                user_id=entry.user_id,
+            )
+            if row is not None:
+                ids.append(row.id)
+
+        logger.info(
+            "MANUAL_TIME_REQUEST_EMAILS_QUEUED: entry=%s user=%s approvers=%d notifications=%d",
+            entry.id, entry.user_id, len(approvers), len(ids),
+        )
+    except Exception:  # noqa: BLE001 - the request is saved; the email is secondary
+        logger.warning(
+            "MANUAL_TIME_REQUEST_EMAILS_FAILED: entry=%s", getattr(entry, "id", "?"), exc_info=True,
+        )
+    return ids
+
+
+def queue_manual_time_decision_notification(db: Session, entry, reviewer=None) -> Optional[int]:
+    """Tell the requester their request was approved or rejected. Never raises.
+
+    The recipient is the entry's own `user_id`, never anything the reviewer's
+    request supplies — so an approver chooses which request to decide, and
+    that choice alone determines who is written to.
+    """
+    try:
+        status = str(entry.approval_status or "")
+        if status not in ("approved", "rejected"):
+            return None
+        from app.models.user import User
+        requester = db.get(User, entry.user_id)
+        recipients = resolve_user_recipient(getattr(requester, "email", "") or "")
+        if not recipients:
+            logger.warning(
+                "MANUAL_TIME_DECISION_EMAIL_SKIPPED: entry=%s user=%s reason=no_usable_email",
+                entry.id, entry.user_id,
+            )
+            return None
+
+        payload = _manual_time_payload(db, entry, requester)
+        payload["reviewer_name"] = getattr(reviewer, "name", None)
+        row = EmailOutboxService.enqueue(
+            db,
+            notification_type=TYPE_MANUAL_TIME_DECISION,
+            dedupe_key=manual_time_dedupe_key(entry.id, status),
+            recipients=recipients,
+            subject=messages.manual_time_decision_subject(payload),
+            payload=payload,
+            organization_id=entry.organization_id,
+            user_id=entry.user_id,
+        )
+        if row is None:
+            return None
+        logger.info(
+            "MANUAL_TIME_DECISION_EMAIL_QUEUED: entry=%s user=%s status=%s notification=%s",
+            entry.id, entry.user_id, status, row.id,
+        )
+        return row.id
+    except Exception:  # noqa: BLE001 - the decision is committed; the email is secondary
+        logger.warning(
+            "MANUAL_TIME_DECISION_EMAIL_QUEUE_FAILED: entry=%s", getattr(entry, "id", "?"), exc_info=True,
+        )
+        return None
 
 
 # ----------------------------------------------------------------------

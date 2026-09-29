@@ -20,7 +20,10 @@ from markupsafe import Markup
 
 from app.core.config import settings
 from app.core.time_format import IST, to_ist
-from app.models.email_notification import TYPE_MONTHLY_REPORT, TYPE_WEEKLY_REPORT
+from app.models.email_notification import (
+    TYPE_MANUAL_TIME_DECISION, TYPE_MANUAL_TIME_RECEIPT, TYPE_MANUAL_TIME_REQUEST,
+    TYPE_MONTHLY_REPORT, TYPE_WEEKLY_REPORT,
+)
 from app.services.email import assets
 from app.services.email.provider import (
     EmailAddressError, OutgoingEmail, assert_header_safe, normalise_address,
@@ -1425,3 +1428,275 @@ def build_monthly_report_email(payload: dict[str, Any], recipients: list[str]) -
 
 
 BUILDERS[TYPE_MONTHLY_REPORT] = build_monthly_report_email
+
+
+# ----------------------------------------------------------------------
+# Workflow 9 & 10 — manual time request, receipt, and decision
+# ----------------------------------------------------------------------
+
+#: Where each audience reviews or follows a request. Existing routes: the
+#: admin/leader Time Tracking screen (opened on its Manual Requests tab) and
+#: the member's own Time Tracking screen.
+MANUAL_TIME_REVIEW_PATH = "/admin/time-tracking?tab=requests"
+MANUAL_TIME_MEMBER_PATH = "/member/time-tracking"
+
+MANUAL_TIME_STATUS_PRESENTATION: dict[str, dict[str, str]] = {
+    "pending": {"label": "Pending approval", "accent": "#B45309", "chip_bg": "#FFFBEB", "chip_border": "#FDE68A"},
+    "approved": {"label": "Approved", "accent": "#047857", "chip_bg": "#ECFDF5", "chip_border": "#A7F3D0"},
+    "rejected": {"label": "Rejected", "accent": "#B91C1C", "chip_bg": "#FEF2F2", "chip_border": "#FECACA"},
+}
+
+
+def _manual_time_status(status: str) -> dict[str, str]:
+    presentation = MANUAL_TIME_STATUS_PRESENTATION.get(status)
+    if presentation is None:
+        raise KeyError(f"No manual time email is defined for status {status!r}.")
+    return presentation
+
+
+def _app_url(path: str) -> Optional[str]:
+    base = (settings.MONITRA_APP_URL or "").strip().rstrip("/")
+    if not base.startswith("https://"):
+        return None
+    return f"{base}{path}"
+
+
+def manual_time_review_url() -> Optional[str]:
+    return _app_url(MANUAL_TIME_REVIEW_PATH)
+
+
+def manual_time_requester_url(payload: dict[str, Any]) -> Optional[str]:
+    return _app_url(
+        MANUAL_TIME_REVIEW_PATH if payload.get("requester_can_view_directory")
+        else MANUAL_TIME_MEMBER_PATH
+    )
+
+
+def _manual_date(payload: dict[str, Any]) -> str:
+    raw = str(payload.get("work_date") or "")
+    try:
+        return datetime.fromisoformat(raw).strftime("%d %B %Y")
+    except ValueError:
+        return raw
+
+
+def _manual_time_range(payload: dict[str, Any]) -> Optional[str]:
+    if not (payload.get("start_time") and payload.get("end_time")):
+        return None
+    _d, start, _ = _display_times(payload.get("start_time"))
+    _d, end, _ = _display_times(payload.get("end_time"))
+    return f"{start.replace(' IST', '')} – {end}"
+
+
+def _manual_duration(payload: dict[str, Any]) -> str:
+    return format_duration(payload.get("total_seconds"))
+
+
+def _manual_rows(payload: dict[str, Any], *, include_employee: bool, include_decision: bool) -> list[tuple[str, Any]]:
+    """The request exactly as it was filed, one label/value pair per field."""
+    rows: list[tuple[str, Any]] = []
+    if include_employee:
+        rows += [("Employee", payload.get("name")), ("Email", payload.get("email"))]
+    rows += [
+        ("Project", payload.get("project_name")),
+        ("Task", payload.get("task_name")),
+        ("Date", _manual_date(payload)),
+        ("Time", _manual_time_range(payload)),
+        ("Duration", _manual_duration(payload)),
+        ("Billable", "Yes" if payload.get("is_billable") else "No"),
+        ("Submitted", _display_times(payload.get("submitted_at"))[2]),
+    ]
+    if include_decision:
+        rows += [
+            ("Status", _manual_time_status(str(payload.get("status") or ""))["label"]),
+            ("Reviewed by", payload.get("reviewer_name")),
+            ("Reviewed", _display_times(payload.get("decided_at"))[2] if payload.get("decided_at") else None),
+        ]
+    return rows
+
+
+def _manual_rows_text(rows: list[tuple[str, Any]]) -> list[str]:
+    return [
+        f"  {label}{' ' * max(1, 14 - len(label))}{value}"
+        for label, value in rows
+        if value is not None and str(value).strip()
+    ]
+
+
+def _manual_note_block(payload: dict[str, Any]) -> Markup:
+    """The requester's own description, verbatim and escaped, or nothing."""
+    description = str(payload.get("description") or "")
+    if not description.strip():
+        return Markup("")
+    return Markup(
+        '<p style="margin:24px 0 8px 0;font-family:Helvetica,Arial,sans-serif;font-size:12px;'
+        'font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6B7280;">Description</p>'
+        '<div style="padding:14px 16px;background-color:#F8FAFC;border:1px solid #E8ECF3;border-radius:10px;'
+        'font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:22px;color:#1F2937;">{body}</div>'
+    ).format(body=paragraphs(description))
+
+
+def _manual_cta(url: Optional[str], label: str) -> Markup:
+    if url is None:
+        return Markup("")
+    return Markup(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+        'class="st-cta" style="margin:28px 0 0 0;">'
+        '<tr><td align="center" style="background-color:#2563EB;border-radius:8px;">'
+        '<a href="{url}" style="display:inline-block;padding:13px 30px;'
+        'font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;'
+        'color:#FFFFFF;text-decoration:none;">{label}</a>'
+        '</td></tr></table>'
+    ).format(url=url, label=label)
+
+
+def _manual_email(
+    payload: dict[str, Any], recipients: list[str], *, subject: str, status: str,
+    heading: str, greeting: str, lead: str, body: str, rows: list[tuple[str, Any]],
+    cta_url: Optional[str], cta_label: str, footer_note: str, preheader: str,
+) -> OutgoingEmail:
+    presentation = _manual_time_status(status)
+    frame = _frame_context(subject=subject, preheader=preheader, footer_note=footer_note)
+    html = render_page(
+        "manual_time_request.html",
+        {
+            **frame,
+            "status_chip": _status_chip(presentation),
+            "heading": heading,
+            "greeting": greeting,
+            "lead": lead,
+            "body": body,
+            "detail_rows": detail_rows(rows),
+            "note_block": _manual_note_block(payload),
+            "cta_block": _manual_cta(cta_url, cta_label),
+        },
+    )
+
+    description = str(payload.get("description") or "")
+    text = [heading.upper(), "", greeting, "", lead]
+    if body:
+        text += ["", body]
+    text += ["", "-" * 48, *_manual_rows_text(rows), "-" * 48]
+    if description.strip():
+        text += ["", "Description", description]
+    if cta_url:
+        text += ["", f"{cta_label}: {cta_url}"]
+    if (support := (settings.MONITRA_SUPPORT_EMAIL or "").strip()):
+        text += ["", f"Need a hand? Write to {support}."]
+    text += ["", "Monitra — Staff Management System", "Store Transform"]
+
+    return OutgoingEmail(
+        to=recipients,
+        subject=subject,
+        html=html,
+        text="\n".join(text),
+        reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
+        inline_images=frame["_inline_images"],
+    )
+
+
+def manual_time_request_subject(payload: dict[str, Any]) -> str:
+    """"Manual Time Request — Priya Raman — 15 September 2026". Goes to an
+    approver's inbox, where who and which day are what they sort by."""
+    who = str(payload.get("name") or "").strip()
+    parts = ["Manual Time Request"] + ([who] if who else []) + [_manual_date(payload)]
+    return clean_subject(" — ".join(part for part in parts if part))
+
+
+def build_manual_time_request_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    """To an admin or leader: a request is waiting for their review."""
+    who = str(payload.get("name") or "A team member").strip()
+    duration = _manual_duration(payload)
+    day = _manual_date(payload)
+    return _manual_email(
+        payload, recipients,
+        subject=manual_time_request_subject(payload),
+        status="pending",
+        heading="New manual time request",
+        greeting=_greeting(payload.get("recipient_name")),
+        lead=f"{who} has submitted a manual time request for {duration} on {day}, and it is waiting for your review.",
+        body="The request is shown below exactly as it was submitted. Approve or reject it from the Manual Requests tab in Time Tracking.",
+        rows=_manual_rows(payload, include_employee=True, include_decision=False),
+        cta_url=manual_time_review_url(),
+        cta_label="Review Request",
+        footer_note=(
+            "You are receiving this because you are an administrator or a team leader "
+            "for this employee in Monitra. It is sent once for each new request."
+        ),
+        preheader=f"{who} requested {duration} on {day}. Waiting for your review.",
+    )
+
+
+def manual_time_receipt_subject(payload: dict[str, Any]) -> str:
+    return clean_subject(f"Your Manual Time Request Was Submitted — {_manual_date(payload)}")
+
+
+def build_manual_time_receipt_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    """To the requester: we received your request and sent it for review."""
+    duration = _manual_duration(payload)
+    day = _manual_date(payload)
+    return _manual_email(
+        payload, recipients,
+        subject=manual_time_receipt_subject(payload),
+        status="pending",
+        heading="Your manual time request was submitted",
+        greeting=_greeting(payload.get("name")),
+        lead=f"Your request for {duration} on {day} has been sent to your admin and team leader for review.",
+        body="You will receive another email as soon as it is approved or rejected. Until then it stays pending and is not counted in your tracked time.",
+        rows=_manual_rows(payload, include_employee=False, include_decision=False),
+        cta_url=manual_time_requester_url(payload),
+        cta_label="View My Requests",
+        footer_note=(
+            "You are receiving this because you submitted a manual time request in Monitra. "
+            "It is sent once for each request."
+        ),
+        preheader=f"Your request for {duration} on {day} is pending review.",
+    )
+
+
+def manual_time_decision_subject(payload: dict[str, Any]) -> str:
+    status = str(payload.get("status") or "")
+    word = "Approved" if status == "approved" else "Rejected"
+    return clean_subject(f"Your Manual Time Request Was {word} — {_manual_date(payload)}")
+
+
+def build_manual_time_decision_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    """To the requester: the outcome of their request."""
+    status = str(payload.get("status") or "")
+    duration = _manual_duration(payload)
+    day = _manual_date(payload)
+    if status == "approved":
+        heading = "Your manual time request was approved"
+        lead = f"Good news — your request for {duration} on {day} has been approved."
+        body = "This time has been added to your tracked time and now appears in your timesheet and reports."
+        preheader = f"Approved: {duration} on {day} has been added to your tracked time."
+    elif status == "rejected":
+        heading = "Your manual time request was rejected"
+        lead = f"Your request for {duration} on {day} was not approved."
+        body = ("This time has not been added to your tracked time. If you think this is a mistake, "
+                "please speak to your admin or team leader, or submit a corrected request.")
+        preheader = f"Rejected: {duration} on {day} was not added to your tracked time."
+    else:
+        raise KeyError(f"No manual time decision email is defined for status {status!r}.")
+    return _manual_email(
+        payload, recipients,
+        subject=manual_time_decision_subject(payload),
+        status=status,
+        heading=heading,
+        greeting=_greeting(payload.get("name")),
+        lead=lead,
+        body=body,
+        rows=_manual_rows(payload, include_employee=False, include_decision=True),
+        cta_url=manual_time_requester_url(payload),
+        cta_label="View My Requests",
+        footer_note=(
+            "You are receiving this because you submitted a manual time request in Monitra. "
+            "It is sent once, when the request is decided."
+        ),
+        preheader=preheader,
+    )
+
+
+BUILDERS[TYPE_MANUAL_TIME_REQUEST] = build_manual_time_request_email
+BUILDERS[TYPE_MANUAL_TIME_RECEIPT] = build_manual_time_receipt_email
+BUILDERS[TYPE_MANUAL_TIME_DECISION] = build_manual_time_decision_email
