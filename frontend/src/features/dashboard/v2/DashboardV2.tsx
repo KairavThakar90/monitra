@@ -47,18 +47,18 @@ type ProjectFilterTab = "top" | "billable" | "internal";
 
 /**
  * Budget-usage color for a Billable project's progress bar, against the
- * project's own fixed_hours -- not a generic 0-100 gauge. Under 80% is
- * healthy, 80-97% is closing in, 98-99% is about to run out, and 100%+ means
- * the budget is used up. Bands, not a gradient: a project is either in one
+ * project's own fixed_hours -- not a generic 0-100 gauge. Under 80% is in
+ * progress, 80-99% is closing in, exactly 100% landed on budget, and above
+ * 100% is over budget. Bands, not a gradient: a project is either in one
  * state or another, never "a bit of both". Banded on the same rounded value
  * the row prints, so the label and its color always agree.
  */
 const usageColor = (pct: number): string => {
   const shown = Math.round(pct);
-  if (shown >= 100) return "#EF4444"; // red-500 -- budget used up
-  if (shown >= 98) return "#F97316"; // orange-500 -- about to run out
+  if (shown > 100) return "#EF4444"; // red-500 -- over budget
+  if (shown === 100) return "#10B981"; // emerald-500 -- on budget
   if (shown >= 80) return "#EAB308"; // yellow-500 -- closing in
-  return "#10B981"; // emerald-500 -- healthy
+  return "#3B82F6"; // blue-500 -- in progress
 };
 
 const HoverStat: React.FC<{ label: string; value: string }> = ({ label, value }) => (
