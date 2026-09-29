@@ -132,6 +132,34 @@ class ApiHttpError(ApiError):
 #: The one thing a user is told when their sign-in is over. The API-level
 #: causes -- 401, "Not authenticated", a 502 from the identity provider -- are
 #: accurate but meaningless to someone who only wants to get back to work.
+#: The backend's refusal when an administrator has excluded this member from
+#: signing in (Members directory, `users.can_login`). Every request answers
+#: 401 and every sign-in 403 with `{"detail": {"code": LOGIN_DISABLED_CODE,
+#: "message": ..., "note": ...}}` -- see backend app/core/login_access.py.
+#: The texts are the backend's, repeated here so the client can show them even
+#: when the refusal came through a path that flattened the body.
+LOGIN_DISABLED_CODE = "login_disabled"
+LOGIN_DISABLED_MESSAGE = (
+    "You are not allowed to log in yet. Once an administrator allows you, you can log in again."
+)
+LOGIN_DISABLED_NOTE = (
+    "If you are continuously unable to log in, please contact your administrator."
+)
+
+
+def is_login_disabled(response_body: Optional[str]) -> bool:
+    """Whether an error body is the backend's `login_disabled` refusal.
+    Never raises."""
+    if not response_body:
+        return False
+    try:
+        payload = json.loads(response_body)
+    except (ValueError, TypeError):
+        return False
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    return isinstance(detail, dict) and detail.get("code") == LOGIN_DISABLED_CODE
+
+
 SESSION_EXPIRED_MESSAGE = (
     "Your login session has expired. Please sign in again to continue."
 )

@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Optional
 from app.config import settings
 from app.api.exceptions import (
     ApiConnectionError, ApiError, ApiTimeoutError, ApiHttpError, SessionExpiredError,
+    LOGIN_DISABLED_CODE, is_login_disabled,
 )
 from version import user_agent
 
@@ -82,6 +83,11 @@ class ApiClient:
         # produces one refresh rather than one per caller.
         self._refresh_hook: Optional[Callable[[], bool]] = None
         self._refresh_lock = threading.Lock()
+        #: Why the backend last ended this session, when it said so: set to
+        #: LOGIN_DISABLED_CODE when an administrator has excluded the member
+        #: from signing in. Read (and cleared) by the window that takes the
+        #: user back to the sign-in screen, so it can say *why*.
+        self.session_end_reason: Optional[str] = None
 
         # Persistent connection pool — reuses TCP connections across requests
         self._client: Optional[httpx.Client] = None
@@ -201,6 +207,14 @@ class ApiClient:
         try:
             return self._execute(method, path, json_data, params, headers, timeout)
         except ApiHttpError as e:
+            if e.status_code in (401, 403) and is_login_disabled(e.response_body):
+                # Excluded by an administrator. A refresh would be refused the
+                # same way, so the 401 goes straight to the handlers that end
+                # the session, with the reason recorded for the sign-in screen.
+                if self.session_end_reason != LOGIN_DISABLED_CODE:
+                    log.info("the backend refused this account: excluded from signing in")
+                self.session_end_reason = LOGIN_DISABLED_CODE
+                raise
             if e.status_code != 401 or skip_auth_refresh or self._refresh_hook is None:
                 raise
             outcome = self._refresh_once(token_used)

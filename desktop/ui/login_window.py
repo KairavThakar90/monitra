@@ -5,6 +5,7 @@ Presentation only: the AuthService integration is unchanged, the widget owns
 no thread, and the login call still runs on the shared bounded pool when a
 BackgroundApi is attached (inline in unit tests, where it is not).
 """
+import html
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal, QSize
@@ -12,10 +13,10 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
-    QToolButton,
+    QToolButton, QMessageBox,
 )
 
-from app.api.exceptions import redact_urls
+from app.api.exceptions import LOGIN_DISABLED_MESSAGE, LOGIN_DISABLED_NOTE, redact_urls
 from app.auth.service import AuthService
 from core.branding import logo_pixmap
 from core.validation import (
@@ -31,6 +32,15 @@ from ui.styles import (
     BUTTON_GRADIENT, BUTTON_GRADIENT_HOVER,
 )
 
+
+
+def login_disabled_html() -> str:
+    """The administrator's refusal as rich text: the message, then the
+    contact note in bold."""
+    return (
+        f"{html.escape(LOGIN_DISABLED_MESSAGE)}<br><br>"
+        f"<b>{html.escape(LOGIN_DISABLED_NOTE)}</b>"
+    )
 
 class MonitoraLogo(QWidget):
     """The Monitra mark and wordmark side by side, centered.
@@ -315,8 +325,32 @@ class LoginWindow(QWidget):
         self.reveal_button.setToolTip("Hide password" if revealed else "Show password")
 
     def _set_message(self, text: str, color: str = ERROR) -> None:
+        # Plain text: this shows server-supplied wording, which must never be
+        # interpreted as markup.
+        self.error_label.setTextFormat(Qt.TextFormat.PlainText)
         self.error_label.setText(text)
         self.error_label.setStyleSheet(f"color: {color}; background: transparent;")
+
+    def show_login_disabled(self, popup: bool = True) -> None:
+        """An administrator has excluded this account from signing in.
+
+        The reason goes on the card, with the contact note in bold for the
+        user who keeps being refused because the administrator forgot to
+        allow them again, and -- unless `popup` is False -- in a pop-up too.
+        The pop-up is window-modal and opened with `open()`, so it never runs
+        a nested event loop on the UI thread.
+        """
+        rich = login_disabled_html()
+        self.error_label.setTextFormat(Qt.TextFormat.RichText)
+        self.error_label.setText(rich)
+        self.error_label.setStyleSheet(f"color: {ERROR}; background: transparent;")
+        if popup:
+            box = QMessageBox(QMessageBox.Icon.Warning, "Login not allowed", "", QMessageBox.StandardButton.Ok, self)
+            box.setTextFormat(Qt.TextFormat.RichText)
+            box.setText(rich)
+            box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            self._login_disabled_box = box
+            box.open()
 
     def _handle_login(self) -> None:
         if self._login_in_flight:
@@ -380,6 +414,9 @@ class LoginWindow(QWidget):
         # ones raised below the API client and text echoed from a backend
         # `detail` -- and this screen is the one most likely to be read over a
         # user's shoulder. The endpoint is in the log for support.
+        if error_message.strip() == LOGIN_DISABLED_MESSAGE:
+            self.show_login_disabled()
+            return
         self._set_message(redact_urls(error_message))
 
     def reset(self) -> None:
