@@ -12,6 +12,7 @@ row has changed status.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlencode
@@ -28,6 +29,8 @@ from app.services.email.provider import (
 from app.services.email.templates import (
     brand_html, detail_rows, paragraphs, render_page,
 )
+
+logger = logging.getLogger(__name__)
 
 #: The longest a Subject header may be here. The column is String(255) and a
 #: header that long is already being truncated by most clients; this keeps the
@@ -855,6 +858,16 @@ def _client_invitation_urls(token: str) -> tuple[str, str]:
     web client itself. See `app/api/clients.py`.
     """
     base = (settings.API_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        # Without a base these render as host-less links ("http:///clients/…"
+        # once a mail client absolutises them), which is exactly how a
+        # production invitation shipped with broken buttons on 2026-09-29.
+        # The email still sends -- the token is valid and support can hand
+        # the client a working link -- but the misconfiguration is shouted.
+        logger.error(
+            "CLIENT_INVITATION_LINKS_UNCONFIGURED: API_BASE_URL is not set; "
+            "this invitation's Approve/Reject buttons will be broken relative links"
+        )
     return f"{base}/clients/invitations/{token}/approve", f"{base}/clients/invitations/{token}/reject"
 
 
