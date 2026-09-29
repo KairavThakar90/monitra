@@ -22,6 +22,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Skip when the column already exists: a database restored from a dump can
+    # carry it while alembic_version still names the previous revision, and a
+    # plain re-run would fail and block every later deploy. Offline (--sql)
+    # mode cannot inspect and renders the statement as before.
+    if not op.get_context().as_sql:
+        if "share_billing" in {c["name"] for c in sa.inspect(op.get_bind()).get_columns("clients")}:
+            return
     op.add_column(
         "clients",
         sa.Column("share_billing", sa.Boolean(), nullable=False, server_default=sa.text("false")),

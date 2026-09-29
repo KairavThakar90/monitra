@@ -1,0 +1,11 @@
+[Unit]
+Description=Monitra: fixed-hours budget alert reconciliation every 5 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00 UTC
+Persistent=false
+AccuracySec=1s
+Unit=monitra-job@budget-alerts.service
+
+[Install]
+WantedBy=timers.target
