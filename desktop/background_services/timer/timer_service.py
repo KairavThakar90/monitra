@@ -649,8 +649,13 @@ class TimerService(BaseService):
             self.log.warning("start_time_entry failed (%s); queueing durably", exc)
             self._enqueue_start(project_id, task_id, started_at, client_op)
 
+        # Keyed on the session, not the task. The pool drops a submit whose key
+        # is already in flight, and Pause-then-Play of one task is two
+        # sessions: keyed on the task id, the resumed session's start was
+        # discarded while the paused one's was still waiting for its reply,
+        # and the clock ran with no entry on the backend.
         self.runtime.tasks.submit(
-            call, on_success=on_success, on_error=on_error, key=f"timer-start:{task_id}"
+            call, on_success=on_success, on_error=on_error, key=f"timer-start:{client_op}"
         )
 
     def _enqueue_start(

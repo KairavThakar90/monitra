@@ -416,6 +416,46 @@ def test_a_start_landing_after_its_stop_hands_the_entry_id_to_the_queued_stop(
     assert client_op
 
 
+def test_resuming_while_the_paused_sessions_start_is_in_flight_still_sends_the_start(
+    qapp, cache
+):
+    """Pause, then Play, before the first start's reply arrives.
+
+    The pool de-duplicates by key (`TaskRunner.submit`): a submit whose key is
+    already in flight is dropped. Keyed on the task id, the resumed session's
+    start shared the paused session's key and was silently discarded -- the
+    clock ran locally while the backend had no entry for the session. Two
+    sessions of one task are two requests; only a replay of the same session
+    may be de-duplicated.
+    """
+    class DedupingDeferredTasks(DeferredTasks):
+        def submit(self, fn, on_success=None, on_error=None, key=None, **kwargs):
+            if key is not None and any(k == key for *_, k in self.pending):
+                return None
+            return super().submit(fn, on_success, on_error, key, **kwargs)
+
+    backend = FakeTimeEntryService(entry_id=4242)
+    runtime = FakeRuntime(cache, backend)
+    runtime.tasks = DedupingDeferredTasks()
+    timer = TimerService(runtime, backend, cache)
+    runtime.timer = timer
+    try:
+        timer.start_tracking(1, 7, "Task")       # start in flight
+        timer.stop_tracking()                    # Pause
+        timer.start_tracking(1, 7, "Task")       # Play, same task
+        resumed_at = timer.active_session()["started_at_utc"]
+
+        runtime.tasks.release("timer-start")
+
+        sent = [started_at for _, _, started_at in backend.started]
+        queued = [p["started_at"] for p in _queued(runtime, "start_timer")]
+        assert resumed_at in sent + queued, (
+            "the resumed session's start was dropped as a duplicate of the paused one"
+        )
+    finally:
+        timer.stop(timeout_ms=500)
+
+
 def test_switching_before_the_first_start_replies_does_not_orphan_it(deferred_timer):
     """Stop-and-start-another is the reported sequence; same window."""
     timer = deferred_timer
