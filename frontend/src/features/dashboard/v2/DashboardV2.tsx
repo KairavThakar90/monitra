@@ -88,7 +88,13 @@ const BillableProjectRow: React.FC<{ project: ReactDashboardProjectBilling }> = 
           {pct.toFixed(0)}%
         </span>
       </div>
-      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#F1F5F9]">
+      {/* The whole track carries the band color as a light tint, so a project's
+          state reads at a glance even at 0%; the solid fill is still the true
+          usage and never grows past what was actually used. */}
+      <div
+        className="mt-2 h-1.5 w-full overflow-hidden rounded-full"
+        style={{ backgroundColor: `${color}33` }}
+      >
         <div
           className="h-full rounded-full transition-all duration-500 ease-out"
           style={{ width: `${barWidth}%`, backgroundColor: color }}
