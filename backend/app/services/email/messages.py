@@ -1620,8 +1620,8 @@ def build_manual_time_request_email(payload: dict[str, Any], recipients: list[st
         cta_url=manual_time_review_url(),
         cta_label="Review Request",
         footer_note=(
-            "You are receiving this because you are an administrator or a team leader "
-            "for this employee in Monitra. It is sent once for each new request."
+            "You are receiving this because you can approve manual time requests for "
+            "this employee in Monitra. It is sent once for each new request."
         ),
         preheader=f"{who} requested {duration} on {day}. Waiting for your review.",
     )
@@ -1641,7 +1641,7 @@ def build_manual_time_receipt_email(payload: dict[str, Any], recipients: list[st
         status="pending",
         heading="Your manual time request was submitted",
         greeting=_greeting(payload.get("name")),
-        lead=f"Your request for {duration} on {day} has been sent to your admin and team leader for review.",
+        lead=f"Your request for {duration} on {day} has been sent to your admin, HR, manager and team leader for review.",
         body="You will receive another email as soon as it is approved or rejected. Until then it stays pending and is not counted in your tracked time.",
         rows=_manual_rows(payload, include_employee=False, include_decision=False),
         cta_url=manual_time_requester_url(payload),

@@ -374,10 +374,19 @@ class TestApproverQuery(unittest.TestCase):
     def test_the_roles_are_admins_and_leaders_only(self):
         from app.repositories.manual_time_notification import ADMIN_ROLES, LEADER_ROLES
 
-        self.assertEqual(ADMIN_ROLES, {"administrator", "org_admin", "super_admin"})
+        self.assertEqual(ADMIN_ROLES, {"administrator", "org_admin", "super_admin", "hr", "manager"})
         self.assertEqual(LEADER_ROLES, {"leader", "project_leader"})
-        for not_notified in ("employee", "manager", "hr"):
-            self.assertNotIn(not_notified, ADMIN_ROLES | LEADER_ROLES)
+        self.assertNotIn("employee", ADMIN_ROLES | LEADER_ROLES)
+
+    def test_every_org_wide_role_that_can_approve_is_notified(self):
+        """Anyone who can approve any request in the organisation must be told
+        about new ones -- a role added to the approvers must be added here too."""
+        from app.core.permissions import ROLE_PERMISSIONS
+        from app.repositories.manual_time_notification import ADMIN_ROLES, LEADER_ROLES
+
+        approvers = {role for role, perms in ROLE_PERMISSIONS.items()
+                     if "manual_time_entries:approve" in perms}
+        self.assertEqual(approvers - LEADER_ROLES, set(ADMIN_ROLES))
 
 
 if __name__ == "__main__":  # pragma: no cover
