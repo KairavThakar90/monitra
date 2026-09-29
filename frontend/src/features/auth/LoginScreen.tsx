@@ -1,6 +1,13 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "./authContext";
+import {
+  LOGIN_DISABLED_MESSAGE,
+  LOGIN_DISABLED_NOTE,
+  clearLoginDisabledNotice,
+  isLoginDisabledError,
+  peekLoginDisabledNotice,
+} from "../../auth/loginAccess";
 import {
   FieldError,
   PASSWORD_MAX_LENGTH,
@@ -64,6 +71,10 @@ export const LoginScreen: React.FC = () => {
   // A failed `?token=...` handoff explains itself here rather than dropping the
   // user on an empty form with no idea why they were not signed in.
   const [error, setError] = useState<string | null>(ssoError);
+  // Signed out (or refused) because an administrator excluded this account.
+  const [loginDisabled, setLoginDisabled] = useState<boolean>(peekLoginDisabledNotice);
+  const [showLoginDisabledPopup, setShowLoginDisabledPopup] = useState<boolean>(peekLoginDisabledNotice);
+  useEffect(() => clearLoginDisabledNotice(), []);
   const [isLoading, setIsLoading] = useState(false);
   const [rejectedInvite] = useState<boolean>(consumeRejectedInviteFlag);
 
@@ -107,6 +118,7 @@ export const LoginScreen: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setLoginDisabled(false);
 
     if (isClientAttempt) {
       const emailCheck = loginForm.validateField("email", email);
@@ -117,7 +129,12 @@ export const LoginScreen: React.FC = () => {
         await loginAsClient(emailCheck.value as string);
         navigate("/client/dashboard");
       } catch (err: any) {
-        setError(err.message || "Sorry, you are not registered as a client. Please contact your admin.");
+        if (isLoginDisabledError(err)) {
+          setLoginDisabled(true);
+          setShowLoginDisabledPopup(true);
+        } else {
+          setError(err.message || "Sorry, you are not registered as a client. Please contact your admin.");
+        }
       } finally {
         setIsLoading(false);
       }
@@ -137,7 +154,12 @@ export const LoginScreen: React.FC = () => {
       await login(check.values.email as string, password);
       navigate("/dashboard");
     } catch (err: any) {
-      setError(err.message || "Failed to sign in. Please verify your credentials or server status.");
+      if (isLoginDisabledError(err)) {
+        setLoginDisabled(true);
+        setShowLoginDisabledPopup(true);
+      } else {
+        setError(err.message || "Failed to sign in. Please verify your credentials or server status.");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -201,8 +223,42 @@ export const LoginScreen: React.FC = () => {
             </div>
           )}
 
+          {showLoginDisabledPopup && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="login-disabled-title"
+              aria-describedby="login-disabled-body"
+            >
+              <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
+                <h2 id="login-disabled-title" className="text-lg font-bold text-slate-800">Login not allowed</h2>
+                <div id="login-disabled-body" className="mt-3 text-sm text-slate-600">
+                  <p>{LOGIN_DISABLED_MESSAGE}</p>
+                  <p className="mt-3 font-bold text-slate-800">{LOGIN_DISABLED_NOTE}</p>
+                </div>
+                <div className="mt-6 flex justify-end">
+                  <button
+                    type="button"
+                    autoFocus
+                    onClick={() => setShowLoginDisabledPopup(false)}
+                    className="rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] px-5 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90"
+                  >
+                    OK
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           <form className="space-y-6" onSubmit={handleSubmit}>
-            {error && (
+            {loginDisabled && (
+              <div role="alert" className="p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-600">
+                <p>{LOGIN_DISABLED_MESSAGE}</p>
+                <p className="mt-2 font-bold">{LOGIN_DISABLED_NOTE}</p>
+              </div>
+            )}
+            {error && !loginDisabled && (
               <div className="p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-600">
                 {error}
               </div>

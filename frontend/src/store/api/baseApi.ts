@@ -1,3 +1,4 @@
+import { isLoginDisabledBody, isLoginDisabledError, markLoginDisabled } from '../../auth/loginAccess';
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 import type { FetchArgs, FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import { createAction } from '@reduxjs/toolkit';
@@ -41,6 +42,15 @@ const baseQueryWithRefresh = async (args: string | FetchArgs, api: any, extraOpt
   let result = await rawBaseQuery(args, api, extraOptions);
   if (result.error?.status !== 401) return result;
 
+  // An administrator excluded this account: a refresh would be refused the
+  // same way. End the session now and let the sign-in screen say why.
+  if (isLoginDisabledBody(result.error.data)) {
+    markLoginDisabled();
+    clearSessionStorage();
+    window.dispatchEvent(new Event('auth:session-expired'));
+    return result;
+  }
+
   const refreshToken = localStorage.getItem('refreshToken');
   if (!refreshToken) return result;
 
@@ -52,7 +62,8 @@ const baseQueryWithRefresh = async (args: string | FetchArgs, api: any, extraOpt
     const session = await refreshPromise;
     storeSessionTokens(session, true);
     result = await rawBaseQuery(args, api, extraOptions);
-  } catch {
+  } catch (err) {
+    if (isLoginDisabledError(err)) markLoginDisabled();
     clearSessionStorage();
     window.dispatchEvent(new Event('auth:session-expired'));
   }

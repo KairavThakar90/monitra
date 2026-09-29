@@ -1,3 +1,4 @@
+import { LoginDisabledError, isLoginDisabledBody, isLoginDisabledError } from "../auth/loginAccess";
 import { AUTH_PROVIDER_LOGIN_URL, ENDPOINTS } from "./endpoints";
 
 export interface DevLoginPayload {
@@ -112,12 +113,14 @@ export async function ssoLoginAPI(
     let errorDetail = fallbackMessage;
     try {
       const errorData = await response.json();
+      if (isLoginDisabledBody(errorData)) throw new LoginDisabledError();
       if (errorData.detail && typeof errorData.detail === "object" && errorData.detail.message) {
         errorDetail = errorData.detail.message;
       } else if (errorData.detail) {
         errorDetail = errorData.detail;
       }
-    } catch {
+    } catch (err) {
+      if (isLoginDisabledError(err)) throw err;
       // Ignore - the default message already explains what the user should do.
     }
     throw new Error(errorDetail);
@@ -135,6 +138,8 @@ export async function refreshSessionAPI(refreshToken: string): Promise<TokenPair
   });
 
   if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    if (isLoginDisabledBody(body)) throw new LoginDisabledError();
     throw new Error("Session expired");
   }
 
@@ -162,8 +167,10 @@ export async function clientDirectLoginAPI(email: string): Promise<TokenPair> {
     let message = "Sorry, you are not registered as a client. Please contact your admin.";
     try {
       const data = await response.json();
+      if (isLoginDisabledBody(data)) throw new LoginDisabledError();
       if (typeof data?.detail === "string") message = data.detail;
-    } catch {
+    } catch (err) {
+      if (isLoginDisabledError(err)) throw err;
       // The default message already explains what to do.
     }
     throw new Error(message);
@@ -222,13 +229,15 @@ export interface UserRead {
   permissions: Record<string, boolean>;
   /** False when an administrator switched Add Task off for this account (Members page). */
   can_add_tasks?: boolean;
+  /** False when an administrator excluded this account from signing in (Members page). */
+  can_login?: boolean;
   is_active: boolean;
 }
 
 /** Keep profiles from older deployments compatible with the canonical role
  * name. Tolerates a missing `role_name` rather than turning a malformed
  * response into a TypeError mid-sign-in. */
-const normalizeUserProfile = (user: UserRead): UserRead => ({
+export const normalizeUserProfile = (user: UserRead): UserRead => ({
   ...user,
   role_name: (user.role_name ?? "").trim().toLowerCase() === "admin" ? "administrator" : user.role_name,
 });
@@ -244,6 +253,8 @@ export async function getMeAPI(token: string): Promise<UserRead> {
 
   if (!response.ok) {
     if (response.status === 401) {
+      const body = await response.json().catch(() => null);
+      if (isLoginDisabledBody(body)) throw new LoginDisabledError();
       throw new Error("Unauthorized");
     }
     throw new Error("Failed to fetch user profile");
