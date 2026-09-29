@@ -253,7 +253,8 @@ class ProjectTaskSummaryTests(unittest.TestCase):
         self.assertEqual(error.exception.status_code, 400)
 
     def test_no_date_filter_uses_all_time_range(self):
-        with patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([self.project], 1)), \
+        with patch("app.services.reports.ReportsRepository.project_ids_tracked_between", return_value={1}), \
+             patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([self.project], 1)), \
              patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}) as seconds, \
              patch("app.services.reports.ReportsRepository.active_tasks_by_project", return_value={}), \
              patch("app.services.reports.ReportsRepository.tasks_touched_today", return_value=set()), \
@@ -268,7 +269,8 @@ class ProjectTaskSummaryTests(unittest.TestCase):
         # task the project has ever had -- the untracked task never appears
         # because tasks_touched_today never names it, regardless of what
         # total_tracked_hours it would otherwise show.
-        with patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([self.project], 1)), \
+        with patch("app.services.reports.ReportsRepository.project_ids_tracked_between", return_value={1}), \
+             patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([self.project], 1)), \
              patch("app.services.reports.ReportsRepository.session_seconds_by",
                    side_effect=[{1: 7200}, {100: 7200}]), \
              patch("app.services.reports.ReportsRepository.active_tasks_by_project",
@@ -290,7 +292,8 @@ class ProjectTaskSummaryTests(unittest.TestCase):
         # task worked on today can still show 0 hours if the admin is viewing
         # a different range (e.g. last month), and it must not be dropped for
         # that -- the range only affects the displayed total, never inclusion.
-        with patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([self.project], 1)), \
+        with patch("app.services.reports.ReportsRepository.project_ids_tracked_between", return_value={1}), \
+             patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([self.project], 1)), \
              patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}), \
              patch("app.services.reports.ReportsRepository.active_tasks_by_project",
                    return_value={1: [self.tracked_task, self.untracked_task]}), \
@@ -304,25 +307,40 @@ class ProjectTaskSummaryTests(unittest.TestCase):
         self.assertEqual([task["id"] for task in tasks], [100])
         self.assertEqual(tasks[0]["total_tracked_hours"], 0.0)
 
-    def test_no_task_touched_today_leaves_the_project_with_an_empty_list(self):
-        # The project itself is not hidden -- only its task list narrows to
-        # nothing, distinct from a project genuinely having no tasks at all.
-        with patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([self.project], 1)), \
-             patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}), \
-             patch("app.services.reports.ReportsRepository.active_tasks_by_project",
-                   return_value={1: [self.tracked_task, self.untracked_task]}), \
-             patch("app.services.reports.ReportsRepository.tasks_touched_today", return_value=set()), \
-             patch("app.services.reports.ReportsRepository.project_statuses_lookup", return_value={}):
+    def test_a_project_with_no_tracking_today_is_hidden_entirely(self):
+        # The Task Listing is "what is being worked on today": a project
+        # nobody has started today does not appear at all -- not even as an
+        # empty shell -- and the page never asks the database to paginate it.
+        with patch("app.services.reports.ReportsRepository.project_ids_tracked_between",
+                   return_value=set()), \
+             patch("app.services.reports.ReportsRepository.paginated_projects") as paginated:
             response = ReportsService.build_project_task_summary(None, self.user, 1, 5, None, None, None, None)
 
-        project_item = response["projects"][0]
-        self.assertEqual(project_item["tasks"], [])
-        self.assertEqual(project_item["total_task_count"], 0)
+        self.assertEqual(response["projects"], [])
+        self.assertEqual(response["pagination"], {"page": 1, "limit": 5, "total_projects": 0, "total_pages": 0})
+        paginated.assert_not_called()
+
+    def test_pagination_covers_only_todays_active_projects(self):
+        # The paginated set *is* the active set: total_projects counts only
+        # projects with tracking today, so page counts stay truthful.
+        with patch("app.services.reports.ReportsRepository.project_ids_tracked_between",
+                   return_value={1, 7}), \
+             patch("app.services.reports.ReportsRepository.paginated_projects",
+                   return_value=([self.project], 2)) as paginated, \
+             patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}), \
+             patch("app.services.reports.ReportsRepository.active_tasks_by_project", return_value={}), \
+             patch("app.services.reports.ReportsRepository.tasks_touched_today", return_value=set()), \
+             patch("app.services.reports.ReportsRepository.project_statuses_lookup", return_value={}):
+            response = ReportsService.build_project_task_summary(None, self.user, 1, 1, None, None, None, None)
+
+        self.assertEqual(paginated.call_args.args[2], [1, 7])
+        self.assertEqual(response["pagination"]["total_projects"], 2)
 
     def test_tasks_touched_today_is_asked_for_todays_boundary_not_the_requested_range(self):
         # The admin can be viewing any range (or all-time); which tasks show
         # must still be resolved against today, never the requested range.
-        with patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([self.project], 1)), \
+        with patch("app.services.reports.ReportsRepository.project_ids_tracked_between", return_value={1}), \
+             patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([self.project], 1)), \
              patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}), \
              patch("app.services.reports.ReportsRepository.active_tasks_by_project", return_value={}), \
              patch("app.services.reports.ReportsRepository.tasks_touched_today",
@@ -337,7 +355,8 @@ class ProjectTaskSummaryTests(unittest.TestCase):
         self.assertEqual(end_date, date(2026, 9, 28))
 
     def test_no_projects_on_page_returns_empty_list_not_error(self):
-        with patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([], 0)), \
+        with patch("app.services.reports.ReportsRepository.project_ids_tracked_between", return_value={1}), \
+             patch("app.services.reports.ReportsRepository.paginated_projects", return_value=([], 0)), \
              patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}), \
              patch("app.services.reports.ReportsRepository.active_tasks_by_project", return_value={}), \
              patch("app.services.reports.ReportsRepository.tasks_touched_today", return_value=set()), \

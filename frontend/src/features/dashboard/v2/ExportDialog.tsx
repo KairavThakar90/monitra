@@ -95,9 +95,6 @@ const idOf = (dimension: ReportId, row: ReactReportsItem): number | null => {
  *
  * `total_tasks` is omitted on the Task tab because the API documents it as
  * always 1 there — a column of ones tells the reader nothing.
- *
- * The applied filters are not repeated onto every row; they are recorded once
- * in the file's header block (see `includeFilterHeader`).
  */
 const columnsFor = (dimension: ReportId, dimensionLabel: string): ColumnDef[] => {
   const columns: ColumnDef[] = [
@@ -147,16 +144,14 @@ export const ExportDialog: React.FC<{
   reportTitle,
   dimensionLabel,
   range,
-  selectedMembers,
-  selectedProjects,
-  members,
-  projects,
+  // selectedMembers/selectedProjects/members/projects stay in the prop type
+  // for the callers' sake but are no longer read: they only fed the applied
+  // filters chips and the file's filter-summary block, both removed.
   queryParams,
 }) => {
   const columns = useMemo(() => columnsFor(reportId, dimensionLabel), [reportId, dimensionLabel]);
 
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
-  const [includeFilterHeader, setIncludeFilterHeader] = useState(true);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -200,20 +195,6 @@ export const ExportDialog: React.FC<{
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [open, busy, onClose]);
-
-  const memberNames = useMemo(
-    () => (members || []).filter((m) => selectedMembers.includes(String(m.id))).map((m) => m.name),
-    [members, selectedMembers]
-  );
-  const projectNames = useMemo(
-    () => (projects || []).filter((p) => selectedProjects.includes(String(p.id))).map((p) => p.project_name),
-    [projects, selectedProjects]
-  );
-
-  // One spelling of "what was filtered", shared by the on-screen chips and the
-  // file's header block so the two can never disagree.
-  const projectsLabel = projectNames.length ? projectNames.join("; ") : "All projects";
-  const membersLabel = memberNames.length ? memberNames.join("; ") : "All members";
 
   if (!open) return null;
 
@@ -345,23 +326,11 @@ export const ExportDialog: React.FC<{
         })
       );
 
-      const filterLines: (string | number)[][] = includeFilterHeader
-        ? [
-            ["Report", reportTitle],
-            ["Date range", `${range.from} to ${range.to}`],
-            ["Projects", projectsLabel],
-            ["Members", membersLabel],
-            ["Rows", rows.length],
-            ["Generated", new Date().toLocaleString("en-GB")],
-            [],
-          ]
-        : [];
-
       exportToCsv(
         `${reportId}-report_${range.from}_to_${range.to}.csv`,
         headers,
         body,
-        filterLines
+        []
       );
       onClose();
     } catch (caught: any) {
@@ -374,12 +343,6 @@ export const ExportDialog: React.FC<{
       setProgress(null);
     }
   };
-
-  const chip = (text: string) => (
-    <span key={text} className="rounded-md bg-[#EFF6FF] px-2 py-1 text-[11px] font-bold text-[#2563EB]">
-      {text}
-    </span>
-  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -455,36 +418,9 @@ export const ExportDialog: React.FC<{
             </div>
           </section>
 
-          {/* Applied filters — the exact scope of the file being written. */}
-          <section>
-            <h3 className="text-[11px] font-bold uppercase tracking-wider text-[#64748B]">Applied filters</h3>
-            <dl className="mt-3 space-y-2.5">
-              <div className="flex items-start gap-3">
-                <dt className="w-20 shrink-0 pt-1 text-[12px] font-semibold text-[#94A3B8]">Report</dt>
-                <dd className="flex flex-wrap gap-1.5">{chip(reportTitle)}</dd>
-              </div>
-              <div className="flex items-start gap-3">
-                <dt className="w-20 shrink-0 pt-1 text-[12px] font-semibold text-[#94A3B8]">Dates</dt>
-                <dd className="flex flex-wrap gap-1.5">{chip(`${range.from} → ${range.to}`)}</dd>
-              </div>
-              <div className="flex items-start gap-3">
-                <dt className="w-20 shrink-0 pt-1 text-[12px] font-semibold text-[#94A3B8]">Projects</dt>
-                <dd className="flex flex-wrap gap-1.5">
-                  {projectNames.length ? projectNames.map(chip) : chip("All projects")}
-                </dd>
-              </div>
-              <div className="flex items-start gap-3">
-                <dt className="w-20 shrink-0 pt-1 text-[12px] font-semibold text-[#94A3B8]">Members</dt>
-                <dd className="flex flex-wrap gap-1.5">
-                  {memberNames.length ? memberNames.map(chip) : chip("All members")}
-                </dd>
-              </div>
-            </dl>
-          </section>
-
           {/* Columns. The timesheet's columns are its days, which are fixed
               by the selected range, so there is nothing to choose. */}
-          <section className={"mt-6 " + (format === "timesheet" ? "hidden" : "")}>
+          <section className={format === "timesheet" ? "hidden" : ""}>
             <div className="flex items-center justify-between">
               <h3 className="text-[11px] font-bold uppercase tracking-wider text-[#64748B]">
                 Columns ({activeColumns.length}/{columns.length})
@@ -527,26 +463,6 @@ export const ExportDialog: React.FC<{
               })}
             </div>
           </section>
-
-          <label
-            className={
-              "mt-5 flex cursor-pointer items-start gap-2.5 " +
-              (format === "timesheet" ? "hidden" : "")
-            }
-          >
-            <input
-              type="checkbox"
-              checked={includeFilterHeader}
-              onChange={(e) => setIncludeFilterHeader(e.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-            />
-            <span className="text-[13px] font-semibold text-[#0F172A]">
-              Include the filter summary at the top of the file
-              <span className="block text-[11px] font-normal text-[#94A3B8]">
-                So the spreadsheet records which range, projects and members it covers.
-              </span>
-            </span>
-          </label>
 
           {error && (
             <p className="mt-4 rounded-lg bg-[#FEF2F2] px-3 py-2 text-[12px] font-semibold text-[#DC2626]">

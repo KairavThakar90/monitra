@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { DateRange } from '../dashboard/v2/filters';
 import { exportToCsv } from '../dashboard/v2/filters';
 import {
@@ -11,66 +11,106 @@ import {
 } from '../../store/api/clientPortalApi';
 import { formatSharedHMS } from './clientRange';
 
-/** A percentage against a total that may itself be null (Timing withheld) —
- * "Not shared" rather than a fabricated 0.00. */
-const shareOfTotal = (seconds: number | null, total: number | null): string | number =>
-  seconds === null || total === null ? 'Not shared' : total > 0 ? ((seconds / total) * 100).toFixed(2) : 0;
-
 /**
  * The client portal's export dialog.
  *
- * Deliberately the same shape as the admin/member Reports page's
- * `ExportDialog` — a format choice, a filter-chip summary, a column
- * checklist, an "include filter summary" toggle, the same footer — so a
- * client sees the same export experience Monitra already offers everywhere
- * else, built from the client-portal's own (already-filtered, unpaginated)
- * endpoints rather than the staff reports pipeline.
+ * Same dressing as the admin/member Reports page's `ExportDialog` — a report
+ * choice, a column checklist, the same footer — built from the client
+ * portal's own (already-filtered, unpaginated) endpoints. People appear by
+ * *name* in the file, never as bare counts or ids, and every figure the
+ * admin has not shared exports as "Not shared" rather than a fabricated 0.
  */
 
 type ClientReportId = 'projects' | 'members' | 'tasks';
 
-const REPORT_META: Record<ClientReportId, { title: string; dimensionLabel: string }> = {
-  projects: { title: 'Projects', dimensionLabel: 'Project' },
-  members: { title: 'Members', dimensionLabel: 'Member' },
-  tasks: { title: 'Tasks', dimensionLabel: 'Task' },
+const REPORT_META: Record<ClientReportId, { title: string }> = {
+  projects: { title: 'Projects' },
+  members: { title: 'Members' },
+  tasks: { title: 'Tasks' },
 };
+
+/** What a column needs beyond its own row to compute a value. */
+interface ExportContext {
+  memberDetailsShared: boolean;
+}
 
 interface ColumnDef<T> {
   key: string;
   label: string;
-  value: (row: T, index: number, totalSeconds: number | null) => string | number;
+  value: (row: T, index: number, ctx: ExportContext) => string | number;
   optional?: boolean;
 }
 
+const hoursOr = (hours: number | null | undefined, absent: string): string | number =>
+  hours === null || hours === undefined ? absent : hours;
+
+/** Exactly the format the client asked for -- five columns, nothing else:
+ * name, description, created date, when its tasks were first started, and
+ * the assigned members by name. */
 const PROJECT_COLUMNS: ColumnDef<MyProjectSummary>[] = [
-  { key: 'rank', label: 'Sr. No.', value: (_row, index) => index + 1 },
-  { key: 'name', label: 'Project', value: (row) => row.project_name },
-  { key: 'id', label: 'Project ID', value: (row) => row.id, optional: true },
-  { key: 'status', label: 'Status', value: (row) => row.status },
-  { key: 'time', label: 'Total Time (HH:MM:SS)', value: (row) => formatSharedHMS(row.total_tracked_seconds) },
-  { key: 'hours', label: 'Total Hours', value: (row) => row.total_tracked_hours ?? 'Not shared' },
-  { key: 'share', label: '% of Total', value: (row, _index, total) => shareOfTotal(row.total_tracked_seconds, total) },
-  { key: 'members', label: 'Members', value: (row) => row.member_count ?? 'Not shared' },
+  { key: 'name', label: 'Project Name', value: (row) => row.project_name },
+  { key: 'description', label: 'Project Description', value: (row) => row.description || '—' },
+  { key: 'created', label: 'Project Created Date', value: (row) => row.created_date ?? '—' },
+  {
+    key: 'taskStarted',
+    label: 'Project Task Started Date',
+    value: (row) =>
+      row.first_tracked_date ?? (row.total_tracked_hours === null ? 'Not shared' : 'Not started yet'),
+  },
+  {
+    key: 'members',
+    label: 'Members',
+    value: (row, _index, ctx) =>
+      !ctx.memberDetailsShared
+        ? 'Not shared'
+        : (row.members ?? []).length
+          ? (row.members ?? []).map((member) => member.name).join('; ')
+          : '—',
+  },
 ];
 
 const MEMBER_COLUMNS: ColumnDef<MyMemberHours>[] = [
-  { key: 'rank', label: 'Sr. No.', value: (_row, index) => index + 1 },
   { key: 'name', label: 'Member', value: (row) => row.name },
-  { key: 'id', label: 'Member ID', value: (row) => row.id, optional: true },
-  { key: 'time', label: 'Total Time (HH:MM:SS)', value: (row) => formatSharedHMS(row.total_tracked_seconds) },
-  { key: 'hours', label: 'Total Hours', value: (row) => row.total_tracked_hours ?? 'Not shared' },
-  { key: 'share', label: '% of Total', value: (row, _index, total) => shareOfTotal(row.total_tracked_seconds, total) },
-  { key: 'projects', label: 'Projects', value: (row) => row.project_count },
+  { key: 'designation', label: 'Designation', value: (row) => row.designation ?? '—' },
+  { key: 'hours', label: 'Project Hours', value: (row) => hoursOr(row.total_tracked_hours, 'Not shared') },
+  {
+    key: 'time',
+    label: 'Total Time (HH:MM:SS)',
+    value: (row) => formatSharedHMS(row.total_tracked_seconds),
+    optional: true,
+  },
+  {
+    key: 'projects',
+    label: 'Projects',
+    value: (row) => ((row.project_names ?? []).length ? (row.project_names ?? []).join('; ') : '—'),
+    optional: true,
+  },
 ];
 
 const TASK_COLUMNS: ColumnDef<MyTaskHours>[] = [
-  { key: 'rank', label: 'Sr. No.', value: (_row, index) => index + 1 },
   { key: 'name', label: 'Task', value: (row) => row.task_name },
-  { key: 'id', label: 'Task ID', value: (row) => row.id, optional: true },
-  { key: 'project', label: 'Project', value: (row) => row.project_name ?? 'Unknown project' },
-  { key: 'time', label: 'Total Time (HH:MM:SS)', value: (row) => formatSharedHMS(row.total_tracked_seconds) },
-  { key: 'hours', label: 'Total Hours', value: (row) => row.total_tracked_hours ?? 'Not shared' },
-  { key: 'share', label: '% of Total', value: (row, _index, total) => shareOfTotal(row.total_tracked_seconds, total) },
+  { key: 'project', label: 'Project', value: (row) => row.project_name ?? 'Unknown project', optional: true },
+  { key: 'hours', label: 'Task Hours', value: (row) => hoursOr(row.total_tracked_hours, 'Not shared') },
+  {
+    key: 'member',
+    label: 'Member',
+    value: (row, _index, ctx) => (!ctx.memberDetailsShared ? 'Not shared' : row.assignee ?? '—'),
+  },
+  { key: 'date', label: 'Date', value: (row) => row.created_date ?? '—' },
+  {
+    key: 'activity',
+    label: 'Activity %',
+    // Null means either Timing withheld (hours are null too) or the timer
+    // recorded no samples in range — told apart honestly, never a made-up 0.
+    value: (row) =>
+      row.activity_percentage ?? (row.total_tracked_hours === null ? 'Not shared' : '—'),
+  },
+  {
+    key: 'time',
+    label: 'Total Time (HH:MM:SS)',
+    value: (row) => formatSharedHMS(row.total_tracked_seconds),
+    optional: true,
+  },
 ];
 
 export const ClientExportDialog: React.FC<{
@@ -82,10 +122,12 @@ export const ClientExportDialog: React.FC<{
   selectedMemberIds: string[];
   allProjects: { id: number; project_name: string }[];
   allMembers: { id: number; name: string }[];
-}> = ({ open, onClose, defaultReport, range, selectedProjectIds, selectedMemberIds, allProjects, allMembers }) => {
-  const [report, setReport] = useState<ClientReportId>(defaultReport);
+}> = ({ open, onClose, defaultReport, range, selectedProjectIds, selectedMemberIds }) => {
+  // Locked to the page the Export button was pressed on: the Tasks page
+  // exports tasks, the Members page members, the Projects page projects --
+  // no chooser.
+  const report = defaultReport;
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
-  const [includeFilterHeader, setIncludeFilterHeader] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const dateArgs = { start_date: range.from, end_date: range.to };
@@ -103,13 +145,8 @@ export const ClientExportDialog: React.FC<{
     { ...dateArgs, project_ids: projectIds, member_ids: memberIds },
     { skip: !open },
   );
-
   const columns = report === 'projects' ? PROJECT_COLUMNS : report === 'members' ? MEMBER_COLUMNS : TASK_COLUMNS;
   const isFetching = report === 'projects' ? projectsFetching : report === 'members' ? membersFetching : tasksFetching;
-
-  useEffect(() => {
-    if (open) setReport(defaultReport);
-  }, [open, defaultReport]);
 
   useEffect(() => {
     setSelectedColumns(columns.filter((c) => !c.optional).map((c) => c.key));
@@ -119,29 +156,12 @@ export const ClientExportDialog: React.FC<{
     if (!open) setError(null);
   }, [open]);
 
-  const projectNames = useMemo(
-    () => allProjects.filter((p) => selectedProjectIds.includes(String(p.id))).map((p) => p.project_name),
-    [allProjects, selectedProjectIds],
-  );
-  const memberNames = useMemo(
-    () => allMembers.filter((m) => selectedMemberIds.includes(String(m.id))).map((m) => m.name),
-    [allMembers, selectedMemberIds],
-  );
-  const projectsLabel = projectNames.length ? projectNames.join('; ') : 'All shared projects';
-  const membersLabel = memberNames.length ? memberNames.join('; ') : 'All members';
-
   if (!open) return null;
 
   const toggleColumn = (key: string) =>
     setSelectedColumns((current) => (current.includes(key) ? current.filter((k) => k !== key) : [...current, key]));
 
   const activeColumns = columns.filter((c) => selectedColumns.includes(c.key));
-
-  const chip = (text: string) => (
-    <span key={text} className="rounded-md bg-[#EFF6FF] px-2 py-1 text-[11px] font-bold text-[#2563EB]">
-      {text}
-    </span>
-  );
 
   const handleExport = () => {
     setError(null);
@@ -154,30 +174,19 @@ export const ClientExportDialog: React.FC<{
       return;
     }
 
-    // Timing is either shared for every row this client sees or none of them
-    // -- a `null` on the first row means the whole column is withheld.
-    const totalSeconds = rows[0].total_tracked_seconds === null
-      ? null
-      : rows.reduce((sum, row) => sum + (row.total_tracked_seconds ?? 0), 0);
+    const ctx: ExportContext = {
+      memberDetailsShared:
+        (report === 'projects' ? projectData : report === 'members' ? memberData : taskData)?.permissions
+          .share_member_details ?? false,
+    };
+
     const headers = activeColumns.map((c) => c.label);
     // Every column def is typed against its own row shape; the row list here
     // is exactly that shape because `columns` and `rows` are switched on the
     // same `report` value together.
-    const body = rows.map((row, index) => activeColumns.map((column) => (column.value as any)(row, index, totalSeconds)));
+    const body = rows.map((row, index) => activeColumns.map((column) => (column.value as any)(row, index, ctx)));
 
-    const filterLines: (string | number)[][] = includeFilterHeader
-      ? [
-          ['Report', REPORT_META[report].title],
-          ['Date range', `${range.from} to ${range.to}`],
-          ['Projects', projectsLabel],
-          ['Members', membersLabel],
-          ['Rows', rows.length],
-          ['Generated', new Date().toLocaleString('en-GB')],
-          [],
-        ]
-      : [];
-
-    exportToCsv(`client-${report}-report_${range.from}_to_${range.to}.csv`, headers, body, filterLines);
+    exportToCsv(`client-${report}-report_${range.from}_to_${range.to}.csv`, headers, body, []);
     onClose();
   };
 
@@ -192,9 +201,11 @@ export const ClientExportDialog: React.FC<{
       >
         <header className="flex items-start justify-between gap-4 border-b border-[#E2E8F0] px-6 py-5">
           <div>
-            <h2 className="text-[16px] font-bold tracking-tight text-[#0F172A]">Export report</h2>
+            <h2 className="text-[16px] font-bold tracking-tight text-[#0F172A]">
+              Export {REPORT_META[report].title}
+            </h2>
             <p className="mt-0.5 text-[12px] text-[#94A3B8]">
-              Downloads every row matching the filters below, in the format you choose.
+              Downloads every row matching the page&rsquo;s current filters, in the format you choose.
             </p>
           </div>
           <button
@@ -209,49 +220,7 @@ export const ClientExportDialog: React.FC<{
         </header>
 
         <div className="flex-1 overflow-y-auto px-6 py-5">
-          <section className="mb-6">
-            <h3 className="text-[11px] font-bold uppercase tracking-wider text-[#64748B]">Report</h3>
-            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
-              {(Object.keys(REPORT_META) as ClientReportId[]).map((id) => {
-                const active = report === id;
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => setReport(id)}
-                    className={
-                      'rounded-lg border px-3 py-2.5 text-left transition ' +
-                      (active ? 'border-[#2563EB]/40 bg-[#EFF6FF]' : 'border-[#E2E8F0] hover:bg-[#F8FAFC]')
-                    }
-                  >
-                    <span className="block truncate text-[13px] font-bold text-[#0F172A]">{REPORT_META[id].title}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-
           <section>
-            <h3 className="text-[11px] font-bold uppercase tracking-wider text-[#64748B]">Applied filters</h3>
-            <dl className="mt-3 space-y-2.5">
-              <div className="flex items-start gap-3">
-                <dt className="w-20 shrink-0 pt-1 text-[12px] font-semibold text-[#94A3B8]">Dates</dt>
-                <dd className="flex flex-wrap gap-1.5">{chip(`${range.from} → ${range.to}`)}</dd>
-              </div>
-              <div className="flex items-start gap-3">
-                <dt className="w-20 shrink-0 pt-1 text-[12px] font-semibold text-[#94A3B8]">Projects</dt>
-                <dd className="flex flex-wrap gap-1.5">
-                  {projectNames.length ? projectNames.map(chip) : chip('All shared projects')}
-                </dd>
-              </div>
-              <div className="flex items-start gap-3">
-                <dt className="w-20 shrink-0 pt-1 text-[12px] font-semibold text-[#94A3B8]">Members</dt>
-                <dd className="flex flex-wrap gap-1.5">{memberNames.length ? memberNames.map(chip) : chip('All members')}</dd>
-              </div>
-            </dl>
-          </section>
-
-          <section className="mt-6">
             <div className="flex items-center justify-between">
               <h3 className="text-[11px] font-bold uppercase tracking-wider text-[#64748B]">
                 Columns ({activeColumns.length}/{columns.length})
@@ -294,21 +263,6 @@ export const ClientExportDialog: React.FC<{
               })}
             </div>
           </section>
-
-          <label className="mt-5 flex cursor-pointer items-start gap-2.5">
-            <input
-              type="checkbox"
-              checked={includeFilterHeader}
-              onChange={(e) => setIncludeFilterHeader(e.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-            />
-            <span className="text-[13px] font-semibold text-[#0F172A]">
-              Include the filter summary at the top of the file
-              <span className="block text-[11px] font-normal text-[#94A3B8]">
-                So the spreadsheet records which range, projects and members it covers.
-              </span>
-            </span>
-          </label>
 
           {error && (
             <p className="mt-4 rounded-lg bg-[#FEF2F2] px-3 py-2 text-[12px] font-semibold text-[#DC2626]">{error}</p>

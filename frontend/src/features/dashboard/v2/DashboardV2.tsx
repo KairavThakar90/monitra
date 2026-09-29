@@ -423,7 +423,7 @@ export const DashboardV2: React.FC = () => {
                   [
                     { key: "top", label: "Top Projects" },
                     { key: "billable", label: "Billable" },
-                    { key: "internal", label: "Free Time / Internal" },
+                    { key: "internal", label: "Flexible Time" },
                   ] as { key: ProjectFilterTab; label: string }[]
                 ).map((tab) => (
                   <button

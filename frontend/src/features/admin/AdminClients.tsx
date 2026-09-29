@@ -336,18 +336,19 @@ export const AdminClients: React.FC = () => {
                       {new Date(client.created_at).toLocaleDateString()}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex items-center gap-3">
+                      {/* The same bordered-pill actions the Members table uses. */}
+                      <div className="flex items-center gap-2">
                         <button
                           onClick={() => setEditingClient(client)}
-                          className="text-[#475569] font-semibold hover:text-[#0F172A]"
+                          className="rounded px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-[#14B8A6] border border-[#14B8A6]/30 transition hover:bg-[#14B8A6]/10"
                         >
-                          Edit Access
+                          Edit 
                         </button>
                         {client.status === 'active' ? (
                           <button
                             disabled={isDeactivating}
                             onClick={() => deactivateClient(client.id)}
-                            className="text-rose-600 font-semibold hover:text-rose-700 disabled:opacity-50"
+                            className="rounded px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-rose-500 border border-rose-200 transition hover:bg-rose-50 disabled:opacity-50"
                           >
                             Deactivate
                           </button>
@@ -355,9 +356,9 @@ export const AdminClients: React.FC = () => {
                           <button
                             disabled={isResending}
                             onClick={() => resendInvitation(client.id)}
-                            className="text-[#2563EB] font-semibold hover:text-blue-700 disabled:opacity-50"
+                            className="rounded px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-[#2563EB] border border-[#2563EB]/30 transition hover:bg-[#2563EB]/10 disabled:opacity-50"
                           >
-                            Resend Invitation
+                            Resend 
                           </button>
                         )}
                       </div>
