@@ -610,6 +610,23 @@ class TestEmail(unittest.TestCase):
         self.assertIn("Over budget by", over.html)
         self.assertIn("1h 0m", over.html)
 
+    def test_the_capsule_is_solid_centred_and_coloured_per_state(self):
+        cases = {
+            (EVENT_REMAINING_50, 50 * H): ("#FACC15", "color:#1F2937"),   # yellow, dark text
+            (EVENT_REMAINING_20, 80 * H): ("#EA580C", "color:#FFFFFF"),   # orange
+            (EVENT_REMAINING_10, 90 * H): ("#DC2626", "color:#FFFFFF"),   # red
+            (EVENT_EXHAUSTED, 100 * H): ("#991B1B", "color:#FFFFFF"),     # dark red
+            (EVENT_EXHAUSTED, 101 * H): ("#991B1B", "color:#FFFFFF"),
+        }
+        for (event, used), (fill, text_colour) in cases.items():
+            html = self.render(_payload(event=event, used=used)).html
+            capsule = html[html.index("border-radius:999px") - 200: html.index("border-radius:999px") + 250]
+            self.assertIn(f"background-color:{fill}", capsule, event)
+            self.assertIn(text_colour, capsule, event)
+            self.assertIn("font-weight:800", capsule)
+            self.assertIn("font-size:18px", capsule)
+            self.assertIn('<td align="center"', html[:html.index("border-radius:999px")][-400:])
+
     def test_project_names_are_escaped(self):
         message = self.render(_payload(**{}) | {"project_name": "<script>alert(1)</script>"})
         self.assertNotIn("<script>alert(1)", message.html)

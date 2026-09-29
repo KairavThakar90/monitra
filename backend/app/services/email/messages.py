@@ -1994,21 +1994,22 @@ MEMBER_PROJECTS_PATH = "/member/projects"
 BUDGET_ALERT_PRESENTATION: dict[str, dict[str, str]] = {
     "remaining_50": {
         "label": "50% Hours Remaining", "subject": "50% Hours Remaining",
-        "accent": "#92400E", "bg": "#FFFBEB", "border": "#FCD34D",
+        # Dark text on yellow: white on a yellow this bright is unreadable.
+        "accent": "#1F2937", "bg": "#FACC15", "border": "#EAB308",
         "headline": "Half of the allocated project hours remain.",
         "message": "Half of the allocated hours for this project have been used. "
                    "It is a good moment to review progress and the work still planned.",
     },
     "remaining_20": {
         "label": "20% Hours Remaining", "subject": "20% Hours Remaining",
-        "accent": "#9A3412", "bg": "#FFF7ED", "border": "#FDBA74",
+        "accent": "#FFFFFF", "bg": "#EA580C", "border": "#EA580C",
         "headline": "20% of the allocated project hours remain.",
         "message": "Only 20% of the allocated hours are left. The remaining work may "
                    "need closer monitoring against the budget.",
     },
     "remaining_10": {
         "label": "10% Hours Remaining", "subject": "10% Hours Remaining",
-        "accent": "#B91C1C", "bg": "#FEF2F2", "border": "#FCA5A5",
+        "accent": "#FFFFFF", "bg": "#DC2626", "border": "#DC2626",
         "headline": "10% of the allocated project hours remain.",
         "message": "Only 10% of the allocated hours are left. Please review the remaining "
                    "scope and progress with the team.",
@@ -2084,11 +2085,15 @@ def build_project_budget_alert_email(payload: dict[str, Any], recipients: list[s
             "for this project in Monitra. Each alert is sent once per project budget."
         ),
     )
+    # A solid, centred capsule: the state is the first thing the reader sees.
     badge = Markup(
-        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px 0;"><tr>'
-        '<td style="padding:8px 16px;background-color:{bg};border:1px solid {border};border-radius:999px;'
-        'font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:700;letter-spacing:0.06em;'
-        'text-transform:uppercase;color:{accent};">{label}</td></tr></table>'
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" '
+        'style="margin:4px 0 24px 0;"><tr><td align="center">'
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>'
+        '<td align="center" style="padding:14px 34px;background-color:{bg};border:2px solid {border};'
+        'border-radius:999px;font-family:Helvetica,Arial,sans-serif;font-size:18px;line-height:22px;'
+        'font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:{accent};">{label}</td>'
+        '</tr></table></td></tr></table>'
     ).format(**presentation)
     cta = Markup("")
     if url:
