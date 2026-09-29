@@ -2060,8 +2060,6 @@ def _budget_rows(payload: dict[str, Any]) -> list[tuple[str, Any]]:
         ("Fixed hours", _hours_text(payload.get("allocation_seconds"))),
         ("Used hours", _hours_text(payload.get("used_seconds"))),
         ("Remaining hours", _hours_text(payload.get("remaining_seconds"))),
-        ("Remaining", f"{payload.get('remaining_percent')}%"),
-        ("Budget used", f"{payload.get('used_percent')}%"),
     ]
     if over > 0:
         rows.append(("Over budget by", _hours_text(over)))

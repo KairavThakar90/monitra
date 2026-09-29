@@ -589,9 +589,13 @@ class TestEmail(unittest.TestCase):
     def test_threshold_email_content(self):
         message = self.render()
         for expected in ("20% Hours Remaining", "Project Alpha", "Fixed Hours", "100h 0m", "80h 0m",
-                         "20h 0m", "20.0%", "80.0%", "5h 0m (not counted against the budget)",
+                         "20h 0m", "5h 0m (not counted against the budget)",
                          "29 September 2026, 3:00 PM IST", "Active", "View Project"):
             self.assertIn(expected, message.html, expected)
+        # The percentage rows were removed on request; the badge states the threshold.
+        for removed in ("Budget used", "20.0%", "80.0%"):
+            self.assertNotIn(removed, message.html, removed)
+            self.assertNotIn(removed, message.text, removed)
         self.assertEqual(message.subject, "Monitra — 20% Hours Remaining: Project Alpha")
 
     def test_every_state_has_explicit_text_and_its_own_subject(self):
