@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { ClientShell } from './ClientShell';
 import { ClientKpiCard } from './ClientKpiCard';
 import { Card, EmptyState, ErrorNote, Spinner } from '../member/MemberUi';
@@ -42,12 +42,35 @@ const UsageBar: React.FC<{ total: number | null; used: number }> = ({ total, use
   );
 };
 
-const ProjectBillingCard: React.FC<{ project: MyBillingProject }> = ({ project }) => (
+/**
+ * One project's billing, as an accordion: the header row (name, status and
+ * the budget/used/remaining chips) is always visible; the per-task table
+ * expands on click. Collapsed by default, so the page opens as a compact
+ * per-project summary.
+ */
+const ProjectBillingCard: React.FC<{ project: MyBillingProject }> = ({ project }) => {
+  const [open, setOpen] = useState(false);
+  return (
   <Card>
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <h3 className="text-base font-bold text-[#0F172A]">{project.project_name}</h3>
-        <p className="mt-0.5 text-xs capitalize text-[#64748B]">{project.status} · Fixed billing</p>
+    <button
+      type="button"
+      onClick={() => setOpen((current) => !current)}
+      aria-expanded={open}
+      className="flex w-full cursor-pointer flex-wrap items-start justify-between gap-3 text-left"
+    >
+      <div className="flex items-start gap-2">
+        <svg
+          className={`mt-1 h-4 w-4 shrink-0 text-[#94A3B8] transition-transform ${open ? 'rotate-180' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+        </svg>
+        <div>
+          <h3 className="text-base font-bold text-[#0F172A]">{project.project_name}</h3>
+          <p className="mt-0.5 text-xs capitalize text-[#64748B]">{project.status} · Fixed billing</p>
+        </div>
       </div>
       <div className="flex flex-wrap items-center gap-4 text-sm">
         <div className="text-right">
@@ -63,10 +86,10 @@ const ProjectBillingCard: React.FC<{ project: MyBillingProject }> = ({ project }
           <RemainingLabel remaining={project.remaining_hours} />
         </div>
       </div>
-    </div>
+    </button>
     <UsageBar total={project.total_hours} used={project.used_hours} />
 
-    {project.tasks.length === 0 ? (
+    {!open ? null : project.tasks.length === 0 ? (
       <p className="mt-4 text-sm text-[#94A3B8]">No tasks on this project yet.</p>
     ) : (
       <div className="mt-4 overflow-x-auto">
@@ -109,7 +132,8 @@ const ProjectBillingCard: React.FC<{ project: MyBillingProject }> = ({ project }
       </div>
     )}
   </Card>
-);
+  );
+};
 
 export const ClientBilling: React.FC = () => {
   const { data, isLoading, isError } = useGetMyBillingQuery();

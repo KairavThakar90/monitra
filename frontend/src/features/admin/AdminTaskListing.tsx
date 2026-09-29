@@ -330,7 +330,9 @@ export const AdminTaskListing: React.FC = () => {
   const projects = data?.projects || [];
   const pagination = data?.pagination;
 
-  // Initialize expanded state for newly loaded projects
+  // Initialize expanded state for newly loaded projects — collapsed by
+  // default, so the page opens as a compact project list and the admin
+  // expands only what they want to read.
   useEffect(() => {
     if (projects.length > 0) {
       setExpandedProjects((prev) => {
@@ -338,7 +340,7 @@ export const AdminTaskListing: React.FC = () => {
         let changed = false;
         projects.forEach((p) => {
           if (next[p.id] === undefined) {
-            next[p.id] = true;
+            next[p.id] = false;
             changed = true;
           }
         });
@@ -611,7 +613,10 @@ export const AdminTaskListing: React.FC = () => {
               </div>
             ) : (
               projects.map((project) => {
-                const isExpanded = expandedProjects[project.id] !== false;
+                // Collapsed until explicitly opened — `undefined` (not yet
+                // initialised) must render closed, or the first paint flashes
+                // every project open before the init effect runs.
+                const isExpanded = expandedProjects[project.id] === true;
                 return (
                   <div
                     key={project.id}

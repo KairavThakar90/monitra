@@ -515,7 +515,9 @@ export const AdminProjectManagement: React.FC = () => {
   );
 
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>({
-    project: true, status: true, owner: true, leader: true, team: true, tasks: true, billing: true,
+    // Tasks starts hidden: the count is rarely what this table is opened
+    // for, and the Columns dropdown turns it on when it is.
+    project: true, status: true, owner: true, leader: true, team: true, tasks: false, billing: true,
     usedHours: true, internalHours: true, remainingHours: true, started: true, manage: true
   });
   const [showColumnDropdown, setShowColumnDropdown] = useState(false);
@@ -968,7 +970,11 @@ export const AdminProjectManagement: React.FC = () => {
                 </svg>
               </button>
               {showColumnDropdown && (
-                <div className="absolute right-0 mt-2 w-48 rounded-xl bg-white p-3 shadow-xl border border-slate-100 z-50">
+                <>
+                  {/* Click-away: anywhere outside the panel closes it, the
+                      same pattern the row Manage menu uses. */}
+                  <div className="fixed inset-0 z-40" onClick={() => setShowColumnDropdown(false)} />
+                  <div className="absolute right-0 mt-2 w-48 rounded-xl bg-white p-3 shadow-xl border border-slate-100 z-50">
                   <div className="text-xs font-bold text-slate-400 mb-3 uppercase tracking-wider">Visible Columns</div>
                   <div className="space-y-2">
                     {COLUMNS.map(col => (
@@ -983,10 +989,11 @@ export const AdminProjectManagement: React.FC = () => {
                       </label>
                     ))}
                   </div>
-                </div>
+                  </div>
+                </>
               )}
             </div>
-            
+
             <button
               type="button"
               onClick={() => setShowExportDialog(true)}

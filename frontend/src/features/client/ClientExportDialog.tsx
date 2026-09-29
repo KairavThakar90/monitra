@@ -123,8 +123,9 @@ export const ClientExportDialog: React.FC<{
   allProjects: { id: number; project_name: string }[];
   allMembers: { id: number; name: string }[];
 }> = ({ open, onClose, defaultReport, range, selectedProjectIds, selectedMemberIds }) => {
-  // No report chooser: each page's Export button exports that page's own
-  // report, so the dialog is just columns + download.
+  // Locked to the page the Export button was pressed on: the Tasks page
+  // exports tasks, the Members page members, the Projects page projects --
+  // no chooser.
   const report = defaultReport;
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
