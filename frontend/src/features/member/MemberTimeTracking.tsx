@@ -569,7 +569,8 @@ export const MemberTimeTracking: React.FC = () => {
         start_time: istWallClockToUtcISO(formDate, formClockIn),
         end_time: istWallClockToUtcISO(formDate, formClockOut),
         description: formReason.trim(),
-        is_billable: true,
+        // No is_billable: the backend takes it from the project's billing
+        // type (fixed hours bill, free ones do not).
       }).unwrap();
       showToast("Request submitted for approval.", "success");
       setDrawerOpen(false);

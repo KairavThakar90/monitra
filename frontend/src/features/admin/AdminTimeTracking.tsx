@@ -561,7 +561,8 @@ export const AdminTimeTracking: React.FC = () => {
         start_time: istWallClockToUtcISO(formDate, formClockIn),
         end_time: istWallClockToUtcISO(formDate, formClockOut),
         description: 'Manual entry created from admin panel.',
-        is_billable: true,
+        // No is_billable: the backend takes it from the project's billing
+        // type (fixed hours bill, free ones do not).
       }).unwrap();
 
       showToast('Manual time entry requested successfully.', 'success');
