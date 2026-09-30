@@ -66,7 +66,7 @@ describe('hover cards in a scrolling list', () => {
       root.render(
         <div style={{ maxHeight: 40, overflowY: 'auto' }}>
           <RankedBars
-            items={[{ id: '1', name: 'Apollo', value: 3, secondary: 72 }]}
+            items={[{ id: '1', name: 'Apollo', value: 3, meta: '', secondary: 72 }]}
             color="#2563EB"
             formatValue={(n) => `${n}h`}
           />
