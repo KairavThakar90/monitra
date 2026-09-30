@@ -245,6 +245,25 @@ def list_my_tasks(
 
 
 @router.get(
+    "/clients/me/timesheet",
+    summary="Tracked time by day, member, project and to-do across shared projects: the rows of the timesheet export",
+)
+def list_my_timesheet(
+    start_date: Optional[str] = _START_DATE_Q,
+    end_date: Optional[str] = _END_DATE_Q,
+    project_ids: Optional[list[int]] = _PROJECT_IDS_Q,
+    member_ids: Optional[list[int]] = _MEMBER_IDS_Q,
+    current_user: User = Depends(_require_client),
+    db: Session = Depends(get_db),
+):
+    return ClientPortalService.list_timesheet(
+        db, current_user,
+        _parse_date(start_date, field_label="start_date"), _parse_date(end_date, field_label="end_date"),
+        project_ids, member_ids,
+    )
+
+
+@router.get(
     "/clients/me/billing",
     summary="Billing usage for the shared billable projects: budgeted, used and remaining hours, per project and per task",
 )

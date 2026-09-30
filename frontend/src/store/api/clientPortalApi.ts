@@ -90,6 +90,30 @@ export interface MyTaskHoursResponse {
 /** Budget/usage figures shared by the billing read's project and task rows.
  * `total_hours`/`remaining_hours` are null when no budget is set (a task
  * without an estimate); `remaining_hours` goes negative when overspent. */
+/** One row of the client's timesheet: tracked time on one IST day. */
+export interface MyTimesheetRow {
+  /** `YYYY-MM-DD`, in IST. */
+  date: string;
+  /** Opaque; present even when the name is withheld, so people stay distinct. */
+  member_id: number;
+  /** `null` when member details are not shared with this client. */
+  member_name: string | null;
+  project_id: number | null;
+  project_name: string | null;
+  task_id: number | null;
+  /** `null` when tasks are not shared with this client. */
+  task_name: string | null;
+  tracked_seconds: number;
+}
+
+export interface MyTimesheetResponse {
+  start_date: string;
+  end_date: string;
+  organization: string | null;
+  permissions: ClientPermissions;
+  items: MyTimesheetRow[];
+}
+
 export interface MyBillingUsage {
   total_hours: number | null;
   used_seconds: number;
@@ -266,6 +290,11 @@ export const clientPortalApi = baseApi.injectEndpoints({
       providesTags: [{ type: 'ClientProject', id: 'TASKS' }],
     }),
 
+    getMyTimesheet: builder.query<MyTimesheetResponse, ClientQueryArg | void>({
+      query: (arg) => withQuery(ENDPOINTS.CLIENTS.MY_TIMESHEET, arg ?? undefined),
+      providesTags: [{ type: 'ClientProject', id: 'TIMESHEET' }],
+    }),
+
     getMyMemberDetail: builder.query<MyMemberDetail, { memberId: number } & ClientQueryArg>({
       query: ({ memberId, ...rest }) => withQuery(ENDPOINTS.CLIENTS.MY_MEMBER_BY_ID(memberId), rest),
       providesTags: (_result, _error, { memberId }) => [{ type: 'ClientProject', id: `member-${memberId}` }],
@@ -299,6 +328,7 @@ export const {
   useGetMyMemberHoursQuery,
   useGetMyMemberDetailQuery,
   useGetMyTaskHoursQuery,
+  useGetMyTimesheetQuery,
   useGetMyBillingQuery,
   useGetMyProjectDetailQuery,
   useGetMyProjectScreenshotsQuery,

@@ -997,7 +997,7 @@ export const AdminMembers: React.FC = () => {
                               onClick={() => setLogMember({ id: member.id, name: member.name || 'Member' })}
                               className="rounded px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-indigo-600 border border-indigo-200 transition hover:bg-indigo-50"
                             >
-                              View Log
+                               Log
                             </button>
                             <button
                               onClick={() => openEditDrawer(member)}

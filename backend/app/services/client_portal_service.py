@@ -471,6 +471,87 @@ class ClientPortalService:
         items.sort(key=lambda item: (-(item["total_tracked_seconds"] or 0), item["task_name"].lower()))
         return {"start_date": start.isoformat(), "end_date": end.isoformat(), "permissions": permissions, "items": items}
 
+    #: Rows read per query while assembling a timesheet. The export needs every
+    #: row in the range, so the repository is walked page by page.
+    _TIMESHEET_PAGE = 1000
+    #: A ceiling on that walk, so a range that somehow matches an absurd number
+    #: of rows ends instead of running for ever.
+    _TIMESHEET_MAX_PAGES = 200
+
+    @staticmethod
+    def list_timesheet(
+        db: Session,
+        user: User,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        project_ids: Optional[list[int]] = None,
+        member_ids: Optional[list[int]] = None,
+    ) -> dict:
+        """The rows behind the client's timesheet export: tracked time at
+        (IST day, member, project, to-do) grain across the shared projects.
+
+        The same grain the staff timesheet is built from, so a client and an
+        administrator read one format. It honours what the administrator
+        shared, by withholding rather than fabricating:
+
+        * ``share_timing`` off -- there is nothing to report, so no rows, and
+          ``permissions`` says why;
+        * ``share_member_details`` off -- the member is named ``None``. Rows
+          still carry the (opaque) ``member_id`` so two people are not merged
+          into one, but no name leaves the server;
+        * ``share_tasks`` off -- the to-do is named ``None`` in the same way.
+
+        Projects are narrowed to what this client may see: a filter can only
+        narrow, never widen.
+        """
+        client = ClientPortalService._client_for(db, user)
+        start, end = _resolve_range(start_date, end_date)
+        permissions = _permissions_payload(client)
+        empty = {
+            "start_date": start.isoformat(), "end_date": end.isoformat(),
+            "organization": None, "permissions": permissions, "items": [],
+        }
+        if not client.share_timing:
+            return empty
+
+        scoped_project_ids = ClientPortalService._scope_project_ids(
+            project_ids, ClientPortalService._shared_project_ids(db, client),
+        )
+        if not scoped_project_ids:
+            return empty
+
+        start_time, end_time = _utc_start(start), _utc_end(end)
+        items: list[dict] = []
+        for page in range(ClientPortalService._TIMESHEET_MAX_PAGES):
+            rows, total = ReportsRepository.session_detailed_logs(
+                db, client.organization_id, scoped_project_ids, member_ids or None,
+                start_time, end_time, start, end,
+                None, "date", False,
+                page * ClientPortalService._TIMESHEET_PAGE, ClientPortalService._TIMESHEET_PAGE,
+            )
+            for row in rows:
+                work_date = row.work_date
+                items.append({
+                    "date": work_date.isoformat() if hasattr(work_date, "isoformat") else str(work_date)[:10],
+                    "member_id": row.member_id,
+                    "member_name": row.member_name if client.share_member_details else None,
+                    "project_id": row.project_id,
+                    "project_name": row.project_name,
+                    "task_id": row.task_id,
+                    "task_name": row.task_name if client.share_tasks else None,
+                    "tracked_seconds": int(row.tracked_seconds or 0),
+                })
+            if not rows or (page + 1) * ClientPortalService._TIMESHEET_PAGE >= total:
+                break
+
+        from app.repositories.member import MemberRepository
+
+        return {
+            "start_date": start.isoformat(), "end_date": end.isoformat(),
+            "organization": MemberRepository.organization_name(db, client.organization_id),
+            "permissions": permissions, "items": items,
+        }
+
     @staticmethod
     def list_billing(
         db: Session,

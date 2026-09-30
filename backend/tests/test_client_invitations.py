@@ -517,6 +517,65 @@ class ClientPortalPermissionsCase(unittest.TestCase):
         self.assertEqual(len(result["items"]), 1)
         self.assertEqual(result["items"][0]["project_names"], ["Permissioned"])
 
+    # ---------------------------------------------------------- timesheet
+
+    def _postgres_functions(self):
+        """The detailed-log query uses two Postgres functions SQLite lacks. Give
+        the test connection stand-ins, so the real query runs rather than a
+        patched one."""
+        connection = self.engine.raw_connection().driver_connection
+        connection.create_function("greatest", 2, lambda a, b: max(a, b))
+        connection.create_function("concat", 2, lambda a, b: f"{a}{b}")
+        # `organizations` has no ORM model (see MemberRepository.organization_name).
+        connection.execute("CREATE TABLE IF NOT EXISTS organizations (id INTEGER PRIMARY KEY, name TEXT)")
+        connection.execute(f"INSERT OR REPLACE INTO organizations (id, name) VALUES ({ORG}, 'Acme Co')")
+        connection.commit()
+
+    def test_timesheet_is_empty_when_timing_is_not_shared(self):
+        """Nothing to report without timing, and no row is invented for it."""
+        result = ClientPortalService.list_timesheet(self.db, self.client_user)
+        self.assertEqual(result["items"], [])
+        self.assertFalse(result["permissions"]["share_timing"])
+
+    def test_timesheet_rows_carry_day_member_project_and_to_do(self):
+        self._postgres_functions()
+        self.client_row.share_timing = True
+        self.client_row.share_member_details = True
+        self.client_row.share_tasks = True
+        self.db.commit()
+        result = ClientPortalService.list_timesheet(self.db, self.client_user)
+        self.assertEqual(len(result["items"]), 1)
+        row = result["items"][0]
+        self.assertEqual(row["member_name"], "Member One")
+        self.assertEqual(row["project_name"], "Permissioned")
+        self.assertEqual(row["task_name"], "Do the thing")
+        self.assertEqual(row["tracked_seconds"], 60)
+        self.assertEqual(result["organization"], "Acme Co")
+        self.assertRegex(row["date"], r"^\d{4}-\d{2}-\d{2}$")
+
+    def test_timesheet_names_nobody_and_nothing_that_was_not_shared(self):
+        """Withheld, not fabricated: the member and the to-do are None, but the
+        opaque member id stays so two people are not merged into one row."""
+        self._postgres_functions()
+        self.client_row.share_timing = True
+        self.db.commit()
+        row = ClientPortalService.list_timesheet(self.db, self.client_user)["items"][0]
+        self.assertIsNone(row["member_name"])
+        self.assertIsNone(row["task_name"])
+        self.assertEqual(row["member_id"], self.member.id)
+        self.assertEqual(row["project_name"], "Permissioned")
+
+    def test_timesheet_filter_can_only_narrow_never_widen(self):
+        self._postgres_functions()
+        self.client_row.share_timing = True
+        self.db.commit()
+        # A project that is not this client's cannot be smuggled in.
+        outside = ClientPortalService.list_timesheet(self.db, self.client_user, project_ids=[999999])
+        self.assertEqual(outside["items"], [])
+        # A member filter that excludes the only worker leaves nothing.
+        other = ClientPortalService.list_timesheet(self.db, self.client_user, member_ids=[self.member.id + 1000])
+        self.assertEqual(other["items"], [])
+
     # ------------------------------------------------------- task listing
 
     def test_task_listing_includes_untracked_tasks_with_details(self):

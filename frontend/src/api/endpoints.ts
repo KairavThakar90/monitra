@@ -48,6 +48,8 @@ export const ENDPOINTS = {
     MY_MEMBERS: `${API_BASE_URL}/clients/me/members`,
     MY_MEMBER_BY_ID: (id: string | number) => `${API_BASE_URL}/clients/me/members/${id}`,
     MY_TASKS: `${API_BASE_URL}/clients/me/tasks`,
+    // The rows behind the timesheet export: day x member x project x to-do.
+    MY_TIMESHEET: `${API_BASE_URL}/clients/me/timesheet`,
     // Billing usage for shared billable projects — always all-time, so it
     // takes no date range (a budget is spent across a project's whole life).
     MY_BILLING: `${API_BASE_URL}/clients/me/billing`,
