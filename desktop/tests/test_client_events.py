@@ -171,7 +171,11 @@ def test_the_exit_waits_for_the_close_report_and_leaves_as_soon_as_it_lands(qapp
     ready = []
     runtime.prepare_exit(lambda: ready.append(True))
     assert ready == [], "the report is in flight; the exit is waiting on it"
-    assert runtime._exit_timer.remainingTime() <= EXIT_EVENT_FLUSH_BUDGET_MS
+    # `interval()`, not `remainingTime()`: the interval is what the runtime
+    # asked for, the remaining time is what the platform scheduled. A coarse
+    # Qt timer may run up to 5% long, and on macOS a 1500ms timer reports
+    # 1575ms remaining (v1.3.1's first Intel build).
+    assert runtime._exit_timer.interval() <= EXIT_EVENT_FLUSH_BUDGET_MS
 
     action = _process_next(runtime)
 
@@ -241,11 +245,11 @@ def test_shortening_the_wait_never_extends_it(qapp, runtime):
     try:
         runtime._exit_timer.start(5_000)
         runtime._shorten_exit_wait(1_500)
-        assert runtime._exit_timer.remainingTime() <= 1_500
+        assert runtime._exit_timer.interval() == 1_500
 
         runtime._exit_timer.start(300)
         runtime._shorten_exit_wait(1_500)
-        assert runtime._exit_timer.remainingTime() <= 300, "a nearly spent wait was lengthened"
+        assert runtime._exit_timer.interval() == 300, "a nearly spent wait was lengthened"
     finally:
         runtime._exit_timer.stop()
 
