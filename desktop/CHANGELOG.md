@@ -28,6 +28,12 @@ re-grant a permission.
   not have to search for it. When you stop, or switch to another project, it
   goes back to its usual place.
 - **Notifications stay on screen for 30 seconds**, down from a minute.
+- **A new notification no longer replaces the one already on screen.** It
+  appears as its own card above it, so you can see that something new came
+  in. Each card closes by itself after 30 seconds, or when you click its ×.
+- **You can search inside the project and task drop-downs.** When you add a
+  manual time entry (Request) or reassign idle time, open the list and start
+  typing to find a project or task by name.
 - The Activity search box is shown on the Apps and URLs tabs only. It no
   longer takes up a row on the Screenshots tab, where it could not be used.
 
@@ -52,6 +58,10 @@ re-grant a permission.
 - The Activity search box has a visible border and no longer sits flush
   against the list below it.
 - The scrollbar beside the project list no longer shows a checkered strip.
+- **Drop-downs look right.** The arrow on the Project, Task, Work Date, Status
+  and Feedback category fields was a boxed button with a broken border, and
+  on the idle Reassign dialog it was missing altogether. Every drop-down now
+  has a clean arrow and the same list.
 
 ## [1.3.0]
 
