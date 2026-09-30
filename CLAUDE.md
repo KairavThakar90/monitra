@@ -185,6 +185,13 @@ change it in all three.
 - **Backend ↔ desktop contract:** if you change a response shape the desktop consumes, you must
   update the desktop side in the same change, or the desktop's optimistic UI and sync queue will
   silently diverge.
+- **WFPM integration:** everything that connects Monitra to WFPM lives in `backend/app/WFPM/`
+  (routes, schemas, service, the timer queue, the HTTP client) — put WFPM work there and
+  nowhere else, so it stays easy to find. Its routes delegate to `ProjectManagementService`;
+  never re-implement a project or task rule in that folder.
+  **[docs/WFPM_INTEGRATION.md](docs/WFPM_INTEGRATION.md) is authoritative** and is the contract
+  the WFPM side is built against: change a route, payload or status code and you must change
+  it in the same commit.
 - **Frontend:** `npm run build` must pass (it runs `tsc -b`), and `npm run lint` must be clean.
   Do not add new `.backup.tsx` or one-off `.cjs` codemod scripts — several already litter the
   tree; do not add more.

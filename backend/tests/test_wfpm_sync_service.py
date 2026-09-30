@@ -314,6 +314,34 @@ class MemberTests(_Db):
             WfpmSyncService.remove_member(self.db, self.admin, "55", EMPLOYEE)
         self.assertEqual(ctx.exception.status_code, 404)
 
+    def test_only_an_admin_or_the_projects_own_leader_may_change_its_members(self):
+        """One rule for adding and removing. Monitra's shared `remove_member`
+        does not check it, so without the WFPM service applying it a manager,
+        or a leader merely staffed onto the project, could remove a member
+        they are refused when they try to add one."""
+        self._linked_project(employee_ids=[EMPLOYEE, OTHER_EMPLOYEE, LEADER])   # led by the admin
+        manager = self._user(3, "manager")
+        self.db.commit()
+        for caller in (manager, self.leader):
+            for call in (
+                lambda: WfpmSyncService.add_members(self.db, caller, "55", [EMPLOYEE]),
+                lambda: WfpmSyncService.remove_member(self.db, caller, "55", EMPLOYEE),
+            ):
+                with self.subTest(role=caller.role_name), self.assertRaises(HTTPException) as ctx:
+                    call()
+                self.assertEqual(ctx.exception.status_code, 403)
+        members = set(self.db.scalars(select(ProjectMember.user_id)).all())
+        self.assertEqual(members, {EMPLOYEE, OTHER_EMPLOYEE, LEADER})
+
+    def test_the_leader_of_the_project_may_change_its_members(self):
+        self._linked_project(employee_ids=[EMPLOYEE])
+        [row] = self._projects()
+        row.leader_id = LEADER
+        self.db.commit()
+        WfpmSyncService.add_members(self.db, self.leader, "55", [OTHER_EMPLOYEE])
+        WfpmSyncService.remove_member(self.db, self.leader, "55", EMPLOYEE)
+        self.assertEqual(set(self.db.scalars(select(ProjectMember.user_id)).all()), {OTHER_EMPLOYEE})
+
     def test_member_routes_need_a_linked_project(self):
         for call in (
             lambda: WfpmSyncService.add_members(self.db, self.admin, "55", [EMPLOYEE]),

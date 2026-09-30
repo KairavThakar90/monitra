@@ -305,6 +305,12 @@ class WfpmSyncService:
     def remove_member(db: Session, user: User, wfpm_project_id: str, member_id: int) -> None:
         project = WfpmSyncService._linked_project(db, user, wfpm_project_id)
         project_id = project.id
+        # Who may change a project's membership is one rule -- an admin, or the
+        # leader of that project -- and `add_members` above enforces it inside
+        # the shared service. `remove_member` does not, so it is applied here:
+        # without it, anyone holding `project_members:manage` could remove
+        # through WFPM a member they are not allowed to add.
+        ProjectMemberService._authorized_project(db, project_id, user)
         ProjectMemberService.remove_member(db, project_id, member_id, user)
         logger.info(
             "WFPM_SYNC_MEMBER_REMOVED: wfpm_project=%s project=%s user=%s member=%s",
