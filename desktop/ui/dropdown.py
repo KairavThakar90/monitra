@@ -396,7 +396,12 @@ class PickerComboBox(QComboBox):
         return self._popup is not None and self._popup.isVisible()
 
     def showPopup(self) -> None:  # noqa: N802 - Qt naming
-        if self.count() == 0 or self.is_popup_open():
+        if self.is_popup_open():
+            # Asked to open while open: the field was pressed again. That
+            # closes it, the way pressing the arrow of any drop-down does.
+            self.hidePopup()
+            return
+        if self.count() == 0:
             return
         if time.monotonic() - self._closed_at < REOPEN_GUARD_SECONDS:
             # The press that just closed the list, delivered to the field.

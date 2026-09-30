@@ -372,6 +372,33 @@ def test_the_press_that_closes_the_list_does_not_reopen_it(host, qapp):
     assert not combo.is_popup_open()
 
 
+def test_pressing_the_field_while_the_list_is_open_closes_it(host, qapp):
+    """Found on the real display: a press that reaches the field with the
+    list still open used to be ignored, and the list stayed up."""
+    combo = _combo(host, qapp)
+    combo.showPopup()
+    assert combo.is_popup_open()
+
+    QTest.mouseClick(combo, Qt.MouseButton.LeftButton)
+
+    assert not combo.is_popup_open()
+
+
+def test_a_press_outside_the_list_closes_it_and_keeps_the_selection(host, qapp):
+    """What the platform delivers when the user clicks anywhere else: the
+    open list holds the mouse, so it receives the press, outside its own
+    rectangle."""
+    combo = _combo(host, qapp)
+    combo.setCurrentIndex(4)
+    combo.showPopup()
+    popup = combo.picker_popup()
+
+    QTest.mousePress(popup, Qt.MouseButton.LeftButton, pos=QPoint(-40, -40))
+
+    assert not combo.is_popup_open()
+    assert combo.currentIndex() == 4
+
+
 def test_the_search_field_accepts_exactly_the_catalogue_limit(host, qapp):
     combo = _combo(host, qapp)
 
