@@ -12,7 +12,8 @@ had looked away could read it, and `NotificationService.DISPLAY_MS` was a hint
 nothing honoured.
 
 This widget is the answer: Monitra draws the notification itself, in a corner
-of the screen it owns, so the minute in `DISPLAY_MS` is a real minute.
+of the screen it owns, so the thirty seconds in `DISPLAY_MS` are a real thirty
+seconds.
 
 Two rules it must keep, both of them paid for already:
 

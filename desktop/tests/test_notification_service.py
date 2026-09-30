@@ -212,19 +212,23 @@ def test_stopping_the_service_clears_a_pending_link(service):
 
 # ── Display duration ──────────────────────────────────────────────────────────
 
-def test_a_notification_is_held_for_at_least_a_minute(service):
-    """The requested behaviour: a toast is not a blink-and-miss-it flash.
+def test_a_notification_is_held_for_thirty_seconds(service):
+    """The requested behaviour: thirty seconds, for every notification.
+
+    It was a minute; the owner asked for thirty seconds (2026-09-30). Exact,
+    not "at least": the point of the request is that the card is gone after
+    half a minute, so a longer value is as wrong as a shorter one.
 
     Windows ignores the hint and uses its own accessibility setting, so this
     can only assert what the service actually controls -- the value passed to
     the platform, and how long the service keeps the notification alive.
     """
-    assert NotificationService.DISPLAY_MS >= 60_000
+    assert NotificationService.DISPLAY_MS == 30_000
 
     service.notify("Drink water", key="wellbeing:hydrate")
 
     _, _, _, timeout_ms = service._tray.showMessage.call_args[0]
-    assert timeout_ms >= 60_000
+    assert timeout_ms == 30_000
 
 
 def test_the_retirement_timer_outlasts_the_display_window(service):
@@ -236,7 +240,7 @@ def test_the_retirement_timer_outlasts_the_display_window(service):
 
 
 def test_a_click_still_opens_the_link_late_in_the_display_window(service):
-    """A minute-long toast is one the user can act on a minute later."""
+    """A toast that is up for its whole window can be acted on until it ends."""
     service.notify("Release 2.0 is available", key="update", link="https://example.com")
 
     service._retire_current()          # only now does the window close
@@ -247,10 +251,10 @@ def test_a_click_still_opens_the_link_late_in_the_display_window(service):
 #
 # `DISPLAY_MS` used to be a hint nothing honoured: Windows ignores the timeout
 # passed to `showMessage` and uses the user's accessibility setting instead --
-# five seconds by default, about twenty-five for a long toast -- so a minute's
-# worth of notification was on screen for a fraction of it. Monitra now draws
-# the notification itself, and these tests pin the properties that make that
-# both correct and safe.
+# five seconds by default, about twenty-five for a long toast -- so the time
+# asked for and the time on screen had nothing to do with each other. Monitra
+# now draws the notification itself, and these tests pin the properties that
+# make that both correct and safe.
 
 
 def test_the_card_is_shown_even_when_no_system_tray_exists(qapp):
@@ -275,7 +279,7 @@ def test_the_card_is_shown_even_when_no_system_tray_exists(qapp):
 
 
 def test_a_notification_is_drawn_by_the_app_not_the_platform(popup_service):
-    """The card is the surface, because it is the one that honours the minute."""
+    """The card is the surface, because it is the one that honours DISPLAY_MS."""
     popup_service.notify("Timer started", key="timer-started")
 
     popup = popup_service._popup
@@ -291,12 +295,38 @@ def test_the_platform_toast_is_not_fired_alongside_the_card(popup_service):
     popup_service._tray.showMessage.assert_not_called()
 
 
-def test_the_card_stays_up_for_at_least_a_minute(popup_service):
-    """The whole point of the change: a full minute of real on-screen time."""
+def test_the_card_stays_up_for_thirty_seconds_and_no_longer(popup_service):
+    """Real on-screen time: the card is retired by the service's own timer,
+    thirty seconds after it appears -- not by the platform, and not a minute
+    later as it used to be."""
     popup_service.notify("Drink water", key="wellbeing:hydrate")
 
     assert popup_service._popup.isVisible()
-    assert popup_service._dismiss_timer.remainingTime() >= 60_000
+    remaining = popup_service._dismiss_timer.remainingTime()
+    assert 30_000 <= remaining <= 31_000
+
+
+def test_every_kind_of_notification_gets_the_same_thirty_seconds(popup_service):
+    """One display time for all of them -- a reminder, a timer event, an
+    error -- because there is one timer and one constant behind it."""
+    for level, key in (
+        (NotificationLevel.INFO, "wellbeing:hydrate"),
+        (NotificationLevel.SUCCESS, "timer-started"),
+        (NotificationLevel.WARNING, "network"),
+        (NotificationLevel.ERROR, "task-mut-err"),
+    ):
+        popup_service.notify("message", level, key=key)
+        assert 30_000 <= popup_service._dismiss_timer.remainingTime() <= 31_000
+
+
+def test_the_card_is_gone_when_its_thirty_seconds_are_up(popup_service):
+    """The timer firing is what takes the card down."""
+    popup_service.notify("Drink water", key="wellbeing:hydrate")
+    assert popup_service._popup.isVisible()
+
+    popup_service._dismiss_timer.timeout.emit()      # the thirty seconds elapsing
+
+    assert not popup_service._popup.isVisible()
 
 
 def test_the_card_owns_no_timer_of_its_own(popup_service):

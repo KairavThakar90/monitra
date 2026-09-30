@@ -182,7 +182,12 @@ class NotificationService(BaseService):
     #: five seconds by default and about twenty-five for a long toast. That is
     #: why the platform toast is now only the fallback for a machine the popup
     #: cannot be placed on.
-    DISPLAY_MS = 60_000
+    #:
+    #: Thirty seconds, for every notification. It was a minute; the owner
+    #: asked for half that (2026-09-30) -- long enough to be read by someone
+    #: who looked away, short enough that the card is not still sitting in
+    #: the corner of the screen when the next thing happens.
+    DISPLAY_MS = 30_000
 
     def __init__(self, runtime, parent: Optional[QObject] = None) -> None:
         super().__init__(runtime, parent)
