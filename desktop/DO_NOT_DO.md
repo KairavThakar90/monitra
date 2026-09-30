@@ -754,6 +754,62 @@ both, or a single event notifies the user twice.
 Network flapping produced a burst of toasts. Notifications are de-duplicated by
 key within 20 seconds and capped at 6 per minute.
 
+### ❌ Do not start every recurring reminder from the same instant
+
+```python
+self._due_at = {r.key: now + r.every_minutes * 60 for r in INTERVAL_REMINDERS}
+```
+
+**What it caused:** cadences of 20, 30, 60, 60, 90 and 120 minutes all counted
+from one moment, so they came due together at every common multiple — four at
+the hour, three at ninety minutes, seven at two hours — and one went out per
+thirty-second tick. From a real session's log:
+
+```
+11:32:46  Drink Water
+11:33:16  Fix Your Posture
+11:33:46  Blink Your Eyes
+11:34:16  Follow the 20-20-20 Rule
+```
+
+Four reminders in ninety seconds, each replacing the one before it on the
+single notification card. It needs an unbroken hour of session to appear at
+all, so it was reported as "too quick, for some users, sometimes", and the
+first hour of any test run looked perfect.
+
+**Instead:** give each reminder an offset (`IntervalReminder.offset_minutes`)
+and prove, across the whole repeating timetable, that no two ever fall within
+`MIN_SEPARATION_MINUTES` of each other. "One per tick" spreads a collision
+out; it does not remove it.
+
+### ❌ Do not re-anchor a recurring deadline on the moment it was handled
+
+```python
+self._due_at[key] = now + every_minutes * 60      # `now` is when it was shown
+```
+
+**What it caused:** drift that never recovered. A twenty-minute reminder due at
+11:32:46 and shown at 11:34:16, behind three others, was next due at 11:54:16
+— and every later burst added to it. "Every 20 minutes" was true of nothing.
+
+**Instead:** the next deadline is one period after the one just met
+(`WellbeingService._advance`). Being late once does not move the grid.
+
+### ❌ Do not poll on a fixed tick for something that has a known deadline
+
+A thirty-second tick shows a reminder at whichever tick follows its time: up
+to half a minute late, by a different amount for every reminder. `tick()`
+returns the time to the next deadline (capped at `interval_ms`, which still
+covers what no deadline announces — a sign-out, a gap in the loop).
+
+### ❌ Do not put a storage write between an event's time and showing it
+
+`_due_daily` recorded the reminder as fired, wrote that to `app_state`, and
+only then returned it to be shown. The write waits behind any other writer
+for up to the ten-second busy timeout. In the session this was diagnosed from,
+the 10:30 break appeared 14.5 seconds after the tick that found it due. Show
+first, persist after; and give the service a stop budget that covers the wait.
+
 ### ❌ Do not ship without an explicit Windows App User Model ID
 
 Without `SetCurrentProcessExplicitAppUserModelID`, Windows attributes toasts to

@@ -20,14 +20,32 @@ from dataclasses import dataclass
 from datetime import time
 
 
+#: The closest two interval reminders may ever fall due, in minutes.
+#:
+#: Five is not a preference, it is the ceiling: the 20- and 30-minute cadences
+#: share a common period of ten minutes, so the furthest apart they can be
+#: held is half of that. `tests/test_wellbeing_reminders.py` checks the
+#: catalogue below against this across the whole repeating schedule, so an
+#: edit that puts two reminders on the same instant fails there rather than
+#: on somebody's screen.
+MIN_SEPARATION_MINUTES = 5
+
+
 @dataclass(frozen=True)
 class IntervalReminder:
-    """A reminder shown every `every_minutes` of an active session."""
+    """A reminder shown every `every_minutes` of an active session.
+
+    `offset_minutes` shifts the whole cadence: the reminder falls due at
+    `offset + every`, `offset + 2 * every`, ... minutes into the session. It
+    changes *when* in the hour a reminder lands, never how often -- "every 60
+    minutes" is sixty minutes between one and the next whatever the offset.
+    """
 
     key: str
     title: str
     body: str
     every_minutes: int
+    offset_minutes: int = 0
 
 
 @dataclass(frozen=True)
@@ -47,6 +65,15 @@ class DailyReminder:
 #: rest are given a cadence in the same spirit -- frequent enough to be useful,
 #: spaced so the day does not turn into a stream of toasts. They are one edit
 #: away from anything else.
+#:
+#: The offsets are what keep them apart. Cadences that all start from the same
+#: instant come due together at every common multiple: four of these at the
+#: hour, three at ninety minutes, seven at two hours. One reminder goes out
+#: per tick, so that was a run of toasts thirty seconds apart, each replacing
+#: the last before it had been up for its own display time -- measured in a
+#: real session on 2026-09-30 as water, posture, blink and 20-20-20 inside
+#: ninety seconds. Staggered, no two ever fall within `MIN_SEPARATION_MINUTES`
+#: of each other, and each still repeats exactly as often as it says.
 INTERVAL_REMINDERS: tuple[IntervalReminder, ...] = (
     IntervalReminder(
         key="rule_20_20_20",
@@ -59,18 +86,21 @@ INTERVAL_REMINDERS: tuple[IntervalReminder, ...] = (
         title="👀 Blink Your Eyes",
         body="Take a moment to blink regularly and relax your eyes.",
         every_minutes=30,
+        offset_minutes=5,
     ),
     IntervalReminder(
         key="hydrate",
         title="💧 Drink Water",
         body="Keep a water bottle nearby and stay hydrated throughout the day.",
         every_minutes=60,
+        offset_minutes=10,
     ),
     IntervalReminder(
         key="posture",
         title="🧍 Fix Your Posture",
         body="Sit upright, keep your shoulders relaxed, and avoid slouching.",
         every_minutes=60,
+        offset_minutes=15,
     ),
     IntervalReminder(
         key="wrist_stretch",
@@ -78,24 +108,28 @@ INTERVAL_REMINDERS: tuple[IntervalReminder, ...] = (
         body="Stretch your fingers, wrists, and arms to reduce stiffness from "
              "typing and mouse use.",
         every_minutes=90,
+        offset_minutes=25,
     ),
     IntervalReminder(
         key="deep_breaths",
         title="🌬️ Take Deep Breaths",
         body="Pause for a minute and take a few slow, deep breaths to reset your mind.",
         every_minutes=90,
+        offset_minutes=55,
     ),
     IntervalReminder(
         key="short_walk",
         title="🚶 Take a Short Walk",
         body="Get up and walk around for a few minutes after sitting for a long time.",
         every_minutes=120,
+        offset_minutes=30,
     ),
     IntervalReminder(
         key="screen_break",
         title="🧘 Take a Screen Break",
         body="Step away from your computer and give your mind and eyes a proper break.",
         every_minutes=120,
+        offset_minutes=45,
     ),
     IntervalReminder(
         key="keep_moving",
@@ -103,6 +137,7 @@ INTERVAL_REMINDERS: tuple[IntervalReminder, ...] = (
         body="Avoid staying at your desk for hours without moving. Set regular "
              "movement breaks.",
         every_minutes=120,
+        offset_minutes=50,
     ),
 )
 
