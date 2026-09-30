@@ -295,13 +295,13 @@ export const LoginScreen: React.FC = () => {
                 <label htmlFor="password" className="block text-xs font-semibold text-[#94A3B8] tracking-wider uppercase">
                   Password
                 </label>
-                <button
+                {/* <button
                   type="button"
                   onClick={() => setIsModalOpen(true)}
                   className="text-xs font-medium text-[#2563EB] hover:text-blue-700 focus:outline-none"
                 >
                   Forgot password?
-                </button>
+                </button> */}
               </div>
               <div className="relative">
                 <span className="pointer-events-none absolute left-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md bg-[#EFF6FF] text-[#2563EB]">

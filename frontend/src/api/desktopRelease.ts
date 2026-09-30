@@ -2,11 +2,15 @@
  * Desktop downloads for the website.
  *
  * Each platform has exactly one link (`DOWNLOAD_LINKS`) and every download
- * button goes through it. As of 2026-09-29 those links point at versioned
- * artifacts on GitHub, so shipping a new build means updating them (see the
- * note on `DOWNLOAD_LINKS`). The release metadata shown beside a button
- * (version, size, notes, checksum) still comes from the backend, and is
- * omitted rather than guessed when it is not there.
+ * button goes through it. As of 2026-09-30 the installers are served by the
+ * website itself, from `public/download_app_files/`, and the links are built
+ * from `DOWNLOAD_VERSION`, so shipping a new build means dropping the three
+ * files in that folder and bumping that one constant (see the note on
+ * `DOWNLOAD_LINKS`). The version a button serves is therefore known here; the
+ * rest of the metadata shown beside it (size, notes, checksum) comes from the
+ * backend, and is only shown when the backend's record is about that same
+ * build — see `describesLinkedBuild` — and omitted rather than guessed
+ * otherwise.
  *
  * Unauthenticated by design: someone installing Monitra for the first time has
  * no account yet. The backend only ever exposes *published* releases here, so
@@ -49,26 +53,46 @@ export const DOWNLOAD_TARGETS: Record<DownloadKey, { platform: string; arch?: st
 };
 
 /**
+ * The version of Monitra every link in `DOWNLOAD_LINKS` serves.
+ *
+ * Kept in step with `desktop/version.py` by hand: this is the number the
+ * download page prints beside each button, so it must be the version of the
+ * file the button actually hands over, and nothing else.
+ */
+export const DOWNLOAD_VERSION = '1.3.0';
+
+/**
+ * The folder the installers are served from, at the root of this website.
+ *
+ * It is `frontend/public/download_app_files/` in the source tree: Vite copies
+ * `public/` verbatim into the build, so the same path works on the dev server
+ * and on the deployed site. The files are deliberately not tracked in git —
+ * they are build output, and far too large for it — so the machine that builds
+ * a release must have them in place, or the buttons lead to a 404.
+ */
+const DOWNLOAD_DIRECTORY = '/download_app_files';
+
+/**
  * Where each platform's installer is served from.
  *
- * These currently point at versioned artifacts in the `release-monitra`
- * GitHub repository (a deliberate decision, 2026-09-29). The cost of that
- * choice: **publishing a new release now requires editing these three links**
- * — and the pinned URLs in `__tests__/desktopRelease.test.ts` — or the
- * download page keeps serving the old build forever.
+ * Root-relative on purpose: the file sits on the same origin as this page, so
+ * the link resolves against the site wherever the page is mounted, and the
+ * `download` attribute on the button (which browsers honour only for
+ * same-origin links) makes a click save the file instead of navigating to it.
+ * **Publishing a new release means placing the three files in
+ * `public/download_app_files/` and bumping `DOWNLOAD_VERSION`** — and the
+ * pinned paths in `__tests__/desktopRelease.test.ts` — or the download page
+ * keeps serving the old build forever.
  *
  * Because the file is not served by our backend, the page cannot learn a
- * download's size or checksum from the link. Version and size are still shown
- * when `GET /desktop/releases/downloads` knows them, and simply omitted when
- * it does not — the download itself never depends on that call.
+ * download's size or checksum from the link. Those are still shown when
+ * `GET /desktop/releases/downloads` describes this very version, and simply
+ * omitted when it does not — the download itself never depends on that call.
  */
 export const DOWNLOAD_LINKS: Record<DownloadKey, string> = {
-  windows:
-    'https://github.com/KairavThakar90/release-monitra/raw/refs/heads/main/1.2.7/Monitra-Windows-1.2.7.zip',
-  'macos-arm64':
-    'https://github.com/KairavThakar90/release-monitra/raw/refs/heads/main/1.2.7/Monitra-macOS-arm64-1.2.7.zip',
-  'macos-x86_64':
-    'https://github.com/KairavThakar90/release-monitra/raw/refs/heads/main/1.2.7/Monitra-macOS-x86_64-1.2.7.zip',
+  windows: `${DOWNLOAD_DIRECTORY}/Monitra-Setup-${DOWNLOAD_VERSION}.exe`,
+  'macos-arm64': `${DOWNLOAD_DIRECTORY}/Monitra-macOS-arm64-${DOWNLOAD_VERSION}.dmg`,
+  'macos-x86_64': `${DOWNLOAD_DIRECTORY}/Monitra-macOS-x86_64-${DOWNLOAD_VERSION}.dmg`,
 };
 
 /**
@@ -79,6 +103,20 @@ export const DOWNLOAD_LINKS: Record<DownloadKey, string> = {
  */
 export function downloadUrlFor(key: DownloadKey): string {
   return DOWNLOAD_LINKS[key];
+}
+
+/**
+ * Whether the backend's record is about the build the button serves.
+ *
+ * Only then may its size, release notes and checksum be printed beside the
+ * button. The backend answers with the newest *published* row, which lags
+ * behind `DOWNLOAD_VERSION` until that version is registered — and a size or
+ * SHA-256 that belongs to a different file is not "slightly stale", it is
+ * wrong: a person verifying their download against it would conclude the
+ * file is corrupt.
+ */
+export function describesLinkedBuild(release: DesktopRelease | undefined): release is DesktopRelease {
+  return Boolean(release?.available) && release?.version === DOWNLOAD_VERSION;
 }
 
 /** Every platform's current download, for a page that lists them all. */

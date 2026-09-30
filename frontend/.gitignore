@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Desktop installers the download page serves (see src/api/desktopRelease.ts).
+# Build output, and far too large for git: place them here on the machine
+# that builds the site.
+public/download_app_files/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

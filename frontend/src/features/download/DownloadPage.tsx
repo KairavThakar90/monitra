@@ -10,13 +10,18 @@
  * the thing they sign in with is a loop.
  *
  * **Downloading does not depend on the release service.** The installers are
- * hosted separately from the backend, so `GET /desktop/releases/downloads`
- * supplies the version, size, notes and checksum shown beside a button and
- * nothing more. When it fails or knows nothing, those rows are omitted — never
- * guessed — and the download stays exactly as clickable as it was. Hiding a
- * working download behind a metadata failure would be reporting a fault that
- * is not there, which is the mirror image of the fabricated-data pattern this
- * project has already removed once.
+ * hosted separately from the backend, and the version each button serves is
+ * `DOWNLOAD_VERSION` — a fact this page knows without asking anyone.
+ * `GET /desktop/releases/downloads` supplies only the size, notes and checksum
+ * shown beside a button, and only when its record is about that same version
+ * (`describesLinkedBuild`): the backend describes the newest *registered*
+ * release, which can trail the linked build, and a checksum for a different
+ * file is wrong, not stale. When the call fails, knows nothing, or describes
+ * another version, those rows are omitted — never guessed — and the download
+ * stays exactly as clickable as it was. Hiding a working download behind a
+ * metadata failure would be reporting a fault that is not there, which is the
+ * mirror image of the fabricated-data pattern this project has already removed
+ * once.
  *
  * The palette is the one the rest of the app uses — the #2563EB blue and the
  * slate hexes from LoginScreen — rather than Tailwind's stock indigo, so this
@@ -25,6 +30,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  DOWNLOAD_VERSION,
+  describesLinkedBuild,
   detectDownloadKey,
   downloadUrlFor,
   fetchDesktopDownloadsAPI,
@@ -88,13 +95,13 @@ function DownloadCard({
   recommended: boolean;
 }) {
   /**
-   * Whether the release service told us *about* this build — not whether it
-   * can be downloaded. The installer is served from its own host, so the
-   * button works whatever this call returned; all this decides is which
-   * details are printed beside it.
+   * Whether the release service told us about *this* build — the one the
+   * button serves — not whether it can be downloaded. The installer is served
+   * from its own host, so the button works whatever this call returned; all
+   * this decides is whether the size, notes and checksum are printed beside it.
    */
-  const described = Boolean(release?.available);
-  const size = formatFileSize(release?.file_size ?? null);
+  const described = describesLinkedBuild(release);
+  const size = formatFileSize(described ? release.file_size : null);
 
   return (
     <div
@@ -119,7 +126,7 @@ function DownloadCard({
       <dl className="mt-5 space-y-1 text-sm">
         <div className="flex justify-between">
           <dt className="text-[#64748B]">Version</dt>
-          <dd className="font-medium text-[#0F172A]">{described ? release?.version : '—'}</dd>
+          <dd className="font-medium text-[#0F172A]">{DOWNLOAD_VERSION}</dd>
         </div>
         {size && (
           <div className="flex justify-between">
@@ -131,22 +138,26 @@ function DownloadCard({
 
       {card.note && <p className="mt-3 text-xs text-[#94A3B8]">{card.note}</p>}
 
-      {/* Always a real link. The installer is hosted independently of the
-          release service, so a visitor can download Monitra even when that
-          service has published nothing or cannot be reached — the two used to
-          be the same fact and are not any more. */}
+      {/* Always a real link. The installer is served by this site itself,
+          independently of the release service, so a visitor can download
+          Monitra even when that service has published nothing or cannot be
+          reached — the two used to be the same fact and are not any more.
+          `download` makes the click save the file under its own name rather
+          than navigate to it; browsers honour it because the file is on the
+          same origin as this page. */}
       <a
         href={downloadUrlFor(card.key)}
+        download
         rel="noreferrer noopener"
         className="mt-5 inline-flex items-center justify-center rounded-md bg-[#2563EB] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition duration-150 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-[#2563EB] focus:ring-offset-2"
       >
         Download for {card.shortTitle}
       </a>
 
-      {described && (release?.release_notes || release?.release_notes_url) && (
+      {described && (release.release_notes || release.release_notes_url) && (
         <details className="mt-4">
           <summary className="cursor-pointer text-xs font-medium text-[#2563EB] hover:text-blue-700">
-            What&rsquo;s new in {release.version}
+            What&rsquo;s new in {DOWNLOAD_VERSION}
           </summary>
           {release.release_notes && (
             /* The hand-written CHANGELOG entry, rendered as the plain text it
@@ -171,7 +182,7 @@ function DownloadCard({
         </details>
       )}
 
-      {described && release?.sha256 && (
+      {described && release.sha256 && (
         <details className="mt-3">
           <summary className="cursor-pointer text-xs text-[#94A3B8] hover:text-[#64748B]">
             Verify this download
@@ -277,12 +288,13 @@ export function DownloadPage() {
               </li>
             </ol>
           </div>
-          {index?.latest_version && (
-            <p className="mt-4 text-sm text-[#64748B]">
-              Latest version:{' '}
-              <span className="font-semibold text-[#0F172A]">{index.latest_version}</span>
-            </p>
-          )}
+          {/* The version the buttons below serve — known from the links
+              themselves, so it is right even while the release service is
+              down or still describes the previous build. */}
+          <p className="mt-4 text-sm text-[#64748B]">
+            Latest version:{' '}
+            <span className="font-semibold text-[#0F172A]">{DOWNLOAD_VERSION}</span>
+          </p>
         </header>
 
         {error && !loading && (

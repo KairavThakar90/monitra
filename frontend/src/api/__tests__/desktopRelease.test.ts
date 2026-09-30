@@ -6,9 +6,10 @@
  * 1. **Each platform's button points at exactly the artifact it should.**
  *    These tests pin the three links themselves: a typo in one of them is a
  *    download that hands a Mac user the Windows installer, and nothing else
- *    would catch it. Since 2026-09-29 the links point at versioned GitHub
- *    artifacts, so publishing a new release means updating `DOWNLOAD_LINKS`
- *    and the pinned URLs here together.
+ *    would catch it. Since 2026-09-30 the links point at installers the site
+ *    serves itself from `public/download_app_files/`, so publishing a new
+ *    release means placing the files there, bumping `DOWNLOAD_VERSION`, and
+ *    updating the pinned paths here together.
  * 2. **Detection only ever picks a default.** It must never be the thing that
  *    decides what a user is allowed to download — browsers cannot report the
  *    CPU, so a Mac visitor has to be able to reach the other architecture.
@@ -17,12 +18,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DOWNLOAD_TARGETS,
+  DOWNLOAD_VERSION,
+  describesLinkedBuild,
   detectDownloadKey,
   downloadUrlFor,
   fetchDesktopDownloadsAPI,
   formatFileSize,
 } from '../desktopRelease';
-import type { DownloadKey } from '../desktopRelease';
+import type { DesktopRelease, DownloadKey } from '../desktopRelease';
 
 /** Point `navigator` at a fixed user agent for one assertion. */
 function withNavigator(userAgent: string, platform: string) {
@@ -37,11 +40,14 @@ afterEach(() => {
 describe('downloadUrlFor', () => {
   const keys = Object.keys(DOWNLOAD_TARGETS) as DownloadKey[];
 
-  it('is an absolute https link the browser can follow on its own', () => {
-    // The installer is hosted away from our backend, so these have to be
-    // complete URLs: a relative path would resolve against the dashboard.
+  it('is a root-relative path on this site', () => {
+    // The installer is served by the website itself. Root-relative (a leading
+    // slash) is what makes that safe: a bare relative path would resolve
+    // against whatever route the page is on, and an absolute URL to another
+    // host would lose the `download` attribute, which browsers only honour
+    // for the same origin.
     for (const key of keys) {
-      expect(downloadUrlFor(key)).toMatch(/^https:\/\//);
+      expect(downloadUrlFor(key)).toMatch(/^\/[^/]/);
     }
   });
 
@@ -53,22 +59,67 @@ describe('downloadUrlFor', () => {
   });
 
   it('serves each platform the build it asks for', () => {
-    expect(downloadUrlFor('windows')).toBe(
-      'https://github.com/KairavThakar90/release-monitra/raw/refs/heads/main/1.2.7/Monitra-Windows-1.2.7.zip',
-    );
-    expect(downloadUrlFor('macos-arm64')).toBe(
-      'https://github.com/KairavThakar90/release-monitra/raw/refs/heads/main/1.2.7/Monitra-macOS-arm64-1.2.7.zip',
-    );
-    expect(downloadUrlFor('macos-x86_64')).toBe(
-      'https://github.com/KairavThakar90/release-monitra/raw/refs/heads/main/1.2.7/Monitra-macOS-x86_64-1.2.7.zip',
-    );
+    expect(downloadUrlFor('windows')).toBe('/download_app_files/Monitra-Setup-1.3.0.exe');
+    expect(downloadUrlFor('macos-arm64')).toBe('/download_app_files/Monitra-macOS-arm64-1.3.0.dmg');
+    expect(downloadUrlFor('macos-x86_64')).toBe('/download_app_files/Monitra-macOS-x86_64-1.3.0.dmg');
   });
 
   it('answers without the release service having been called', () => {
     // The download is the page's whole purpose: it must not become
     // unavailable because a metadata request failed.
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
-    expect(downloadUrlFor('windows')).toMatch(/^https:\/\//);
+    expect(downloadUrlFor('windows')).toMatch(/^\//);
+  });
+
+  it('serves the version the page prints beside every button', () => {
+    // DOWNLOAD_VERSION is what the card shows as "Version"; a link that
+    // serves any other build would make that label a lie.
+    for (const key of keys) {
+      expect(downloadUrlFor(key)).toContain(`-${DOWNLOAD_VERSION}.`);
+    }
+  });
+
+  it('hands each platform the installer format it can open', () => {
+    // Windows runs an installer executable; both Macs mount a disk image.
+    expect(downloadUrlFor('windows')).toMatch(/\.exe$/);
+    expect(downloadUrlFor('macos-arm64')).toMatch(/\.dmg$/);
+    expect(downloadUrlFor('macos-x86_64')).toMatch(/\.dmg$/);
+  });
+});
+
+describe('describesLinkedBuild', () => {
+  const record = (overrides: Partial<DesktopRelease>): DesktopRelease => ({
+    version: DOWNLOAD_VERSION,
+    platform: 'win32',
+    architecture: null,
+    download_url: null,
+    file_size: 31_681_154,
+    sha256: 'abc',
+    release_notes: null,
+    release_notes_url: null,
+    published_at: null,
+    available: true,
+    ...overrides,
+  });
+
+  it('accepts the backend record for the build the button serves', () => {
+    expect(describesLinkedBuild(record({}))).toBe(true);
+  });
+
+  it('rejects a record for a different version', () => {
+    // The backend describes the newest *registered* release. Before the
+    // linked build is registered that is the previous one, and printing its
+    // size and checksum under a button that serves a different file would
+    // send a person verifying their download to the wrong answer.
+    expect(describesLinkedBuild(record({ version: '1.1.1' }))).toBe(false);
+  });
+
+  it('rejects a record the backend marked unavailable', () => {
+    expect(describesLinkedBuild(record({ available: false }))).toBe(false);
+  });
+
+  it('rejects the absence of a record', () => {
+    expect(describesLinkedBuild(undefined)).toBe(false);
   });
 });
 
