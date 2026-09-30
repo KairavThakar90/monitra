@@ -247,31 +247,77 @@ def test_the_search_box_filters_both_usage_lists(qapp):
     assert [u["title"] for u in section.view_urls.visible_items()] == ["Google Docs"]
 
 
-def test_the_search_box_stays_on_screen_on_every_tab(qapp):
-    """Hiding it on Screenshots made the feature impossible to find.
+def test_the_search_box_is_shown_only_on_the_tabs_it_filters(qapp):
+    """On Apps and URLs, and not on Screenshots.
 
-    The Activity section opens on Screenshots, so a box that only exists on
-    the other two tabs is a box nobody discovers.
+    It used to stay on the Screenshots tab as a disabled box explaining
+    itself. The owner asked for it to be removed there (2026-09-30): a
+    control that can never be used on that tab is a row of dead space above
+    the captures. The section opens on Screenshots, so this also covers the
+    state a fresh window is in before any tab is clicked.
     """
     section = _section(qapp)
     section.show()
 
-    for tab in ("screenshots", "apps", "urls"):
+    assert not section._search_bar.isVisible(), "present on the opening tab"
+    for tab, expected in (
+        ("apps", True), ("screenshots", False), ("urls", True), ("screenshots", False),
+    ):
         section.switch_tab(tab)
-        assert section._search_bar.isVisible(), f"missing on the {tab} tab"
+        assert section._search_bar.isVisible() is expected, f"wrong on the {tab} tab"
     section.hide()
 
 
-def test_the_box_is_inert_and_says_why_on_the_screenshots_tab(qapp):
+def test_the_box_works_on_both_searchable_tabs(qapp):
     section = _section(qapp)
 
-    section.switch_tab("screenshots")
-    assert not section.search_input.isEnabled()
-    assert section.search_input.placeholderText() == section.SEARCH_UNAVAILABLE
+    for tab in ("apps", "urls"):
+        section.switch_tab(tab)
+        assert section.search_input.isEnabled()
+        assert section.search_input.placeholderText() == section.SEARCH_PLACEHOLDER
 
+
+def test_leaving_the_searchable_tabs_clears_the_term(qapp):
+    """Unchanged behaviour: a term typed on Apps does not silently keep
+    filtering a list the user comes back to later."""
+    section = _section(qapp)
     section.switch_tab("apps")
-    assert section.search_input.isEnabled()
-    assert section.search_input.placeholderText() == section.SEARCH_PLACEHOLDER
+    section.search_input.setText("chrome")
+    section._apply_search()
+    assert len(section.view_apps.visible_items()) == 1
+
+    section.switch_tab("screenshots")
+    section._apply_search()          # what the debounce timer runs
+
+    assert section.search_input.text() == ""
+    assert len(section.view_apps.visible_items()) == len(APPS)
+
+
+def test_the_search_band_is_padded_below_the_box(qapp):
+    """The list under it starts on a different background. With no bottom
+    margin that edge sat exactly on the box's lower border, and the field
+    read as glued to the list."""
+    section = _section(qapp)
+
+    margins = section._search_bar.layout().contentsMargins()
+
+    assert margins.bottom() > 0
+    assert margins.bottom() == margins.top()
+
+
+def test_the_search_box_has_a_border_that_shows_at_rest(qapp):
+    """A card hairline disappears against the band; the field carries the
+    soft brand tint at rest and the brand colour under the pointer or focus."""
+    from ui.styles import BORDER_LIGHT, PRIMARY, PRIMARY_BORDER
+
+    section = _section(qapp)
+    sheet = " ".join(section.search_input.styleSheet().split())
+
+    resting = sheet.split("QLineEdit#ActivitySearchInput {", 1)[1].split("}", 1)[0]
+    assert f"solid {PRIMARY_BORDER}" in resting
+    assert BORDER_LIGHT not in resting
+    assert f"QLineEdit#ActivitySearchInput:focus {{ border-color: {PRIMARY}; }}" in sheet
+    assert f"QLineEdit#ActivitySearchInput:hover {{ border-color: {PRIMARY}; }}" in sheet
 
 
 def test_the_box_accepts_exactly_the_catalogue_limit(qapp):

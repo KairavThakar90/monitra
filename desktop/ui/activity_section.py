@@ -1530,12 +1530,16 @@ class ActivitySection(QWidget):
         card_layout.addWidget(div)
 
         # Search bar. It filters the Apps and URLs lists that are already in
-        # memory -- no request, no query -- so on Screenshots, which has
-        # nothing text-shaped to match against, it stays on screen but
-        # disabled (see `_update_search_visibility`) rather than hidden.
+        # memory -- no request, no query -- and is shown on those two tabs
+        # only (see `_update_search_visibility`).
+        #
+        # The band it sits in is padded below as well as above. The list under
+        # it is a scroll area drawn on a different background from this band,
+        # so with no bottom margin that change of background fell exactly on
+        # the box's lower border and the field read as glued to the list.
         self._search_bar = QWidget(self.card)
         search_layout = QHBoxLayout(self._search_bar)
-        search_layout.setContentsMargins(20, 12, 20, 0)
+        search_layout.setContentsMargins(20, 12, 20, 12)
         search_layout.setSpacing(8)
 
         self.search_input = QLineEdit(self._search_bar)
@@ -1555,12 +1559,15 @@ class ActivitySection(QWidget):
         self.search_input.setStyleSheet(f"""
             QLineEdit#ActivitySearchInput {{
                 background: {CARD_BG};
-                border: 1px solid {BORDER_LIGHT};
+                border: 1.5px solid {PRIMARY_BORDER};
                 border-radius: 9px;
                 padding: 7px 10px;
                 color: {TEXT_PRIMARY};
                 font-size: 13px;
                 selection-background-color: {PRIMARY};
+            }}
+            QLineEdit#ActivitySearchInput:hover {{
+                border-color: {PRIMARY};
             }}
             QLineEdit#ActivitySearchInput:focus {{
                 border-color: {PRIMARY};
@@ -1706,22 +1713,19 @@ class ActivitySection(QWidget):
         self.view_apps.set_filter(term)
         self.view_urls.set_filter(term)
 
-    #: Shown on the tab that cannot be searched, so the box explains itself
-    #: instead of vanishing.
     SEARCH_PLACEHOLDER = "Search applications and websites"
-    SEARCH_UNAVAILABLE = "Search is available on the Apps and URLs tabs"
 
     def _update_search_visibility(self) -> None:
-        # Always visible -- the Activity section opens on Screenshots, so a
-        # box that only existed on the other two tabs was a box nobody ever
-        # discovered. On Screenshots it stays on screen but inert, and says
-        # why through its own placeholder rather than vanishing.
-        self._search_bar.setVisible(True)
+        # Shown on Apps and URLs, the two tabs it filters, and removed from
+        # Screenshots. It used to stay there as a disabled box with a
+        # placeholder explaining itself; a control that can never be used on
+        # the tab the section opens on was a row of dead space above the
+        # captures, and the owner asked for it to go (2026-09-30). Leaving
+        # the searchable tabs still clears the term, exactly as before.
         searchable = self._active_tab in ("apps", "urls")
+        self._search_bar.setVisible(searchable)
         self.search_input.setEnabled(searchable)
-        self.search_input.setPlaceholderText(
-            self.SEARCH_PLACEHOLDER if searchable else self.SEARCH_UNAVAILABLE
-        )
+        self.search_input.setPlaceholderText(self.SEARCH_PLACEHOLDER)
 
         if not searchable:
             self._search_error.hide()
