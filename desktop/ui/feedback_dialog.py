@@ -25,13 +25,14 @@ from PySide6.QtCore import QByteArray, Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
+    QDialog, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
     QPushButton, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from app.feedback.service import MESSAGE_MAX_LENGTH
 from background_services.public_api import NotificationLevel
 from core.validation import validate_description
+from ui.dropdown import PickerComboBox
 from ui.styles import (
     BORDER_LIGHT, BORDER_MID, BUTTON_GRADIENT, BUTTON_GRADIENT_HOVER,
     CONTENT_BG, ERROR, MONITRA_MARK_SVG, PRIMARY, TEXT_MUTED, TEXT_PRIMARY,
@@ -165,7 +166,7 @@ class FeedbackDialog(QDialog):
 
         # ── Category ──────────────────────────────────────────────────────────
         card.addWidget(self._field_label("Category"))
-        self.category_combo = QComboBox(self.card)
+        self.category_combo = PickerComboBox(self.card)
         self.category_combo.setObjectName("PickerCombo")
         self.category_combo.setMinimumHeight(38)
         self.category_combo.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -266,22 +267,15 @@ class FeedbackDialog(QDialog):
                 color: {TEXT_MUTED};
                 background: #F8FAFC;
             }}
-            /* The drop-down indicator is deliberately left unstyled.
-               Overriding `::drop-down` (even only its border and width)
+            /* The arrow and the list belong to PickerComboBox (ui/dropdown.py).
+               Overriding `::drop-down` here (even only its border and width)
                makes Qt stop painting `::down-arrow` altogether, and the
                field then reads as a plain text box with no affordance that
-               it opens -- which is exactly how it shipped and was reported.
-               QSS url() accepts no data URI, so there is no inline image to
-               substitute; the platform arrow is the correct answer. */
-            QComboBox QAbstractItemView {{
-                border: 1px solid {BORDER_LIGHT};
-                border-radius: 8px;
-                background: #FFFFFF;
-                selection-background-color: {PRIMARY};
-                selection-color: #FFFFFF;
-                outline: none;
-                padding: 4px;
-            }}
+               it opens -- which is how it first shipped. Leaving it alone,
+               as this sheet then did, gets the platform's own button: a
+               square box with half a border inside a rounded field, which
+               was the next report. QSS url() accepts no data URI, so the
+               chevron is painted by the widget instead. */
             QTextEdit#MessageEdit {{
                 border: 1.5px solid {BORDER_LIGHT};
                 border-radius: 9px;

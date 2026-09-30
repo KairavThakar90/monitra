@@ -40,6 +40,7 @@ from core.validation import (
     validate_name,
 )
 from ui import icons
+from ui.dropdown import PickerComboBox, PickerDateEdit
 from ui.styles import (
     PRIMARY, PRIMARY_HOVER, PRIMARY_LIGHT, SUCCESS_BG,
     ERROR, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED,
@@ -412,7 +413,7 @@ class EditTaskDialog(QDialog):
         form.addRow("Description:", self.desc_input)
 
         # Status dropdown
-        self.status_combo = QComboBox(self)
+        self.status_combo = PickerComboBox(self)
         self.status_combo.setFixedHeight(30)
         
         current_status_id = None
@@ -457,14 +458,14 @@ class EditTaskDialog(QDialog):
                 color: #334155;
                 background: transparent;
             }}
-            QLineEdit, QTextEdit {{
+            QLineEdit, QTextEdit, QComboBox {{
                 border: 1px solid #CBD5E1;
                 border-radius: 6px;
                 padding: 4px 8px;
                 background-color: #FFFFFF;
                 font-size: 12px;
             }}
-            QLineEdit:focus, QTextEdit:focus {{
+            QLineEdit:focus, QTextEdit:focus, QComboBox:focus {{
                 border-color: {PRIMARY};
             }}
             QPushButton {{
@@ -751,7 +752,11 @@ class ManualTimeEntryDialog(QDialog):
         form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
-        self.project_combo = QComboBox(self)
+        # Searchable: the list is every project the user can see, which runs
+        # to hundreds, and the task list of a busy project is no shorter.
+        self.project_combo = PickerComboBox(
+            self, searchable=True, search_placeholder="Search projects…"
+        )
         self.project_combo.setFixedHeight(34)
         for project in self._projects:
             self.project_combo.addItem(
@@ -760,14 +765,15 @@ class ManualTimeEntryDialog(QDialog):
         self.project_combo.currentIndexChanged.connect(self._on_project_changed)
         form.addRow("Project *", self.project_combo)
 
-        self.task_combo = QComboBox(self)
+        self.task_combo = PickerComboBox(
+            self, searchable=True, search_placeholder="Search tasks…"
+        )
         self.task_combo.setFixedHeight(34)
         self.task_combo.setEnabled(False)
         form.addRow("Task *", self.task_combo)
 
         today = QDate.currentDate()
-        self.date_input = QDateEdit(today, self)
-        self.date_input.setCalendarPopup(True)
+        self.date_input = PickerDateEdit(today, self)
         self.date_input.setMaximumDate(today)
         self.date_input.setDisplayFormat("MMM d, yyyy")
         self.date_input.setFixedHeight(34)

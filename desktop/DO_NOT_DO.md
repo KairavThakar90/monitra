@@ -676,6 +676,32 @@ widget's type rather than using no selector. `tests/test_tooltip_style.py`
 shows every tooltip in the dashboard and reads its pixels back, so the next
 one fails there.
 
+### ❌ Do not build a bare `QComboBox` or `QDateEdit`
+
+```python
+self.project_combo = QComboBox(self)            # the dialog's sheet styles its border
+```
+
+**What it caused:** two different broken arrows, one after the other. A combo
+box styled through a stylesheet has its drop-down button drawn by the
+platform style: on Windows, a square box with half a border and a chevron,
+inside a rounded field it does not match (the Request dialog's Project, Task
+and Work Date, and the Feedback category). The obvious fix —
+`::drop-down { border: none }` — makes Qt stop painting the arrow altogether,
+and the field then has no sign that it opens (the idle Reassign dialog, and
+Feedback before that). QSS `image: url()` takes no data URI, so there is no
+inline image to give it.
+
+The same fields were also unsearchable: a native combo popup over every
+project the user can see is a scroll through hundreds of rows.
+
+**Instead:** `PickerComboBox` / `PickerDateEdit` (`ui/dropdown.py`). The
+button is switched off and the glyph painted by the widget; the list is the
+application's own panel, with a search field for the pickers that can grow
+long (`searchable=True`). It is still a `QComboBox` — the dialogs' own code
+does not change. `tests/test_dropdown.py` fails on any bare `QComboBox(` or
+`QDateEdit(` in `ui/`.
+
 ---
 
 ## Naming
