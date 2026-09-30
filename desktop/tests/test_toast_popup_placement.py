@@ -10,7 +10,7 @@ fit and its right third, close button included, hung off the screen. Users
 saw "the notification shows half". These tests pin every edge of the drawn
 card inside the screen's working area, at the intended margin.
 """
-from PySide6.QtCore import QPoint, QRect
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QGuiApplication
 
 from background_services.notifications.toast_popup import ToastPopup
@@ -131,3 +131,22 @@ def test_the_badge_stays_top_aligned_for_a_message_long_enough_to_wrap(qapp):
     assert popup._logo.geometry().y() == popup._title.geometry().y()
     popup.hide()
     popup.deleteLater()
+
+
+def test_a_long_title_wraps_instead_of_being_cut_off(qapp):
+    """Reported 2026-09-30: "Stretch Your Hands & Wrists" was clipped at the
+    close button because the title was a single-line label in a fixed-width
+    card. It wraps like the message, and the card grows to hold it."""
+    popup = ToastPopup()
+    popup.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+
+    popup.present("Short", "message", "info")
+    short_card = popup.card_height()
+    popup.present("🤲 Stretch Your Hands & Wrists and Arms and More", "message", "info")
+    for _ in range(3):
+        qapp.processEvents()
+
+    title = popup._title
+    assert title.wordWrap()
+    assert title.heightForWidth(title.width()) <= title.height(), "the wrapped title is not fully shown"
+    assert popup.card_height() > short_card, "the card must grow to hold a wrapped title"
