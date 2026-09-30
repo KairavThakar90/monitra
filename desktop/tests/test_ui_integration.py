@@ -447,7 +447,9 @@ def test_sidebar_pagination_handles_many_projects(qapp):
     from ui.sidebar import SidebarWidget, PROJECTS_PER_PAGE
 
     sidebar = SidebarWidget()
-    many_projects = [{"id": i, "project_name": f"Project {i}"} for i in range(1, 25)]
+    # Two full pages and four more, whatever the page size is.
+    total = 2 * PROJECTS_PER_PAGE + 4
+    many_projects = [{"id": i, "project_name": f"Project {i}"} for i in range(1, total + 1)]
     sidebar.set_projects(many_projects)
 
     assert sidebar._current_page == 1
@@ -462,10 +464,10 @@ def test_sidebar_pagination_handles_many_projects(qapp):
     assert len(sidebar._project_items) == PROJECTS_PER_PAGE
 
     # Selecting a project on page 3 switches to page 3
-    sidebar.select_project(22)
+    sidebar.select_project(total - 2)
     assert sidebar._current_page == 3
     assert sidebar._page_label.text() == "3/3"
-    assert len(sidebar._project_items) == 4  # 24 - 20 = 4 items on 3rd page
+    assert len(sidebar._project_items) == 4  # the remainder on the 3rd page
 
     sidebar.deleteLater()
 

@@ -71,8 +71,10 @@ GREETING_ICONS = {
 #: not written that way even though this particular slot only touches a label.
 GREETING_CHECK_MS = 60_000
 
-# Projects pagination size
-PROJECTS_PER_PAGE = 10
+#: Projects per page of the sidebar list. More than the column shows at once
+#: at most window sizes, so a page scrolls inside the projects area; the pager
+#: in the header moves between pages.
+PROJECTS_PER_PAGE = 20
 
 #: Minimum width of the account drop-down. Qt sizes a menu to its longest
 #: label, which left three short actions in a cramped popup under a 300px
@@ -514,6 +516,14 @@ class SidebarWidget(QWidget):
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0;
+            }}
+            /* The track either side of the handle. Left unstyled, the
+               platform style fills it with its black-and-white dither
+               pattern -- a checkered strip down the edge of the project
+               list whenever a page is taller than the column, which at
+               PROJECTS_PER_PAGE rows is most of the time. */
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: transparent;
             }}
             {TOOLTIP_QSS}
         """)
@@ -1024,9 +1034,17 @@ class SidebarWidget(QWidget):
         self._pagination_widget.hide()
 
     def set_projects(self, projects: List[Dict[str, Any]]) -> None:
-        """Rebuild the project list from real API data."""
+        """Rebuild the project list from real API data.
+
+        The page on screen is kept. This is called by every refresh round --
+        the periodic one, the change probe, a reconnect -- and it used to
+        reset to page 1 each time, so anyone reading page 2 or 3 was thrown
+        back to the first page whenever the dashboard synchronised. Only the
+        user changes the page: the pager, a search, or selecting a project.
+        `_rebuild_project_list` clamps it, so a list that came back shorter
+        falls onto its last page rather than an empty one.
+        """
         self._projects = projects
-        self._current_page = 1
         self._rebuild_project_list()
 
     def set_project_totals(self, totals: Optional[Dict[int, int]]) -> None:
@@ -1135,12 +1153,8 @@ class SidebarWidget(QWidget):
         self._selected_project_id = project_id
 
         # Check if target project is on a different page
-        filtered = [
-            p for p in self._projects
-            if self._search_text.lower() in p.get("project_name", "").lower()
-        ]
         target_page = 1
-        for idx, p in enumerate(filtered):
+        for idx, p in enumerate(self._listed_projects()):
             if p.get("id") == project_id:
                 target_page = (idx // PROJECTS_PER_PAGE) + 1
                 break
@@ -1148,12 +1162,24 @@ class SidebarWidget(QWidget):
         if target_page != self._current_page:
             self._current_page = target_page
             self._rebuild_project_list()
+            self._scroll_to_top()
         else:
             for item in self._project_items:
                 item.setChecked(item.get_project_id() == project_id)
+        # A page holds more rows than the column shows, so the selected one
+        # may be below the fold -- at login, when the remembered project is
+        # selected for the user, it would otherwise be selected and unseen.
+        # Queued: the rows just built have no geometry until the layout runs.
+        QTimer.singleShot(0, self, self._reveal_selected_project)
 
     def set_active_timer_project(self, project_id: Optional[int]) -> None:
         """Update which project shows the running-timer indicator.
+
+        The project being tracked also leads the list -- first row of the
+        first page -- for as long as it is tracked, so it is findable among a
+        couple of hundred projects without searching. That is a change of
+        order, not only of one row's badge, so the list is rebuilt; the page
+        the user is reading is left alone.
 
         Reflects the TimerService's actual state via DashboardWindow -- this
         widget makes no timer decisions of its own, only renders what it's told.
@@ -1161,8 +1187,8 @@ class SidebarWidget(QWidget):
         if project_id == self._active_timer_project_id:
             return
         self._active_timer_project_id = project_id
-        for item in self._project_items:
-            item.set_active_timer(item.get_project_id() == project_id)
+        if self._projects:
+            self._rebuild_project_list()
 
     def toggle_collapse(self) -> None:
         self._collapsed = not self._collapsed
@@ -1221,20 +1247,48 @@ class SidebarWidget(QWidget):
         self._greeting_icon.setPixmap(icons.pixmap(name, color, GREETING_ICON_SIZE))
         self._greeting_icon.show()
 
+    def _listed_projects(self) -> List[Dict[str, Any]]:
+        """The projects matching the search, in the order the pages are cut from.
+
+        The project being tracked comes first while it is tracked. Nothing is
+        reordered in `self._projects`: the pin is applied here, on every read,
+        so the moment the timer stops or moves to another project the row is
+        back in its own place with nothing to undo.
+        """
+        term = self._search_text.lower()
+        listed = [
+            p for p in self._projects if term in p.get("project_name", "").lower()
+        ]
+        active_id = self._active_timer_project_id
+        if active_id is None:
+            return listed
+        tracked = [p for p in listed if p.get("id") == active_id]
+        if not tracked:
+            return listed
+        return tracked + [p for p in listed if p.get("id") != active_id]
+
+    def _scroll_to_top(self) -> None:
+        self._scroll_area.verticalScrollBar().setValue(0)
+
+    def _reveal_selected_project(self) -> None:
+        """Scroll the selected project's row into view, if it is on this page."""
+        for item in self._project_items:
+            if item.get_project_id() == self._selected_project_id:
+                self._scroll_area.ensureWidgetVisible(item, 0, 8)
+                return
+
     def _prev_page(self) -> None:
         if self._current_page > 1:
             self._current_page -= 1
             self._rebuild_project_list()
+            self._scroll_to_top()
 
     def _next_page(self) -> None:
-        filtered = [
-            p for p in self._projects
-            if self._search_text.lower() in p.get("project_name", "").lower()
-        ]
-        total_pages = max(1, math.ceil(len(filtered) / PROJECTS_PER_PAGE))
+        total_pages = max(1, math.ceil(len(self._listed_projects()) / PROJECTS_PER_PAGE))
         if self._current_page < total_pages:
             self._current_page += 1
             self._rebuild_project_list()
+            self._scroll_to_top()
 
     def _rebuild_project_list(self) -> None:
         self._projects_header_label.setText(f"PROJECTS ({len(self._projects)})")
@@ -1244,10 +1298,15 @@ class SidebarWidget(QWidget):
             item.deleteLater()
         self._project_items.clear()
 
-        filtered = [
-            p for p in self._projects
-            if self._search_text.lower() in p.get("project_name", "").lower()
-        ]
+        filtered = self._listed_projects()
+        # A project's colour is its position in the whole list, the same rule
+        # DashboardWindow uses for the selected project's accent. It must not
+        # follow the row: a project pinned to the top while it is tracked, or
+        # one of three left by a search, is still the same project.
+        color_by_id = {
+            p.get("id"): PROJECT_COLORS[i % len(PROJECT_COLORS)]
+            for i, p in enumerate(self._projects)
+        }
 
         total_pages = max(1, math.ceil(len(filtered) / PROJECTS_PER_PAGE))
         self._current_page = max(1, min(self._current_page, total_pages))
@@ -1275,9 +1334,8 @@ class SidebarWidget(QWidget):
             else:
                 self._pagination_widget.hide()
 
-        for i, project in enumerate(page_projects):
-            global_idx = start_idx + i
-            color = PROJECT_COLORS[global_idx % len(PROJECT_COLORS)]
+        for project in page_projects:
+            color = color_by_id.get(project.get("id"), PROJECT_COLORS[0])
             item = ProjectItem(
                 project, color, self._collapsed,
                 has_active_timer=(project.get("id") == self._active_timer_project_id),
@@ -1301,6 +1359,7 @@ class SidebarWidget(QWidget):
         self._search_text = text
         self._current_page = 1
         self._rebuild_project_list()
+        self._scroll_to_top()
 
     def _apply_collapse_state(self) -> None:
         is_col = self._collapsed

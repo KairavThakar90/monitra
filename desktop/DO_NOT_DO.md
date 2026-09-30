@@ -457,6 +457,26 @@ logged once, and nothing afterwards said why the dashboard had gone stale.
 `_run_load` reports in a `finally`, and `REFRESH_STALE_AFTER_S` abandons a
 round that never reports back, with the runtime health in the log.
 
+### ❌ Do not reset a pager because its list was refreshed
+
+```python
+def set_projects(self, projects):
+    self._projects = projects
+    self._current_page = 1          # "a new list starts at the beginning"
+    self._rebuild_project_list()
+```
+
+**What it caused:** `set_projects` runs on every refresh round — the periodic
+one, the change probe, a reconnect. Anyone reading page 2 or 3 of the project
+list was thrown back to page 1 whenever the dashboard synchronised, with
+nothing on screen to say why. A refresh is not a new list; it is the same
+list, again.
+
+**Instead:** only the user moves the page — the pager, a search, selecting a
+project. A refresh keeps it and clamps it into range, so a list that came
+back shorter lands on its last page rather than an empty one. The task list
+already worked this way (`test_a_refresh_of_the_same_project_keeps_the_page`).
+
 ### ❌ Do not cancel a key family by its bare name
 
 ```python
