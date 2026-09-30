@@ -277,6 +277,69 @@ export interface RankedItem {
   secondary?: number; // shown in the tooltip, e.g. activity %
 }
 
+/**
+ * Hover cards that survive a scrolling list.
+ *
+ * A card drawn `absolute` inside a row is clipped by any scrolling ancestor,
+ * so a list with a scroller cannot use one. This anchors the card to the row's
+ * on-screen rectangle instead and draws it `fixed`, which no ancestor clips.
+ * It closes when anything scrolls, since the rectangle it was measured from
+ * has moved.
+ */
+export const useHoverAnchor = () => {
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  useEffect(() => {
+    if (!rect) return;
+    const close = () => setRect(null);
+    window.addEventListener("scroll", close, true);
+    return () => window.removeEventListener("scroll", close, true);
+  }, [rect]);
+  return {
+    rect,
+    bind: {
+      onMouseEnter: (event: React.MouseEvent<HTMLElement>) => setRect(event.currentTarget.getBoundingClientRect()),
+      onMouseLeave: () => setRect(null),
+    },
+  };
+};
+
+/** A card centred above the anchor row, or below it when there is no room above. */
+export const FloatingCard: React.FC<{
+  rect: DOMRect | null;
+  className?: string;
+  children: React.ReactNode;
+}> = ({ rect, className = "", children }) => {
+  if (!rect) return null;
+  const above = rect.top > 150;
+  return (
+    <div
+      className={`pointer-events-none fixed z-50 ${className}`}
+      style={{
+        left: rect.left + rect.width / 2,
+        top: above ? rect.top - 6 : rect.bottom + 6,
+        transform: above ? "translate(-50%, -100%)" : "translateX(-50%)",
+      }}
+    >
+      {children}
+    </div>
+  );
+};
+
+/** One ranked row; its tooltip is a `FloatingCard`, so a scroller cannot clip it. */
+const RankedRow: React.FC<{ className: string; tooltip: React.ReactNode; children: React.ReactNode }> = ({
+  className,
+  tooltip,
+  children,
+}) => {
+  const { rect, bind } = useHoverAnchor();
+  return (
+    <li className={className} {...(tooltip ? bind : {})}>
+      {children}
+      {tooltip && <FloatingCard rect={rect}>{tooltip}</FloatingCard>}
+    </li>
+  );
+};
+
 export const RankedBars: React.FC<{
   items: RankedItem[];
   color: string;
@@ -307,10 +370,16 @@ export const RankedBars: React.FC<{
       {items.map((item, index) => {
         const percent = Math.max((item.value / max) * 100, 1);
         return (
-          <li
-            key={item.id}
-            className="group relative flex items-center gap-3 rounded-lg px-3 py-2 transition-all hover:bg-slate-50/50"
-          >
+          <RankedRow key={item.id} className="group relative flex items-center gap-3 rounded-lg px-3 py-2 transition-all hover:bg-slate-50/50" tooltip={
+            item.secondary !== undefined ? (
+              <div className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs shadow-sm">
+                <span className="font-medium text-slate-800">{item.name}</span>
+                <span className="ml-2 text-slate-500">
+                  {secondaryLabel} {item.secondary}%
+                </span>
+              </div>
+            ) : null
+          }>
             {/* Background Bar Fill */}
             <div
               className="absolute inset-y-0 left-0 rounded-lg opacity-[0.08] transition-all duration-500 ease-out"
@@ -352,15 +421,7 @@ export const RankedBars: React.FC<{
               </div>
             </div>
 
-            {item.secondary !== undefined && (
-              <div className="pointer-events-none absolute right-2 top-0 z-20 hidden -translate-y-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs shadow-sm group-hover:block">
-                <span className="font-medium text-slate-800">{item.name}</span>
-                <span className="ml-2 text-slate-500">
-                  {secondaryLabel} {item.secondary}%
-                </span>
-              </div>
-            )}
-          </li>
+          </RankedRow>
         );
       })}
     </ul>

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { V2Shell } from "./V2Shell";
-import { Sparkline, TrendAreaChart, RankedBars, Donut, Legend } from "./charts";
+import { Sparkline, TrendAreaChart, RankedBars, Donut, Legend, FloatingCard, useHoverAnchor } from "./charts";
 import { AppIcon } from "../../../components/AppIcon";
 import { DateRangeFilter, DEFAULT_RANGE } from "./filters";
 import type { DateRange } from "./filters";
@@ -80,8 +80,10 @@ const BillableProjectRow: React.FC<{ project: ReactDashboardProjectBilling }> = 
   const color = usageColor(pct);
   const barWidth = Math.min(Math.max(pct, 0), 100);
 
+  const { rect, bind } = useHoverAnchor();
+
   return (
-    <li className="group relative rounded-lg px-3 py-2.5 transition hover:bg-slate-50/60">
+    <li className="relative rounded-lg px-3 py-2.5 transition hover:bg-slate-50/60" {...bind}>
       <div className="flex items-center justify-between gap-3">
         <span className="truncate text-[13px] font-medium text-slate-700">{project.project_name}</span>
         <span className="shrink-0 text-[12px] font-bold" style={{ color }}>
@@ -104,7 +106,7 @@ const BillableProjectRow: React.FC<{ project: ReactDashboardProjectBilling }> = 
       {/* Hover detail card -- the rich-card language the trend chart's own
           tooltip uses, not the compact one-liner RankedBars uses, since this
           one carries several figures rather than one. */}
-      <div className="pointer-events-none absolute left-1/2 top-0 z-20 hidden w-60 -translate-x-1/2 -translate-y-full rounded-xl border border-[#E2E8F0] bg-white px-3 py-2.5 shadow-lg group-hover:block">
+      <FloatingCard rect={rect} className="w-60 rounded-xl border border-[#E2E8F0] bg-white px-3 py-2.5 shadow-lg">
         <div className="mb-1.5 truncate text-[12px] font-bold text-slate-800">{project.project_name}</div>
         <HoverStat label="Used Hours" value={formatHMS(project.completed_seconds)} />
         <HoverStat label="Internal Hours" value={formatHMS(project.internal_seconds ?? 0)} />
@@ -117,15 +119,17 @@ const BillableProjectRow: React.FC<{ project: ReactDashboardProjectBilling }> = 
         {project.avg_activity !== null && (
           <HoverStat label="Activity" value={`${project.avg_activity.toFixed(0)}%`} />
         )}
-      </div>
+      </FloatingCard>
     </li>
   );
 };
 
 /** One Free Time / Internal row: name and this range's tracked hours -- a
  * free project has no fixed_hours budget, so there is no percentage to color. */
-const InternalProjectRow: React.FC<{ project: ReactDashboardProjectBilling }> = ({ project }) => (
-  <li className="group relative flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 transition hover:bg-slate-50/60">
+const InternalProjectRow: React.FC<{ project: ReactDashboardProjectBilling }> = ({ project }) => {
+  const { rect, bind } = useHoverAnchor();
+  return (
+  <li className="relative flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 transition hover:bg-slate-50/60" {...bind}>
     <div className="flex flex-col truncate pr-4">
       <span className="truncate text-[13px] font-medium text-slate-700">{project.project_name}</span>
       <span className="truncate text-[11px] text-slate-500">
@@ -134,16 +138,17 @@ const InternalProjectRow: React.FC<{ project: ReactDashboardProjectBilling }> = 
     </div>
     <span className="shrink-0 text-[13px] font-semibold text-slate-800">{formatHMS(project.tracked_seconds)}</span>
 
-    <div className="pointer-events-none absolute left-1/2 top-0 z-20 hidden w-56 -translate-x-1/2 -translate-y-full rounded-xl border border-[#E2E8F0] bg-white px-3 py-2.5 shadow-lg group-hover:block">
+    <FloatingCard rect={rect} className="w-56 rounded-xl border border-[#E2E8F0] bg-white px-3 py-2.5 shadow-lg">
       <div className="mb-1.5 truncate text-[12px] font-bold text-slate-800">{project.project_name}</div>
       <HoverStat label="Completed Hours" value={formatHMS(project.completed_seconds)} />
       <HoverStat label="Time Tracked" value={formatHMS(project.tracked_seconds)} />
       {project.avg_activity !== null && (
         <HoverStat label="Activity" value={`${project.avg_activity.toFixed(0)}%`} />
       )}
-    </div>
+    </FloatingCard>
   </li>
-);
+  );
+};
 
 export const DashboardV2: React.FC = () => {
   const navigate = useNavigate();
@@ -440,6 +445,9 @@ export const DashboardV2: React.FC = () => {
                 ))}
               </div>
 
+              {/* The scroller. Hover cards are `FloatingCard`s (fixed), so this
+                  container cannot clip them. */}
+              <div className="max-h-[340px] overflow-y-auto pr-1">
               {projectTab === "top" && (
                 topProjects.length === 0 ? (
                   emptyNote("project time")
@@ -463,10 +471,6 @@ export const DashboardV2: React.FC = () => {
                 billableProjects.length === 0 ? (
                   emptyBillingNote("billable projects")
                 ) : (
-                  // No overflow-y-auto here: each row's hover card escapes
-                  // upward via absolute + -translate-y-full, and a scroll
-                  // container clips that -- the card is left to grow, same
-                  // as Top Projects/Top Apps already do.
                   <ul className="flex flex-col gap-1">
                     {billableProjects.map((project) => (
                       <BillableProjectRow key={project.project_id} project={project} />
@@ -486,6 +490,7 @@ export const DashboardV2: React.FC = () => {
                   </ul>
                 )
               )}
+              </div>
             </div>
 
             {/* Apps Breakdown Donut */}
