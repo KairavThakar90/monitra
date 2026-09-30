@@ -173,6 +173,10 @@ class ToastPopup(QWidget):
 
         self._title = QLabel(self._card)
         self._title.setObjectName("toastTitle")
+        # Wraps like the message below it. A single-line label is as wide as
+        # its text and the card is a fixed width, so a long title -- an emoji
+        # and "Stretch Your Hands & Wrists" -- was cut off at the close button.
+        self._title.setWordWrap(True)
         header.addWidget(self._title, 1)
 
         self._close = QPushButton("×", self._card)
@@ -272,8 +276,26 @@ class ToastPopup(QWidget):
         # immediately after a shorter one was showing). A window that has
         # never been shown does not have this problem, and a second pass on
         # an already-correct size is a no-op, so this is safe unconditionally.
+        self._title.setMinimumHeight(0)
         self.adjustSize()
         self.adjustSize()
+        # A title that wraps onto a third line was still left a line short by
+        # the two passes, clipping its last words. The title is the one label
+        # whose height this corrects: it is told what it needs at the width
+        # it has, and the window is sized around it once more. It only ever
+        # grows the title, so a title that already fits is untouched.
+        #
+        # The width is read only after the layout has been brought up to date
+        # (until then it can still be a default one, and a height worked out
+        # for that is far too tall), and only trusted once it is wide enough
+        # to be the title's real width.
+        self.layout().activate()
+        width = self._title.width()
+        if width >= self.WIDTH // 3:
+            needed = self._title.heightForWidth(width)
+            if needed > self._title.height():
+                self._title.setMinimumHeight(needed)
+                self.adjustSize()
         if not self._move_to_corner(lift):
             return False
 
