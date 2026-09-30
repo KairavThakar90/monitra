@@ -137,12 +137,15 @@ const useClickOutside = (onOutside: () => void, active: boolean) => {
   return ref;
 };
 
-export const SearchInput: React.FC<{ value: string; onChange: (v: string) => void }> = ({
-  value,
-  onChange,
-}) => {
+export const SearchInput: React.FC<{
+  value: string;
+  onChange: (v: string) => void;
+  /** What is being searched, for the placeholder and the accessible name. */
+  subject?: string;
+}> = ({ value, onChange, subject = "feedback" }) => {
   const checked = validateSearchTerm(value, { fieldLabel: "Search" });
   const error = checked.ok ? null : checked.error;
+  const errorId = `${subject.replace(/\s+/g, "-")}-search-error`;
   return (
   <div className="relative min-w-[200px] flex-1">
     <svg
@@ -158,14 +161,14 @@ export const SearchInput: React.FC<{ value: string; onChange: (v: string) => voi
       type="search"
       value={value}
       onChange={(event) => onChange(event.target.value)}
-      placeholder="Search feedback…"
-      aria-label="Search feedback"
+      placeholder={`Search ${subject}…`}
+      aria-label={`Search ${subject}`}
       maxLength={SEARCH_MAX_LENGTH}
       aria-invalid={error ? true : undefined}
-      aria-describedby={error ? "feedback-search-error" : undefined}
+      aria-describedby={error ? errorId : undefined}
       className="w-full rounded-lg border border-[#E2E8F0] bg-white py-2 pl-10 pr-9 text-[13px] font-medium text-[#0F172A] outline-none transition placeholder:font-normal placeholder:text-[#94A3B8] focus:border-[#38BDF8] focus:ring-2 focus:ring-[#38BDF8]/20"
     />
-    <FieldError id="feedback-search-error" message={error} />
+    <FieldError id={errorId} message={error} />
     {value && (
       <button
         type="button"

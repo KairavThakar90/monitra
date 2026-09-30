@@ -12,6 +12,7 @@ import { AdminTimeTracking } from './features/admin/AdminTimeTracking';
 import { AdminScreenshots } from './features/admin/AdminScreenshots';
 import { AdminTeams } from './features/admin/AdminTeams';
 import { AdminFeedback } from './features/admin/AdminFeedback';
+import { AdminActivityLogs } from './features/admin/AdminActivityLogs';
 import { AdminSettings } from './features/admin/AdminSettings';
 import { AdminUserManagement } from './features/admin/AdminUserManagement';
 import { AdminScreenshotPrivacy } from './features/admin/AdminScreenshotPrivacy';
@@ -292,6 +293,17 @@ const AppRoutes: React.FC = () => {
           <FeedbackAdminRoute>
             <AdminFeedback />
           </FeedbackAdminRoute>
+        }
+      />
+      {/* The activity trail reads people, so it takes the directory gate:
+          `GET /activity-logs` is refused without `view_employees`, and a
+          leader who holds it is answered with their own team. */}
+      <Route
+        path="/admin/logs"
+        element={
+          <DirectoryRoute>
+            <AdminActivityLogs />
+          </DirectoryRoute>
         }
       />
       <Route

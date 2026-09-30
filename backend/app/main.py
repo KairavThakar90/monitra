@@ -27,6 +27,8 @@ from app.react_apis.reports import router as reports_router
 from app.react_apis.manual_time_entry import router as react_manual_time_entry_router
 from app.react_apis.member_usage import router as member_usage_router
 from app.react_apis.member_activity_log import router as member_activity_log_router
+from app.react_apis.activity_logs import router as activity_logs_router
+from app.core.request_context import request_context_middleware
 from app.react_apis.reports_page.router import router as reports_page_router
 from app.react_apis.dashboard.router import router as dashboard_router
 from fastapi.middleware.cors import CORSMiddleware
@@ -166,6 +168,7 @@ app.include_router(reports_router)
 app.include_router(react_manual_time_entry_router)
 app.include_router(member_usage_router)
 app.include_router(member_activity_log_router)
+app.include_router(activity_logs_router)
 app.include_router(reports_page_router)
 app.include_router(dashboard_router)
 app.include_router(screenshot_privacy_router)
@@ -245,3 +248,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Which client is calling (desktop or web) and from where, held for the life
+# of one request so the activity trail can record it without every service
+# taking a Request. See app/core/request_context.py.
+app.middleware("http")(request_context_middleware)

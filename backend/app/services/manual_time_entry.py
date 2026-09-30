@@ -13,6 +13,23 @@ from app.services.task import TaskService
 from app.schemas.manual_time_entry import ManualTimeEntryCreate, ManualTimeEntryUpdate
 from app.schemas.project_management import BillingType
 from app.services.member_scope import may_view_member, visible_member_ids
+from app.models.activity_log import ActivityLogAction, ActivityLogModule
+from app.services.activity_log import ActivityLogService
+
+
+def _describe_request(db: Session, entry: ManualTimeEntry) -> str:
+    """``02:30:00 on 2026-09-30 (Project › Task)`` -- a request, in the
+    activity trail's words."""
+    return (
+        f"{ActivityLogService.format_duration(entry.total_seconds)} on {entry.work_date} "
+        f"({ActivityLogService.describe_project_task(db, entry.project_id, entry.task_id)})"
+    )
+
+
+def _member_name(db: Session, user_id: int) -> str:
+    member = db.get(User, user_id)
+    return member.name if member is not None else f"member #{user_id}"
+
 
 class ManualTimeEntryService:
     @staticmethod
@@ -145,6 +162,18 @@ class ManualTimeEntryService:
         for notification_id in queue_manual_time_request_notifications(db, entry):
             if background_tasks is not None:
                 background_tasks.add_task(deliver_in_background, notification_id)
+
+        def on_behalf() -> str:
+            if target_user_id == current_user.id:
+                return ""
+            return f" on behalf of {_member_name(db, target_user_id)}"
+
+        ActivityLogService.capture(db, lambda: {
+            "actor": current_user,
+            "module": ActivityLogModule.MANUAL_TIME, "action": ActivityLogAction.MANUAL_TIME_REQUESTED,
+            "description": f"Requested manual time of {_describe_request(db, entry)}{on_behalf()}",
+            "project_id": entry.project_id, "task_id": entry.task_id, "entity_id": entry.id,
+        })
         return entry
 
     @staticmethod
@@ -288,6 +317,16 @@ class ManualTimeEntryService:
 
         ManualTimeEntryRepository.soft_delete(db, entry, datetime.now(timezone.utc))
 
+        def whose() -> str:
+            return "their" if entry.user_id == current_user.id else f"{_member_name(db, entry.user_id)}'s"
+
+        ActivityLogService.capture(db, lambda: {
+            "actor": current_user,
+            "module": ActivityLogModule.MANUAL_TIME, "action": ActivityLogAction.MANUAL_TIME_WITHDRAWN,
+            "description": f"Withdrew {whose()} manual time request of {_describe_request(db, entry)}",
+            "project_id": entry.project_id, "task_id": entry.task_id, "entity_id": entry.id,
+        })
+
     @staticmethod
     def update_approval(
         db: Session,
@@ -369,6 +408,18 @@ class ManualTimeEntryService:
             from app.services.project_budget_alerts import evaluate_project_in_background
 
             background_tasks.add_task(evaluate_project_in_background, decided.project_id, "manual_approval")
+
+        approved = approval_status == "approved"
+        ActivityLogService.capture(db, lambda: {
+            "actor": current_user,
+            "module": ActivityLogModule.MANUAL_TIME,
+            "action": ActivityLogAction.MANUAL_TIME_APPROVED if approved else ActivityLogAction.MANUAL_TIME_REJECTED,
+            "description": (
+                f"{'Approved' if approved else 'Rejected'} {_member_name(db, decided.user_id)}'s "
+                f"manual time request of {_describe_request(db, decided)}"
+            ),
+            "project_id": decided.project_id, "task_id": decided.task_id, "entity_id": decided.id,
+        })
         return decided
 
     @staticmethod

@@ -35,6 +35,8 @@ from app.models.user import User
 from app.core.time_format import elapsed_seconds
 from app.repositories.time_entry import TimeEntryRepository
 from app.services.task import TaskService
+from app.models.activity_log import ActivityLogAction, ActivityLogModule
+from app.services.activity_log import ActivityLogService
 
 import logging
 
@@ -212,6 +214,16 @@ class TimeEntryService:
             client_started_at=started_at, client_time=client_time,
             server_now=now,
         )
+        # The activity trail. Only a start that created an entry is recorded:
+        # the replays above return the entry an earlier request already logged.
+        ActivityLogService.capture(db, lambda: {
+            "actor": current_user,
+            "module": ActivityLogModule.TIMER, "action": ActivityLogAction.TIMER_STARTED,
+            "description": "Started the timer on "
+                           + ActivityLogService.describe_project_task(db, project_id, task_id),
+            "project_id": project_id, "task_id": task_id, "entity_id": entry.id,
+            "created_at": start_time,
+        })
         return entry, True
 
     @staticmethod
@@ -334,6 +346,18 @@ class TimeEntryService:
             TimeEntryService.refresh_task_rollup(db, stopped_entry.task_id)
             db.commit()
 
+        # The activity trail. Recorded once, by the stop that finalized the
+        # entry; the replays above answer with it and log nothing.
+        ActivityLogService.capture(db, lambda: {
+            "actor": current_user,
+            "module": ActivityLogModule.TIMER, "action": ActivityLogAction.TIMER_STOPPED,
+            "description": "Stopped the timer on "
+                           + ActivityLogService.describe_project_task(
+                               db, stopped_entry.project_id, stopped_entry.task_id)
+                           + f" after {ActivityLogService.format_duration(total_seconds)}",
+            "project_id": stopped_entry.project_id, "task_id": stopped_entry.task_id,
+            "entity_id": stopped_entry.id, "created_at": end_time,
+        })
         return stopped_entry, True
 
     @staticmethod
@@ -507,6 +531,15 @@ class TimeEntryService:
             note=f"from project={from_project_id} task={from_task_id} "
                  f"to project={to_project_id} task={to_task_id}",
         )
+        ActivityLogService.capture(db, lambda: {
+            "actor": current_user,
+            "module": ActivityLogModule.TIMER, "action": ActivityLogAction.ENTRY_TRANSFERRED,
+            "description": "Moved a recorded time entry from "
+                           + ActivityLogService.describe_project_task(db, from_project_id, from_task_id)
+                           + " to "
+                           + ActivityLogService.describe_project_task(db, to_project_id, to_task_id),
+            "project_id": to_project_id, "task_id": to_task_id, "entity_id": updated.id,
+        })
         return updated
 
     @staticmethod

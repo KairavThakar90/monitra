@@ -179,6 +179,11 @@ export const ENDPOINTS = {
     MAINTENANCE_HISTORY: (limit: number) =>
       `${API_BASE_URL}/system/maintenance-mode/history?limit=${encodeURIComponent(String(limit))}`,
   },
+  // The activity trail: every recorded user action, read employee-wise by the
+  // Logs page. Needs `view_employees`; a leader is answered with their team.
+  ACTIVITY_LOGS: {
+    BASE: `${API_BASE_URL}/activity-logs`,
+  },
   REACT_DASHBOARD: {
     BASE: `${API_BASE_URL}/react/dashboard`,
     PROJECTS: `${API_BASE_URL}/react/dashboard/projects`,

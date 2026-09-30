@@ -1,16 +1,21 @@
-"""Data access for ``system_settings`` and the ``activity_logs`` audit rows
-that record changes to them.
+"""Data access for ``system_settings``.
 
 Repositories own SQL and nothing else. Who may change a setting, and what a
-change means, live in ``app.services.maintenance_mode``.
+change means, live in ``app.services.maintenance_mode``. The audit rows a
+change writes go through ``ActivityLogRepository``, which now lives in
+``app.repositories.activity_log`` beside every other writer of that table and
+is re-exported here for the maintenance service that imported it from this
+module first.
 """
-from typing import List, Optional
+from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.activity_log import ActivityLog
 from app.models.system_setting import SystemSetting
+from app.repositories.activity_log import ActivityLogRepository
+
+__all__ = ["SystemSettingRepository", "ActivityLogRepository"]
 
 
 class SystemSettingRepository:
@@ -36,26 +41,3 @@ class SystemSettingRepository:
         """Stage a new row. The caller commits."""
         db.add(setting)
         return setting
-
-
-class ActivityLogRepository:
-
-    @staticmethod
-    def add(db: Session, entry: ActivityLog) -> ActivityLog:
-        """Stage an audit row. The caller commits, in the same transaction
-        as the change it records."""
-        db.add(entry)
-        return entry
-
-    @staticmethod
-    def list_for_module(
-        db: Session, *, module: str, limit: int = 50
-    ) -> List[ActivityLog]:
-        """Newest first, for one module."""
-        stmt = (
-            select(ActivityLog)
-            .where(ActivityLog.module == module)
-            .order_by(ActivityLog.created_at.desc(), ActivityLog.id.desc())
-            .limit(limit)
-        )
-        return list(db.execute(stmt).scalars().all())

@@ -38,10 +38,12 @@ Guarantees provided here
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Callable, List, Optional
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from app.activity_log import CLIENT_EVENT_CLOSED, CLIENT_EVENT_OPENED, ActivityLogApiService
 from app.api.client import ApiClient
 from app.auth.service import AuthService
 from app.auth.session import SessionManager
@@ -88,6 +90,15 @@ log = get_logger("runtime")
 #: Quit, and the backend records that instant as the end time.
 EXIT_STOP_FLUSH_BUDGET_MS = 5_000
 
+#: How long an explicit quit waits for the "application closed" report when
+#: that is the only thing still in flight. Deliberately much shorter than the
+#: stop's budget: a stop left undelivered is an entry still running on the
+#: backend, while a close report left undelivered is only an audit row that
+#: arrives at the next launch instead -- with the instant the user quit, not
+#: the instant it was finally sent. It is worth one quick round trip so the
+#: trail shows the close promptly; it is not worth making Quit feel slow.
+EXIT_EVENT_FLUSH_BUDGET_MS = 1_500
+
 
 class RuntimePhase:
     """Phases the runtime passes through. Each has a terminal outcome."""
@@ -129,6 +140,10 @@ class ApplicationRuntime(QObject):
         self._exit_callbacks: List[Callable[[], None]] = []
         self._exit_timer: Optional[QTimer] = None
         self._exit_connected = False
+        #: The queued "application closed" report this exit is still waiting
+        #: on, by action id; None once it has landed, failed, or was never
+        #: queued (signed out, or an exit that is a restart).
+        self._exit_event_id: Optional[str] = None
 
         #: Queued actions older than this generation are refused. Raised on
         #: logout so a previous user's pending work cannot execute as the next.
@@ -157,6 +172,7 @@ class ApplicationRuntime(QObject):
         self.maintenance_api = MaintenanceApiService(self.api_client)
         self.feedback_service = FeedbackApiService(self.api_client)
         self.portal_service = PortalService(self.api_client)
+        self.activity_log_api = ActivityLogApiService(self.api_client)
 
         # ── Bounded background execution ──────────────────────────────────────
         self.tasks = TaskRunner(parent=self)
@@ -197,7 +213,10 @@ class ApplicationRuntime(QObject):
             WellbeingService(self, self.cache)
         )
         self.sync: SyncService = self.services.register(
-            SyncService(self, self.cache, self.time_entry_service, self.task_service)
+            SyncService(
+                self, self.cache, self.time_entry_service, self.task_service,
+                activity_log_service=self.activity_log_api,
+            )
         )
         self.timer: TimerService = self.services.register(
             TimerService(self, self.time_entry_service, self.cache)
@@ -314,6 +333,43 @@ class ApplicationRuntime(QObject):
             self.recovery.recover()
         except Exception:  # noqa: BLE001
             log.exception("recovery failed; continuing with a clean session")
+
+        # The activity trail's "opened the application" row. Only a launch
+        # that restored a session has anybody to attribute it to; a launch
+        # that lands on the sign-in screen is recorded by the backend as the
+        # sign-in itself.
+        self._report_client_event(CLIENT_EVENT_OPENED)
+
+    def _report_client_event(self, event: str) -> Optional[str]:
+        """Queue a report that the application was opened or closed.
+
+        Through the durable queue and nothing else: no request is made here,
+        so this costs the GUI thread one small local write, and the report
+        survives a quit, an outage and a restart. It carries the instant the
+        event happened and the account it happened under; the queue's consumer
+        sends it only while that account is still the one signed in.
+
+        :return: the queued action's id, or None when nothing was queued --
+            nobody is signed in, or the queue could not be written. Reporting
+            is never allowed to fail startup or an exit.
+        """
+        try:
+            if not self.session_manager.is_authenticated:
+                return None
+            profile = self.session_manager.user_info or {}
+            user_id = profile.get("id")
+            if user_id is None:
+                return None
+            occurred_at = datetime.now(timezone.utc).isoformat()
+            return self.sync.enqueue(
+                "client_event",
+                {"event": event, "occurred_at": occurred_at, "user_id": user_id},
+                idempotency_key=f"client_event:{event}:{occurred_at}",
+                entity_type="client_event",
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("could not queue the %s report", event)
+            return None
 
     def mark_ui_ready(self) -> None:
         self._set_phase(RuntimePhase.UI_READY)
@@ -478,6 +534,12 @@ class ApplicationRuntime(QObject):
            re-authentication) there is nothing to wait for, and when the
            budget runs out the stop is simply delivered by the next launch.
 
+        A quit is also reported to the activity trail as "closed the
+        application": a `client_event` queued after the stop and ranked below
+        it. When that report is all that is still in flight the wait is the
+        much shorter `EXIT_EVENT_FLUSH_BUDGET_MS`; undelivered, it stays
+        queued and the next launch sends it with the instant of the quit.
+
         `stop_timer=False` is for an exit that is a *restart*, not a quit:
         installing an update relaunches the application, and the session is
         recovered by the new process exactly as after any other interruption
@@ -512,17 +574,29 @@ class ApplicationRuntime(QObject):
         if stop_timer and self.timer.is_running():
             self.timer.stop_tracking()
 
+        # A quit, as opposed to a restart, is also reported to the activity
+        # trail. Queued after the stop, and ranked below it, so it can never
+        # go ahead of the one thing the exit exists to deliver.
+        if stop_timer:
+            self._exit_event_id = self._report_client_event(CLIENT_EVENT_CLOSED)
+
         if not self._exit_wait_needed():
             self._finish_exit_preparation("nothing to wait for")
             return
 
+        # The full budget belongs to a stop. With only the close report in
+        # flight the wait is the short one -- see EXIT_EVENT_FLUSH_BUDGET_MS.
+        wait_ms = (
+            budget_ms if self._pending_exit_stops() > 0
+            else min(budget_ms, EXIT_EVENT_FLUSH_BUDGET_MS)
+        )
         self._exit_timer = QTimer(self)
         self._exit_timer.setSingleShot(True)
         self._exit_timer.timeout.connect(
-            lambda: self._finish_exit_preparation("budget exhausted; the stop stays queued")
+            lambda: self._finish_exit_preparation("budget exhausted; what is queued stays queued")
         )
-        self._exit_timer.start(budget_ms)
-        log.info("waiting up to %dms for the queued stop to reach the backend", budget_ms)
+        self._exit_timer.start(wait_ms)
+        log.info("waiting up to %dms for the queue to reach the backend", wait_ms)
         # A stop already waiting out a retry backoff would not be attempted
         # inside the budget at all; the user is waiting, so it is tried now.
         try:
@@ -533,31 +607,45 @@ class ApplicationRuntime(QObject):
         # next scheduled poll.
         self.sync.wake()
 
-    def _exit_wait_needed(self) -> bool:
+    def _pending_exit_stops(self) -> int:
+        """Queued stops still to reach the backend; 0 when they cannot be counted."""
         try:
-            pending = self.cache.pending_stop_count()
+            return self.cache.pending_stop_count()
         except Exception:  # noqa: BLE001
             log.exception("could not count queued stops; not waiting")
-            return False
-        if pending == 0:
+            return 0
+
+    def _exit_wait_needed(self) -> bool:
+        if self._pending_exit_stops() == 0 and self._exit_event_id is None:
             return False
         if self.network.network_state not in NetworkState.USABLE \
                 and self.network.network_state != NetworkState.UNKNOWN:
-            log.info("network is %s; the stop stays queued for the next launch",
+            log.info("network is %s; what is queued stays queued for the next launch",
                      self.network.network_state)
             return False
         if self.sync.state == ServiceState.DEGRADED:
-            log.info("sync consumer is holding (%s); the stop stays queued",
+            log.info("sync consumer is holding (%s); what is queued stays queued",
                      self.sync.health.last_error)
             return False
         return True
 
-    def _on_exit_sync_progress(self, _action_id: str, action_type: str, _result: dict) -> None:
-        if action_type == "stop_timer" and not self._exit_wait_needed():
-            self._finish_exit_preparation("stop delivered")
+    def _on_exit_sync_progress(self, action_id: str, action_type: str, _result: dict) -> None:
+        if action_type == "client_event":
+            if action_id != self._exit_event_id:
+                return
+            self._exit_event_id = None
+        elif action_type != "stop_timer":
+            return
+        if not self._exit_wait_needed():
+            self._finish_exit_preparation("delivered")
+            return
+        if action_type == "stop_timer" and self._exit_event_id is not None:
+            # The stop has landed and only the close report remains: it gets
+            # its own short wait, never the rest of the stop's budget.
+            self._shorten_exit_wait(EXIT_EVENT_FLUSH_BUDGET_MS)
 
     def _on_exit_sync_failed(
-        self, _action_id: str, action_type: str, error: str, will_retry: bool
+        self, action_id: str, action_type: str, error: str, will_retry: bool
     ) -> None:
         if action_type == "stop_timer":
             # Retrying now would only make the user wait for a backoff that
@@ -565,6 +653,20 @@ class ApplicationRuntime(QObject):
             self._finish_exit_preparation(
                 f"stop could not be delivered now ({error}); retry={will_retry}"
             )
+        elif action_type == "client_event" and action_id == self._exit_event_id:
+            self._exit_event_id = None
+            if not self._exit_wait_needed():
+                self._finish_exit_preparation(
+                    f"close report could not be delivered now ({error}); retry={will_retry}"
+                )
+
+    def _shorten_exit_wait(self, budget_ms: int) -> None:
+        """Cap what is left of the exit wait at `budget_ms`. Never extends it."""
+        timer = self._exit_timer
+        if timer is None or not timer.isActive():
+            return
+        if timer.remainingTime() > budget_ms:
+            timer.start(budget_ms)
 
     def _finish_exit_preparation(self, reason: str) -> None:
         if self._exit_done:

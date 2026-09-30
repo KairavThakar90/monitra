@@ -28,6 +28,7 @@ from typing import Any, Dict, Optional
 
 from PySide6.QtCore import Signal
 
+from app.activity_log.service import CLIENT_EVENTS, ActivityLogApiService
 from app.api.exceptions import ApiError
 from app.tasks.service import TaskService
 from app.time_entries.service import TimeEntryService
@@ -127,6 +128,10 @@ class SyncService(LoopService):
         "delete_task": 5,
         "activity_batch": 6,
         "app_usage_batch": 6,
+        # The application reporting that it was opened or closed. Last: it
+        # describes the session rather than changing anything in it, so it
+        # never goes ahead of a stop, a start or a task edit.
+        "client_event": 7,
     }
 
     def __init__(
@@ -136,11 +141,13 @@ class SyncService(LoopService):
         time_entry_service: TimeEntryService,
         task_service: TaskService,
         parent=None,
+        activity_log_service: Optional[ActivityLogApiService] = None,
     ) -> None:
         super().__init__(runtime, parent)
         self._cache = cache
         self._time_entry_service = time_entry_service
         self._task_service = task_service
+        self._activity_log_service = activity_log_service
 
         self._awaiting_auth = False
         self._last_pending_count = -1
@@ -344,6 +351,7 @@ class SyncService(LoopService):
             "create_task": self._handle_create_task,
             "update_task": self._handle_update_task,
             "delete_task": self._handle_delete_task,
+            "client_event": self._handle_client_event,
         }
 
         try:
@@ -635,6 +643,31 @@ class SyncService(LoopService):
 
     def _handle_delete_task(self, payload):
         return self._task_service.delete_task(payload["project_id"], payload["task_id"])
+
+    def _handle_client_event(self, payload):
+        """Report that the application was opened or closed.
+
+        The report names the account it was queued under, and is sent only
+        while that same account is signed in. A close queued by one user and
+        delivered at the next launch under another user's token would be
+        recorded by the backend as the *second* user closing the application
+        -- there is no entry id here for the server to check ownership
+        against, as there is for a stop. An event that cannot be attributed
+        is dropped; a wrong row in an audit trail is worse than a missing one.
+        """
+        event = payload.get("event")
+        occurred_at = payload.get("occurred_at")
+        if self._activity_log_service is None or event not in CLIENT_EVENTS or not occurred_at:
+            raise UnresolvableAction(f"client_event cannot be reported (event={event!r})")
+
+        session = getattr(self.runtime, "session_manager", None)
+        profile = getattr(session, "user_info", None)
+        current_user_id = profile.get("id") if isinstance(profile, dict) else None
+        if current_user_id is None or current_user_id != payload.get("user_id"):
+            raise UnresolvableAction(
+                f"client_event {event} was queued for a different account or a session that has ended"
+            )
+        return self._activity_log_service.record_client_event(event, occurred_at)
 
     # ── Batched telemetry ─────────────────────────────────────────────────────
 

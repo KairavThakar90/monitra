@@ -362,6 +362,19 @@ class FeedbackService:
             # dispatch sweeper delivers it with backoff.
             background_tasks.add_task(deliver_in_background, notification_id)
 
+        from app.models.activity_log import ActivityLogAction, ActivityLogModule
+        from app.services.activity_log import ActivityLogService
+
+        ActivityLogService.capture(db, lambda: {
+            "actor": current_user,
+            "module": ActivityLogModule.FEEDBACK, "action": ActivityLogAction.FEEDBACK_STATUS_CHANGED,
+            "description": (
+                f"Marked {submitter.name}'s feedback as "
+                f"{'Working' if target == FeedbackStatus.in_progress.value else target.replace('_', ' ').title()}"
+            ),
+            "entity_id": feedback.id,
+        })
+
         return FeedbackService._response(
             feedback, submitter, notification_queued=notification_id is not None
         )

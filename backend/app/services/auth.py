@@ -20,6 +20,8 @@ from app.core.permissions import ROLE_PERMISSIONS, resolve_role_alias
 from fastapi import HTTPException, status
 from app.services.external_auth_service import ExternalAuthService
 from app.services.email import deliver_in_background, queue_welcome_email
+from app.models.activity_log import ActivityLogAction, ActivityLogModule
+from app.services.activity_log import ActivityLogService
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -303,6 +305,25 @@ class AuthService:
         except Exception:
             db.rollback()
             logger.exception("Failed to revoke authentication session")
+            return
+        # Only a revocation that really happened is a sign-out: the early
+        # returns above are replays of one that already has its row.
+        user_id = row.user_id
+        ActivityLogService.capture(db, lambda: {
+            "actor": db.get(User, user_id),
+            "module": ActivityLogModule.AUTH, "action": ActivityLogAction.LOGOUT,
+            "description": "Signed out",
+        })
+
+    @staticmethod
+    def _record_sign_in(db: Session, user: User) -> None:
+        """One row per session that was actually issued. A token refresh is
+        not a sign-in and is deliberately not recorded."""
+        ActivityLogService.record(
+            db, user,
+            module=ActivityLogModule.AUTH, action=ActivityLogAction.LOGIN,
+            description="Signed in",
+        )
 
     @staticmethod
     async def login_exchange(
@@ -498,6 +519,7 @@ class AuthService:
         # A successful credential check is the only thing that starts a new
         # session window.
         refresh_token_plain, started_at, expires_at = AuthService._persist_session_token(db, user.id)
+        AuthService._record_sign_in(db, user)
 
         logger.info("AUTH_LOGIN_SUCCESS: Authentication completed for local user %s", user.id)
         return TokenPair(
@@ -542,6 +564,7 @@ class AuthService:
             refuse_if_login_disabled(user, 403)
         access_token = create_access_token(AuthService._access_claims(user))
         refresh_token_plain, started_at, expires_at = AuthService._persist_session_token(db, user.id)
+        AuthService._record_sign_in(db, user)
         return TokenPair(
             access_token=access_token,
             refresh_token=refresh_token_plain,

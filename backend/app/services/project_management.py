@@ -17,6 +17,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.models.activity_log import ActivityLogAction, ActivityLogModule
 from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.project_status import ProjectStatus, TaskStatus
@@ -25,6 +26,7 @@ from app.models.task_assignee import TaskAssignee
 from app.models.user import User
 from app.repositories.reports import ReportsRepository
 from app.repositories.status_catalog import StatusCatalog
+from app.services.activity_log import ActivityLogService
 from app.schemas.project_management import (
     BillingType, ProjectCreate, ProjectUpdate, TaskCreate, TaskUpdate,
 )
@@ -39,6 +41,18 @@ from app.core.time_format import ist_day_end_utc, ist_day_start_utc
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
 logger = logging.getLogger("uvicorn.error")
+
+# What an edit touched, in the words the activity trail shows. Keyed on the
+# payload's field names; a field absent from the request is absent from the row.
+_PROJECT_FIELD_LABELS = {
+    "project_name": "name", "description": "description", "status_id": "status",
+    "owner_id": "owner", "leader_id": "leader", "employee_ids": "team",
+    "deadline": "deadline", "billing_type": "billing", "fixed_hours": "hour budget",
+}
+_TASK_FIELD_LABELS = {
+    "name": "name", "status_id": "status", "assignee_id": "assignee",
+    "estimated_hours": "estimated hours",
+}
 
 # Stand-in bounds for "every entry there has ever been" -- the same sentinel
 # span `DashboardRepository.billing_progress` measures a fixed-hour budget
@@ -342,10 +356,18 @@ class ProjectManagementService:
                 db.add(Task(organization_id=user.organization_id, project_id=project.id, task_name=task_name, status=todo_legacy, status_id=todo_status.id, created_by=user.id))
             db.commit()
             db.refresh(project)
-            return ProjectManagementService._detail_payload(db, project, user)
         except Exception:
             db.rollback()
             raise
+        # After the commit and outside its `try`: the project exists whatever
+        # becomes of its audit row, and `capture` never raises.
+        ActivityLogService.capture(db, lambda: {
+            "actor": user,
+            "module": ActivityLogModule.PROJECT, "action": ActivityLogAction.PROJECT_CREATED,
+            "description": f'Created the project "{project.project_name}"',
+            "project_id": project.id, "entity_id": project.id,
+        })
+        return ProjectManagementService._detail_payload(db, project, user)
 
     @staticmethod
     def list(db: Session, user: User, page: int, limit: int, search: Optional[str], status_id: Optional[int], leader_id: Optional[int], billing_type: Optional[BillingType], include_tasks: bool = True, employee_ids: Optional[list[int]] = None):
@@ -525,6 +547,13 @@ class ProjectManagementService:
                 ProjectBudgetAlertService.run(db, project_ids=[project.id], deliver_now=False, source="budget_change")
             except Exception:  # noqa: BLE001 - the edit succeeded; reconciliation retries
                 logger.warning("PROJECT_BUDGET_ALERT_BASELINE_FAILED: project=%s", project.id, exc_info=True)
+        changed = ", ".join(_PROJECT_FIELD_LABELS[key] for key in _PROJECT_FIELD_LABELS if key in values)
+        ActivityLogService.capture(db, lambda: {
+            "actor": user,
+            "module": ActivityLogModule.PROJECT, "action": ActivityLogAction.PROJECT_UPDATED,
+            "description": f'Updated the project "{project.project_name}"' + (f" ({changed})" if changed else ""),
+            "project_id": project.id, "entity_id": project.id,
+        })
         return ProjectManagementService._detail_payload(db, project, user)
 
     @staticmethod
@@ -533,6 +562,12 @@ class ProjectManagementService:
         project.status = "archived"
         db.commit()
         db.refresh(project)
+        ActivityLogService.capture(db, lambda: {
+            "actor": user,
+            "module": ActivityLogModule.PROJECT, "action": ActivityLogAction.PROJECT_ARCHIVED,
+            "description": f'Archived the project "{project.project_name}"',
+            "project_id": project.id, "entity_id": project.id,
+        })
         return {"id": project.id, "status": "archived"}
 
     @staticmethod
@@ -637,6 +672,14 @@ class ProjectManagementService:
             db.add(TaskAssignee(task_id=task.id, user_id=assignee.id, assigned_by=user.id))
         db.commit()
         db.refresh(task)
+        # Only a create that inserted a row reaches here; the idempotent
+        # replays above return the task an earlier request already logged.
+        ActivityLogService.capture(db, lambda: {
+            "actor": user,
+            "module": ActivityLogModule.TASK, "action": ActivityLogAction.TASK_CREATED,
+            "description": f'Added the task "{task.task_name}" to {project.project_name}',
+            "project_id": project.id, "task_id": task.id, "entity_id": task.id,
+        })
         return ProjectManagementService._task_payload(task, task_status, assignee)
 
     @staticmethod
@@ -677,6 +720,13 @@ class ProjectManagementService:
         if "estimated_hours" in values: task.estimated_hours = values["estimated_hours"]
         db.commit()
         db.refresh(task)
+        changed = ", ".join(_TASK_FIELD_LABELS[key] for key in _TASK_FIELD_LABELS if key in values)
+        ActivityLogService.capture(db, lambda: {
+            "actor": user,
+            "module": ActivityLogModule.TASK, "action": ActivityLogAction.TASK_UPDATED,
+            "description": f'Updated the task "{task.task_name}"' + (f" ({changed})" if changed else ""),
+            "project_id": project_id, "task_id": task.id, "entity_id": task.id,
+        })
         return ProjectManagementService._task_payload(task, task_status, assignee)
 
     @staticmethod
@@ -685,4 +735,10 @@ class ProjectManagementService:
         task = ProjectManagementService._task(db, user, project_id, task_id)
         task.status = "archived"
         db.commit()
+        ActivityLogService.capture(db, lambda: {
+            "actor": user,
+            "module": ActivityLogModule.TASK, "action": ActivityLogAction.TASK_ARCHIVED,
+            "description": f'Archived the task "{task.task_name}"',
+            "project_id": project_id, "task_id": task.id, "entity_id": task.id,
+        })
         return {"id": task.id, "status": "archived"}

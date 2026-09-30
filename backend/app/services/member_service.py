@@ -5,24 +5,47 @@ from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.models.activity_log import ActivityLogAction, ActivityLogModule
 from app.models.user import User
 from app.repositories.member import MemberRepository
 from app.schemas.member import MemberCreate, MemberUpdate
+from app.services.activity_log import ActivityLogService
 from app.services.member_scope import may_view_member, visible_member_ids
 
 logger = logging.getLogger(__name__)
 
+#: The two per-member switches, each with the action its two positions record.
+_SWITCH_ACTIONS = {
+    "can_login": (ActivityLogAction.LOGIN_ALLOWED, ActivityLogAction.LOGIN_EXCLUDED, "signing in"),
+    "can_add_tasks": (ActivityLogAction.ADD_TASKS_ALLOWED, ActivityLogAction.ADD_TASKS_EXCLUDED, "adding tasks"),
+}
+
 
 class MemberService:
+    @staticmethod
+    def _record(db: Session, current_user: User, action: str, describe, member) -> None:
+        """One member-directory row. `describe` is given the member's name, so
+        nothing is read off `member` outside the trail's own protection."""
+        ActivityLogService.capture(db, lambda: {
+            "actor": current_user,
+            "module": ActivityLogModule.MEMBER, "action": action,
+            "description": describe(member.name), "entity_id": member.id,
+        })
+
     @staticmethod
     def create(db: Session, current_user: User, payload: MemberCreate):
         if MemberRepository.get_by_email(db, payload.email):
             raise HTTPException(status.HTTP_409_CONFLICT, "A member with this email already exists.")
         try:
-            return MemberRepository.create(db, current_user.organization_id, payload.model_dump(mode="python"))
+            created = MemberRepository.create(db, current_user.organization_id, payload.model_dump(mode="python"))
         except IntegrityError:
             db.rollback()
             raise HTTPException(status.HTTP_409_CONFLICT, "A member with this email already exists.")
+        MemberService._record(
+            db, current_user, ActivityLogAction.MEMBER_CREATED,
+            lambda name: f"Added the member {name}", created,
+        )
+        return created
 
     @staticmethod
     def list(db: Session, current_user: User, search, role, member_status, page, limit):
@@ -69,6 +92,13 @@ class MemberService:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Date of birth cannot be in the future")
         if dates["date_of_joining"] and dates["date_of_joining"] > date.today():
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Date of joining cannot be in the future")
+        # Read before the save overwrites them: a switch is recorded only when
+        # it actually moved, so re-sending the current position logs nothing.
+        switched = {
+            key: data[key] for key in _SWITCH_ACTIONS
+            if key in data and (getattr(member, key, None) is not False) != bool(data[key])
+        }
+        other_fields = sorted(key for key in data if key not in _SWITCH_ACTIONS)
         try:
             saved = MemberRepository.save(db, member, data)
         except IntegrityError:
@@ -76,6 +106,24 @@ class MemberService:
             raise HTTPException(status.HTTP_409_CONFLICT, "A member with this email already exists.")
         if excluding:
             MemberService._end_member_access(db, saved)
+        for key, allowed in switched.items():
+            allowed_action, excluded_action, what = _SWITCH_ACTIONS[key]
+            MemberService._record(
+                db, current_user, allowed_action if allowed else excluded_action,
+                lambda name, allowed=allowed, what=what: (
+                    f"{'Allowed' if allowed else 'Excluded'} {name} {'to resume' if allowed else 'from'} {what}"
+                ),
+                saved,
+            )
+        if other_fields:
+            MemberService._record(
+                db, current_user, ActivityLogAction.MEMBER_UPDATED,
+                lambda name: (
+                    f"Updated the member {name} "
+                    f"({', '.join(field.replace('_', ' ') for field in other_fields)})"
+                ),
+                saved,
+            )
         return saved
 
     @staticmethod
@@ -109,4 +157,9 @@ class MemberService:
         member = MemberService.get(db, current_user, member_id)
         if member.id == current_user.id:
             raise HTTPException(status.HTTP_409_CONFLICT, "Users cannot deactivate their own account")
-        return MemberRepository.save(db, member, {"status": "inactive"})
+        saved = MemberRepository.save(db, member, {"status": "inactive"})
+        MemberService._record(
+            db, current_user, ActivityLogAction.MEMBER_DEACTIVATED,
+            lambda name: f"Deactivated the member {name}", saved,
+        )
+        return saved

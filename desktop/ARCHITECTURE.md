@@ -132,6 +132,21 @@ leave the session record for recovery: an update restart
 (`MainWindow.exit_for_restart`) and an OS shutdown or sign-out
 (`commitDataRequest`).
 
+**Opening and closing are reported to the activity trail.** A launch that
+restores a session, and an explicit quit, each queue a `client_event`
+(`ApplicationRuntime._report_client_event`) for
+`POST /api/v1/activity-logs/client-events` — the two facts in the backend's
+trail that only the client knows. They go through the durable queue like
+everything else: nothing is sent from the GUI thread, `SyncService` is the only
+sender, and the action ranks below every other so it never goes ahead of a
+stop. A quit waits for the close report at most `EXIT_EVENT_FLUSH_BUDGET_MS`
+(far below the stop's budget, and never on top of it); undelivered, it stays
+queued and the next launch sends it carrying the instant of the quit, which the
+backend is idempotent on. The report names the account it was queued under and
+is sent only while that account is signed in — a close delivered under another
+user's token would be recorded as theirs, so it is dropped instead. Nothing is
+queued while signed out, and a restart is not a close.
+
 ---
 
 ## 4. Threading model
