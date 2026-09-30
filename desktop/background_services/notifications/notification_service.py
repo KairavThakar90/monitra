@@ -535,13 +535,11 @@ class NotificationService(BaseService):
         :return: False if no card could be shown, and the caller should fall
             back to the platform toast.
         """
-        deadline = self._clock() + self.DISPLAY_MS / 1000.0
-
         # The very same notification, still on screen: nothing new to say, so
         # no second card saying it. Its time starts again.
         for shown in self._cards:
             if shown.key == key and shown.title == title and shown.message == message:
-                shown.deadline = deadline
+                shown.deadline = self._clock() + self.DISPLAY_MS / 1000.0
                 shown.link = link or None
                 return True
 
@@ -557,6 +555,9 @@ class NotificationService(BaseService):
         if not presented:
             return False
 
+        # Counted from now, with the card on screen -- not from before it
+        # was built and laid out, which for the first card is real time.
+        deadline = self._clock() + self.DISPLAY_MS / 1000.0
         self._spare_cards.remove(card)
         self._cards.append(_ShownCard(card, key, title, message, link or None, deadline))
         self._last_card = card

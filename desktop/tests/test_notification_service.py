@@ -299,25 +299,33 @@ def test_the_card_stays_up_for_thirty_seconds_and_no_longer(popup_service):
     """Real on-screen time: the card is retired by the service's own timer,
     thirty seconds after it appears -- not by the platform, and not a minute
     later as it used to be."""
+    popup_service._clock = lambda: 500.0      # a still clock: no real time in the sum
     popup_service.notify("Drink water", key="wellbeing:hydrate")
 
     assert popup_service._popup.isVisible()
-    # Exactly the display time, with no margin on top: Qt rounds a timer this
-    # long to whole seconds, so thirty and a half became thirty-one.
+    # Exactly the display time, with no margin on top: Qt rounds a coarse
+    # timer this long to whole seconds, so thirty and a half became
+    # thirty-one. The timer is a precise one for the same reason.
+    assert popup_service._cards[0].deadline == 530.0
     assert popup_service._dismiss_timer.interval() == 30_000
+    assert popup_service._dismiss_timer.timerType() == Qt.TimerType.PreciseTimer
 
 
 def test_every_kind_of_notification_gets_the_same_thirty_seconds(popup_service):
     """One display time for all of them -- a reminder, a timer event, an
     error -- because there is one timer and one constant behind it."""
+    now = [500.0]
+    popup_service._clock = lambda: now[0]
     for level, key in (
         (NotificationLevel.INFO, "wellbeing:hydrate"),
         (NotificationLevel.SUCCESS, "timer-started"),
         (NotificationLevel.WARNING, "network"),
         (NotificationLevel.ERROR, "task-mut-err"),
     ):
-        popup_service.notify("message", level, key=key)
-        assert popup_service._dismiss_timer.interval() == 30_000
+        popup_service.notify(f"message for {key}", level, key=key)
+        # Thirty seconds from when *this* card appeared, whatever its level.
+        assert popup_service._cards[-1].deadline == now[0] + 30.0
+        now[0] += 3.0
 
 
 def test_the_card_is_gone_when_its_thirty_seconds_are_up(popup_service):
