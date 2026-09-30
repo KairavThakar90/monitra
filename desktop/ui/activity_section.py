@@ -52,7 +52,8 @@ from ui.icon_manager import IconManager, safe_open_url
 from ui.sidebar import ElidedLabel
 from ui.styles import (
     TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED,
-    BORDER_LIGHT, BORDER_MID, CARD_BG, CONTENT_BG, PRIMARY, SUCCESS, WARNING, ERROR
+    BORDER_LIGHT, BORDER_MID, CARD_BG, CONTENT_BG, PRIMARY, PRIMARY_BORDER,
+    SUCCESS, TOOLTIP_QSS, WARNING, ERROR
 )
 
 #: Material icon used for each Activity tab, both in the tab button itself
@@ -649,7 +650,10 @@ class UsageActivityRow(QFrame):
         display_title = full_title[:75] + "..." if len(full_title) > 75 else full_title
         self.title_lbl = QLabel(display_title, mid_container)
         self.title_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
-        self.title_lbl.setStyleSheet(f"color: {TEXT_PRIMARY};")
+        # The tooltip is restated because a label's sheet styles the label's
+        # own tooltip too (see TOOLTIP_QSS): this one came out as dark text
+        # on whatever the platform draws behind a transparent tooltip.
+        self.title_lbl.setStyleSheet(f"QLabel {{ color: {TEXT_PRIMARY}; }}{TOOLTIP_QSS}")
         self.title_lbl.setToolTip(full_title)
         mid_layout.addWidget(self.title_lbl)
 
@@ -669,6 +673,7 @@ class UsageActivityRow(QFrame):
                 QLabel:hover {{
                     text-decoration: underline;
                 }}
+                {TOOLTIP_QSS}
             """)
             self.sub_lbl.setToolTip(f"Click to open: {url_text}")
             self.sub_lbl.mousePressEvent = lambda e, u=url_text: safe_open_url(u)

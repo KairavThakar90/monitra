@@ -43,7 +43,7 @@ from ui import icons
 from ui.styles import (
     PRIMARY, PRIMARY_HOVER, PRIMARY_LIGHT, SUCCESS_BG,
     ERROR, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED,
-    BORDER_LIGHT, CARD_BG, CONTENT_BG, TASK_TABLE_QSS,
+    BORDER_LIGHT, CARD_BG, CONTENT_BG, TASK_TABLE_QSS, TOOLTIP_QSS,
     MONITRA_MARK_SVG, BORDER_MID, BUTTON_GRADIENT, BUTTON_GRADIENT_HOVER,
     BUTTON_GRADIENT_REVERSED, BUTTON_GRADIENT_REVERSED_HOVER,
     ACTIVE_ROW_BORDER,
@@ -1146,7 +1146,12 @@ class TaskRow(QFrame):
         # (task status is changed through the row's menu -> Edit, as before).
         self._leading_icon = QLabel(self)
         self._leading_icon.setPixmap(icons.pixmap("task_alt", self.project_color, 17))
-        self._leading_icon.setStyleSheet("background: transparent;")
+        # Scoped, with the tooltip restated: a sheet with no selector also
+        # styles this label's own tooltip, which came out as white text on
+        # the platform's white tooltip (see TOOLTIP_QSS).
+        self._leading_icon.setStyleSheet(
+            f"QLabel {{ background: transparent; }}{TOOLTIP_QSS}"
+        )
         self._leading_icon.setToolTip(self.project_name)
         name_row.addWidget(self._leading_icon)
 

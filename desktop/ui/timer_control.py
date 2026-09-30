@@ -30,7 +30,8 @@ from ui import icons
 from ui.task_table import SingleClickButton
 from ui.styles import (
     BUTTON_GRADIENT, BUTTON_GRADIENT_HOVER, BUTTON_GRADIENT_REVERSED,
-    BUTTON_GRADIENT_REVERSED_HOVER, SIDEBAR_MUTED, SIDEBAR_TEXT, WARNING,
+    BUTTON_GRADIENT_REVERSED_HOVER, SIDEBAR_MUTED, SIDEBAR_TEXT, TOOLTIP_QSS,
+    WARNING,
 )
 
 #: Diameter of the disc. Large enough to be the sidebar's primary control
@@ -113,7 +114,10 @@ class TimerControl(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setStyleSheet("background: transparent;")
+        # The disc's tooltip is restated: a bare `background: transparent`
+        # reaches it too, and it came out as white text on the platform's
+        # white tooltip (see TOOLTIP_QSS).
+        self.setStyleSheet("QWidget { background: transparent; }" + TOOLTIP_QSS)
         self._running = False
         self._can_start = False
         self._live_date = True

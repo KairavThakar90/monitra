@@ -51,7 +51,8 @@ from ui.logout_confirm_dialog import LogoutConfirmDialog
 from ui.sidebar import SidebarWidget
 from ui.update_dialog import UpdateDialog
 from ui.styles import (
-    BORDER_LIGHT, CONTENT_BG, ERROR, PROJECT_COLORS, SUCCESS, TEXT_MUTED, WARNING,
+    BORDER_LIGHT, CONTENT_BG, ERROR, PROJECT_COLORS, SUCCESS, TEXT_MUTED,
+    TOOLTIP_QSS, WARNING,
 )
 from ui.stat_cards import StatCardsRow
 from ui.task_table import TaskSection
@@ -397,7 +398,11 @@ class DashboardWindow(QWidget):
     # ── Construction ──────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        self.setStyleSheet(f"QWidget {{ background: {CONTENT_BG}; }}")
+        # The tooltip rule is restated after the bare QWidget one on purpose:
+        # a tooltip is a QWidget too, so without it that background repaints
+        # every tooltip in the window under the application sheet's white
+        # text (see TOOLTIP_QSS).
+        self.setStyleSheet(f"QWidget {{ background: {CONTENT_BG}; }}{TOOLTIP_QSS}")
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -471,7 +476,12 @@ class DashboardWindow(QWidget):
         # content internally, so the outer container only needs to divide
         # up the available height, not add a second, redundant scrollbar.
         content_container = QWidget(right_col)
-        content_container.setStyleSheet(f"background: {CONTENT_BG};")
+        # A sheet with no selector is `* { ... }` to Qt: it reaches every
+        # descendant and every descendant's tooltip, and being nearer than
+        # the window's sheet it wins. So the tooltip is restated here too.
+        content_container.setStyleSheet(
+            f"QWidget {{ background: {CONTENT_BG}; }}{TOOLTIP_QSS}"
+        )
         content_outer_layout = QVBoxLayout(content_container)
         content_outer_layout.setContentsMargins(20, 16, 20, 20)
         content_outer_layout.setSpacing(14)

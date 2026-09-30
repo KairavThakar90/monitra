@@ -22,6 +22,7 @@ from core.branding import logo_pixmap
 from ui.styles import (
     SIDEBAR_BG, SIDEBAR_BG_HOVER, SIDEBAR_SELECTED, SIDEBAR_MUTED,
     SIDEBAR_TEXT, SIDEBAR_BORDER, PROJECT_COLORS, SUCCESS, TEXT_MUTED, ERROR,
+    TOOLTIP_QSS,
 )
 
 EXPANDED_WIDTH = 300
@@ -514,6 +515,7 @@ class SidebarWidget(QWidget):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0;
             }}
+            {TOOLTIP_QSS}
         """)
 
     def _build_ui(self) -> None:
@@ -589,9 +591,13 @@ class SidebarWidget(QWidget):
             "", self._greeting_section, align=Qt.AlignmentFlag.AlignHCenter
         )
         self._welcome_label.setFont(QFont("Segoe UI", WELCOME_FONT_SIZE, QFont.Weight.Bold))
+        # Scoped, with the tooltip restated: the label shows its full text as
+        # a tooltip when elided, and a sheet with no selector styled that
+        # tooltip as this heading -- large, bold, white on white.
         self._welcome_label.setStyleSheet(
-            f"color: {SIDEBAR_TEXT}; background: transparent; "
-            f"font-size: {WELCOME_FONT_SIZE}pt; font-weight: 700;"
+            f"QLabel {{ color: {SIDEBAR_TEXT}; background: transparent; "
+            f"font-size: {WELCOME_FONT_SIZE}pt; font-weight: 700; }}"
+            f"{TOOLTIP_QSS}"
         )
         # Ignored horizontally: the label elides to whatever width the fixed
         # 300px column gives it, so a long name cannot widen the layout's
@@ -822,14 +828,22 @@ class SidebarWidget(QWidget):
         self._avatar_label.setFixedSize(36, 36)
         self._avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._avatar_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        # Scoped, with the tooltip restated after it: a sheet with no selector
+        # would also paint this label's tooltip as a blue disc (TOOLTIP_QSS).
         self._avatar_label.setStyleSheet(
-            "background: #2563EB; color: white; border-radius: 18px;"
+            "QLabel { background: #2563EB; color: white; border-radius: 18px; }"
+            + TOOLTIP_QSS
         )
         self._user_layout.addWidget(self._avatar_label)
 
         # User info container
         self._user_info_widget = QWidget(self._user_card)
-        self._user_info_widget.setStyleSheet("background: transparent;")
+        # The name and email labels inside carry tooltips. A bare
+        # `background: transparent` reached those too, and they came out as
+        # white text on the platform's white tooltip.
+        self._user_info_widget.setStyleSheet(
+            "QWidget { background: transparent; }" + TOOLTIP_QSS
+        )
         user_text_col = QVBoxLayout(self._user_info_widget)
         user_text_col.setContentsMargins(0, 0, 0, 0)
         user_text_col.setSpacing(1)

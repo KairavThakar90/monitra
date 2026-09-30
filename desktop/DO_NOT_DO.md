@@ -629,6 +629,35 @@ resting a hand on the mouse.
 
 ---
 
+## Styling
+
+### ❌ Do not let a bare `QWidget` rule, or a sheet with no selector, reach a tooltip
+
+```python
+self.setStyleSheet(f"QWidget {{ background: {CONTENT_BG}; }}")     # DashboardWindow
+content_container.setStyleSheet(f"background: {CONTENT_BG};")      # no selector: `* { ... }`
+self._leading_icon.setStyleSheet("background: transparent;")
+```
+
+**What it caused:** unreadable tooltips. Qt styles a tooltip through the
+widget it belongs to — that widget's sheet and its ancestors' before the
+application's, nearest first — and a tooltip is itself a `QWidget`, a `QFrame`
+and a `QLabel`. So the window's background rule repainted every tooltip in the
+content area near-white while the text stayed the application sheet's white:
+"Next page" under the task pager was white on white, as was every top-bar
+tooltip. The selector-less `background: transparent` variants left the account
+name, the task row's project marker and the Play disc with white text on the
+platform's own white tooltip. Each looked fine on the widget it was written
+for; none of them was written about tooltips at all.
+
+**Instead:** a sheet that carries such a rule restates the tooltip after it
+(`TOOLTIP_QSS` in `ui/styles.py`), and a sheet on a single widget names that
+widget's type rather than using no selector. `tests/test_tooltip_style.py`
+shows every tooltip in the dashboard and reads its pixels back, so the next
+one fails there.
+
+---
+
 ## Naming
 
 ### ❌ Do not overload `start()`, `stop()` or `state()` on a service

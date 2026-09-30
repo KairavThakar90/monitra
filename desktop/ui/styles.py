@@ -29,6 +29,11 @@ BRAND_VIOLET      = "#7C3AED"
 PRIMARY           = "#4F6BFF"
 PRIMARY_HOVER     = "#3B57E8"
 PRIMARY_LIGHT     = "#EEF2FF"
+# A soft tint of PRIMARY for the resting border of a field that should read
+# as the control to reach for (the Activity search box). BORDER_LIGHT is the
+# colour of a card's hairline and disappears on a white band; PRIMARY itself
+# is the focus colour and would make the field look focused all the time.
+PRIMARY_BORDER    = "#BFCAFF"
 
 # Shared button solid color (brand blue). Used on every
 # primary action button: Start/Stop, Add Task, Save/Save Entry.
@@ -116,6 +121,31 @@ PROJECT_COLORS = [
 from core.branding import MONITRA_MARK_SVG  # noqa: E402,F401
 
 
+# ─── Tooltips ────────────────────────────────────────────────────────────────
+#
+# One definition, used by the application sheet below *and* by any widget
+# whose own sheet carries a bare `QWidget { ... }` rule.
+#
+# A tooltip is styled through the widget it belongs to: Qt resolves it against
+# that widget's ancestors' sheets before the application's, and a nearer sheet
+# always wins a conflict. It is also a QWidget, so an ancestor's bare `QWidget`
+# background rule repaints it -- while the text colour still comes from the
+# application sheet. DashboardWindow's `QWidget { background: CONTENT_BG }`
+# did exactly that: every tooltip in the content area was white text on a
+# near-white box, which is what "Next page" looked like under the task pager.
+# A sheet with such a rule restates the tooltip after it.
+TOOLTIP_QSS = f"""
+QToolTip {{
+    background-color: {TEXT_PRIMARY};
+    color: white;
+    border: none;
+    padding: 5px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+}}
+"""
+
+
 # ─── Global Application QSS ──────────────────────────────────────────────────
 
 APP_QSS = f"""
@@ -159,14 +189,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
 }}
 
 /* ── QToolTip ── */
-QToolTip {{
-    background-color: {TEXT_PRIMARY};
-    color: white;
-    border: none;
-    padding: 5px 8px;
-    border-radius: 6px;
-    font-size: 12px;
-}}
+{TOOLTIP_QSS}
 """
 
 SIDEBAR_QSS = f"""
