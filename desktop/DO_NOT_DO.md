@@ -754,6 +754,26 @@ both, or a single event notifies the user twice.
 Network flapping produced a burst of toasts. Notifications are de-duplicated by
 key within 20 seconds and capped at 6 per minute.
 
+### ❌ Do not overwrite a notification that is still on screen
+
+```python
+popup = self._ensure_popup()            # the one card
+popup.present(title, message, level)    # replaces whatever it was showing
+```
+
+**What it caused:** "Logged in successfully" was up and unclosed when
+"Pending activity synced successfully." arrived. The card did not move, flash
+or reappear — its words changed. Anyone not reading it at that instant had no
+way to know a second notification had come, and the first was gone before
+they had read it. The single card was deliberate (a burst could not stack
+windows), and it traded one failure for a quieter one.
+
+**Instead:** one card per notification, stacked above those still up, each
+with its own thirty seconds and its own ×. The stack is capped, the oldest
+makes room, and an identical repeat restarts its time rather than adding a
+twin. Still one dismissal timer — armed for whichever card goes next, never
+one per card.
+
 ### ❌ Do not start every recurring reminder from the same instant
 
 ```python

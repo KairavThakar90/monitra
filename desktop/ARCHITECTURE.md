@@ -729,9 +729,17 @@ tabs now show honest empty states.
   a long toast). `DISPLAY_MS` is thirty seconds, for every notification, and
   the in-app card is what makes that a real thirty seconds. The platform toast
   is the fallback for a machine the card cannot be placed on — never both at
-  once, or one event notifies twice. The card owns no timer, is reused for
-  every notification so a burst cannot stack windows, and never takes focus
-  (`WA_ShowWithoutActivating`).
+  once, or one event notifies twice. A card owns no timer and never takes
+  focus (`WA_ShowWithoutActivating`).
+- **Each notification gets its own card.** One that arrives while another is
+  still up is stacked above it, for its own thirty seconds, and closing one
+  (its ×) leaves the others. There used to be a single card whose text was
+  replaced: a second notification was then a change of words on a card the
+  user had stopped looking at, and nothing said anything new had come. The
+  stack is capped (`MAX_CARDS`, and never taller than the screen) with the
+  oldest making room, and the very same notification repeated while it is up
+  restarts its time instead of adding a twin. There is still exactly one
+  dismissal timer: it is armed for whichever card goes next.
 - **De-duplication** by key within a 20-second window, and a ceiling of 6
   notifications per minute, so network flapping produces one message rather than
   a burst.

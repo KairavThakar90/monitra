@@ -347,13 +347,212 @@ def test_retiring_hides_the_card(popup_service):
     assert not popup_service._popup.isVisible()
 
 
-def test_one_card_is_reused_so_a_burst_cannot_stack_windows(popup_service):
+# ── A stack of cards ──────────────────────────────────────────────────────────
+#
+# There used to be one card, reused for every notification, and a test here
+# pinned that a second notification replaced the first one's text. The owner
+# reported what that meant in use (2026-09-30): with "Logged in successfully"
+# still up and unclosed, "Pending activity synced successfully." arrived as a
+# change of words on a card already there -- nothing on screen said a new
+# notification had come. Each notification now gets its own card, above the
+# ones still up.
+
+def _card_rect(card):
+    """The visible card's rectangle on screen, without its shadow margin."""
+    frame, margins = card.geometry(), card.layout().contentsMargins()
+    return frame.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
+
+
+def _messages(service):
+    """What is on screen, bottom card first."""
+    return [shown.card._message.text() for shown in service._cards]
+
+
+def test_a_second_notification_gets_a_card_of_its_own(popup_service):
+    """The reported defect: the first card's text must not be overwritten."""
+    popup_service.notify("Logged in successfully", key="login")
+    first = popup_service._popup
+    popup_service.notify("Pending activity synced successfully.", key="sync")
+    second = popup_service._popup
+
+    assert second is not first
+    assert first.isVisible() and second.isVisible()
+    assert first._message.text() == "Logged in successfully"
+    assert second._message.text() == "Pending activity synced successfully."
+
+
+def test_the_new_card_sits_above_the_one_already_up(popup_service):
+    popup_service.notify("Logged in successfully", key="login")
+    first = popup_service._popup
+    corner = _card_rect(first)
+    popup_service.notify("Pending activity synced successfully.", key="sync")
+    second = popup_service._popup
+
+    # The earlier card has not moved, and the new one is directly above it.
+    assert _card_rect(first) == corner
+    above = _card_rect(second)
+    assert above.bottom() + 1 == corner.top() - NotificationService.CARD_GAP
+    assert above.left() == corner.left() and above.right() == corner.right()
+
+
+def test_three_notifications_make_three_cards_in_arrival_order(popup_service):
+    for index, text in enumerate(("First", "Second", "Third")):
+        popup_service.notify(text, key=f"key-{index}")
+
+    assert _messages(popup_service) == ["First", "Second", "Third"]
+    tops = [_card_rect(shown.card).top() for shown in popup_service._cards]
+    assert tops == sorted(tops, reverse=True), "each card is above the one before it"
+    rects = [_card_rect(shown.card) for shown in popup_service._cards]
+    assert not any(a.intersects(b) for a in rects for b in rects if a is not b)
+
+
+def test_closing_one_card_leaves_the_others_and_closes_the_gap(popup_service):
+    for index, text in enumerate(("First", "Second", "Third")):
+        popup_service.notify(text, key=f"key-{index}")
+    first, second, third = (shown.card for shown in popup_service._cards)
+    corner = _card_rect(first)
+
+    second.dismissed.emit()                  # the × on the middle card
+
+    assert _messages(popup_service) == ["First", "Third"]
+    assert not second.isVisible()
+    assert first.isVisible() and third.isVisible()
+    assert _card_rect(first) == corner
+    assert _card_rect(third).bottom() + 1 == corner.top() - NotificationService.CARD_GAP
+
+
+def test_closing_the_bottom_card_slides_the_rest_down_to_the_corner(popup_service):
     popup_service.notify("First", key="one")
     first = popup_service._popup
+    corner = _card_rect(first)
+    popup_service.notify("Second", key="two")
+    second = popup_service._popup
+
+    first.dismissed.emit()
+
+    assert _messages(popup_service) == ["Second"]
+    assert _card_rect(second).bottom() == corner.bottom()
+
+
+def test_each_card_has_its_own_thirty_seconds(popup_service):
+    """A later card does not extend an earlier one, and is not cut short by
+    it: each goes thirty seconds after it appeared."""
+    now = [100.0]
+    popup_service._clock = lambda: now[0]
+
+    popup_service.notify("First", key="one")
+    now[0] = 112.0
+    popup_service.notify("Second", key="two")
+
+    first, second = popup_service._cards
+    assert first.deadline == 130.0
+    assert second.deadline == 142.0
+    # One timer, armed for whichever goes next.
+    assert popup_service._dismiss_timer.interval() == 18_000
+
+    now[0] = 130.0
+    popup_service._dismiss_timer.timeout.emit()
+    assert _messages(popup_service) == ["Second"]
+    assert popup_service._dismiss_timer.isActive()
+    assert popup_service._dismiss_timer.interval() == 12_000
+
+    now[0] = 142.0
+    popup_service._dismiss_timer.timeout.emit()
+    assert _messages(popup_service) == []
+    assert not popup_service._dismiss_timer.isActive()
+
+
+def test_there_is_still_exactly_one_timer_however_many_cards(popup_service):
+    """DO_NOT_DO: a widget owning a dismissal timer can orphan it."""
+    for index in range(3):
+        popup_service.notify(f"message {index}", key=f"key-{index}")
+
+    assert len(popup_service._cards) == 3
+    for shown in popup_service._cards:
+        assert shown.card.findChildren(QTimer) == []
+    assert popup_service.findChildren(QTimer) == [popup_service._dismiss_timer]
+
+
+def test_the_stack_is_capped_and_the_oldest_makes_room(popup_service):
+    for index in range(NotificationService.MAX_CARDS + 2):
+        popup_service.notify(f"message {index}", key=f"key-{index}")
+
+    assert len(popup_service._cards) == NotificationService.MAX_CARDS
+    newest = NotificationService.MAX_CARDS + 1
+    assert _messages(popup_service)[-1] == f"message {newest}"
+    assert "message 0" not in _messages(popup_service)
+    assert "message 1" not in _messages(popup_service)
+
+
+def test_no_card_is_ever_placed_off_the_screen(popup_service, qapp):
+    long_text = "A long notification that wraps onto several lines. " * 14
+    for index in range(NotificationService.MAX_CARDS):
+        popup_service.notify(long_text + str(index), key=f"key-{index}")
+
+    area = qapp.primaryScreen().availableGeometry()
+    for shown in popup_service._cards:
+        assert area.contains(_card_rect(shown.card)), "a card is off the working area"
+    assert _messages(popup_service)[-1].endswith(str(NotificationService.MAX_CARDS - 1))
+
+
+def test_the_same_notification_again_does_not_add_a_second_card(popup_service):
+    """Nothing new to say, so no second card saying it -- its time restarts."""
+    now = [100.0]
+    popup_service._clock = lambda: now[0]
+    popup_service.DEDUPE_SECONDS = 0.0       # let the repeat through admission
+    popup_service.notify("Refreshed", key="refresh")
+
+    now[0] = 110.0
+    popup_service.notify("Refreshed", key="refresh")
+
+    assert _messages(popup_service) == ["Refreshed"]
+    assert popup_service._cards[0].deadline == 140.0
+
+
+def test_a_click_opens_the_link_of_the_card_that_was_clicked(popup_service, monkeypatch):
+    opened = []
+    monkeypatch.setattr(
+        "background_services.notifications.notification_service.QDesktopServices.openUrl",
+        lambda url: opened.append(url.toString()),
+    )
+    popup_service.notify("Update available", key="update", link="https://example.invalid/update")
+    lower = popup_service._popup
+    popup_service.notify("Download ready", key="download", link="https://example.invalid/download")
+
+    lower.clicked.emit()
+
+    assert opened == ["https://example.invalid/update"]
+    assert _messages(popup_service) == ["Download ready"]
+
+
+def test_a_press_on_the_shadow_margin_is_not_a_click_on_the_card(popup_service, qapp):
+    """The window is larger than the card, and in a stack that margin lies
+    over the neighbouring card."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+
+    popup_service.notify("Timer started", key="timer-started")
+    card = popup_service._popup
+    clicks = []
+    card.clicked.connect(lambda: clicks.append(1))
+
+    QTest.mouseClick(card, Qt.MouseButton.LeftButton, pos=QPoint(card.width() // 2, 4))
+    assert clicks == [] and card.isVisible()
+
+    QTest.mouseClick(card, Qt.MouseButton.LeftButton, pos=card._card.geometry().center())
+    assert clicks == [1]
+
+
+def test_a_retired_card_is_used_again_rather_than_building_a_window(popup_service):
+    popup_service.notify("First", key="one")
+    first = popup_service._popup
+    first.dismissed.emit()
+
     popup_service.notify("Second", key="two")
 
     assert popup_service._popup is first
     assert first._message.text() == "Second"
+    assert _messages(popup_service) == ["Second"]
 
 
 def test_the_card_never_steals_focus(popup_service):
