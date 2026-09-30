@@ -59,7 +59,7 @@ export const DOWNLOAD_TARGETS: Record<DownloadKey, { platform: string; arch?: st
  * download page prints beside each button, so it must be the version of the
  * file the button actually hands over, and nothing else.
  */
-export const DOWNLOAD_VERSION = '1.3.0';
+export const DOWNLOAD_VERSION = '1.3.1';
 
 /**
  * The folder the installers are served from, at the root of this website.

@@ -59,9 +59,9 @@ describe('downloadUrlFor', () => {
   });
 
   it('serves each platform the build it asks for', () => {
-    expect(downloadUrlFor('windows')).toBe('/download_app_files/Monitra-Setup-1.3.0.exe');
-    expect(downloadUrlFor('macos-arm64')).toBe('/download_app_files/Monitra-macOS-arm64-1.3.0.dmg');
-    expect(downloadUrlFor('macos-x86_64')).toBe('/download_app_files/Monitra-macOS-x86_64-1.3.0.dmg');
+    expect(downloadUrlFor('windows')).toBe('/download_app_files/Monitra-Setup-1.3.1.exe');
+    expect(downloadUrlFor('macos-arm64')).toBe('/download_app_files/Monitra-macOS-arm64-1.3.1.dmg');
+    expect(downloadUrlFor('macos-x86_64')).toBe('/download_app_files/Monitra-macOS-x86_64-1.3.1.dmg');
   });
 
   it('answers without the release service having been called', () => {
