@@ -25,7 +25,8 @@ const WindowCard: React.FC<{
   subjectName: string;
   onOpen: (shot: ScreenshotView) => void;
   viewUrl: (id: number) => string;
-}> = ({ window: captureWindow, subjectName, onOpen, viewUrl }) => {
+  onMessage?: (shot: ScreenshotView) => void;
+}> = ({ window: captureWindow, subjectName, onOpen, viewUrl, onMessage }) => {
   const cover = captureWindow.screenshots[0];
   const measured = captureWindow.activity_measured_seconds;
   const tracked = captureWindow.tracked_seconds ?? 0;
@@ -52,7 +53,29 @@ const WindowCard: React.FC<{
           </p>
         </div>
       )}
-      <div className="relative">
+      <div className="group relative">
+        {cover && onMessage && (
+          // Only where the page asks for it (Admin, HR and Leader looking at
+          // somebody else's captures). Hidden until the picture is hovered or
+          // the button is focused, so the tiles stay clean and the control is
+          // still reachable from the keyboard.
+          <button
+            type="button"
+            onClick={() => onMessage(cover)}
+            aria-label={`Message about the screenshot captured at ${formatISTTime12(cover.captured_at)}`}
+            title="Message"
+            className="absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-white/95 text-[#2563EB] opacity-0 shadow-md transition hover:bg-white focus-visible:opacity-100 group-hover:opacity-100"
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2"
+                d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+              />
+            </svg>
+          </button>
+        )}
         {cover ? (
           <button
             type="button"
@@ -132,7 +155,9 @@ export const HourRow: React.FC<{
    * Screenshots page passes its own project-scoped view route instead, since
    * a client cannot call the staff one. */
   viewUrl?: (id: number) => string;
-}> = ({ block, subjectName, onOpen, viewUrl = (id) => ENDPOINTS.TIME_ENTRY_SCREENSHOTS.VIEW(id) }) => (
+  /** When given, each tile shows a message button on hover. */
+  onMessage?: (shot: ScreenshotView) => void;
+}> = ({ block, subjectName, onOpen, onMessage, viewUrl = (id) => ENDPOINTS.TIME_ENTRY_SCREENSHOTS.VIEW(id) }) => (
   <div className="relative pl-8">
     <div className="absolute left-0 top-1.5 z-10 h-3 w-3 rounded-full border-2 border-[#CBD5E1] bg-white" />
     <div className="absolute bottom-[-32px] left-[5px] top-4 w-px bg-[#E2E8F0]" />
@@ -158,6 +183,7 @@ export const HourRow: React.FC<{
           subjectName={subjectName}
           onOpen={onOpen}
           viewUrl={viewUrl}
+          onMessage={onMessage}
         />
       ))}
     </div>

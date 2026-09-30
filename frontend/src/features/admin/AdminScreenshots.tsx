@@ -12,12 +12,13 @@ import {
   useDeleteScreenshotMutation,
   useGetScreenshotDayQuery,
 } from '../../store/api/screenshotsApi';
-import type { ScreenshotDay, ScreenshotMemberDays } from '../../store/api/screenshotsApi';
+import type { ScreenshotDay, ScreenshotMemberDays, ScreenshotView } from '../../store/api/screenshotsApi';
 import { MemberMultiSelect, ProjectMultiSelect } from '../dashboard/v2/filters';
 import { DayFilter, istTodayIso } from '../screenshots/DayFilter';
 import { groupWindowsByHour } from '../screenshots/hours';
 import { HourRow } from '../screenshots/HourRow';
 import { ScreenshotLightbox } from '../screenshots/ScreenshotLightbox';
+import { ScreenshotMessageDrawer } from '../screenshots/ScreenshotMessageDrawer';
 import type { LightboxItem } from '../screenshots/ScreenshotLightbox';
 import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
 import { useFeedback } from '../../components/FeedbackProvider';
@@ -178,7 +179,8 @@ const DaySection: React.FC<{
   day: ScreenshotDay;
   subject: Subject;
   onOpen: (items: LightboxItem[], index: number) => void;
-}> = ({ day, subject, onOpen }) => {
+  onMessage?: (subjectName: string, shot: ScreenshotView) => void;
+}> = ({ day, subject, onOpen, onMessage }) => {
   const items = useMemo(() => itemsOfDay(day, subject.name), [day, subject.name]);
   const hours = useMemo(() => groupWindowsByHour(day.windows), [day.windows]);
 
@@ -199,6 +201,7 @@ const DaySection: React.FC<{
           key={block.key}
           block={block}
           subjectName={subject.name}
+          onMessage={onMessage ? (shot) => onMessage(subject.name, shot) : undefined}
           onOpen={(shot) =>
             onOpen(
               items,
@@ -226,7 +229,8 @@ const MemberAccordion: React.FC<{
   member: ScreenshotMemberDays;
   defaultOpen: boolean;
   onOpen: (items: LightboxItem[], index: number) => void;
-}> = ({ member, defaultOpen, onOpen }) => {
+  onMessage?: (subjectName: string, shot: ScreenshotView) => void;
+}> = ({ member, defaultOpen, onOpen, onMessage }) => {
   const [open, setOpen] = useState(defaultOpen);
   const subject: Subject = { id: member.user_id, name: member.user_name };
   const color = AVATAR_COLORS[member.user_id % AVATAR_COLORS.length];
@@ -278,7 +282,7 @@ const MemberAccordion: React.FC<{
       {open && (
         <div className="space-y-10 border-t border-[#F1F5F9] px-5 py-6">
           {member.days.map((day) => (
-            <DaySection key={day.date} day={day} subject={subject} onOpen={onOpen} />
+            <DaySection key={day.date} day={day} subject={subject} onOpen={onOpen} onMessage={onMessage} />
           ))}
         </div>
       )}
@@ -310,6 +314,8 @@ export const AdminScreenshots: React.FC = () => {
   /** Empty means every project — same convention. */
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
   const [viewer, setViewer] = useState<{ items: LightboxItem[]; index: number } | null>(null);
+  /** The screenshot whose (not yet built) message panel is open. */
+  const [messageFor, setMessageFor] = useState<{ subjectName: string; shot: ScreenshotView } | null>(null);
 
   /**
    * `getAllMembers` rather than `getMembers`: the directory endpoint caps
@@ -487,11 +493,23 @@ export const AdminScreenshots: React.FC = () => {
                 // has nothing to scan, so it opens straight onto the captures.
                 defaultOpen={shown.length === 1}
                 onOpen={(items, index) => setViewer({ items, index })}
+                // Admin, HR and Leader reviewing other people's captures --
+                // the Employees view. The Own view has nobody to message.
+                onMessage={
+                  showingOwn ? undefined : (subjectName, shot) => setMessageFor({ subjectName, shot })
+                }
               />
             ))}
           </div>
         )}
       </div>
+
+      <ScreenshotMessageDrawer
+        open={messageFor !== null}
+        onClose={() => setMessageFor(null)}
+        subjectName={messageFor?.subjectName}
+        capturedAt={messageFor?.shot.captured_at}
+      />
 
       {viewer && (
         <ScreenshotLightbox
