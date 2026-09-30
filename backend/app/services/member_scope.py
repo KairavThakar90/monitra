@@ -26,6 +26,8 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.client import Client
+from app.models.client_project import ClientProject
 from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.user import User
@@ -78,4 +80,48 @@ def visible_member_ids(db: Optional[Session], user: User) -> Optional[set[int]]:
 def may_view_member(db: Optional[Session], user: User, member_id: int) -> bool:
     """Whether ``user`` may read the person with id ``member_id``."""
     allowed = visible_member_ids(db, user)
+    return allowed is None or member_id in allowed
+
+
+def visible_directory_ids(db: Optional[Session], user: User) -> Optional[set[int]]:
+    """Who appears in this caller's *member directory*, or ``None`` for everyone.
+
+    The directory is wider than the team for one reason: a leader also sees
+    their **clients** -- the client accounts an administrator shared one of
+    the leader's own projects with. The link is the administrator's act
+    (``client_projects``, written from the Clients screen) joined to the
+    project's ``leader_id``; a leader cannot add a client to their directory,
+    and a client shared only on somebody else's project is not in it.
+
+    This is deliberately a separate set from ``visible_member_ids``. That one
+    answers "whose recorded work may I read" -- dashboard, reports, time,
+    screenshots, logs -- and a client has no recorded work and is not part of
+    the team. Widening it would put clients in every one of those surfaces;
+    this widens the roster and nothing else.
+    """
+    allowed = visible_member_ids(db, user)
+    if allowed is None or db is None:
+        return allowed
+
+    led_projects = select(Project.id).where(
+        Project.leader_id == user.id,
+        Project.organization_id == user.organization_id,
+    )
+    client_user_ids = db.scalars(
+        select(Client.user_id)
+        .join(ClientProject, ClientProject.client_id == Client.id)
+        .where(
+            ClientProject.project_id.in_(led_projects),
+            Client.organization_id == user.organization_id,
+            # An invitation whose account was never created has no row in the
+            # directory to show.
+            Client.user_id.is_not(None),
+        )
+    ).all()
+    return allowed | {user_id for user_id in client_user_ids if user_id is not None}
+
+
+def may_view_in_directory(db: Optional[Session], user: User, member_id: int) -> bool:
+    """Whether ``member_id`` is in ``user``'s member directory."""
+    allowed = visible_directory_ids(db, user)
     return allowed is None or member_id in allowed

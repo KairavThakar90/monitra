@@ -28,6 +28,7 @@ import type { ActivityLogEntry, ActivityLogMemberGroup } from '../../../store/ap
 import {
   actionLabel,
   contextLabel,
+  entryActionLabel,
   filterMembers,
   groupEntriesByDay,
   istDayOf,
@@ -127,6 +128,13 @@ describe('activity log wording', () => {
     expect(sourceLabel({ source: 'desktop', client_version: null })).toBe('Desktop');
     expect(sourceLabel({ source: 'web', client_version: null })).toBe('Web');
     expect(sourceLabel({ source: null, client_version: null })).toBeNull();
+  });
+
+  it('says when a sign-in or sign-out was made from the desktop application', () => {
+    expect(entryActionLabel({ action: 'login', source: 'desktop' })).toBe('Signed in to the desktop app');
+    expect(entryActionLabel({ action: 'logout', source: 'desktop' })).toBe('Signed out of the desktop app');
+    expect(entryActionLabel({ action: 'login', source: 'web' })).toBe('Signed in');
+    expect(entryActionLabel({ action: 'timer_started', source: 'desktop' })).toBe('Started timer');
   });
 
   it('joins the project and task an action concerned', () => {

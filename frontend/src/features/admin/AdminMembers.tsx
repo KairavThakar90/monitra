@@ -9,6 +9,8 @@ import {
 } from '../../store/api/membersApi';
 import type { Member } from '../../store/api/membersApi';
 import { useGetProjectMetadataQuery } from '../../store/api/projectsApi';
+import { isTeamScoped } from '../../utils/roles';
+import { MemberLogModal } from './MemberLogModal';
 import { useFeedback } from '../../components/FeedbackProvider';
 import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
@@ -29,6 +31,9 @@ const ROLE_TONES: Record<string, string> = {
   hr: 'text-amber-600',
   leader: 'text-blue-600',
   employee: 'text-slate-600',
+  // Not a staff role: an external client account, listed beside the team of
+  // the projects it was given access to.
+  client: 'text-teal-600',
 };
 
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
@@ -570,6 +575,7 @@ const MemberProfileView: React.FC<{ member: Member }> = ({ member }) => {
 export const AdminMembers: React.FC = () => {
   const { showToast, confirmAction } = useFeedback();
   const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null);
+  const [logMember, setLogMember] = useState<{ id: number; name: string } | null>(null);
 
   const [search, setSearch] = useState('');
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -827,7 +833,12 @@ export const AdminMembers: React.FC = () => {
       title="Members Directory"
       subtitle={canManageMembers
         ? "Manage employees, their roles, and company details."
-        : "View employees, their roles, and company details."}
+        : isTeamScoped(currentUser)
+          // What `GET /members` answers a leader with: the people on the
+          // projects they lead, and the clients an administrator shared those
+          // projects with.
+          ? "View your team and the clients of the projects you lead."
+          : "View employees, their roles, and company details."}
       actions={
         canManageMembers ? (
           <div className="flex items-center gap-3">
@@ -983,6 +994,12 @@ export const AdminMembers: React.FC = () => {
                         <td className="px-6 py-4 text-right">
                           <div className="flex items-center justify-end gap-2">
                             <button
+                              onClick={() => setLogMember({ id: member.id, name: member.name || 'Member' })}
+                              className="rounded px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-indigo-600 border border-indigo-200 transition hover:bg-indigo-50"
+                            >
+                              View Log
+                            </button>
+                            <button
                               onClick={() => openEditDrawer(member)}
                               className="rounded px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-[#14B8A6] border border-[#14B8A6]/30 transition hover:bg-[#14B8A6]/10"
                             >
@@ -1017,6 +1034,9 @@ export const AdminMembers: React.FC = () => {
       </div>
 
       {/* Right Slide-over Drawer for Create / Edit */}
+      {logMember && (
+        <MemberLogModal memberId={logMember.id} memberName={logMember.name} onClose={() => setLogMember(null)} />
+      )}
       <div className={`fixed inset-0 z-50 overflow-hidden ${isDrawerOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}>
         <div 
           className={`absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity duration-300 ${isDrawerOpen ? 'opacity-100' : 'opacity-0'}`} 

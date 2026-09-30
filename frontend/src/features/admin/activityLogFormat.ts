@@ -73,6 +73,18 @@ const ACTION_LABELS: Record<string, string> = {
  */
 export const actionLabel = (action: string) => ACTION_LABELS[action] ?? humanize(action);
 
+/**
+ * The label for one row. A sign-in or sign-out made from the desktop application
+ * says so -- "Signed in to the desktop app" -- because which client a person
+ * signed in from is what the log is read for; every other action keeps its
+ * plain label and shows its client beside it.
+ */
+export const entryActionLabel = (entry: Pick<ActivityLogEntry, 'action' | 'source'>) => {
+  if (entry.source === 'desktop' && entry.action === 'login') return 'Signed in to the desktop app';
+  if (entry.source === 'desktop' && entry.action === 'logout') return 'Signed out of the desktop app';
+  return actionLabel(entry.action);
+};
+
 /** "Desktop 1.3.0", "Web", "API" -- or null when no client was recorded. */
 export const sourceLabel = (entry: Pick<ActivityLogEntry, 'source' | 'client_version'>): string | null => {
   if (!entry.source) return null;
@@ -151,7 +163,7 @@ export const logsToCsvRows = (members: ActivityLogMemberGroup[]): (string | numb
       formatISTDate(entry.created_at),
       formatISTTime12(entry.created_at),
       moduleLabel(entry.module),
-      actionLabel(entry.action),
+      entryActionLabel(entry),
       entry.description ?? '',
       entry.project_name ?? '',
       entry.task_name ?? '',

@@ -29,19 +29,25 @@ export const canViewAllFeedback = (user: UserRead | null) =>
   FEEDBACK_VIEW_ALL_ROLES.has((user?.role_name || "").trim().toLowerCase());
 
 /**
- * Who may look at *other people's* screenshots.
+ * Who may look at *other people's* screenshots, and how far.
  *
- * Screenshots are the most invasive thing this product records, so the audience
- * for someone else's is deliberately narrower than for their time: Admin and HR
- * only. A leader holds `view_employees` and `time_entries:view_all` — enough for
- * the roster, the dashboard and their team's timesheets — but not this. A leader
- * and an employee both see exactly one person's captures: their own.
+ * Three audiences, and the difference between them is reach, not the screen:
  *
- * This is a *role* list rather than a permission because the backend has no
- * separate screenshot permission to mirror: `TimeEntryScreenshotService`
- * authorises reads through the general member scope, which would let a leader
- * through. The gate therefore lives here, and a leader's own screenshots come
- * from the endpoint's caller-pinned default rather than from a `user_id`.
+ * - **Admin and HR** see every member's captures.
+ * - **A leader** sees their own team's: the people on the projects they lead.
+ *   The backend decides who that is — `TimeEntryScreenshotService` reads
+ *   through `visible_member_ids`, the same set that scopes a leader's
+ *   dashboard, timesheets and logs — so this page sends no list of people and
+ *   a leader cannot ask for someone off their team (403).
+ * - **Everyone else** sees exactly one person's captures: their own.
+ *
+ * These are *role* lists rather than a permission because the backend has no
+ * separate screenshot-read permission to mirror; the roles here are the ones
+ * whose server-side scope reaches past themselves. A stale copy can only hide
+ * the employees view, never widen what the endpoint returns.
+ *
+ * Seeing is not deleting. A leader sees their team's captures and may not
+ * destroy one — see `canDeleteScreenshots`.
  */
 const SCREENSHOT_VIEW_ALL_ROLES = new Set([
   "administrator",
@@ -50,14 +56,25 @@ const SCREENSHOT_VIEW_ALL_ROLES = new Set([
   "hr",
 ]);
 
-/** True for Admin and HR — the only roles shown every member's screenshots. */
+/** Mirrors `TEAM_SCOPED_ROLES` in `backend/app/services/member_scope.py`. */
+const SCREENSHOT_VIEW_TEAM_ROLES = new Set(["leader", "project_leader"]);
+
+/** True for Admin and HR — the roles shown every member's screenshots. */
 export const canViewAllScreenshots = (user: UserRead | null) =>
   SCREENSHOT_VIEW_ALL_ROLES.has((user?.role_name || "").trim().toLowerCase());
+
+/** True for a leader — shown their own team's screenshots and nobody else's. */
+export const canViewTeamScreenshots = (user: UserRead | null) =>
+  SCREENSHOT_VIEW_TEAM_ROLES.has((user?.role_name || "").trim().toLowerCase());
+
+/** True for anyone shown screenshots other than their own: Admin, HR, Leader. */
+export const canViewOthersScreenshots = (user: UserRead | null) =>
+  canViewAllScreenshots(user) || canViewTeamScreenshots(user);
 
 /**
  * Who may destroy a screenshot.
  *
- * Unlike `canViewAllScreenshots`, this one has a real backend permission to
+ * Unlike the read helpers above, this one has a real backend permission to
  * mirror: `DELETE /time-entry-screenshots/{id}` is gated on `screenshots:delete`,
  * which `app/core/permissions.py` grants to `administrator`, `org_admin`, `super_admin`
  * and `hr` and to nobody else — deliberately not to a leader or a manager, who

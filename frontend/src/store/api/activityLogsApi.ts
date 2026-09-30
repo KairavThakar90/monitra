@@ -76,14 +76,17 @@ export interface ActivityLogListArgs {
   end: string;
   module?: string | null;
   search?: string;
+  /** Only this member's actions. */
+  memberId?: number;
 }
 
 export const activityLogsApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
     getActivityLogs: builder.query<ActivityLogListResponse, ActivityLogListArgs>({
-      query: ({ start, end, module, search }) => {
+      query: ({ start, end, module, search, memberId }) => {
         const params = new URLSearchParams({ start, end });
         if (module) params.set('module', module);
+        if (memberId) params.set('member_id', String(memberId));
         if (search && search.trim()) params.set('search', search.trim());
         return `${ENDPOINTS.ACTIVITY_LOGS.BASE}?${params.toString()}`;
       },

@@ -10,7 +10,7 @@ from app.models.user import User
 from app.repositories.member import MemberRepository
 from app.schemas.member import MemberCreate, MemberUpdate
 from app.services.activity_log import ActivityLogService
-from app.services.member_scope import may_view_member, visible_member_ids
+from app.services.member_scope import may_view_in_directory, may_view_member, visible_directory_ids
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +49,13 @@ class MemberService:
 
     @staticmethod
     def list(db: Session, current_user: User, search, role, member_status, page, limit):
-        # A leader's directory is their own team, not the organization; every
-        # other role with `view_employees` gets None here and is unrestricted.
+        # A leader's directory is their own team plus the clients an
+        # administrator shared their projects with -- not the organization;
+        # every other role with `view_employees` gets None here and is
+        # unrestricted.
         items, total = MemberRepository.list_by_organization(
             db, current_user.organization_id, search, role, member_status, page, limit,
-            visible_member_ids(db, current_user),
+            visible_directory_ids(db, current_user),
         )
         return {"items": items, "page": page, "limit": limit, "total": total, "pages": math.ceil(total / limit) if total else 0}
 
@@ -65,7 +67,22 @@ class MemberService:
         # Someone outside the caller's scope is reported as missing rather than
         # forbidden: a 403 would confirm the person exists, and the list this
         # id could have come from never showed them in the first place.
-        if not may_view_member(db, current_user, member.id):
+        if not may_view_in_directory(db, current_user, member.id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Member not found.")
+        return member
+
+    @staticmethod
+    def get_team_member(db: Session, current_user: User, member_id: int):
+        """A member whose *recorded work* the caller may read.
+
+        Narrower than `get` for a leader: the directory also lists the clients
+        of the projects they lead, but a client is not on the team and has no
+        tracked day to open. Surfaces that read someone's time, idle periods
+        or screenshots go through here, so widening the roster can never widen
+        them. Missing rather than forbidden, for the same reason as `get`.
+        """
+        member = MemberRepository.get_by_id_and_organization(db, member_id, current_user.organization_id)
+        if not member or not may_view_member(db, current_user, member.id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Member not found.")
         return member
 

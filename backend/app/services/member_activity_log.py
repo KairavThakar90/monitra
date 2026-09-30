@@ -152,7 +152,9 @@ class MemberActivityLogService:
     def build(db: Session, current_user: User, member_id: int, day: Optional[date]) -> dict:
         # Scope first: someone outside the caller's organisation or team is
         # reported as missing, the same way every other member read does it.
-        member = MemberService.get(db, current_user, member_id)
+        # The *team* lookup, not the directory one: this is a person's
+        # recorded day, and a leader's directory also lists clients.
+        member = MemberService.get_team_member(db, current_user, member_id)
         organization_id = member.organization_id
 
         selected_day = day or ist_today()

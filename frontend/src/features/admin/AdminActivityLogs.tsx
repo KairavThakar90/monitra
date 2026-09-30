@@ -21,7 +21,7 @@ import { validateSearchTerm } from "../../validation";
 import {
   LOG_CSV_HEADERS,
   MODULE_STYLES,
-  actionLabel,
+  entryActionLabel,
   contextLabel,
   countEntries,
   filterMembers,
@@ -161,8 +161,8 @@ const LogRow: React.FC<{ entry: ActivityLogEntry }> = ({ entry }) => {
         >
           {style.label}
         </span>
-        <span className="truncate text-[12px] font-bold text-[#0F172A]" title={actionLabel(entry.action)}>
-          {actionLabel(entry.action)}
+        <span className="truncate text-[12px] font-bold text-[#0F172A]" title={entryActionLabel(entry)}>
+          {entryActionLabel(entry)}
         </span>
       </span>
 
@@ -281,9 +281,6 @@ const MemberAccordion: React.FC<{
   );
 };
 
-const actionButton =
-  "rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-[12px] font-bold text-[#334155] transition hover:border-[#CBD5E1] hover:bg-[#F8FAFC] disabled:cursor-not-allowed disabled:opacity-50";
-
 export const AdminActivityLogs: React.FC = () => {
   const { currentUser } = useAuth();
   const teamScoped = isTeamScoped(currentUser);
@@ -308,7 +305,7 @@ export const AdminActivityLogs: React.FC = () => {
   const checkedSearch = validateSearchTerm(debouncedSearch, { fieldLabel: "Search" });
   const searchTerm = checkedSearch.ok ? checkedSearch.value : "";
 
-  const { data, isLoading, isFetching, isError, refetch } = useGetActivityLogsQuery(
+  const { data, isLoading, isFetching, isError } = useGetActivityLogsQuery(
     { start: range.from, end: range.to, module, search: searchTerm },
     // A trail is only useful if it is current: cached rows paint at once and
     // are always re-read behind, rather than trusted for the default minute.
@@ -375,10 +372,15 @@ export const AdminActivityLogs: React.FC = () => {
       actions={
         <>
           <InlineRefreshIndicator active={isFetching && !isLoading} />
-          <button type="button" onClick={() => refetch()} disabled={isFetching} className={actionButton}>
-            Refresh
-          </button>
-          <button type="button" onClick={exportCsv} disabled={shownActions === 0} className={actionButton}>
+          <button
+            type="button"
+            onClick={exportCsv}
+            disabled={shownActions === 0}
+            className="flex items-center gap-1.5 rounded-lg bg-[#0F172A] px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-[#1E293B] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+            </svg>
             Export CSV
           </button>
         </>

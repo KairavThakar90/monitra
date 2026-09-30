@@ -1,7 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import { V2Shell } from '../dashboard/v2/V2Shell';
 import { useAuth } from '../auth/authContext';
-import { canDeleteScreenshots, canViewAllScreenshots } from '../auth/roles';
+import {
+  canDeleteScreenshots,
+  canViewOthersScreenshots,
+  canViewTeamScreenshots,
+} from '../auth/roles';
 import { useGetAllMembersQuery } from '../../store/api/membersApi';
 import { useGetAllProjectsQuery } from '../../store/api/projectsApi';
 import {
@@ -22,18 +26,25 @@ import { formatHMS, formatISTDate } from '../../utils/duration';
 /**
  * Screenshots, for the people allowed to see someone else's.
  *
- * Two audiences share this screen, and the difference between them is the
- * member picker:
+ * Two views, chosen with the **Employees / Own** switch:
  *
- * - **Admin / HR** (`canViewAllScreenshots`) open on *every* employee — one
- *   request to `/time-entry-screenshots/day` for the selected day — and can
- *   narrow with the member filter. Each employee is an accordion section
- *   headed by their name and the time they worked, so a long roster is a list
- *   you scan rather than a page you scroll.
- * - **A leader** reaches this route too — they hold `view_employees`, which is
- *   what gates the read-only `/admin` screens — but screenshots are not part of
- *   a leader's authority over their team. They get no picker, and the request
- *   pins `user_id` to themselves.
+ * - **Employees** — everyone the caller may see *other than themselves*, from
+ *   one request to `/time-entry-screenshots/day` for the selected day. Who
+ *   that is belongs to the backend: every member for Admin and HR, the people
+ *   on the projects they lead for a leader (`visible_member_ids`). This page
+ *   sends no list of people, so it cannot widen that. Each employee is an
+ *   accordion section headed by their name and the time they worked, so a
+ *   long roster is a list you scan rather than a page you scroll, and the
+ *   member and project pickers narrow what came back.
+ * - **Own** — the caller's own captures, with the request pinned to their
+ *   `user_id`. No pickers: there is one person and nothing to narrow.
+ *
+ * Someone whose scope does not reach past themselves (a manager, say) gets no
+ * switch and only ever the Own view.
+ *
+ * Seeing is not deleting. The lightbox's Delete is offered only to a caller
+ * holding `screenshots:delete` — Admin and HR. A leader reviews their team's
+ * captures and cannot remove one, here or through the endpoint.
  *
  * The day is the unit of this screen: it opens on today, and inside a member's
  * section the captures are grouped into hour rows, each headed by the time
@@ -46,6 +57,52 @@ import { formatHMS, formatISTDate } from '../../utils/duration';
  */
 
 type Subject = { id: number; name: string };
+
+/** Whose captures the page is showing. */
+type ScreenshotScope = 'employees' | 'own';
+
+/**
+ * The Employees / Own switch.
+ *
+ * A view filter over what the caller is already entitled to, not a permission
+ * boundary: Employees is whatever the endpoint returns for them minus their
+ * own row, and Own is their own row.
+ */
+const ScopeSwitch: React.FC<{
+  value: ScreenshotScope;
+  onChange: (value: ScreenshotScope) => void;
+}> = ({ value, onChange }) => {
+  const options: { id: ScreenshotScope; label: string }[] = [
+    { id: 'employees', label: 'Employees' },
+    { id: 'own', label: 'Own' },
+  ];
+  return (
+    <div
+      className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-[#F1F5F9] p-1"
+      role="tablist"
+      aria-label="Whose screenshots"
+    >
+      {options.map((option) => {
+        const active = value === option.id;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(option.id)}
+            className={
+              'rounded-md px-3 py-1.5 text-[12px] font-bold transition ' +
+              (active ? 'bg-white text-[#0F172A] shadow-sm' : 'text-[#64748B] hover:text-[#334155]')
+            }
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+};
 
 /** Stable per-member accent, matching the avatars in the member filter. */
 const AVATAR_COLORS = [
@@ -231,13 +288,19 @@ const MemberAccordion: React.FC<{
 
 export const AdminScreenshots: React.FC = () => {
   const { currentUser } = useAuth();
-  const seesEveryone = canViewAllScreenshots(currentUser);
+  /** Admin, HR and leaders: the callers whose scope reaches past themselves. */
+  const seesOthers = canViewOthersScreenshots(currentUser);
+  /** A leader's "employees" are their own team, which changes only the wording. */
+  const teamOnly = canViewTeamScreenshots(currentUser);
   /**
    * Admin and HR only, read from the permission the backend actually issued.
-   * A leader viewing this page, and an employee viewing their own, get no
-   * delete control — and the endpoint refuses them anyway.
+   * A leader viewing their team's captures, and anyone viewing their own, get
+   * no delete control — and the endpoint refuses them anyway.
    */
   const mayDelete = canDeleteScreenshots(currentUser);
+  /** Opens on the employees, which is what someone reviewing a team came for. */
+  const [scope, setScope] = useState<ScreenshotScope>('employees');
+  const showingOwn = !seesOthers || scope === 'own';
   const { showToast, confirmAction } = useFeedback();
 
   /** Opens on today, which is the day someone monitoring a team is looking at. */
@@ -253,17 +316,23 @@ export const AdminScreenshots: React.FC = () => {
    * `limit` at 100, so asking for more comes back 422 and the picker renders
    * empty. This one pages through and returns the whole roster.
    */
-  const { data: members = [] } = useGetAllMembersQuery(undefined, { skip: !seesEveryone });
-  const { data: projects = [] } = useGetAllProjectsQuery(undefined, { skip: !seesEveryone });
+  const { data: members = [] } = useGetAllMembersQuery(undefined, { skip: !seesOthers });
+  const { data: projects = [] } = useGetAllProjectsQuery(undefined, { skip: !seesOthers });
+  /** The picker offers the people the Employees view can show: not the caller. */
+  const pickableMembers = useMemo(
+    () => members.filter((member) => member.id !== currentUser?.id),
+    [members, currentUser?.id],
+  );
 
   const [deleteScreenshot, { isLoading: isDeleting }] = useDeleteScreenshotMutation();
 
   const { data, isLoading, isFetching, isError } = useGetScreenshotDayQuery({
     from: day,
     to: day,
-    // A leader is pinned to themselves. Their organisation-side scope is their
-    // whole team, so leaving this off would hand them their team's captures.
-    ...(seesEveryone ? {} : { user_id: currentUser?.id }),
+    // Own pins the request to the caller. Employees sends no id at all: the
+    // endpoint answers with everyone in the caller's own scope — the
+    // organization for Admin and HR, their team for a leader.
+    ...(showingOwn ? { user_id: currentUser?.id } : {}),
   });
 
   /**
@@ -273,15 +342,22 @@ export const AdminScreenshots: React.FC = () => {
    */
   const shown = useMemo(() => {
     const all = data?.members ?? [];
+    // Own has no pickers, so nothing chosen in the other view applies to it.
+    if (showingOwn) return all;
+    // The caller's own row belongs to the Own view; a leader is a member of
+    // their own team server-side, so without this they would head their own
+    // employee list.
+    const others = all.filter((member) => member.user_id !== currentUser?.id);
     const byMember =
       selectedMembers.length === 0
-        ? all
+        ? others
         : (() => {
             const wanted = new Set(selectedMembers);
-            return all.filter((member) => wanted.has(String(member.user_id)));
+            return others.filter((member) => wanted.has(String(member.user_id)));
           })();
     return filterByProjects(byMember, selectedProjects);
-  }, [data, selectedMembers, selectedProjects]);
+  }, [data, showingOwn, currentUser?.id, selectedMembers, selectedProjects]);
+  const filtersApplied = !showingOwn && (selectedMembers.length > 0 || selectedProjects.length > 0);
 
   const totalShots = shown.reduce((sum, member) => sum + member.screenshot_count, 0);
 
@@ -330,21 +406,24 @@ export const AdminScreenshots: React.FC = () => {
     <V2Shell
       title="Screenshots"
       subtitle={
-        seesEveryone
-          ? 'Screens captured on employees’ machines while they were tracking time.'
-          : 'Screens captured on your machine while you were tracking time.'
+        showingOwn
+          ? 'Screens captured on your machine while you were tracking time.'
+          : teamOnly
+            ? 'Screens captured on your team’s machines while they were tracking time.'
+            : 'Screens captured on employees’ machines while they were tracking time.'
       }
       actions={<InlineRefreshIndicator active={isFetching && !isLoading} />}
     >
       <div className="w-full space-y-6 pb-20">
         {/* Filters — one day at a time, plus the dashboard's own member picker. */}
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-[#E2E8F0] bg-white p-4 shadow-sm">
+          {seesOthers && <ScopeSwitch value={scope} onChange={setScope} />}
           <DayFilter value={day} onChange={setDay} />
 
-          {seesEveryone ? (
+          {!showingOwn ? (
             <>
               <MemberMultiSelect
-                members={members}
+                members={pickableMembers}
                 selected={selectedMembers}
                 onChange={setSelectedMembers}
               />
@@ -362,7 +441,7 @@ export const AdminScreenshots: React.FC = () => {
 
           <span className="ml-auto text-[12px] font-semibold text-[#64748B]">
             {totalShots} capture{totalShots === 1 ? '' : 's'}
-            {seesEveryone &&
+            {!showingOwn &&
               shown.length > 0 &&
               ` from ${shown.length} employee${shown.length === 1 ? '' : 's'}`}
           </span>
@@ -384,10 +463,13 @@ export const AdminScreenshots: React.FC = () => {
           <div className="rounded-xl border border-[#E2E8F0] bg-white p-6 shadow-sm">
             <div className="py-10 text-center">
               <p className="text-sm font-bold text-[#475569]">
-                {(selectedMembers.length > 0 || selectedProjects.length > 0) &&
-                (data?.members?.length ?? 0) > 0
+                {filtersApplied && (data?.members?.length ?? 0) > 0
                   ? 'No screenshots match the selected filters on this day.'
-                  : 'No screenshots were captured on this day.'}
+                  : showingOwn
+                    ? 'You have no screenshots on this day.'
+                    : teamOnly
+                      ? 'Your team captured no screenshots on this day.'
+                      : 'No screenshots were captured on this day.'}
               </p>
               <p className="mt-1 text-xs font-medium text-[#94A3B8]">
                 Captures appear here once the desktop client records and uploads them for the
@@ -401,8 +483,8 @@ export const AdminScreenshots: React.FC = () => {
               <MemberAccordion
                 key={member.user_id}
                 member={member}
-                // A single employee — a leader, or a filtered-down list — has
-                // nothing to scan, so it opens straight onto the captures.
+                // A single person — the Own view, or a filtered-down list —
+                // has nothing to scan, so it opens straight onto the captures.
                 defaultOpen={shown.length === 1}
                 onOpen={(items, index) => setViewer({ items, index })}
               />
