@@ -666,6 +666,12 @@ def _iso(value) -> Optional[str]:
     return value.isoformat() if hasattr(value, "isoformat") else (str(value) if value else None)
 
 
+def _reason_of(entry) -> Optional[str]:
+    """The request's stored reason, or None when none was given."""
+    reason = getattr(entry, "reason", None)
+    return reason if isinstance(reason, str) and reason else None
+
+
 def _manual_time_payload(db: Session, entry, requester) -> dict[str, Any]:
     """Everything the three emails show about one request, exactly as filed.
 
@@ -697,6 +703,9 @@ def _manual_time_payload(db: Session, entry, requester) -> dict[str, Any]:
         "end_time": _iso(entry.end_time),
         "total_seconds": int(entry.total_seconds or 0),
         "is_billable": bool(entry.is_billable),
+        # The stored value, not its wording: the label is looked up when the
+        # email is rendered, so the payload stays the record of what was filed.
+        "reason": _reason_of(entry),
         "description": entry.description or "",
         "submitted_at": _iso(getattr(entry, "created_at", None) or datetime.now(timezone.utc)),
         "status": str(entry.approval_status or "pending"),

@@ -17,6 +17,11 @@ class ManualTimeEntry(Base):
     total_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_billable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Why the time is being asked for after the fact: one of the values of
+    # `ManualEntryReason` (app/schemas/manual_time_entry.py). Null on every
+    # request filed before the field existed, and on one filed by a client
+    # that does not ask for it -- "not given", never a guessed default.
+    reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
     approval_status: Mapped[str] = mapped_column(String(20), nullable=False, default='pending')
     approved_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)

@@ -31,6 +31,10 @@ re-grant a permission.
 - **A new notification no longer replaces the one already on screen.** It
   appears as its own card above it, so you can see that something new came
   in. Each card closes by itself after 30 seconds, or when you click its ×.
+- **A manual time entry (Request) now asks for a reason.** Choose one of
+  "Forgot to start/stop timer", "Used wrong task/project" or "Other"; your
+  approver sees it with the request. The Billable box is gone: whether the
+  time is billable is taken from the project itself, so it is always right.
 - **You can search inside the project and task drop-downs.** When you add a
   manual time entry (Request) or reassign idle time, open the list and start
   typing to find a project or task by name.

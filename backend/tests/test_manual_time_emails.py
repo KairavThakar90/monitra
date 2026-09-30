@@ -67,6 +67,7 @@ def _entry(**overrides):
     entry.end_time = datetime(2026, 9, 15, 6, 0, tzinfo=timezone.utc)
     entry.total_seconds = 9000
     entry.is_billable = overrides.get("is_billable", True)
+    entry.reason = overrides.get("reason", "forgot_timer")
     entry.description = overrides.get("description", "Client call about the <Q3> rollout\nand follow-up notes")
     entry.approval_status = overrides.get("approval_status", "pending")
     entry.created_at = datetime(2026, 9, 15, 7, 0, tzinfo=timezone.utc)
@@ -222,6 +223,8 @@ class TestContent(unittest.TestCase):
         self.assertEqual(payload["work_date"], "2026-09-15")
         self.assertEqual(payload["total_seconds"], 9000)
         self.assertTrue(payload["is_billable"])
+        # The stored value, not its wording: the label is a rendering concern.
+        self.assertEqual(payload["reason"], "forgot_timer")
         self.assertEqual(payload["description"], "Client call about the <Q3> rollout\nand follow-up notes")
         self.assertNotIn("permissions", payload)
         json.dumps(payload)  # it must survive the outbox's JSON column
@@ -240,6 +243,48 @@ class TestContent(unittest.TestCase):
         self.assertIn("Smit Prajapati", message.subject)
         self.assertIn("15 September 2026", message.subject)
         self.assertIn("Client call about the <Q3> rollout", message.text)
+
+    def test_the_reviewer_is_shown_why_the_time_was_requested(self):
+        """The reason the requester chose in the desktop's Request dialog, in
+        the words they chose it in -- it is what the approver decides on."""
+        labels = {
+            "forgot_timer": "Forgot to start/stop timer",
+            "wrong_task_project": "Used wrong task/project",
+            "other": "Other",
+        }
+        for value, label in labels.items():
+            with email_settings():
+                message = messages.build_manual_time_request_email(
+                    {**_payload(reason=value), "recipient_name": "Asha Admin"}, ["admin@example.com"],
+                )
+            self.assertIn("Reason", message.html)
+            self.assertIn(label, message.html, f"{value} is not shown as {label!r}")
+            self.assertIn(label, message.text)
+
+    def test_a_request_with_no_reason_has_no_reason_row(self):
+        """Filed before the field existed, or by a client that does not ask
+        for one. The row is left out -- never filled with a placeholder."""
+        payload = _payload(reason=None)
+        self.assertIsNone(payload["reason"])
+        with email_settings():
+            message = messages.build_manual_time_request_email(
+                {**payload, "recipient_name": "Asha Admin"}, ["admin@example.com"],
+            )
+        self.assertNotIn("Reason", message.html)
+        self.assertNotIn("Reason", message.text)
+        for label in ("Forgot to start/stop timer", "Used wrong task/project"):
+            self.assertNotIn(label, message.html)
+
+    def test_a_stored_email_from_before_the_field_still_renders(self):
+        """An outbox row queued by the previous build has no `reason` key."""
+        payload = _payload()
+        del payload["reason"]
+        with email_settings():
+            message = messages.build_manual_time_request_email(
+                {**payload, "recipient_name": "Asha Admin"}, ["admin@example.com"],
+            )
+        self.assertIn("Store Revamp", message.html)
+        self.assertNotIn("Reason", message.html)
 
     def test_the_description_is_escaped_not_rendered(self):
         with email_settings():

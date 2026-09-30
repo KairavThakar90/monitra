@@ -530,7 +530,9 @@ class TimerAuthorizationTests(TaskIsolationCase):
             project_id=PROJECT, task_id=self.ids["A"], work_date=date(2026, 9, 10),
             start_time=datetime(2026, 9, 10, 9, 0),
             end_time=datetime(2026, 9, 10, 10, 0), total_seconds=3600,
-            reason="x" * 12,
+            # `reason` is a real, validated field now (one of a fixed set); it
+            # was an unknown key the schema ignored when this was written.
+            reason="other",
         )
         with patch("app.services.task.ProjectService.get_project"):
             with self.assertRaises(HTTPException) as error:

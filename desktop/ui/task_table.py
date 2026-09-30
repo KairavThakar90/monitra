@@ -26,16 +26,18 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QFrame, QScrollArea, QToolButton,
     QMenu, QMessageBox, QDialog, QTextEdit, QFormLayout,
-    QGraphicsDropShadowEffect, QComboBox, QCheckBox, QDateEdit, QTimeEdit,
+    QGraphicsDropShadowEffect, QComboBox, QDateEdit, QTimeEdit,
     QAbstractSpinBox,
 )
 
 from app.tasks.service import TaskService
+from app.time_entries.service import MANUAL_ENTRY_REASONS
 from background_services.public_api import NotificationLevel
 from core.validation import (
     DESCRIPTION_MAX_LENGTH,
     NAME_MAX_LENGTH,
     validate_description,
+    validate_enum,
     validate_identifier,
     validate_name,
 )
@@ -63,6 +65,10 @@ TASK_CREATION_BLOCKED_MESSAGE = (
     "You are not allowed to add tasks yet. Once an administrator allows you, you can add tasks."
 )
 
+
+#: The Reason drop-down's first item in the Request dialog. It carries no
+#: value, so it can never be submitted as a reason.
+PLACEHOLDER_REASON = "Select a reason"
 
 log = get_logger("ui.tasks")
 
@@ -698,10 +704,6 @@ class ManualTimeEntryDialog(QDialog):
             idx = self.project_combo.findData(initial_project_id)
             if idx >= 0:
                 self.project_combo.setCurrentIndex(idx)
-        # The combo box's own default first item selects no index change, so
-        # the Billable row is set for the opening project here, not left to
-        # currentIndexChanged.
-        self._apply_project_billing()
         # No project_changed emit here: __init__ runs before the caller has
         # had a chance to connect to this signal, so an emit at this point
         # is silently lost -- exactly why the task dropdown never populated
@@ -792,14 +794,18 @@ class ManualTimeEntryDialog(QDialog):
         self.duration_label.setObjectName("DurationLabel")
         form.addRow("", self.duration_label)
 
-        # Only a fixed-hours project bills its time -- the billing type is
-        # chosen when the project is created -- so the box is shown only for
-        # one, and starts ticked there. `_apply_project_billing` keeps it in
-        # step with the selected project.
-        self.billable_check = QCheckBox("Billable", self)
-        self.billable_check.setChecked(True)
-        form.addRow("", self.billable_check)
-        self._form = form
+        # Why the time is being requested after the fact. It stands where
+        # the Billable box used to: that box asked the requester something
+        # the project already answers -- a fixed-hours project bills its
+        # time, a flexible one does not -- so billable is no longer asked
+        # or sent, and the backend takes it from the project. The first item
+        # carries no value, so a reason is always a choice somebody made.
+        self.reason_combo = PickerComboBox(self)
+        self.reason_combo.setFixedHeight(34)
+        self.reason_combo.addItem(PLACEHOLDER_REASON, None)
+        for value, label in MANUAL_ENTRY_REASONS:
+            self.reason_combo.addItem(label, value)
+        form.addRow("Reason *", self.reason_combo)
 
         self.desc_input = QTextEdit(self)
         self.desc_input.setPlaceholderText("What did you work on?")
@@ -910,28 +916,9 @@ class ManualTimeEntryDialog(QDialog):
     def _on_project_changed(self, _index: int) -> None:
         self.task_combo.clear()
         self.task_combo.setEnabled(False)
-        self._apply_project_billing()
         project_id = self.project_combo.currentData()
         if project_id is not None:
             self.project_changed.emit(project_id)
-
-    def _selected_project_is_billable(self) -> bool:
-        """Whether the selected project bills its time (`billing_type` 'fixed').
-
-        A project without a `billing_type` is treated as not billable: the
-        box then stays hidden and the backend decides, rather than this
-        dialog claiming the time is billable on a guess.
-        """
-        project_id = self.project_combo.currentData()
-        project = next((p for p in self._projects if p.get("id") == project_id), None)
-        return bool(project) and project.get("billing_type") == "fixed"
-
-    def _apply_project_billing(self) -> None:
-        billable = self._selected_project_is_billable()
-        self._form.setRowVisible(self.billable_check, billable)
-        # Re-ticked on every change of project: the default belongs to the
-        # project now selected, not to whatever was chosen for the last one.
-        self.billable_check.setChecked(billable)
 
     def set_tasks_loading(self) -> None:
         self.task_combo.clear()
@@ -983,6 +970,15 @@ class ManualTimeEntryDialog(QDialog):
             self._show_error("End time cannot be before start time.")
             return
 
+        reason = validate_enum(
+            self.reason_combo.currentData(),
+            [value for value, _label in MANUAL_ENTRY_REASONS],
+            field_label="Reason",
+        )
+        if not reason.ok:
+            self._show_error("Select a reason.")
+            return
+
         # Description is required for a manual entry: unlike a tracked
         # session there is no activity record behind it, so the note is the
         # only account of what the time was spent on. Whitespace-only text
@@ -1025,8 +1021,8 @@ class ManualTimeEntryDialog(QDialog):
             "end_time": end_utc.isoformat(),
             "total_seconds": int((end_utc - start_utc).total_seconds()),
             "description": self.desc_input.toPlainText().strip() or None,
-            # Never billable on a free project, whatever the (hidden) box says.
-            "is_billable": self._selected_project_is_billable() and self.billable_check.isChecked(),
+            # No `is_billable`: the backend takes it from the project.
+            "reason": self.reason_combo.currentData(),
         }
 
 

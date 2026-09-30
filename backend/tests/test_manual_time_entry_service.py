@@ -1,7 +1,7 @@
 import unittest
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
 
@@ -89,6 +89,117 @@ class CreateConflictTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as error:
                 ManualTimeEntryService.create_manual_entry(None, payload, self.user)
         self.assertEqual(error.exception.status_code, 400)
+
+
+class ReasonTests(unittest.TestCase):
+    """Why the time is being requested: a fixed set, stored as filed.
+
+    The desktop's Request dialog asks for it in place of the Billable box.
+    Billable is then not sent at all and is taken from the project, which
+    `BillableTests` below already pins for an omitted `is_billable`.
+    """
+
+    def setUp(self):
+        self.user = make_user()
+
+    def _create(self, project=None, **fields):
+        payload = ManualTimeEntryCreate(
+            project_id=1272, task_id=239, work_date=date(2026, 8, 10), total_seconds=3600, **fields
+        )
+        with patch("app.services.manual_time_entry.TaskService.get_task"), \
+             patch("app.services.manual_time_entry.ProjectRepository.get_by_id",
+                   return_value=project or make_project("fixed")), \
+             patch("app.services.manual_time_entry.ManualTimeEntryRepository.find_overlapping_time_entries", return_value=[]), \
+             patch("app.services.manual_time_entry.ManualTimeEntryRepository.find_overlapping_manual_entries", return_value=[]), \
+             patch("app.services.manual_time_entry.ManualTimeEntryRepository.create", return_value=make_entry()) as create:
+            ManualTimeEntryService.create_manual_entry(None, payload, self.user)
+        return create.call_args.kwargs
+
+    def test_the_three_reasons_are_the_whole_set(self):
+        from app.schemas.manual_time_entry import MANUAL_ENTRY_REASON_LABELS, ManualEntryReason
+
+        self.assertEqual(
+            [member.value for member in ManualEntryReason],
+            ["forgot_timer", "wrong_task_project", "other"],
+        )
+        self.assertEqual(MANUAL_ENTRY_REASON_LABELS, {
+            "forgot_timer": "Forgot to start/stop timer",
+            "wrong_task_project": "Used wrong task/project",
+            "other": "Other",
+        })
+
+    def test_each_reason_is_stored_as_its_plain_value(self):
+        for value in ("forgot_timer", "wrong_task_project", "other"):
+            stored = self._create(reason=value)["reason"]
+            self.assertEqual(stored, value)
+            self.assertIs(type(stored), str, "the enum member must not reach the column")
+
+    def test_a_request_without_a_reason_is_stored_as_not_given(self):
+        """The web form and older desktop builds send none. That is stored as
+        null -- never as a default reason nobody chose."""
+        self.assertIsNone(self._create()["reason"])
+
+    def test_a_value_outside_the_set_is_refused_and_the_error_names_the_set(self):
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError) as error:
+            ManualTimeEntryCreate(
+                project_id=1272, task_id=239, work_date=date(2026, 8, 10),
+                total_seconds=3600, reason="felt like it",
+            )
+        message = str(error.exception)
+        for value in ("forgot_timer", "wrong_task_project", "other"):
+            self.assertIn(value, message)
+
+    def test_billable_comes_from_the_project_when_only_a_reason_is_sent(self):
+        """What the desktop now sends: a reason and no `is_billable`."""
+        fixed = self._create(make_project("fixed"), reason="forgot_timer")
+        free = self._create(make_project("free"), reason="forgot_timer")
+
+        self.assertIs(fixed["is_billable"], True)
+        self.assertIs(free["is_billable"], False)
+
+    def test_a_pending_request_can_have_its_reason_corrected(self):
+        entry = make_entry(reason="other")
+        with patch("app.services.manual_time_entry.ManualTimeEntryRepository.get_by_id", return_value=entry), \
+             patch("app.services.manual_time_entry.ManualTimeEntryRepository.update_fields",
+                   side_effect=lambda db, e, **kw: SimpleNamespace(**{**vars(e), **kw})) as update:
+            result = ManualTimeEntryService.update_manual_entry(
+                None, 1, ManualTimeEntryUpdate(reason="wrong_task_project"), make_user(uid=54)
+            )
+
+        self.assertEqual(result.reason, "wrong_task_project")
+        self.assertIs(type(update.call_args.kwargs["reason"]), str)
+
+    def test_the_review_listing_carries_the_reason(self):
+        entry = make_entry(reason="wrong_task_project", created_at=None, updated_at=None)
+        db = MagicMock()
+        db.query.return_value.filter.return_value.all.return_value = []
+        with patch("app.services.manual_time_entry.visible_member_ids", return_value=None), \
+             patch("app.services.manual_time_entry.ManualTimeEntryRepository.search_by_filters",
+                   return_value=([entry], 1)), \
+             patch("app.services.manual_time_entry.ManualTimeEntryRepository.find_overlapping_time_entries",
+                   return_value=[]):
+            page = ManualTimeEntryService.list_for_review(
+                db, make_user(permissions={"time_entries:view_all": True}),
+                None, None, None, None, None, None, None, 1, 20,
+            )
+
+        self.assertEqual(page["items"][0]["reason"], "wrong_task_project")
+
+    def test_the_read_schema_returns_the_reason(self):
+        from app.schemas.manual_time_entry import ManualTimeEntryRead
+
+        now = datetime(2026, 8, 10, 9, tzinfo=timezone.utc)
+        with_reason = ManualTimeEntryRead.model_validate(
+            make_entry(reason="forgot_timer", created_at=now, updated_at=now)
+        )
+        legacy = ManualTimeEntryRead.model_validate(
+            make_entry(reason=None, created_at=now, updated_at=now)
+        )
+
+        self.assertEqual(with_reason.reason, "forgot_timer")
+        self.assertIsNone(legacy.reason)
 
 
 class BillableTests(unittest.TestCase):

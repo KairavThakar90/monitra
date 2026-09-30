@@ -5,6 +5,18 @@ from app.api.client import ApiClient
 from app.api.exceptions import ApiError, ApiHttpError, ApiConnectionError
 from core.validation.rules import IDEMPOTENCY_KEY_PATTERN
 
+#: Why a manual time entry is being requested: (value, label) in the order the
+#: Request dialog lists them. The values are the backend's `ManualEntryReason`
+#: (backend/app/schemas/manual_time_entry.py) and are what is sent and stored;
+#: the labels are what the user reads. `tests/test_manual_time_entry_dialog.py`
+#: reads the backend's file and fails if the two sets differ -- a value this
+#: list offers that the backend does not know is a request it refuses.
+MANUAL_ENTRY_REASONS = (
+    ("forgot_timer", "Forgot to start/stop timer"),
+    ("wrong_task_project", "Used wrong task/project"),
+    ("other", "Other"),
+)
+
 
 def _client_now_iso() -> str:
     """This machine's clock, at the moment a request is sent.
@@ -262,7 +274,7 @@ class TimeEntryService:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         description: Optional[str] = None,
-        is_billable: bool = True,
+        reason: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Log a completed work session after the fact, distinct from the live
@@ -280,6 +292,14 @@ class TimeEntryService:
             datetime.isoformat(). Optional; if omitted (with end_time), the
             backend derives the slot from work_date + total_seconds instead.
         :param end_time: ISO 8601 UTC datetime string, paired with start_time.
+        :param reason: Why the time is being requested -- one of the values in
+            `MANUAL_ENTRY_REASONS`.
+
+        Whether the entry is billable is not sent. It is a property of the
+        project (fixed-hours projects bill their time, flexible ones do not),
+        and the backend takes it from there whenever `is_billable` is left
+        out -- so what is stored always agrees with the project.
+
         :raises ApiError: On session expiry (401), an overlapping time slot
             (409), validation errors (400/422), or network drop.
         :return: The created manual time entry (approval_status='pending').
@@ -290,8 +310,9 @@ class TimeEntryService:
             "work_date": work_date,
             "total_seconds": total_seconds,
             "description": description,
-            "is_billable": is_billable,
         }
+        if reason is not None:
+            payload["reason"] = reason
         if start_time is not None and end_time is not None:
             payload["start_time"] = start_time
             payload["end_time"] = end_time
