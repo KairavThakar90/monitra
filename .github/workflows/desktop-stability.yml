@@ -69,10 +69,25 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
+      # The run itself is unchanged. On failure the failing test ids and the
+      # assertion lines are also raised as one annotation: a job's log needs
+      # repository access to read, its annotations do not (the same reason
+      # tools/run_tests_per_module.py annotates the macOS release build).
+      # Test output only -- nothing from the environment.
       - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest tests/ -v --tb=short
+        run: |
+          set -o pipefail
+          python -m pytest tests/ -v --tb=short 2>&1 | tee pytest.log || {
+            status=$?
+            message=$( { grep -E '^(FAILED|ERROR) ' pytest.log | head -40; \
+                         grep -E '^E  ' pytest.log | head -25; \
+                         grep -E 'Fatal Python error|Segmentation fault' pytest.log | head -5; } \
+                       | cut -c1-300 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' )
+            echo "::error title=Desktop regression suite failed (exit ${status})::${message:-no FAILED line in the output; see the log}"
+            exit "$status"
+          }
 
   launch-cycles:
     name: Launch/quit cycles
