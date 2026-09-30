@@ -226,7 +226,11 @@ def test_start_wait_stop_is_exact_at_every_layer(qapp, desktop, api, db, princip
     assert active["entry"]["id"] == entry_id
     assert "server_time" in active
     # Desktop: elapsed counts from the local anchor and the offset is recorded.
-    assert 0 <= timer.elapsed_seconds() <= 3
+    # Compared with the real time since Start was pressed, not with a fixed
+    # bound: the reads above include this module's first connection to the
+    # development database, which alone takes over a second from here.
+    since_press = (datetime.now(UTC) - pressed_start).total_seconds()
+    assert abs(timer.elapsed_seconds() - since_press) <= 1.5, (timer.elapsed_seconds(), since_press)
     assert "clock_offset_seconds" in session or True
 
     time.sleep(wait_seconds)

@@ -515,7 +515,16 @@ def test_re_uploading_a_capture_returns_the_same_record_and_no_second_object(
     assert body["duplicate"] is True, "the retry was not recognised as one"
     assert body["screenshot"]["id"] == row["id"], "a second record was created"
 
-    after = _stored_rows(db, entry_id)
+    # Only the replayed capture is counted. The service's own schedule is
+    # armed for as long as the timer runs, and when its random instant falls
+    # inside this test it stores a second, different capture for the entry --
+    # which is the product working, not a duplicate of the retry.
+    rows = _stored_rows(db, entry_id)
+    drive_litter.extend(
+        r["google_drive_file_id"] for r in rows
+        if r["google_drive_file_id"] not in drive_litter
+    )
+    after = [r for r in rows if r["client_screenshot_id"] == record["client_screenshot_id"]]
     assert len(after) == 1, "the retry created a duplicate row"
     assert after[0]["google_drive_file_id"] == row["google_drive_file_id"], (
         "the retry created a second Drive object"

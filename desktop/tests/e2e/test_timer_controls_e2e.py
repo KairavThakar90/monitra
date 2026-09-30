@@ -159,6 +159,7 @@ def test_play_pause_break_in_and_break_out_through_the_widgets(
     # Test A: select the task, press the circular Play.
     _click_row_body(qapp, _task_row(window, task_id))
     assert _task_row(window, task_id).is_selected
+    first_pressed = time.monotonic()
     _click(qapp, _circle(window), "Play")
     assert timer.is_running() and timer.task_id == task_id
     _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
@@ -176,6 +177,7 @@ def test_play_pause_break_in_and_break_out_through_the_widgets(
     time.sleep(work_seconds)
 
     # Test C: Break In from the card.
+    first_measured = time.monotonic() - first_pressed
     _click(qapp, cards.break_button, "Break In")
     assert not timer.is_running() and timer.break_status == BreakStatus.ON_BREAK
     assert cards.break_button.text() == "Break Out"
@@ -204,6 +206,7 @@ def test_play_pause_break_in_and_break_out_through_the_widgets(
     assert timer.pre_break_task()["task_id"] == task_id
 
     # Test D: Break Out from the card.
+    second_pressed = time.monotonic()
     _click(qapp, cards.break_button, "Break Out")
     _pump(qapp, lambda: timer.is_running(), 30, "the resume to start")
     assert timer.task_id == task_id and timer.break_status == BreakStatus.NONE
@@ -221,6 +224,7 @@ def test_play_pause_break_in_and_break_out_through_the_widgets(
     time.sleep(work_seconds)
 
     # Test B: the circular Pause.
+    second_measured = time.monotonic() - second_pressed
     _click(qapp, _circle(window), "Pause")
     assert not timer.is_running()
     _pump(qapp, lambda: len(finalized) == 2, 30, "the pause's stop to be finalized")
@@ -248,8 +252,13 @@ def test_play_pause_break_in_and_break_out_through_the_widgets(
     first, second, third = _row(db, first_id), _row(db, second_id), _row(db, third_id)
     for row in (first, second, third):
         assert row["status"] == "stopped" and row["task_id"] == task_id, row
-    assert abs(first["total_seconds"] - work_seconds) <= DURATION_TOLERANCE_SECONDS, first
-    assert abs(second["total_seconds"] - work_seconds) <= DURATION_TOLERANCE_SECONDS, second
+    # Against the interval between the two presses, not against the sleep
+    # alone: the checks made while the session runs (the active read, the
+    # database row, the screenshot) are part of it, and how long they take
+    # depends on the network to the development database.
+    assert first_measured >= work_seconds and second_measured >= work_seconds
+    assert abs(first["total_seconds"] - first_measured) <= DURATION_TOLERANCE_SECONDS, (first, first_measured)
+    assert abs(second["total_seconds"] - second_measured) <= DURATION_TOLERANCE_SECONDS, (second, second_measured)
     gap = (second["start_time"] - first["end_time"]).total_seconds()
     assert gap >= break_seconds - DURATION_TOLERANCE_SECONDS, (first, second)
     assert len(_running_rows(db, principal["user_id"])) == 0
