@@ -10,7 +10,7 @@ from app.api.employees import router as employees_router
 from app.api.time_entry_screenshot import router as time_entry_screenshot_router
 from app.api.members import router as members_router
 from app.api.project_management import router as project_management_router
-from app.api.wfpm import router as wfpm_router
+from app.WFPM.router import internal_router as wfpm_internal_router, router as wfpm_router
 from app.api.time_entry_app_usage import router as time_entry_app_usage_router
 from app.api.time_entry_activity import router as time_entry_activity_router
 from app.api.url_usage import router as url_usage_router
@@ -110,6 +110,29 @@ try:
 except Exception:  # noqa: BLE001
     logger.warning("Could not report email configuration", exc_info=True)
 
+# The WFPM timer integration, stated at boot for the same reason again. With
+# WFPM_TIMER_START_URL unset, timers start and stop exactly as they always
+# have and WFPM is simply never told -- nothing anywhere fails. Non-sensitive
+# by construction: `describe_configuration()` reports whether a URL and a
+# token are present, never either value.
+try:
+    from app.WFPM.timer_sync import describe_configuration as _describe_wfpm
+
+    _wfpm_config = _describe_wfpm()
+    if _wfpm_config["configured"]:
+        logger.info(
+            "WFPM timer integration: enabled (token %s)",
+            "present" if _wfpm_config["token_present"] else "NOT set",
+        )
+    else:
+        logger.warning(
+            "WFPM timer integration is DISABLED: %s. Timers started in Monitra "
+            "will not start a timer in WFPM.",
+            _wfpm_config["reason"],
+        )
+except Exception:  # noqa: BLE001
+    logger.warning("Could not report WFPM integration configuration", exc_info=True)
+
 # 1. Base registrations for desktop client endpoints (which expect paths without /api/v1)
 app.include_router(auth_router)
 app.include_router(project_router)
@@ -136,6 +159,8 @@ app.include_router(activity_rollup_router)
 # spelling of any of them would be a second URL to keep working forever.
 app.include_router(email_notifications_router)
 app.include_router(clients_public_router)
+# The WFPM timer-event sweeper: another scheduler entry point, same reasoning.
+app.include_router(wfpm_internal_router)
 
 # 2. Registrations with the /api/v1 prefix (expected by React frontend and prefix-aware desktop calls)
 api_prefix = "/api/v1"
@@ -220,6 +245,14 @@ def health_check():
     except Exception:  # noqa: BLE001
         logger.warning("Could not report email configuration in /health", exc_info=True)
         payload["email"] = {"configured": False, "reason": "unavailable"}
+
+    try:
+        from app.WFPM.timer_sync import describe_configuration as describe_wfpm
+
+        payload["wfpm_timer_sync"] = describe_wfpm()
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not report WFPM integration in /health", exc_info=True)
+        payload["wfpm_timer_sync"] = {"configured": False, "reason": "unavailable"}
 
     return payload
 

@@ -9,7 +9,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-JOBS=(email-dispatch budget-alerts weekly-report monthly-report monthly-project-summary daily-rollup)
+JOBS=(email-dispatch budget-alerts weekly-report monthly-report monthly-project-summary daily-rollup wfpm-timer-dispatch)
 
 [ -f /etc/monitra/backend.env ] || { echo "missing /etc/monitra/backend.env (run setup_vm.sh first)"; exit 1; }
 if ! grep -Eq '^EMAIL_DISPATCH_TOKEN=.+' /etc/monitra/backend.env; then

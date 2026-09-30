@@ -27,7 +27,7 @@ ROLE_PERMISSIONS = {
         "tasks:create",
         "tasks:update",
         # Deliberately narrower than `projects:create`: an employee may create
-        # a project only through the WFPM Tools integration (see app/api/wfpm.py),
+        # a project only through the WFPM Tools integration (see app/WFPM/router.py),
         # never through /api/v1/projects, which `projects:create` also gates.
         # A single shared permission would hand employees the Monitra frontend's
         # own project-create/update/delete screen along with it.

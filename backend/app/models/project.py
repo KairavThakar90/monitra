@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, String, Text, Boolean, Integer, Date, Numeric, TIMESTAMP, Identity, ForeignKeyConstraint, event, inspect, text, func
+from sqlalchemy import BigInteger, String, Text, Boolean, Integer, Date, Numeric, TIMESTAMP, Identity, ForeignKeyConstraint, Index, event, inspect, text, func
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import date, datetime
 from typing import Optional
@@ -34,6 +34,10 @@ class Project(Base):
     #: `_bump_budget_version`) whenever `fixed_hours` or `billing_type` changes,
     #: so every alert row is keyed to the exact allocation it was about.
     budget_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default=text('1'))
+    #: The id this project has in WFPM -- the link the WFPM integration
+    #: (app/WFPM) addresses it by. Opaque text: it belongs to another system.
+    #: Unique per organization; NULL for every project WFPM does not know.
+    wfpm_project_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -45,6 +49,10 @@ class Project(Base):
 
     __table_args__ = (
         ForeignKeyConstraint(['organization_id'], ['organizations.id'], name='fk_projects_organization', ondelete='CASCADE'),
+        Index(
+            'uq_projects_org_wfpm_project_id', 'organization_id', 'wfpm_project_id',
+            unique=True, postgresql_where=text('wfpm_project_id IS NOT NULL'),
+        ),
     )
 
 

@@ -31,6 +31,9 @@ from app.models.screenshot_exclusion import ScreenshotExclusion
 from app.models.client import Client
 from app.models.client_invitation import ClientInvitation
 from app.models.client_project import ClientProject
+# The WFPM integration keeps its own table beside the rest of its code
+# (app/WFPM); it is registered here so the metadata still names every table.
+from app.WFPM.models import WfpmTimerEvent
 
 __all__ = [
     "Base",
@@ -66,4 +69,5 @@ __all__ = [
     "Client",
     "ClientInvitation",
     "ClientProject",
+    "WfpmTimerEvent",
 ]

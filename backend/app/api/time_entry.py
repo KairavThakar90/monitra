@@ -38,6 +38,7 @@ def start_timer(
     payload: TimeEntryStart,
     request: Request,
     response: Response,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -56,6 +57,17 @@ def start_timer(
     if not created:
         # Idempotent replay: nothing was created, so say so.
         response.status_code = status.HTTP_200_OK
+    else:
+        # A timer on a WFPM-linked task starts the matching timer in WFPM.
+        # Queued here and delivered after the response, so WFPM being slow or
+        # down cannot delay or fail the start; `queue_timer_start` never
+        # raises and answers None for every task WFPM does not know. Only a
+        # genuinely new entry announces itself -- a replayed start already did.
+        from app.WFPM.timer_sync import WfpmTimerSync, deliver_in_background
+
+        wfpm_event_id = WfpmTimerSync.queue_timer_start(db, entry)
+        if wfpm_event_id is not None:
+            background_tasks.add_task(deliver_in_background, wfpm_event_id)
     return _one(db, entry)
 
 @router.post("/{id}/stop", response_model=TimeEntryRead)
