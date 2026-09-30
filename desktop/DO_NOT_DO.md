@@ -457,6 +457,26 @@ logged once, and nothing afterwards said why the dashboard had gone stale.
 `_run_load` reports in a `finally`, and `REFRESH_STALE_AFTER_S` abandons a
 round that never reports back, with the runtime health in the log.
 
+### ❌ Do not reset a pager because its list was refreshed
+
+```python
+def set_projects(self, projects):
+    self._projects = projects
+    self._current_page = 1          # "a new list starts at the beginning"
+    self._rebuild_project_list()
+```
+
+**What it caused:** `set_projects` runs on every refresh round — the periodic
+one, the change probe, a reconnect. Anyone reading page 2 or 3 of the project
+list was thrown back to page 1 whenever the dashboard synchronised, with
+nothing on screen to say why. A refresh is not a new list; it is the same
+list, again.
+
+**Instead:** only the user moves the page — the pager, a search, selecting a
+project. A refresh keeps it and clamps it into range, so a list that came
+back shorter lands on its last page rather than an empty one. The task list
+already worked this way (`test_a_refresh_of_the_same_project_keeps_the_page`).
+
 ### ❌ Do not cancel a key family by its bare name
 
 ```python
@@ -629,6 +649,61 @@ resting a hand on the mouse.
 
 ---
 
+## Styling
+
+### ❌ Do not let a bare `QWidget` rule, or a sheet with no selector, reach a tooltip
+
+```python
+self.setStyleSheet(f"QWidget {{ background: {CONTENT_BG}; }}")     # DashboardWindow
+content_container.setStyleSheet(f"background: {CONTENT_BG};")      # no selector: `* { ... }`
+self._leading_icon.setStyleSheet("background: transparent;")
+```
+
+**What it caused:** unreadable tooltips. Qt styles a tooltip through the
+widget it belongs to — that widget's sheet and its ancestors' before the
+application's, nearest first — and a tooltip is itself a `QWidget`, a `QFrame`
+and a `QLabel`. So the window's background rule repainted every tooltip in the
+content area near-white while the text stayed the application sheet's white:
+"Next page" under the task pager was white on white, as was every top-bar
+tooltip. The selector-less `background: transparent` variants left the account
+name, the task row's project marker and the Play disc with white text on the
+platform's own white tooltip. Each looked fine on the widget it was written
+for; none of them was written about tooltips at all.
+
+**Instead:** a sheet that carries such a rule restates the tooltip after it
+(`TOOLTIP_QSS` in `ui/styles.py`), and a sheet on a single widget names that
+widget's type rather than using no selector. `tests/test_tooltip_style.py`
+shows every tooltip in the dashboard and reads its pixels back, so the next
+one fails there.
+
+### ❌ Do not build a bare `QComboBox` or `QDateEdit`
+
+```python
+self.project_combo = QComboBox(self)            # the dialog's sheet styles its border
+```
+
+**What it caused:** two different broken arrows, one after the other. A combo
+box styled through a stylesheet has its drop-down button drawn by the
+platform style: on Windows, a square box with half a border and a chevron,
+inside a rounded field it does not match (the Request dialog's Project, Task
+and Work Date, and the Feedback category). The obvious fix —
+`::drop-down { border: none }` — makes Qt stop painting the arrow altogether,
+and the field then has no sign that it opens (the idle Reassign dialog, and
+Feedback before that). QSS `image: url()` takes no data URI, so there is no
+inline image to give it.
+
+The same fields were also unsearchable: a native combo popup over every
+project the user can see is a scroll through hundreds of rows.
+
+**Instead:** `PickerComboBox` / `PickerDateEdit` (`ui/dropdown.py`). The
+button is switched off and the glyph painted by the widget; the list is the
+application's own panel, with a search field for the pickers that can grow
+long (`searchable=True`). It is still a `QComboBox` — the dialogs' own code
+does not change. `tests/test_dropdown.py` fails on any bare `QComboBox(` or
+`QDateEdit(` in `ui/`.
+
+---
+
 ## Naming
 
 ### ❌ Do not overload `start()`, `stop()` or `state()` on a service
@@ -704,6 +779,82 @@ both, or a single event notifies the user twice.
 
 Network flapping produced a burst of toasts. Notifications are de-duplicated by
 key within 20 seconds and capped at 6 per minute.
+
+### ❌ Do not overwrite a notification that is still on screen
+
+```python
+popup = self._ensure_popup()            # the one card
+popup.present(title, message, level)    # replaces whatever it was showing
+```
+
+**What it caused:** "Logged in successfully" was up and unclosed when
+"Pending activity synced successfully." arrived. The card did not move, flash
+or reappear — its words changed. Anyone not reading it at that instant had no
+way to know a second notification had come, and the first was gone before
+they had read it. The single card was deliberate (a burst could not stack
+windows), and it traded one failure for a quieter one.
+
+**Instead:** one card per notification, stacked above those still up, each
+with its own thirty seconds and its own ×. The stack is capped, the oldest
+makes room, and an identical repeat restarts its time rather than adding a
+twin. Still one dismissal timer — armed for whichever card goes next, never
+one per card.
+
+### ❌ Do not start every recurring reminder from the same instant
+
+```python
+self._due_at = {r.key: now + r.every_minutes * 60 for r in INTERVAL_REMINDERS}
+```
+
+**What it caused:** cadences of 20, 30, 60, 60, 90 and 120 minutes all counted
+from one moment, so they came due together at every common multiple — four at
+the hour, three at ninety minutes, seven at two hours — and one went out per
+thirty-second tick. From a real session's log:
+
+```
+11:32:46  Drink Water
+11:33:16  Fix Your Posture
+11:33:46  Blink Your Eyes
+11:34:16  Follow the 20-20-20 Rule
+```
+
+Four reminders in ninety seconds, each replacing the one before it on the
+single notification card. It needs an unbroken hour of session to appear at
+all, so it was reported as "too quick, for some users, sometimes", and the
+first hour of any test run looked perfect.
+
+**Instead:** give each reminder an offset (`IntervalReminder.offset_minutes`)
+and prove, across the whole repeating timetable, that no two ever fall within
+`MIN_SEPARATION_MINUTES` of each other. "One per tick" spreads a collision
+out; it does not remove it.
+
+### ❌ Do not re-anchor a recurring deadline on the moment it was handled
+
+```python
+self._due_at[key] = now + every_minutes * 60      # `now` is when it was shown
+```
+
+**What it caused:** drift that never recovered. A twenty-minute reminder due at
+11:32:46 and shown at 11:34:16, behind three others, was next due at 11:54:16
+— and every later burst added to it. "Every 20 minutes" was true of nothing.
+
+**Instead:** the next deadline is one period after the one just met
+(`WellbeingService._advance`). Being late once does not move the grid.
+
+### ❌ Do not poll on a fixed tick for something that has a known deadline
+
+A thirty-second tick shows a reminder at whichever tick follows its time: up
+to half a minute late, by a different amount for every reminder. `tick()`
+returns the time to the next deadline (capped at `interval_ms`, which still
+covers what no deadline announces — a sign-out, a gap in the loop).
+
+### ❌ Do not put a storage write between an event's time and showing it
+
+`_due_daily` recorded the reminder as fired, wrote that to `app_state`, and
+only then returned it to be shown. The write waits behind any other writer
+for up to the ten-second busy timeout. In the session this was diagnosed from,
+the 10:30 break appeared 14.5 seconds after the tick that found it due. Show
+first, persist after; and give the service a stop budget that covers the wait.
 
 ### ❌ Do not ship without an explicit Windows App User Model ID
 

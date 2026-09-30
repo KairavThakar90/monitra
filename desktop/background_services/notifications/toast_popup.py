@@ -12,7 +12,16 @@ had looked away could read it, and `NotificationService.DISPLAY_MS` was a hint
 nothing honoured.
 
 This widget is the answer: Monitra draws the notification itself, in a corner
-of the screen it owns, so the minute in `DISPLAY_MS` is a real minute.
+of the screen it owns, so the thirty seconds in `DISPLAY_MS` are a real thirty
+seconds.
+
+Several cards can be on screen at once. A notification that arrives while an
+earlier one is still up gets a card of its own, stacked above it, rather than
+overwriting it: with one card, a second notification changed the text of a
+card the user had stopped looking at, and nothing on screen said that anything
+new had happened. `NotificationService` owns the stack -- which cards are up,
+in what order, and when each one goes. A card only knows how to draw itself
+and where the corner is; `lift` is how far above the corner it is asked to sit.
 
 Two rules it must keep, both of them paid for already:
 
@@ -99,6 +108,9 @@ class ToastPopup(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFixedWidth(self.WIDTH)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        #: Set by `_move_to_corner`: the card does not fit under the top of
+        #: the working area at the height it was asked to sit.
+        self.clipped = False
 
         # Margin around the card, not on it: a QGraphicsDropShadowEffect
         # paints outside the widget it is attached to, and this window is
@@ -238,15 +250,12 @@ class ToastPopup(QWidget):
             """
         )
 
-    def present(self, title: str, message: str, level: str) -> bool:
+    def present(self, title: str, message: str, level: str, lift: int = 0) -> bool:
         """
-        Show this notification, replacing whatever the card was showing.
+        Show this notification on this card.
 
-        One card is reused for every notification, so a burst cannot leave a
-        stack of windows on screen — the newest message supersedes the previous
-        one in place, which is also how the service's single dismissal timer
-        behaves.
-
+        :param lift: how far above the corner position the card sits, in
+            pixels -- the height of the cards already stacked beneath it.
         :return: True if the card is on screen. False means there was no screen
             to place it on, and the caller should fall back to the platform's
             own toast.
@@ -265,15 +274,39 @@ class ToastPopup(QWidget):
         # an already-correct size is a no-op, so this is safe unconditionally.
         self.adjustSize()
         self.adjustSize()
-        if not self._move_to_corner():
+        if not self._move_to_corner(lift):
             return False
 
         self.show()
         self.raise_()
         return True
 
-    def _move_to_corner(self) -> bool:
-        """Pin the card to the bottom-right of the current working area.
+    def place(self, lift: int = 0) -> bool:
+        """Move the card to `lift` pixels above the corner, as it is.
+
+        Used when the stack changes underneath a card that is already up:
+        the one below it has gone, so it slides down. Nothing about what the
+        card shows is touched.
+        """
+        return self._move_to_corner(lift)
+
+    def card_height(self) -> int:
+        """Height of the visible card, without the shadow's margin around it.
+
+        What the next card up has to clear. The window is taller than this by
+        the margins the drop shadow is painted into.
+        """
+        margins = self.layout().contentsMargins()
+        return max(0, self.height() - margins.top() - margins.bottom())
+
+    def _move_to_corner(self, lift: int = 0) -> bool:
+        """Pin the card to the bottom-right of the current working area,
+        `lift` pixels above the corner position.
+
+        `self.clipped` records whether the card, at that height, reaches past
+        the top of the working area. It is still placed (clamped on screen);
+        the service reads the flag to decide the stack has outgrown the
+        screen and retires the oldest card.
 
         The working area, not the full screen, so the card never sits under the
         taskbar. False if the platform reports no screen at all, which is the
@@ -306,7 +339,8 @@ class ToastPopup(QWidget):
         offset_y = self.CARD_SCREEN_MARGIN - margins.bottom()
 
         x = area.x() + area.width() - size.width() - offset_x
-        y = area.y() + area.height() - size.height() - offset_y
+        y = area.y() + area.height() - size.height() - offset_y - max(0, int(lift))
+        self.clipped = y + margins.top() < area.y()
         # Clamp both edges, not just the near one: CARD_SCREEN_MARGIN is the
         # gap the *card* keeps once its own margin (bigger on the bottom, for
         # the drop shadow's downward offset) is subtracted back out, and that
@@ -322,6 +356,13 @@ class ToastPopup(QWidget):
     # ── Interaction ──────────────────────────────────────────────────────────
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        if event.button() == Qt.MouseButton.LeftButton:
+        # Only a press on the card itself is a click on the notification. The
+        # window is larger than the card -- it carries the shadow's margin --
+        # and in a stack that margin lies over the neighbouring card, so a
+        # press there belongs to no notification at all.
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._card.geometry().contains(event.position().toPoint())
+        ):
             self.clicked.emit()
         super().mousePressEvent(event)

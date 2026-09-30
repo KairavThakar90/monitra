@@ -24,10 +24,11 @@ from PySide6.QtCore import QByteArray, Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
+    QDialog, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
     QPushButton, QVBoxLayout, QWidget,
 )
 
+from ui.dropdown import PickerComboBox
 from ui.styles import (
     BORDER_LIGHT, BORDER_MID, BUTTON_GRADIENT, BUTTON_GRADIENT_HOVER,
     CONTENT_BG, ERROR, MONITRA_MARK_SVG, PRIMARY, TEXT_MUTED, TEXT_PRIMARY,
@@ -139,7 +140,11 @@ class ReassignTimeDialog(QDialog):
         card.addWidget(self.duration_label)
 
         card.addWidget(self._field_label("Project"))
-        self.project_combo = QComboBox(self.card)
+        # Searchable, both of them: the user is choosing among every project
+        # they can see, with an idle alert waiting behind the dialog.
+        self.project_combo = PickerComboBox(
+            self.card, searchable=True, search_placeholder="Search projects…"
+        )
         self.project_combo.setObjectName("PickerCombo")
         self.project_combo.setMinimumHeight(38)
         self.project_combo.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -147,7 +152,9 @@ class ReassignTimeDialog(QDialog):
         card.addWidget(self.project_combo)
 
         card.addWidget(self._field_label("Task"))
-        self.task_combo = QComboBox(self.card)
+        self.task_combo = PickerComboBox(
+            self.card, searchable=True, search_placeholder="Search tasks…"
+        )
         self.task_combo.setObjectName("PickerCombo")
         self.task_combo.setMinimumHeight(38)
         self.task_combo.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -221,19 +228,10 @@ class ReassignTimeDialog(QDialog):
                 color: {TEXT_MUTED};
                 background: #F8FAFC;
             }}
-            QComboBox#PickerCombo::drop-down {{
-                border: none;
-                width: 24px;
-            }}
-            QComboBox QAbstractItemView {{
-                border: 1px solid {BORDER_LIGHT};
-                border-radius: 8px;
-                background: #FFFFFF;
-                selection-background-color: {PRIMARY};
-                selection-color: #FFFFFF;
-                outline: none;
-                padding: 4px;
-            }}
+            /* The arrow and the list belong to PickerComboBox (ui/dropdown.py).
+               This sheet used to set `::drop-down {{ border: none }}` itself,
+               which makes Qt stop painting the arrow: these two fields had
+               no sign that they opened. */
             QPushButton {{
                 border-radius: 8px;
                 font-size: 13px;

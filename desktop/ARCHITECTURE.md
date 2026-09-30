@@ -680,6 +680,49 @@ rather than by convention:
   else. Logout hides it through the same edge (`reset_session()` emits
   "off" if it was on).
 
+### Wellbeing reminders
+
+`WellbeingService`
+([background_services/wellbeing/wellbeing_service.py](background_services/wellbeing/wellbeing_service.py))
+shows the catalogue in
+[reminders.py](background_services/wellbeing/reminders.py) — recurring
+nudges ("every 20 minutes") and times of day ("10:30 IST") — through the
+`NotificationService` that owns notifications. Like the update and
+maintenance services it reads the session and notifies, and nothing depends
+on it.
+
+```
+tick()  ->  hold while signed out
+        ->  long gap since the last tick (either clock)?  ->  restart the cadence
+        ->  within MIN_SPACING_SECONDS of the last reminder?  ->  wait
+        ->  time-of-day reminder due?  ->  show, then record it
+        ->  else the most overdue interval reminder  ->  show, advance its grid
+        ->  return the time to the next deadline (at most interval_ms)
+```
+
+The timing rules, each one a defect that reached users:
+
+- **One grid per reminder.** A reminder is due at `offset + n × every`
+  minutes after the cadence starts, and meeting a deadline moves it on by
+  one period from when it was *due*. Anchoring the next one on when it was
+  *shown* let every late reminder slide the rest of the session.
+- **The catalogue is staggered.** Cadences that start together come due
+  together at every common multiple, and went out thirty seconds apart.
+  Each reminder carries an `offset_minutes`, and a test walks the whole
+  repeating timetable to prove no two ever fall within
+  `MIN_SEPARATION_MINUTES`. Changing a cadence means re-checking the offsets;
+  the test says so.
+- **The loop wakes for its deadlines.** `tick()` returns the time to the next
+  one, so a reminder is shown within about a second of its time rather than
+  at the next fixed half-minute tick.
+- **Shown first, recorded second.** The daily record's write can wait on the
+  database's busy timeout; it happens after the reminder is on screen, and
+  the service's stop budget covers that wait.
+- **A gap is read from both clocks.** The cadence runs on the monotonic
+  clock so a corrected system clock cannot release a backlog, but that clock
+  stands still through a sleep on macOS and Linux, so the wall clock is read
+  as well to notice one.
+
 **Screenshot capture and URL tracking are likewise not implemented** in the
 client; it only reads screenshots the backend already holds. The mock fallback
 data that previously made these tabs look populated has been removed, so the
@@ -698,11 +741,20 @@ tabs now show honest empty states.
   a platform toast will not stay up for as long as it is asked to: Windows has
   ignored `Shell_NotifyIcon`'s `uTimeout` since Vista and uses the user's
   accessibility setting instead (five seconds by default, about twenty-five for
-  a long toast). `DISPLAY_MS` is a minute, and the in-app card is what makes
-  that a real minute. The platform toast is the fallback for a machine the card
-  cannot be placed on — never both at once, or one event notifies twice. The
-  card owns no timer, is reused for every notification so a burst cannot stack
-  windows, and never takes focus (`WA_ShowWithoutActivating`).
+  a long toast). `DISPLAY_MS` is thirty seconds, for every notification, and
+  the in-app card is what makes that a real thirty seconds. The platform toast
+  is the fallback for a machine the card cannot be placed on — never both at
+  once, or one event notifies twice. A card owns no timer and never takes
+  focus (`WA_ShowWithoutActivating`).
+- **Each notification gets its own card.** One that arrives while another is
+  still up is stacked above it, for its own thirty seconds, and closing one
+  (its ×) leaves the others. There used to be a single card whose text was
+  replaced: a second notification was then a change of words on a card the
+  user had stopped looking at, and nothing said anything new had come. The
+  stack is capped (`MAX_CARDS`, and never taller than the screen) with the
+  oldest making room, and the very same notification repeated while it is up
+  restarts its time instead of adding a twin. There is still exactly one
+  dismissal timer: it is armed for whichever card goes next.
 - **De-duplication** by key within a 20-second window, and a ceiling of 6
   notifications per minute, so network flapping produces one message rather than
   a burst.

@@ -20,6 +20,53 @@ re-grant a permission.
 
 ## [Unreleased]
 
+### Changed
+
+- **The project list shows 20 projects per page**, up from 10.
+- **The project you are tracking is at the top of the project list.** While a
+  timer is running, its project is the first row on the first page, so you do
+  not have to search for it. When you stop, or switch to another project, it
+  goes back to its usual place.
+- **Notifications stay on screen for 30 seconds**, down from a minute.
+- **A new notification no longer replaces the one already on screen.** It
+  appears as its own card above it, so you can see that something new came
+  in. Each card closes by itself after 30 seconds, or when you click its ×.
+- **A manual time entry (Request) now asks for a reason.** Choose one of
+  "Forgot to start/stop timer", "Used wrong task/project" or "Other"; your
+  approver sees it with the request. The Billable box is gone: whether the
+  time is billable is taken from the project itself, so it is always right.
+- **You can search inside the project and task drop-downs.** When you add a
+  manual time entry (Request) or reassign idle time, open the list and start
+  typing to find a project or task by name.
+- The Activity search box is shown on the Apps and URLs tabs only. It no
+  longer takes up a row on the Screenshots tab, where it could not be used.
+
+### Fixed
+
+- **The project list no longer jumps back to page 1 by itself.** If you were
+  on page 2 or 3, every background sync sent you back to the first page.
+  The list now stays where you left it.
+- **Health reminders no longer arrive in a burst.** After an hour of work,
+  several reminders (water, posture, blink, 20-20-20) used to appear within a
+  minute or two of each other, each replacing the last. They are now spread
+  out: no two are ever less than five minutes apart, and each one still
+  repeats as often as before.
+- **Reminders arrive on time.** A reminder is shown when it is due rather than
+  up to half a minute later, a late one no longer delays the ones after it,
+  and the break reminders (10:30, 13:30, 14:15, 16:30) appear at that time.
+- On a Mac, a reminder no longer appears moments after the laptop wakes from
+  sleep.
+- **Tooltips are readable.** The "Previous page" / "Next page" tips under the
+  task list, the tips on the top bar buttons, on your name in the sidebar and
+  on the Play button were white text on a white box.
+- The Activity search box has a visible border and no longer sits flush
+  against the list below it.
+- The scrollbar beside the project list no longer shows a checkered strip.
+- **Drop-downs look right.** The arrow on the Project, Task, Work Date, Status
+  and Feedback category fields was a boxed button with a broken border, and
+  on the idle Reassign dialog it was missing altogether. Every drop-down now
+  has a clean arrow and the same list.
+
 ## [1.3.0]
 
 The installer and the macOS bundles are still unsigned: Windows SmartScreen

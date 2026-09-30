@@ -23,7 +23,8 @@ class ManualTimeEntryRepository:
         end_time: datetime,
         total_seconds: int,
         description: Optional[str] = None,
-        is_billable: bool = True
+        is_billable: bool = True,
+        reason: Optional[str] = None,
     ) -> ManualTimeEntry:
         db_entry = ManualTimeEntry(
             organization_id=organization_id,
@@ -36,6 +37,7 @@ class ManualTimeEntryRepository:
             total_seconds=total_seconds,
             description=description,
             is_billable=is_billable,
+            reason=reason,
             approval_status='pending'
         )
         db.add(db_entry)

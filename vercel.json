@@ -48,6 +48,10 @@
     {
       "path": "/internal/activity/daily-rollup",
       "schedule": "50 18 * * *"
+    },
+    {
+      "path": "/internal/wfpm/timer-events/dispatch",
+      "schedule": "*/1 * * * *"
     }
   ]
 }

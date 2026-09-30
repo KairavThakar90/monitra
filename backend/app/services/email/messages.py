@@ -1506,6 +1506,22 @@ def _manual_duration(payload: dict[str, Any]) -> str:
     return format_duration(payload.get("total_seconds"))
 
 
+def _manual_reason(payload: dict[str, Any]) -> Optional[str]:
+    """The reason the requester chose, in words; None when none was given.
+
+    A request filed before the field existed, or by a client that does not
+    ask for one, has no reason -- the row is then left out rather than filled
+    with a placeholder. A value this build does not know (a newer client's)
+    is shown as it was sent, not dropped.
+    """
+    from app.schemas.manual_time_entry import MANUAL_ENTRY_REASON_LABELS
+
+    reason = payload.get("reason")
+    if not reason:
+        return None
+    return MANUAL_ENTRY_REASON_LABELS.get(str(reason), str(reason))
+
+
 def _manual_rows(payload: dict[str, Any], *, include_employee: bool, include_decision: bool) -> list[tuple[str, Any]]:
     """The request exactly as it was filed, one label/value pair per field."""
     rows: list[tuple[str, Any]] = []
@@ -1517,6 +1533,7 @@ def _manual_rows(payload: dict[str, Any], *, include_employee: bool, include_dec
         ("Date", _manual_date(payload)),
         ("Time", _manual_time_range(payload)),
         ("Duration", _manual_duration(payload)),
+        ("Reason", _manual_reason(payload)),
         ("Billable", "Yes" if payload.get("is_billable") else "No"),
         ("Submitted", _display_times(payload.get("submitted_at"))[2]),
     ]

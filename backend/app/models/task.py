@@ -31,6 +31,11 @@ class Task(Base):
     #: the same name. Unique per organization; NULL for tasks created without
     #: one (the web client, older desktop builds, the default project tasks).
     client_op: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    #: The id this task has in WFPM -- the link the WFPM integration (app/WFPM)
+    #: addresses it by, and what a timer started on this task sends to WFPM so
+    #: the matching timer starts there. Opaque text; unique per organization;
+    #: NULL for every task WFPM does not know, which starts no WFPM timer.
+    wfpm_task_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
@@ -45,6 +50,10 @@ class Task(Base):
         Index(
             'uq_tasks_org_client_op', 'organization_id', 'client_op',
             unique=True, postgresql_where=text('client_op IS NOT NULL'),
+        ),
+        Index(
+            'uq_tasks_org_wfpm_task_id', 'organization_id', 'wfpm_task_id',
+            unique=True, postgresql_where=text('wfpm_task_id IS NOT NULL'),
         ),
     )
 

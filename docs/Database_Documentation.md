@@ -107,6 +107,7 @@ Indexes: `(organization_id, role_name)`, `(organization_id, status)`.
 | fixed_hours | numeric(8,2) | |
 | time_tracked_seconds | integer | default 0 — denormalized rollup, kept in sync by the time-entry write path, not computed on read |
 | leader_id | bigint | FK → users (nullable) |
+| wfpm_project_id | varchar(255) | The id this project has in WFPM (nullable). UNIQUE with `organization_id` where set (`uq_projects_org_wfpm_project_id`). See `docs/WFPM_INTEGRATION.md` |
 | created_by | bigint | NOT NULL, FK → users (no ON DELETE rule declared) |
 | created_at / updated_at | timestamptz | default `now()` |
 
@@ -168,6 +169,7 @@ Unique: `(project_id, user_id)` — a user can only be added to a project once.
 | completed_at | timestamptz | |
 | completed_by | bigint | |
 | is_duplicate | boolean | default false |
+| wfpm_task_id | varchar(255) | The id this task has in WFPM (nullable). UNIQUE with `organization_id` where set (`uq_tasks_org_wfpm_task_id`). A timer on a task that has one is announced to WFPM. See `docs/WFPM_INTEGRATION.md` |
 | created_by | bigint | NOT NULL |
 | created_at / updated_at | timestamptz | default `now()` |
 

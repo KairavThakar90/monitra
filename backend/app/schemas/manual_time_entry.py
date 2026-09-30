@@ -1,3 +1,5 @@
+from enum import Enum
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from datetime import date, datetime
 from typing import Optional
@@ -10,6 +12,30 @@ from app.core.validation import Identifier, OptionalDescription, OptionalIdentif
 MAX_MANUAL_ENTRY_SECONDS = 24 * 60 * 60
 
 
+class ManualEntryReason(str, Enum):
+    """Why time is being requested after the fact.
+
+    A fixed set, chosen from a drop-down in the desktop's Request dialog. The
+    values are the API's contract and what is stored; the wording a person
+    reads lives in `MANUAL_ENTRY_REASON_LABELS`. The desktop keeps the same
+    three (`desktop/app/time_entries/service.py`), and its test suite reads
+    this file to prove the two lists have not drifted apart.
+    """
+
+    forgot_timer = "forgot_timer"
+    wrong_task_project = "wrong_task_project"
+    other = "other"
+
+
+#: The reason as the requester chose it, for anything a person reads (the
+#: approver's email, a review screen). One definition, beside the values.
+MANUAL_ENTRY_REASON_LABELS: dict[str, str] = {
+    ManualEntryReason.forgot_timer.value: "Forgot to start/stop timer",
+    ManualEntryReason.wrong_task_project.value: "Used wrong task/project",
+    ManualEntryReason.other.value: "Other",
+}
+
+
 class ManualTimeEntryCreate(BaseModel):
     project_id: Identifier
     task_id: Identifier
@@ -20,6 +46,10 @@ class ManualTimeEntryCreate(BaseModel):
     #: Omitted means "whatever the project is": billable on a fixed-hours
     #: project, not on a free one. `True` against a free project is refused.
     is_billable: bool | None = None
+    #: Why the time is being requested. Optional in the contract, because the
+    #: web form and desktop builds older than the field do not send one; a
+    #: value that is sent must be one of the set.
+    reason: ManualEntryReason | None = None
     # Optional real clock-time slot. If omitted, behavior is unchanged from
     # before this field existed: start_time defaults to midnight UTC on
     # work_date and end_time = start_time + total_seconds. If provided, both
@@ -48,6 +78,7 @@ class ManualTimeEntryUpdate(BaseModel):
     total_seconds: Optional[int] = Field(None, gt=0, le=MAX_MANUAL_ENTRY_SECONDS)
     description: OptionalDescription = None
     is_billable: Optional[bool] = None
+    reason: Optional[ManualEntryReason] = None
 
     @model_validator(mode="after")
     def _validate_time_slot(self):
@@ -79,6 +110,7 @@ class ManualTimeEntryRead(BaseModel):
     total_seconds: int
     description: str | None
     is_billable: bool
+    reason: str | None = None
     approval_status: str
     approved_by: int | None
     approved_at: datetime | None

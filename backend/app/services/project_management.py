@@ -188,7 +188,7 @@ class ProjectManagementService:
     @staticmethod
     def default_project_status(db: Session):
         """The org's "Active" project status row -- for a caller that creates
-        a project without naming one (see app/api/wfpm.py). Matched on the
+        a project without naming one (see app/WFPM/router.py). Matched on the
         normalised name, like the Todo lookup below, so a deployment seeded
         with different ids still finds its own Active row."""
         item = next((row for row in StatusCatalog.project_statuses(db).values() if ProjectManagementService._status_key(row.name) == "active"), None)
@@ -199,7 +199,7 @@ class ProjectManagementService:
     @staticmethod
     def default_task_status(db: Session):
         """The org's "Todo" task status row -- for a caller that creates a
-        task without naming one (see app/api/wfpm.py and `create`, which
+        task without naming one (see app/WFPM/router.py and `create`, which
         seeds a new project's default tasks against the same row)."""
         item = next((row for row in StatusCatalog.task_statuses(db).values() if ProjectManagementService._status_key(row.name) == "todo"), None)
         if not item:
@@ -305,7 +305,7 @@ class ProjectManagementService:
         return payloads
 
     @staticmethod
-    def create(db: Session, user: User, payload: ProjectCreate, owner_required: bool = True):
+    def create(db: Session, user: User, payload: ProjectCreate, owner_required: bool = True, wfpm_project_id: Optional[str] = None):
         """Create a project.
 
         `owner_required=False` is for the WFPM integration alone: its callers
@@ -313,6 +313,12 @@ class ProjectManagementService:
         nobody made, so its projects start without one -- exactly like every
         project that predates owners. Every other caller must name an eligible
         owner.
+
+        `wfpm_project_id` is likewise the WFPM integration's alone (see
+        app/WFPM/service.py): the id this project has in WFPM, written in the
+        same transaction as the row so a project can never exist half-linked.
+        It is a keyword rather than a `ProjectCreate` field so that no other
+        route can set it.
         """
         if payload.owner_id is not None:
             owner = resolve_owner(db, user, payload.owner_id)
@@ -328,7 +334,7 @@ class ProjectManagementService:
         leader_id = user.id if is_team_scoped(user) else payload.leader_id
         project_status, leader, employees = ProjectManagementService._validate_project_fields(db, user, payload.status_id, leader_id, payload.employee_ids, payload.deadline, payload.billing_type, payload.fixed_hours)
         try:
-            project = Project(organization_id=user.organization_id, project_name=payload.project_name, description=payload.description, status=ProjectManagementService._legacy_status(project_status, PROJECT_STATUS_NAMES, "project"), status_id=project_status.id, owner_id=owner.id if owner else None, leader_id=leader.id, deadline=payload.deadline, billing_type=payload.billing_type.value, fixed_hours=payload.fixed_hours, is_billable=payload.billing_type == BillingType.fixed, created_by=user.id)
+            project = Project(organization_id=user.organization_id, project_name=payload.project_name, description=payload.description, status=ProjectManagementService._legacy_status(project_status, PROJECT_STATUS_NAMES, "project"), status_id=project_status.id, owner_id=owner.id if owner else None, leader_id=leader.id, deadline=payload.deadline, billing_type=payload.billing_type.value, fixed_hours=payload.fixed_hours, is_billable=payload.billing_type == BillingType.fixed, created_by=user.id, wfpm_project_id=wfpm_project_id)
             db.add(project)
             db.flush()
             # The project may already have members by the time the flush returns.
@@ -617,7 +623,10 @@ class ProjectManagementService:
         return ProjectManagementService._task_payload(task, StatusCatalog.task_status(db, task.status_id), assignee)
 
     @staticmethod
-    def create_task(db: Session, user: User, project_id: int, payload: TaskCreate):
+    def create_task(db: Session, user: User, project_id: int, payload: TaskCreate, wfpm_task_id: Optional[str] = None):
+        # `wfpm_task_id` is the WFPM integration's alone (app/WFPM/service.py):
+        # the id this task has in WFPM, written with the row. A keyword rather
+        # than a `TaskCreate` field so that no other route can set it.
         project = ProjectManagementService._project(db, project_id, user)
         # Idempotency. A create whose reply was lost is retried with the same
         # `client_op`; the row already exists, so it is returned rather than
@@ -654,7 +663,7 @@ class ProjectManagementService:
         # legacy route has always done.
         if assignee is None and is_task_scoped(user):
             assignee = user
-        task = Task(organization_id=user.organization_id, project_id=project.id, task_name=payload.name, assignee_id=assignee.id if assignee else None, status_id=task_status.id, status=ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task"), created_by=user.id, client_op=payload.client_op, estimated_hours=payload.estimated_hours)
+        task = Task(organization_id=user.organization_id, project_id=project.id, task_name=payload.name, assignee_id=assignee.id if assignee else None, status_id=task_status.id, status=ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task"), created_by=user.id, client_op=payload.client_op, estimated_hours=payload.estimated_hours, wfpm_task_id=wfpm_task_id)
         db.add(task)
         try:
             db.flush()
@@ -728,6 +737,30 @@ class ProjectManagementService:
             "project_id": project_id, "task_id": task.id, "entity_id": task.id,
         })
         return ProjectManagementService._task_payload(task, task_status, assignee)
+
+    @staticmethod
+    def unassign_task(db: Session, user: User, project_id: int, task_id: int):
+        """Leave a task with no assignee.
+
+        `update_task` can only *replace* an assignee -- an explicit null there
+        is refused, because "assign to nobody" is not an assignment. This is
+        the other half, and it clears **both** representations together
+        (`task_assignees` and `tasks.assignee_id`) for the reason task_scope
+        gives: a rule that consulted only one would call the task unassigned
+        in one place and assigned in another.
+
+        An unassigned task is shared project work, visible to every member of
+        its project (see task_scope). That is what this does, not a side
+        effect of it. Idempotent: unassigning an unassigned task changes
+        nothing and answers the same way.
+        """
+        ProjectManagementService._project(db, project_id, user)
+        task = ProjectManagementService._task(db, user, project_id, task_id)
+        db.execute(delete(TaskAssignee).where(TaskAssignee.task_id == task.id))
+        task.assignee_id = None
+        db.commit()
+        db.refresh(task)
+        return ProjectManagementService._task_payload(task, StatusCatalog.task_status(db, task.status_id), None)
 
     @staticmethod
     def delete_task(db: Session, user: User, project_id: int, task_id: int):

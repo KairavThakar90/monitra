@@ -248,6 +248,41 @@ class Settings(BaseSettings):
     #: resolves it.
     EMAIL_ASSET_BASE_URL: str = ""
 
+    # ── WFPM integration (Monitra → WFPM timer start) ─────────────────────
+    # When a timer starts on a task that is linked to WFPM
+    # (`tasks.wfpm_task_id`), this backend tells WFPM so the matching timer
+    # starts there. Everything about it lives in app/WFPM; the contract is
+    # docs/WFPM_INTEGRATION.md.
+    #
+    #: The full URL of the WFPM endpoint that starts a task timer, e.g.
+    #: "https://wfpm.example.com/api/monitra/timer/start". Left empty, the
+    #: integration is off: no event is queued and nothing is sent. Never
+    #: populate this with a placeholder -- a queue that fills against a URL
+    #: that does not exist is delivered all at once the day it does.
+    WFPM_TIMER_START_URL: str = ""
+    #: The secret WFPM issues to this backend, sent as `Authorization: Bearer`.
+    #: Optional only because WFPM may authorise by network instead; when WFPM
+    #: issues one, set it here and nowhere else.
+    WFPM_API_TOKEN: str = ""
+    #: Hard ceiling on one delivery attempt. Delivery runs after the response,
+    #: never inside the timer-start request, but an unbounded read would still
+    #: pin a worker for as long as WFPM chose to stay silent.
+    WFPM_REQUEST_TIMEOUT_SECONDS: float = 10.0
+    #: Attempts before a timer event is parked as `failed`.
+    WFPM_TIMER_MAX_ATTEMPTS: int = 6
+    #: Delay before the first retry. Each later attempt doubles it, up to the
+    #: maximum, and every delay carries jitter.
+    WFPM_TIMER_RETRY_BASE_DELAY_SECONDS: int = 30
+    WFPM_TIMER_RETRY_MAX_DELAY_SECONDS: int = 900
+    #: Most events one sweep will attempt, so a backlog cannot make a single
+    #: invocation run past its timeout.
+    WFPM_TIMER_DISPATCH_BATCH_SIZE: int = 50
+
+    @property
+    def wfpm_timer_sync_configured(self) -> bool:
+        """Whether a started timer is announced to WFPM at all."""
+        return bool((self.WFPM_TIMER_START_URL or "").strip())
+
     @property
     def email_configured(self) -> bool:
         """Whether this deployment can actually deliver a message."""

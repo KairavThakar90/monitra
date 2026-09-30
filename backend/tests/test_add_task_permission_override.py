@@ -123,7 +123,7 @@ class CreateTaskRouteTests(unittest.TestCase):
             with self.subTest(route=route), \
                  patch("app.api.project_management.ProjectManagementService.create_task") as pm_create, \
                  patch("app.api.task.TaskService.create_task") as legacy_create, \
-                 patch("app.api.wfpm.ProjectManagementService.create_task") as wfpm_create:
+                 patch("app.services.project_management.ProjectManagementService.create_task") as wfpm_create:
                 response = self._post(route)
                 self.assertEqual(response.status_code, 403, response.text)
                 self.assertEqual(response.json()["detail"], PER_MEMBER_OVERRIDE_MESSAGES["tasks:create"])

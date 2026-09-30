@@ -149,7 +149,9 @@ class ManualTimeEntryService:
             end_time=end_time,
             total_seconds=total_seconds,
             description=entry_in.description,
-            is_billable=is_billable
+            is_billable=is_billable,
+            # The stored value is the plain string, not the enum member.
+            reason=entry_in.reason.value if entry_in.reason is not None else None,
         )
 
         # The request is committed. Emails follow from it and cannot fail it:
@@ -258,6 +260,8 @@ class ManualTimeEntryService:
         update_data = payload.model_dump(exclude_unset=True)
         if not update_data:
             return entry
+        if update_data.get("reason") is not None:
+            update_data["reason"] = update_data["reason"].value
 
         project_id = update_data.get("project_id", entry.project_id)
         task_id = update_data.get("task_id", entry.task_id)
@@ -470,7 +474,7 @@ class ManualTimeEntryService:
                 **{c: getattr(entry, c) for c in (
                     "id", "organization_id", "user_id", "project_id", "task_id", "work_date",
                     "start_time", "end_time", "total_seconds", "description", "is_billable",
-                    "approval_status", "approved_by", "approved_at", "mirrored_time_entry_id",
+                    "reason", "approval_status", "approved_by", "approved_at", "mirrored_time_entry_id",
                     "created_at", "updated_at",
                 )},
                 "member_name": user.name if user else f"User {entry.user_id}",

@@ -5,9 +5,17 @@ Consolidates `ui/notification_manager.py`. Four audited problems are addressed:
 
 **Notifications that never dismiss.** Every notification now has a deterministic
 lifecycle owned by this service: it is shown, a single owned QTimer retires it,
-and retirement also happens if the notification is superseded or the service
-stops. A dismissal timer can no longer be orphaned by a widget being destroyed,
-because no widget owns one.
+and retirement also happens if the user closes it or the service stops. A
+dismissal timer can no longer be orphaned by a widget being destroyed, because
+no widget owns one.
+
+**Notifications that overwrite each other.** There used to be one card, and a
+notification arriving while another was up replaced its text. Anyone who had
+not closed the first never saw that a second had come: the card was already
+there, in the same place, and only its words had changed. Each notification
+now gets its own card, stacked above the ones still up, for its own thirty
+seconds. There is still exactly one timer -- it is armed for whichever card is
+due to go next.
 
 **Notification storms.** Going offline and online repeatedly used to emit a
 toast per transition, per subscriber. Notifications are now de-duplicated by
@@ -30,7 +38,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import (
@@ -152,6 +160,23 @@ def set_windows_app_identity() -> None:
         pass
 
 
+class _ShownCard:
+    """One notification that is on screen: its card and when it goes."""
+
+    __slots__ = ("card", "key", "title", "message", "link", "deadline")
+
+    def __init__(self, card, key, title, message, link, deadline) -> None:
+        self.card = card
+        self.key = key
+        self.title = title
+        self.message = message
+        #: URL this card opens when clicked, or None. Held per card, so a
+        #: click can only ever open the link of the card that was clicked.
+        self.link = link
+        #: `time.monotonic()` at which the card is retired.
+        self.deadline = deadline
+
+
 class NotificationService(BaseService):
     """
     Owns notification delivery and the system tray icon.
@@ -165,7 +190,7 @@ class NotificationService(BaseService):
 
     restore_requested = Signal()
     quit_requested = Signal()
-    toast_requested = Signal(str, str, str, str)  # message, level, title, link
+    toast_requested = Signal(str, str, str, str, str)  # message, level, title, link, key
 
     #: A repeat of the same key inside this window is suppressed.
     DEDUPE_SECONDS = 2.0
@@ -182,7 +207,19 @@ class NotificationService(BaseService):
     #: five seconds by default and about twenty-five for a long toast. That is
     #: why the platform toast is now only the fallback for a machine the popup
     #: cannot be placed on.
-    DISPLAY_MS = 60_000
+    #:
+    #: Thirty seconds, for every notification. It was a minute; the owner
+    #: asked for half that (2026-09-30) -- long enough to be read by someone
+    #: who looked away, short enough that the card is not still sitting in
+    #: the corner of the screen when the next thing happens.
+    DISPLAY_MS = 30_000
+
+    #: The most cards on screen at once. A notification that would make one
+    #: more retires the oldest: a column of cards up the side of the screen
+    #: is not something anybody reads, and the oldest has had the longest.
+    MAX_CARDS = 4
+    #: Gap between one card and the next above it, in pixels.
+    CARD_GAP = 10
 
     def __init__(self, runtime, parent: Optional[QObject] = None) -> None:
         super().__init__(runtime, parent)
@@ -195,31 +232,48 @@ class NotificationService(BaseService):
         # notify(); the tray itself is only ever touched on this object's own
         # thread (see `_deliver`).
         self._admit_lock = threading.Lock()
-        # One owned timer retires the current toast. Single instance, single
-        # owner: a dismissal timer can never be orphaned.
+        # One owned timer retires every notification. Single instance, single
+        # owner: a dismissal timer can never be orphaned. With several cards
+        # up it is armed for whichever goes next, and re-armed as each one
+        # does -- there is never a timer per card.
+        #
+        # Precise, because it is what takes a card down: Qt rounds a coarse
+        # timer this long to whole seconds and may fire it early, and a card
+        # asked to stay for thirty seconds should stay for thirty.
         self._dismiss_timer = QTimer(self)
         self._dismiss_timer.setSingleShot(True)
-        self._dismiss_timer.timeout.connect(self._retire_current)
+        self._dismiss_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._dismiss_timer.timeout.connect(self._on_dismiss_timeout)
+        #: The deadline the timer is currently armed for, so a timeout retires
+        #: what it was set for even if it lands a few milliseconds early.
+        self._armed_deadline: Optional[float] = None
         self._available = False
-        #: The in-app notification card, created on first use on this (GUI)
-        #: thread. It is the only surface that can honour `DISPLAY_MS`; the
-        #: platform toast is the fallback for a machine it cannot be shown on.
-        #: One card is reused for every notification, and it owns no timer —
-        #: `_dismiss_timer` above is still the single owner of dismissal.
-        self._popup: Optional[ToastPopup] = None
+        #: The notifications on screen, oldest first -- which is bottom first:
+        #: a new card is stacked above the ones already up. Each card is a
+        #: window this application draws, the only surface that can honour
+        #: `DISPLAY_MS`; the platform toast is the fallback for a machine a
+        #: card cannot be shown on. Cards own no timer.
+        self._cards: List[_ShownCard] = []
+        #: Cards not currently showing anything, kept to be used again rather
+        #: than destroying and recreating a window per notification.
+        self._spare_cards: List[ToastPopup] = []
+        #: The card most recently shown, whether or not it is still up.
+        self._last_card: Optional[ToastPopup] = None
         #: Cleared for good if the popup cannot be built, so a platform that
         #: refuses it falls back once rather than on every notification.
         self._popup_enabled = True
-        #: URL the *currently displayed* toast opens when it is clicked, or
-        #: None. A platform toast renders plain text, so a URL in the body is
-        #: not a link and cannot be clicked; without this a notification that
-        #: exists to point somewhere is a dead end — the user clicks it, it
-        #: dismisses, and the address is gone.
+        #: URL the *platform toast* opens when it is clicked, or None. A
+        #: platform toast renders plain text, so a URL in the body is not a
+        #: link and cannot be clicked; without this a notification that exists
+        #: to point somewhere is a dead end — the user clicks it, it
+        #: dismisses, and the address is gone. (A card carries its own link.)
         #:
-        #: Exactly one link is held, replaced when a toast is superseded and
-        #: cleared when one is retired, so a click can never open the link of
+        #: Exactly one is held, replaced when the toast is superseded and
+        #: cleared when it is retired, so a click can never open the link of
         #: a notification that is no longer on screen.
         self._pending_link: Optional[str] = None
+        #: When the platform toast's lifecycle ends, or None if none is up.
+        self._toast_deadline: Optional[float] = None
         # A queued connection to self: whatever thread emits this signal, the
         # slot runs on the thread this service lives on (the GUI thread). It
         # is what makes notify() safe to call from anywhere -- see notify().
@@ -261,12 +315,11 @@ class NotificationService(BaseService):
         self.log.info("system tray initialised")
 
     def on_stop(self, timeout_ms: int) -> bool:
-        self._dismiss_timer.stop()
-        self._pending_link = None
-        if self._popup is not None:
-            self._popup.hide()
-            self._popup.deleteLater()
-            self._popup = None
+        self._retire_current()
+        for card in self._spare_cards:
+            card.deleteLater()
+        self._spare_cards = []
+        self._last_card = None
         if self._tray is not None:
             self._tray.hide()
             self._tray.setContextMenu(None)
@@ -297,6 +350,10 @@ class NotificationService(BaseService):
         delivers `messageClicked` on the thread the tray lives on.
         """
         link, self._pending_link = self._pending_link, None
+        self._open_link_or_restore(link)
+
+    def _open_link_or_restore(self, link: Optional[str]) -> None:
+        """What a click on a notification does, whichever surface showed it."""
         if not link:
             self.restore_requested.emit()
             return
@@ -333,41 +390,119 @@ class NotificationService(BaseService):
                 self._recent = {k: t for k, t in self._recent.items() if t >= cutoff}
         return True
 
-    def _retire_current(self) -> None:
-        """
-        Explicitly end the current notification's lifecycle.
+    @property
+    def _popup(self) -> Optional[ToastPopup]:
+        """The newest card: the one on top of the stack, or, with nothing up,
+        the one shown last. None before the first notification and after the
+        service stops."""
+        return self._cards[-1].card if self._cards else self._last_card
+
+    # ── The stack of cards ────────────────────────────────────────────────────
+
+    def _clock(self) -> float:
+        return time.monotonic()
+
+    def _arm_timer(self) -> None:
+        """Arm the one timer for whichever notification goes next."""
+        deadlines = [shown.deadline for shown in self._cards]
+        if self._toast_deadline is not None:
+            deadlines.append(self._toast_deadline)
+        if not deadlines:
+            self._dismiss_timer.stop()
+            self._armed_deadline = None
+            return
+        self._armed_deadline = min(deadlines)
+        remaining_ms = round((self._armed_deadline - self._clock()) * 1000)
+        self._dismiss_timer.start(max(0, remaining_ms))
+
+    def _on_dismiss_timeout(self) -> None:
+        """The timer fired: retire what it was armed for, and anything else
+        that is due, then arm it for the next."""
+        due = self._clock()
+        if self._armed_deadline is not None:
+            due = max(due, self._armed_deadline)
+        due += 0.05     # two cards shown in the same instant go together
+        for shown in [entry for entry in self._cards if entry.deadline <= due]:
+            self._retire_card(shown, restack=False)
+        if self._toast_deadline is not None and self._toast_deadline <= due:
+            self._retire_toast()
+        self._restack()
+        self._arm_timer()
+
+    def _retire_card(self, shown: _ShownCard, restack: bool = True) -> None:
+        """Take one card down and put it back with the spares."""
+        if shown not in self._cards:
+            return
+        self._cards.remove(shown)
+        shown.card.hide()
+        self._spare_cards.append(shown.card)
+        self.log.debug("notification retired (%s)", shown.key)
+        if restack:
+            self._restack()
+
+    def _retire_toast(self) -> None:
+        """End the platform toast's lifecycle.
 
         The platform dismisses its own toast. This is the service's own
-        end-of-life marker for it: the single owned timer that fires here is
-        restarted, never accumulated, so no notification can outlive its
-        display window without the service knowing.
+        end-of-life marker for it: its link must go with it, because a click
+        arriving afterwards belongs to no notification and must not open a
+        stale address.
         """
-        # The toast is gone, so its link must go with it. A click arriving
-        # after this belongs to no notification and must not open a stale
-        # address.
         self._pending_link = None
-        if self._popup is not None:
-            self._popup.hide()
-        self.log.debug("notification retired")
+        self._toast_deadline = None
 
-    def _dismiss_now(self) -> None:
-        """End the current notification ahead of its timer.
+    def _retire_current(self) -> None:
+        """End every notification that is up, cards and platform toast alike."""
+        for shown in list(self._cards):
+            self._retire_card(shown, restack=False)
+        self._retire_toast()
+        self._arm_timer()
 
-        The user closed or clicked the card, so the display window is over:
-        disarm the timer rather than leaving it to fire against a notification
-        that has already gone. The timer is single-shot and owned here, so
-        stopping it can never leave one armed for a card that is not shown.
+    def _restack(self) -> None:
+        """Sit each card on the one below it, oldest at the corner.
+
+        Run whenever the stack changes, so a card whose neighbour below has
+        gone slides down into the space. Then the cards are raised from the
+        top of the stack down, leaving the lowest one frontmost: each card's
+        window is larger than the card by the margin its shadow is painted
+        in, and with the newest frontmost that margin lay over the close
+        button of the card beneath it.
         """
-        self._dismiss_timer.stop()
-        self._retire_current()
+        lift = 0
+        for shown in self._cards:
+            shown.card.place(lift)
+            lift += shown.card.card_height() + self.CARD_GAP
+        for shown in reversed(self._cards):
+            shown.card.raise_()
 
-    def _on_popup_clicked(self) -> None:
-        """A click on the in-app card is a click on the notification."""
-        self._on_message_clicked()
-        self._dismiss_now()
+    def _entry_for(self, card: ToastPopup) -> Optional[_ShownCard]:
+        return next((shown for shown in self._cards if shown.card is card), None)
 
-    def _ensure_popup(self) -> Optional["ToastPopup"]:
-        """The in-app card, built on first use. None if it cannot be shown.
+    def _on_card_clicked(self, card: ToastPopup) -> None:
+        """A click on a card is a click on that notification: open its link,
+        or bring the window back if it has none, and take the card down."""
+        shown = self._entry_for(card)
+        if shown is None:
+            return
+        link = shown.link
+        self._retire_card(shown)
+        self._arm_timer()
+        self._open_link_or_restore(link)
+
+    def _on_card_dismissed(self, card: ToastPopup) -> None:
+        """The user closed a card with its close button: that card goes, the
+        others stay, and the timer moves on to whichever is next."""
+        shown = self._entry_for(card)
+        if shown is None:
+            return
+        self._retire_card(shown)
+        self._arm_timer()
+
+    def _ensure_popup(self) -> Optional[ToastPopup]:
+        """A card ready to show a notification, or None if one cannot be built.
+
+        A spare one if there is one, otherwise a new window. It stays with
+        the spares until `_show_card` takes it.
 
         Runs on this service's own thread — the GUI thread — because every
         caller is `_deliver`, which the queued `toast_requested` connection
@@ -375,8 +510,8 @@ class NotificationService(BaseService):
         """
         if not self._popup_enabled:
             return None
-        if self._popup is not None:
-            return self._popup
+        if self._spare_cards:
+            return self._spare_cards[-1]
         if QApplication.instance() is None:
             # Nothing to parent a window to. Not an error: a headless run
             # still logs, and the tray fallback still applies.
@@ -389,10 +524,52 @@ class NotificationService(BaseService):
             self.log.exception("could not create the notification popup")
             self._popup_enabled = False
             return None
-        popup.clicked.connect(self._on_popup_clicked)
-        popup.dismissed.connect(self._dismiss_now)
-        self._popup = popup
+        popup.clicked.connect(lambda card=popup: self._on_card_clicked(card))
+        popup.dismissed.connect(lambda card=popup: self._on_card_dismissed(card))
+        self._spare_cards.append(popup)
         return popup
+
+    def _show_card(self, title: str, message: str, level: str, link: str, key: str) -> bool:
+        """Put this notification on a card of its own, above the ones up.
+
+        :return: False if no card could be shown, and the caller should fall
+            back to the platform toast.
+        """
+        # The very same notification, still on screen: nothing new to say, so
+        # no second card saying it. Its time starts again.
+        for shown in self._cards:
+            if shown.key == key and shown.title == title and shown.message == message:
+                shown.deadline = self._clock() + self.DISPLAY_MS / 1000.0
+                shown.link = link or None
+                return True
+
+        card = self._ensure_popup()
+        if card is None:
+            return False
+        lift = sum(entry.card.card_height() + self.CARD_GAP for entry in self._cards)
+        try:
+            presented = card.present(title, message, level, lift)
+        except Exception:  # noqa: BLE001
+            self.log.exception("failed to show the notification popup")
+            presented = False
+        if not presented:
+            return False
+
+        # Counted from now, with the card on screen -- not from before it
+        # was built and laid out, which for the first card is real time.
+        deadline = self._clock() + self.DISPLAY_MS / 1000.0
+        self._spare_cards.remove(card)
+        self._cards.append(_ShownCard(card, key, title, message, link or None, deadline))
+        self._last_card = card
+        # Too many, or too tall for the screen: the oldest makes room. The
+        # newest is never the one to go -- it is the one nobody has seen.
+        while len(self._cards) > 1 and (
+            len(self._cards) > self.MAX_CARDS or getattr(card, "clipped", False)
+        ):
+            self._retire_card(self._cards[0], restack=False)
+            self._restack()
+        self._restack()
+        return True
 
     def notify(
         self,
@@ -430,12 +607,14 @@ class NotificationService(BaseService):
         self.log.info("notify [%s] %s", level, message)
 
         if QThread.currentThread() is not self.thread():
-            self.toast_requested.emit(message, level, title, link or "")
+            self.toast_requested.emit(message, level, title, link or "", dedupe_key)
             return True
 
-        return self._deliver(message, level, title, link or "")
+        return self._deliver(message, level, title, link or "", dedupe_key)
 
-    def _deliver(self, message: str, level: str, title: str, link: str = "") -> bool:
+    def _deliver(
+        self, message: str, level: str, title: str, link: str = "", key: str = ""
+    ) -> bool:
         """Show an admitted notification. Runs on this service's own thread.
 
         The in-app card is a plain widget and needs no system tray, so it is
@@ -444,39 +623,36 @@ class NotificationService(BaseService):
         module's docstring — not drop every notification, including a failed
         task creation, with no feedback at all.
         """
+        # A card of its own first, because a card is the only surface that
+        # stays up for `DISPLAY_MS`. The platform toast is shown only if a
+        # card could not be — never both, or one event would notify the user
+        # twice.
+        if self._show_card(title, message, level, link, key or f"{level}:{message}"):
+            self._arm_timer()
+            return True
+
+        if not self._available or self._tray is None:
+            return False
         # Set before showing: on a fast click the platform can deliver
         # `messageClicked` the instant the toast appears.
         self._pending_link = link or None
+        try:
+            # Use Monitra brand QIcon so Windows system toast displays Monitra logo
+            tray_icon = self._icon if self._icon and not self._icon.isNull() else _LEVEL_ICONS.get(level, QSystemTrayIcon.MessageIcon.Information)
+            self._tray.showMessage(
+                title, message, tray_icon,
+                self.DISPLAY_MS,
+            )
+        except Exception:  # noqa: BLE001
+            self.log.exception("failed to display notification")
+            self._pending_link = None
+            return False
 
-        # The in-app card first, because it is the only surface that stays up
-        # for `DISPLAY_MS`. The platform toast is shown only if the card could
-        # not be — never both, or one event would notify the user twice.
-        popup = self._ensure_popup()
-        shown = False
-        if popup is not None:
-            try:
-                shown = popup.present(title, message, level)
-            except Exception:  # noqa: BLE001
-                self.log.exception("failed to show the notification popup")
-                shown = False
-
-        if not shown:
-            if not self._available or self._tray is None:
-                self._pending_link = None
-                return False
-            try:
-                # Use Monitra brand QIcon so Windows system toast displays Monitra logo
-                tray_icon = self._icon if self._icon and not self._icon.isNull() else _LEVEL_ICONS.get(level, QSystemTrayIcon.MessageIcon.Information)
-                self._tray.showMessage(
-                    title, message, tray_icon,
-                    self.DISPLAY_MS,
-                )
-            except Exception:  # noqa: BLE001
-                self.log.exception("failed to display notification")
-                self._pending_link = None
-                return False
-
-        self._dismiss_timer.start(self.DISPLAY_MS + 500)
+        # The platform toast dismisses itself; the timer only ends its
+        # lifecycle (and its link), and is given a margin so it cannot end it
+        # while the toast is still up. A card gets the display time exactly.
+        self._toast_deadline = self._clock() + (self.DISPLAY_MS + 500) / 1000.0
+        self._arm_timer()
         return True
 
     # ── Convenience wrappers (compatible with the previous manager) ───────────
