@@ -508,7 +508,7 @@ export const AdminScreenshots: React.FC = () => {
         open={messageFor !== null}
         onClose={() => setMessageFor(null)}
         subjectName={messageFor?.subjectName}
-        capturedAt={messageFor?.shot.captured_at}
+        shot={messageFor?.shot}
       />
 
       {viewer && (

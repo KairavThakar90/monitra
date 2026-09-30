@@ -1,0 +1,49 @@
+<!--
+  Screenshot notice — sent to an employee when an administrator, HR or their
+  leader writes a notice about one of their screenshots.
+
+  The screenshot itself is attached to the message and referenced by its
+  Content-ID (`screenshot_image`), so it renders in a client that blocks remote
+  images and never depends on a public link to private storage. The notice text
+  is user-written: `message_html` is built by `templates.paragraphs()`, which
+  escapes it and only then adds the line breaks, and every value in
+  `detail_rows` goes through the same escaping. A notice containing markup
+  renders as the characters that were typed.
+-->
+<h1 class="st-h1" style="margin:0 0 12px 0;font-family:Helvetica,Arial,sans-serif;font-size:26px;line-height:34px;font-weight:700;color:#0F172A;letter-spacing:-0.3px;">
+  A notice about your screenshot
+</h1>
+
+<p style="margin:0 0 18px 0;font-family:Helvetica,Arial,sans-serif;font-size:16px;line-height:26px;color:#374151;">
+  {{ greeting }}
+</p>
+
+<p style="margin:0 0 22px 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:25px;color:#4B5563;">
+  {{ lead }}
+</p>
+
+<!-- The screenshot the notice is about. -->
+{{ screenshot_block }}
+
+<!-- The notice. -->
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 22px 0;border:1px solid #E8ECF3;border-radius:10px;border-collapse:separate;overflow:hidden;">
+  <tr>
+    <td class="st-card" style="padding:16px 18px;background-color:#F8FAFF;border-left:4px solid #2563EB;">
+      <p style="margin:0 0 8px 0;font-family:Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#2563EB;">
+        Notice
+      </p>
+      <div style="font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:25px;color:#1F2937;word-break:break-word;">
+        {{ message_html }}
+      </div>
+    </td>
+  </tr>
+</table>
+
+<!-- About the screenshot and who sent the notice. -->
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0;border:1px solid #E8ECF3;border-radius:10px;border-collapse:separate;overflow:hidden;">
+  {{ detail_rows }}
+</table>
+
+<p style="margin:26px 0 0 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:25px;color:#4B5563;">
+  {{ reply_note }}
+</p>

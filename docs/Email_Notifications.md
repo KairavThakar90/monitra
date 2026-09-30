@@ -130,6 +130,37 @@ There is deliberately **no feature flag**. The welcome and release emails have
 one because they fire automatically; this one fires because an administrator
 pressed a button, and a flag would make that press silently do nothing.
 
+### Screenshot notice — a reviewer writes to the employee about a screenshot
+
+On the Screenshots page, hovering a tile shows a message button. It opens a
+panel with the screenshot and a box for a notice; **Send notice** emails the
+screenshot, with the notice, to the employee who captured it
+(`POST /time-entry-screenshots/{id}/notice`,
+`TimeEntryScreenshotService.send_notice`, type `screenshot_notice`).
+
+**Admin, HR and Leader** — everyone holding `view_employees` — and scoped as
+viewing is: a leader can write about their own team's screenshots only, and a
+screenshot outside the caller's reach answers 404. Nobody can write about their
+own. The recipient is never a request field: it is the owner of the
+screenshot's time entry, so the request carries a message and nothing else.
+The text goes through the shared `DESCRIPTION` rule (limit overridden to 1,000
+characters, refused rather than scrubbed).
+
+The picture is read from Drive **at send time**, not frozen into the queued row:
+the row stays small and a retry reads the same file again. It is converted to
+JPEG and scaled to 1,400px wide, because WebP is not rendered inline by every
+mail client. If storage is down the delivery raises and the outbox retries with
+backoff — a notice about a screenshot that arrives without it is worse than one
+that arrives late. Sent by the deployment's one mailbox, displayed as
+"<sender> via Monitra", with Reply-To pointing at the sender.
+
+Refused up front, with a message the panel shows, when the notice could not
+arrive: the employee has no usable address (422), or email is switched off on
+the server (503). Idempotency is `screenshot:<id>:from:<sender>:<hash of the
+text>:<minute>` — a double click is one email, a different notice or a
+different sender is another. Each send is also written to the activity trail
+(`screenshot` / `screenshot_notice_sent`) under the sender.
+
 ### Monthly Project Summary — scheduled, per recipient scope
 
 On the 1st of each month, `/internal/reports/monthly-projects/run` queues a

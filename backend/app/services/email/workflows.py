@@ -26,7 +26,7 @@ from app.models.email_notification import (
     TYPE_FEEDBACK, TYPE_FEEDBACK_STATUS, TYPE_RELEASE, TYPE_WELCOME,
     TYPE_MANUAL_TIME_DECISION, TYPE_MANUAL_TIME_RECEIPT, TYPE_MANUAL_TIME_REQUEST,
     TYPE_MONTHLY_PROJECT_SUMMARY, TYPE_MONTHLY_REPORT, TYPE_PROJECT_BUDGET_ALERT,
-    TYPE_WEEKLY_REPORT,
+    TYPE_SCREENSHOT_NOTICE, TYPE_WEEKLY_REPORT,
 )
 from app.repositories.email_notification import EmailNotificationRepository
 from app.repositories.user import UserRepository
@@ -1019,3 +1019,92 @@ def queue_client_login_link_email(db: Session, user, handoff_token: str, backgro
             "CLIENT_LOGIN_LINK_EMAIL_QUEUE_FAILED: user=%s", getattr(user, "id", "?"), exc_info=True,
         )
         return False
+
+
+# ----------------------------------------------------------------------
+# Workflow 13 -- a notice about an employee's screenshot
+# ----------------------------------------------------------------------
+
+
+def screenshot_notice_dedupe_key(screenshot_id: int, sender_id: int, message: str, at: datetime) -> str:
+    """One notice, however many times the button was pressed.
+
+    Keyed on the screenshot, the sender and the text, bucketed to the minute:
+    a double click or a retried request lands on the same row, while the same
+    person sending a *different* notice about the same screenshot -- or the
+    same words again tomorrow -- is a new email. Hashed, so the key stays short
+    and never holds the text itself.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(" ".join((message or "").split()).encode("utf-8")).hexdigest()[:16]
+    return f"screenshot:{screenshot_id}:from:{sender_id}:{digest}:{at.strftime('%Y%m%d%H%M')}"
+
+
+def queue_screenshot_notice(
+    db: Session,
+    *,
+    screenshot,
+    recipient,
+    sender,
+    message: str,
+    project_name: Optional[str] = None,
+    task_name: Optional[str] = None,
+) -> Optional[int]:
+    """Queue a notice about `screenshot` to `recipient` (its owner).
+
+    **The recipient is whoever the screenshot belongs to**, resolved by the
+    caller from the screenshot's own time entry -- there is no address anywhere
+    on this path for a request to set. The sender chooses *which screenshot*,
+    and that choice alone decides who is written to.
+
+    Like every entry point here it never raises into the caller and returns the
+    queued id or None. The caller has already recorded that the notice was
+    sent; delivery is what follows from it.
+    """
+    try:
+        recipients = resolve_user_recipient(getattr(recipient, "email", "") or "")
+        if not recipients:
+            logger.warning(
+                "SCREENSHOT_NOTICE_SKIPPED: screenshot=%s user=%s reason=recipient_has_no_usable_email",
+                getattr(screenshot, "id", None), getattr(recipient, "id", None),
+            )
+            return None
+
+        now = datetime.now(timezone.utc)
+        captured_at = getattr(screenshot, "captured_at", None) or now
+        payload: dict[str, Any] = {
+            "screenshot_id": screenshot.id,
+            # Read at send time to attach the picture; not the picture itself.
+            "drive_file_id": getattr(screenshot, "google_drive_file_id", None),
+            "captured_at": captured_at.isoformat() if hasattr(captured_at, "isoformat") else str(captured_at),
+            "recipient_name": getattr(recipient, "name", None),
+            "sender_name": getattr(sender, "name", None),
+            "sender_role": (getattr(sender, "role_name", "") or "").replace("_", " ").title(),
+            "sender_email": getattr(sender, "email", None),
+            "message": message,
+            "project_name": project_name,
+            "task_name": task_name,
+        }
+        row = EmailOutboxService.enqueue(
+            db,
+            notification_type=TYPE_SCREENSHOT_NOTICE,
+            dedupe_key=screenshot_notice_dedupe_key(screenshot.id, sender.id, message, now),
+            recipients=recipients,
+            subject=messages.screenshot_notice_subject(payload),
+            payload=payload,
+            organization_id=getattr(screenshot, "organization_id", None),
+            user_id=getattr(recipient, "id", None),
+        )
+        if row is None:
+            return None
+        logger.info(
+            "SCREENSHOT_NOTICE_QUEUED: screenshot=%s from=%s to=%s notification=%s state=%s",
+            screenshot.id, getattr(sender, "id", None), getattr(recipient, "id", None), row.id, row.status,
+        )
+        return row.id
+    except Exception:  # noqa: BLE001 - the notice is recorded; the email is what follows from it
+        logger.warning(
+            "SCREENSHOT_NOTICE_QUEUE_FAILED: screenshot=%s", getattr(screenshot, "id", "?"), exc_info=True,
+        )
+        return None

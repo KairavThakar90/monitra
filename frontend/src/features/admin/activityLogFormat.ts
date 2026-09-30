@@ -20,6 +20,7 @@ export const MODULE_STYLES: Record<string, { label: string; text: string; bg: st
   task: { label: 'Task', text: '#4338CA', bg: '#EEF2FF', dot: '#6366F1' },
   member: { label: 'Member', text: '#BE123C', bg: '#FFF1F2', dot: '#F43F5E' },
   feedback: { label: 'Feedback', text: '#A16207', bg: '#FEFCE8', dot: '#EAB308' },
+  screenshot: { label: 'Screenshot', text: '#0369A1', bg: '#F0F9FF', dot: '#0EA5E9' },
   system: { label: 'System', text: '#334155', bg: '#F1F5F9', dot: '#64748B' },
 };
 
@@ -63,6 +64,7 @@ const ACTION_LABELS: Record<string, string> = {
   add_tasks_excluded: 'Excluded from adding tasks',
   add_tasks_allowed: 'Allowed to add tasks',
   feedback_status_changed: 'Updated feedback',
+  screenshot_notice_sent: 'Sent screenshot notice',
   maintenance_enabled: 'Enabled maintenance notice',
   maintenance_disabled: 'Disabled maintenance notice',
 };

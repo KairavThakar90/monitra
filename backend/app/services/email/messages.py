@@ -24,11 +24,12 @@ from app.core.time_format import IST, to_ist
 from app.models.email_notification import (
     TYPE_MANUAL_TIME_DECISION, TYPE_MANUAL_TIME_RECEIPT, TYPE_MANUAL_TIME_REQUEST,
     TYPE_MONTHLY_PROJECT_SUMMARY, TYPE_MONTHLY_REPORT, TYPE_PROJECT_BUDGET_ALERT,
-    TYPE_WEEKLY_REPORT,
+    TYPE_SCREENSHOT_NOTICE, TYPE_WEEKLY_REPORT,
 )
 from app.services.email import assets
 from app.services.email.provider import (
-    EmailAddressError, OutgoingEmail, assert_header_safe, normalise_address,
+    EmailAddressError, EmailDeliveryError, InlineImage, OutgoingEmail, assert_header_safe,
+    normalise_address,
 )
 from app.services.email.templates import (
     brand_html, detail_rows, paragraphs, render_page,
@@ -2172,3 +2173,170 @@ def build_project_budget_alert_email(payload: dict[str, Any], recipients: list[s
 
 
 BUILDERS[TYPE_PROJECT_BUDGET_ALERT] = build_project_budget_alert_email
+
+
+# ----------------------------------------------------------------------
+# Workflow 13 — a notice about an employee's screenshot
+# ----------------------------------------------------------------------
+
+#: The Content-ID the screenshot is attached under, and referenced by in the HTML.
+SCREENSHOT_CID = "screenshot_image"
+#: A screenshot wider than this is scaled down for the email. A merged
+#: multi-monitor capture can be several thousand pixels wide, and a mailbox is
+#: a poor place to keep one at full size; this is still sharp on any screen.
+SCREENSHOT_EMAIL_MAX_WIDTH = 1400
+
+
+def screenshot_notice_subject(payload: dict[str, Any]) -> str:
+    """"Monitra — A notice about your screenshot".
+
+    Carries neither the notice text nor the sender: it is the line that shows on
+    a lock screen, and the notice is for the employee, not for whoever is
+    standing behind them.
+    """
+    return clean_subject("Monitra — A notice about your screenshot")
+
+
+def fetch_screenshot_for_email(payload: dict[str, Any]) -> InlineImage:
+    """The screenshot, downloaded from storage and made email-safe.
+
+    Stored as WebP, which Outlook and some other clients do not render inline,
+    so it is converted to JPEG here. The bytes are read at *send* time rather
+    than frozen into the queued row: the row stays small, and a retry reads the
+    same file again.
+
+    Raises `EmailDeliveryError` when the image cannot be read, so the outbox
+    retries it with backoff. A notice about a screenshot that arrives without
+    the screenshot would be worse than one that arrives a few minutes late.
+    """
+    file_id = str(payload.get("drive_file_id") or "").strip()
+    if not file_id:
+        raise EmailDeliveryError("The screenshot has no stored image to attach.")
+
+    from io import BytesIO
+
+    from PIL import Image
+
+    from app.services.google_drive_service import drive_service
+
+    try:
+        raw = drive_service.download_file(file_id)
+    except Exception as exc:  # noqa: BLE001 - any storage failure is retryable
+        raise EmailDeliveryError("The screenshot could not be read from storage.") from exc
+
+    try:
+        with Image.open(BytesIO(raw)) as source:
+            image = source.convert("RGB")
+        if image.width > SCREENSHOT_EMAIL_MAX_WIDTH:
+            height = round(image.height * SCREENSHOT_EMAIL_MAX_WIDTH / image.width)
+            image = image.resize((SCREENSHOT_EMAIL_MAX_WIDTH, max(1, height)))
+        out = BytesIO()
+        image.save(out, format="JPEG", quality=85, optimize=True)
+        return InlineImage(
+            cid=SCREENSHOT_CID, filename="screenshot.jpg", content=out.getvalue(), subtype="jpeg",
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise EmailDeliveryError("The screenshot image could not be prepared for email.") from exc
+
+
+def _screenshot_block() -> Markup:
+    """The picture, framed. Width is capped so it fits a phone."""
+    return Markup(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" '
+        'style="margin:0 0 22px 0;border:1px solid #E2E8F0;border-radius:10px;'
+        'border-collapse:separate;overflow:hidden;background-color:#0F172A;"><tr><td>'
+        '<img src="cid:{cid}" alt="The screenshot this notice is about" width="560" '
+        'style="display:block;border:0;outline:none;text-decoration:none;width:100%;'
+        'max-width:100%;height:auto;" />'
+        '</td></tr></table>'
+    ).format(cid=SCREENSHOT_CID)
+
+
+def build_screenshot_notice_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    """The notice, addressed to the employee whose screenshot it is about.
+
+    Sent by the deployment's one authorised mailbox, with the *sender's* name
+    beside it ("Grace Hopper via Monitra") and Reply-To pointing at them, so
+    hitting Reply reaches the person who wrote the notice.
+    """
+    subject = screenshot_notice_subject(payload)
+    sender = " ".join(str(payload.get("sender_name") or "").split()) or "A Monitra administrator"
+    sender_role = str(payload.get("sender_role") or "").strip()
+    message = str(payload.get("message") or "")
+    _day, _clock, captured = _display_times(payload.get("captured_at"))
+    project = str(payload.get("project_name") or "").strip() or None
+    task = str(payload.get("task_name") or "").strip() or None
+    lead = f"{sender} has sent you a notice about one of your screenshots."
+
+    frame = _frame_context(
+        subject=subject,
+        preheader=f"{sender} sent you a notice about your screenshot from {captured}.",
+        footer_note=(
+            "You are receiving this because someone reviewing your tracked time wrote "
+            "a notice about one of your screenshots."
+        ),
+    )
+    image = fetch_screenshot_for_email(payload)
+
+    rows = detail_rows([
+        ("From", f"{sender} ({sender_role})" if sender_role else sender),
+        ("Project", project),
+        ("Task", task),
+        ("Screenshot taken", captured),
+    ])
+    reply_note = "You can reply to this email to answer the sender directly."
+
+    html = render_page(
+        "screenshot_notice.html",
+        {
+            **frame,
+            "greeting": _greeting(payload.get("recipient_name")),
+            "lead": lead,
+            "screenshot_block": _screenshot_block(),
+            "message_html": paragraphs(message),
+            "detail_rows": rows,
+            "reply_note": reply_note,
+        },
+    )
+
+    text_lines = [
+        "A NOTICE ABOUT YOUR SCREENSHOT",
+        "",
+        _greeting(payload.get("recipient_name")),
+        "",
+        lead,
+        "The screenshot is attached to this message.",
+        "",
+        "Notice",
+        "-" * 48,
+        message,
+        "-" * 48,
+        "",
+        f"  From              {sender}" + (f" ({sender_role})" if sender_role else ""),
+    ]
+    if project:
+        text_lines.append(f"  Project           {project}")
+    if task:
+        text_lines.append(f"  Task              {task}")
+    text_lines += [f"  Screenshot taken  {captured}", "", reply_note, "", "Monitra — Staff Management System", "Store Transform"]
+
+    sender_email = str(payload.get("sender_email") or "").strip()
+    reply_to = None
+    if sender_email:
+        try:
+            reply_to = normalise_address(sender_email, field_label="Sender email")
+        except EmailAddressError:
+            reply_to = None
+
+    return OutgoingEmail(
+        to=recipients,
+        subject=subject,
+        html=html,
+        text="\n".join(text_lines),
+        from_name=_sender_display_name(sender),
+        reply_to=reply_to or (settings.EMAIL_REPLY_TO or "").strip() or None,
+        inline_images=(*frame["_inline_images"], image),
+    )
+
+
+BUILDERS[TYPE_SCREENSHOT_NOTICE] = build_screenshot_notice_email

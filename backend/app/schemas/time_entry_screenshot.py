@@ -1,6 +1,8 @@
 from pydantic import BaseModel, ConfigDict, Field
 from datetime import date, datetime
-from typing import List, Optional
+from typing import Annotated, List, Optional
+
+from app.core.validation.types import description_field
 
 
 class ScreenshotConfigResponse(BaseModel):
@@ -188,3 +190,50 @@ class ScreenshotDayResponse(BaseModel):
     success: bool = True
     window_minutes: int
     members: List[ScreenshotMemberDays]
+
+
+#: Longest notice that may be written about a screenshot. A notice is a few
+#: sentences to one person, not a document; the shared DESCRIPTION rule is the
+#: catalogue entry, this is its `max_length` override.
+SCREENSHOT_NOTICE_MAX_LENGTH = 1000
+
+
+class ScreenshotNoticeCreate(BaseModel):
+    """The only field a client may send. Who receives the notice is never in the
+    request: it is the owner of the screenshot named in the path."""
+
+    message: "ScreenshotNoticeText"
+
+
+class ScreenshotNoticeResponse(BaseModel):
+    success: bool = True
+    message: str
+    screenshot_id: int
+    #: The employee the notice was emailed to.
+    recipient_name: str
+
+
+#: Longest notice that may be written about a screenshot. A notice is a few
+#: sentences to one person, not a document; the shared DESCRIPTION rule is the
+#: catalogue entry, and this is its `max_length` override.
+SCREENSHOT_NOTICE_MAX_LENGTH = 1000
+
+ScreenshotNoticeText = Annotated[
+    str,
+    description_field(label="Message", max_length=SCREENSHOT_NOTICE_MAX_LENGTH, required=True),
+]
+
+
+class ScreenshotNoticeCreate(BaseModel):
+    """The only field a client may send. Who receives the notice is never in the
+    request: it is the owner of the screenshot named in the path."""
+
+    message: ScreenshotNoticeText
+
+
+class ScreenshotNoticeResponse(BaseModel):
+    success: bool = True
+    message: str
+    screenshot_id: int
+    #: The employee the notice was emailed to.
+    recipient_name: str

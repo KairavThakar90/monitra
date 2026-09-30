@@ -137,6 +137,15 @@ export interface GetScreenshotDayArgs {
   user_id?: number;
 }
 
+/** What `POST /time-entry-screenshots/{id}/notice` answers on success. */
+export interface ScreenshotNoticeResponse {
+  success: boolean;
+  message: string;
+  screenshot_id: number;
+  /** The employee the notice was emailed to. */
+  recipient_name: string;
+}
+
 /** What `DELETE /time-entry-screenshots/{id}` answers on success. */
 export interface ScreenshotDeleteResponse {
   success: boolean;
@@ -203,6 +212,21 @@ export const screenshotsApi = baseApi.injectEndpoints({
       }),
       invalidatesTags: [{ type: 'TimeTracking' as const, id: 'SCREENSHOTS' }],
     }),
+
+    /**
+     * Email a notice about a screenshot to the employee it belongs to.
+     *
+     * The arguments are the screenshot and the words -- there is no recipient,
+     * because the backend takes it from the screenshot's own owner. It changes
+     * nothing that is cached, so no tag is invalidated.
+     */
+    sendScreenshotNotice: builder.mutation<ScreenshotNoticeResponse, { id: number; message: string }>({
+      query: ({ id, message }) => ({
+        url: ENDPOINTS.TIME_ENTRY_SCREENSHOTS.NOTICE(id),
+        method: 'POST',
+        body: { message },
+      }),
+    }),
   }),
 });
 
@@ -211,4 +235,5 @@ export const {
   useGetScreenshotTimelineQuery,
   useGetScreenshotDayQuery,
   useDeleteScreenshotMutation,
+  useSendScreenshotNoticeMutation,
 } = screenshotsApi;

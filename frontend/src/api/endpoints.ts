@@ -107,6 +107,9 @@ export const ENDPOINTS = {
     // callers holding `screenshots:delete` (Administrator and HR); every other role is
     // refused with 403 whatever the UI chose to show them.
     DELETE: (id: string | number) => `${API_BASE_URL}/time-entry-screenshots/${id}`,
+    // Emails a written notice about one screenshot to the employee it belongs to.
+    // Admin, HR and Leader (`view_employees`); a leader only for their own team.
+    NOTICE: (id: string | number) => `${API_BASE_URL}/time-entry-screenshots/${id}/notice`,
   },
   TIME_TRACKING: {
     GET_ALL: `${API_BASE_URL}/time-tracking`,

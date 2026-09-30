@@ -45,9 +45,11 @@ class ActivityLogModule:
     FEEDBACK = "feedback"
     #: Events the desktop application reports about itself.
     DESKTOP = "desktop"
+    #: A notice about somebody's screenshot.
+    SCREENSHOT = "screenshot"
 
     #: Every module a reader may filter on, in display order.
-    ALL = (AUTH, DESKTOP, TIMER, MANUAL_TIME, PROJECT, TASK, MEMBER, FEEDBACK, SYSTEM)
+    ALL = (AUTH, DESKTOP, TIMER, MANUAL_TIME, PROJECT, TASK, MEMBER, FEEDBACK, SCREENSHOT, SYSTEM)
 
 
 class ActivityLogAction:
@@ -83,6 +85,8 @@ class ActivityLogAction:
     ADD_TASKS_ALLOWED = "add_tasks_allowed"
 
     FEEDBACK_STATUS_CHANGED = "feedback_status_changed"
+
+    SCREENSHOT_NOTICE_SENT = "screenshot_notice_sent"
 
     APP_OPENED = "app_opened"
     APP_CLOSED = "app_closed"

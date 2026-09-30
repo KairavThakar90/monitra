@@ -109,6 +109,12 @@ TYPE_CLIENT_INVITATION = "client_invitation"
 #: link (the first was lost, or simply another day) always sends a new email
 #: rather than being swallowed as a duplicate of the last one.
 TYPE_CLIENT_LOGIN_LINK = "client_login_link"
+#: A notice an administrator, HR or leader wrote about one of an employee's
+#: screenshots, sent to that employee with the picture attached. Keyed on the
+#: screenshot, the sender and the notice text (bucketed to the minute), so a
+#: double click or a retried request is one email while a genuinely new notice
+#: about the same screenshot is another.
+TYPE_SCREENSHOT_NOTICE = "screenshot_notice"
 
 
 class EmailNotification(Base):

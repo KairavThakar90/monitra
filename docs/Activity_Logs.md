@@ -25,6 +25,7 @@ caller's address when the request had a valid one.
 | `task` | `task_created` / `_updated` / `_archived` | Tasks, from the web or the desktop. A replayed create records nothing. | `ProjectManagementService` |
 | `member` | `member_created` / `_updated` / `_deactivated`, `login_excluded` / `login_allowed`, `add_tasks_excluded` / `add_tasks_allowed` | The member directory. A switch is recorded only when it actually moved. | `MemberService` |
 | `feedback` | `feedback_status_changed` | An administrator marks feedback Working or Resolved. | `FeedbackService.update_status` |
+| `screenshot` | `screenshot_notice_sent` | A reviewer emails a notice about an employee's screenshot. | `TimeEntryScreenshotService.send_notice` |
 | `system` | `maintenance_enabled` / `_disabled` | The maintenance notice (predates this document). | `MaintenanceModeService` |
 
 The row belongs to the **actor**. "Grace excluded Alice from signing in" is

@@ -1,5 +1,5 @@
 from fastapi import (
-    APIRouter, Depends, File, Form, HTTPException, Path, Query, Response,
+    APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Path, Query, Response,
     UploadFile, status,
 )
 from sqlalchemy.orm import Session
@@ -7,10 +7,11 @@ from typing import List, Optional
 from datetime import date, datetime
 
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_permission
 from app.models.user import User
 from app.schemas.time_entry_screenshot import (
     ScreenshotConfigResponse, ScreenshotDayResponse, ScreenshotDeleteResponse,
+    ScreenshotNoticeCreate, ScreenshotNoticeResponse,
     ScreenshotTimelineResponse, ScreenshotUploadResponse,
     TimeEntryScreenshotCreate, TimeEntryScreenshotRead,
 )
@@ -206,6 +207,35 @@ def view_screenshot(
             # they may only be held by the browser that fetched them.
             "Cache-Control": "private, max-age=3600",
         },
+    )
+
+
+@router.post(
+    "/time-entry-screenshots/{screenshot_id}/notice",
+    response_model=ScreenshotNoticeResponse,
+    dependencies=[Depends(require_permission("view_employees"))],
+    summary="Email a notice about a screenshot to the employee it belongs to",
+)
+def send_screenshot_notice(
+    payload: ScreenshotNoticeCreate,
+    background_tasks: BackgroundTasks,
+    screenshot_id: int = Path(..., gt=0),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Send the screenshot, with a written notice, to the person who captured it.
+
+    Open to the roles that review other people's work -- Admin, HR and Leader,
+    all of whom hold `view_employees` -- and scoped exactly as viewing is: a
+    leader can send about their own team's screenshots and nobody else's, and a
+    screenshot outside the caller's reach answers 404. The recipient is the
+    screenshot's owner; the request carries no address. The message is checked
+    against the shared DESCRIPTION rule (1,000 characters here) and refused,
+    not scrubbed, when it fails.
+    """
+    return TimeEntryScreenshotService.send_notice(
+        db=db, screenshot_id=screenshot_id, message=payload.message,
+        current_user=current_user, background_tasks=background_tasks,
     )
 
 

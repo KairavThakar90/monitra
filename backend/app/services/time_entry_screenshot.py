@@ -609,6 +609,99 @@ class TimeEntryScreenshotService:
             ) from exc
         return content, record.mime_type or "image/webp", record.file_name or f"screenshot_{record.id}.webp"
 
+    # ── Notice ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def send_notice(
+        db: Session,
+        screenshot_id: int,
+        message: str,
+        current_user: User,
+        background_tasks=None,
+    ) -> dict:
+        """Email a notice about one screenshot to the employee it belongs to.
+
+        The route has already admitted the caller to the people-reading
+        surface (`view_employees`: Admin, HR, Leader). What is left to enforce
+        is *which* screenshot, and it is the same `_may_view` scope every read
+        uses -- a leader reaches their own team's captures and nobody else's --
+        so a screenshot outside it answers 404, never 403.
+
+        **Who receives it is not an input.** It is the owner of the screenshot's
+        time entry, read here. A caller chooses the screenshot and the words;
+        they cannot choose the address.
+
+        Refused rather than half-done when the notice could not possibly arrive:
+        the caller's own screenshot (there is nobody else to tell), an employee
+        with no usable address, or a deployment with email switched off. The
+        delivery itself is queued in the email outbox and attempted straight
+        away in the background, so it is retried if the mail server is down.
+        """
+        from app.models.activity_log import ActivityLogAction, ActivityLogModule
+        from app.models.project import Project
+        from app.models.task import Task
+        from app.services.activity_log import ActivityLogService
+        from app.services.email import deliver_in_background, unconfigured_reason
+        from app.services.email.workflows import queue_screenshot_notice
+
+        record, entry = TimeEntryScreenshotRepository.get_with_entry(db, screenshot_id)
+        if not record or not TimeEntryScreenshotService._may_view(db, record, current_user, entry=entry):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Screenshot not found")
+        if entry is None or entry.user_id == current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A notice can only be sent about another employee's screenshot.",
+            )
+        if not record.google_drive_file_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="This screenshot has no stored image",
+            )
+        reason = unconfigured_reason()
+        if reason:
+            logger.warning("SCREENSHOT_NOTICE_REFUSED: email is not configured (%s)", reason)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Email is not set up on this server, so the notice cannot be sent.",
+            )
+
+        recipient = db.get(User, entry.user_id)
+        if recipient is None or recipient.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Screenshot not found")
+        project = db.get(Project, entry.project_id) if entry.project_id else None
+        task = db.get(Task, entry.task_id) if entry.task_id else None
+
+        notification_id = queue_screenshot_notice(
+            db,
+            screenshot=record,
+            recipient=recipient,
+            sender=current_user,
+            message=message,
+            project_name=project.project_name if project else None,
+            task_name=task.task_name if task else None,
+        )
+        if notification_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{recipient.name} has no usable email address, so the notice cannot be sent.",
+            )
+        if background_tasks is not None:
+            background_tasks.add_task(deliver_in_background, notification_id)
+
+        recipient_name = recipient.name
+        ActivityLogService.capture(db, lambda: {
+            "actor": current_user,
+            "module": ActivityLogModule.SCREENSHOT,
+            "action": ActivityLogAction.SCREENSHOT_NOTICE_SENT,
+            "description": f"Sent a notice to {recipient_name} about a screenshot",
+            "project_id": entry.project_id, "task_id": entry.task_id, "entity_id": record.id,
+        })
+        return {
+            "success": True,
+            "message": f"Notice sent to {recipient_name} by email.",
+            "screenshot_id": record.id,
+            "recipient_name": recipient_name,
+        }
+
     # ── Delete ────────────────────────────────────────────────────────────────
 
     @staticmethod
