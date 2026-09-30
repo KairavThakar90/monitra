@@ -481,7 +481,13 @@ class NotificationService(BaseService):
                 self._pending_link = None
                 return False
 
-        self._dismiss_timer.start(self.DISPLAY_MS + 500)
+        # The card is taken down by this timer, so for the card it is the
+        # display time exactly. The platform toast dismisses itself; there the
+        # timer only ends the notification's lifecycle (and its link), and it
+        # is given a margin so it cannot end it while the toast is still up.
+        # The margin used to apply to the card as well, and Qt rounds a timer
+        # this long to whole seconds: the card stayed up for 31, not 30.
+        self._dismiss_timer.start(self.DISPLAY_MS if shown else self.DISPLAY_MS + 500)
         return True
 
     # ── Convenience wrappers (compatible with the previous manager) ───────────

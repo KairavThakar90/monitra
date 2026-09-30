@@ -302,8 +302,9 @@ def test_the_card_stays_up_for_thirty_seconds_and_no_longer(popup_service):
     popup_service.notify("Drink water", key="wellbeing:hydrate")
 
     assert popup_service._popup.isVisible()
-    remaining = popup_service._dismiss_timer.remainingTime()
-    assert 30_000 <= remaining <= 31_000
+    # Exactly the display time, with no margin on top: Qt rounds a timer this
+    # long to whole seconds, so thirty and a half became thirty-one.
+    assert popup_service._dismiss_timer.interval() == 30_000
 
 
 def test_every_kind_of_notification_gets_the_same_thirty_seconds(popup_service):
@@ -316,7 +317,7 @@ def test_every_kind_of_notification_gets_the_same_thirty_seconds(popup_service):
         (NotificationLevel.ERROR, "task-mut-err"),
     ):
         popup_service.notify("message", level, key=key)
-        assert 30_000 <= popup_service._dismiss_timer.remainingTime() <= 31_000
+        assert popup_service._dismiss_timer.interval() == 30_000
 
 
 def test_the_card_is_gone_when_its_thirty_seconds_are_up(popup_service):
