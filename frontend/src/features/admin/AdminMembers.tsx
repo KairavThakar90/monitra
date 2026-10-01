@@ -545,20 +545,6 @@ export const AdminMembers: React.FC = () => {
     dateOfBirth: { rule: 'date', label: 'Date of birth' },
   });
 
-  const openCreateDrawer = () => {
-    setDrawerMode('create');
-    setEditingId(null);
-    setFormName('');
-    setFormEmail('');
-    setFormRole('employee');
-    setFormStatus('active');
-    setFormDOJ('');
-    setFormDOB('');
-    setFormDesignation('');
-    memberForm.clear();
-    setIsDrawerOpen(true);
-  };
-
   const openEditDrawer = (member: Member) => {
     setDrawerMode('edit');
     setEditingId(member.id);
