@@ -68,7 +68,7 @@ class TeamProjectCardResponse(BaseModel):
     id: int
     project_name: str
     description: Optional[str] = None
-    status: StatusRead
+    status: Optional[StatusRead] = None
     created_at: datetime
     deadline: Optional[date] = None
     member_count: int
@@ -87,7 +87,7 @@ class TeamProjectDetailResponse(BaseModel):
     id: int
     project_name: str
     description: Optional[str] = None
-    status: StatusRead
+    status: Optional[StatusRead] = None
     created_at: datetime
     deadline: Optional[date] = None
     leader: Optional[TeamMemberPreview]

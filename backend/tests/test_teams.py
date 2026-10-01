@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from app.schemas.teams import TeamMemberCardResponse, TeamSummaryResponse
+from app.schemas.teams import TeamMemberCardResponse, TeamProjectCardResponse, TeamSummaryResponse
 from app.services.teams import TeamsService, _initials, _percent, _status_key
 
 
@@ -76,6 +76,31 @@ class TeamsTests(unittest.TestCase):
             "name": "In Progress",
             "color": "#2563EB",
         })
+
+    def test_project_status_falls_back_to_the_legacy_status_string(self):
+        # Production holds projects with `status_id` NULL and only the legacy
+        # `status` string; the lookup by id alone returned None and 500'd the
+        # leader's project list.
+        statuses = {
+            1: SimpleNamespace(id=1, name="Active", color="#16A34A"),
+            2: SimpleNamespace(id=2, name="Paused", color="#F59E0B"),
+        }
+        by_id = SimpleNamespace(status_id=2, status="active")
+        legacy_only = SimpleNamespace(status_id=None, status="active")
+        unknown = SimpleNamespace(status_id=None, status="planning")
+
+        self.assertEqual(TeamsService._project_status(by_id, statuses).id, 2)
+        self.assertEqual(TeamsService._project_status(legacy_only, statuses).id, 1)
+        self.assertIsNone(TeamsService._project_status(unknown, statuses))
+
+    def test_project_card_accepts_a_project_with_no_resolvable_status(self):
+        card = {
+            "id": 1, "project_name": "P", "description": None, "status": None,
+            "created_at": "2026-01-01T00:00:00", "deadline": None, "member_count": 0,
+            "members_preview": [],
+            "task_progress": {"completed": 0, "total": 0, "percentage": 0},
+        }
+        self.assertIsNone(TeamProjectCardResponse.model_validate(card).status)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,22 @@ def _status_key(name: str) -> str:
 
 class TeamsService:
     @staticmethod
+    def _project_status(project: Project, status_map: dict):
+        """The project's status row, or None when it genuinely has none.
+
+        `status_id` is the real column, but it is nullable and production holds
+        projects created before it existed that carry only the legacy `status`
+        string. Looking those up by id returned None, which the response schema
+        refused -- a 500 for every list that contained one. The legacy string is
+        the project's own recorded status, so it is matched against the status
+        rows by name; nothing is invented when it matches nothing.
+        """
+        if project.status_id in status_map:
+            return status_map[project.status_id]
+        legacy = _status_key(project.status or "")
+        return next((item for item in status_map.values() if _status_key(item.name) == legacy), None)
+
+    @staticmethod
     def _leader(db: Session, user: User, leader_id: int) -> User:
         # The Teams screen is a directory of teams, and a leader's directory is
         # their own team. Opening a peer's team card would show that leader's
@@ -163,7 +179,7 @@ class TeamsService:
         for project in projects:
             project_tasks = tasks_by_project.get(project.id, [])
             completed = sum(task.status_id in completed_task_ids for task in project_tasks)
-            items.append({"id": project.id, "project_name": project.project_name, "description": project.description, "status": status_map.get(project.status_id), "created_at": project.created_at, "deadline": project.deadline, "member_count": len(members_by_project.get(project.id, [])), "members_preview": [{"id": users[item].id, "name": users[item].name, "designation": users[item].designation, "initials": _initials(users[item].name)} for item in members_by_project.get(project.id, [])[:5] if item in users], "task_progress": {"completed": completed, "total": len(project_tasks), "percentage": _percent(completed, len(project_tasks))}})
+            items.append({"id": project.id, "project_name": project.project_name, "description": project.description, "status": TeamsService._project_status(project, status_map), "created_at": project.created_at, "deadline": project.deadline, "member_count": len(members_by_project.get(project.id, [])), "members_preview": [{"id": users[item].id, "name": users[item].name, "designation": users[item].designation, "initials": _initials(users[item].name)} for item in members_by_project.get(project.id, [])[:5] if item in users], "task_progress": {"completed": completed, "total": len(project_tasks), "percentage": _percent(completed, len(project_tasks))}})
         status_counts = {"all": int(db.scalar(select(func.count(Project.id)).where(Project.organization_id == user.organization_id, Project.leader_id == leader_id, Project.status != "archived")) or 0)}
         for status in db.scalars(select(ProjectStatus).order_by(ProjectStatus.id)).all():
             status_counts[_status_key(status.name)] = int(db.scalar(select(func.count(Project.id)).where(Project.organization_id == user.organization_id, Project.leader_id == leader_id, Project.status != "archived", Project.status_id == status.id)) or 0)
@@ -187,7 +203,7 @@ class TeamsService:
         members = {item.id: item for item in db.scalars(select(User).where(User.id.in_(member_ids))).all()} if member_ids else {}
         tasks = list(db.scalars(scoped_task_query(select(Task).where(Task.project_id == project_id, Task.status != "archived"), user)).all())
         completed = sum(task.status_id in completed_task_ids for task in tasks)
-        return {"id": project.id, "project_name": project.project_name, "description": project.description, "status": status_map.get(project.status_id), "created_at": project.created_at, "deadline": project.deadline, "leader": {"id": leader.id, "name": leader.name, "designation": leader.designation, "initials": _initials(leader.name)} if leader else None, "members": {"count": len(members), "items": [TeamsService._member_card(db, member, project_id, tasks, task_status_map, completed_task_ids) for member in members.values()]}, "task_progress": {"completed": completed, "total": len(tasks), "percentage": _percent(completed, len(tasks))}, "unassigned_task_count": sum(task.assignee_id is None for task in tasks)}
+        return {"id": project.id, "project_name": project.project_name, "description": project.description, "status": TeamsService._project_status(project, status_map), "created_at": project.created_at, "deadline": project.deadline, "leader": {"id": leader.id, "name": leader.name, "designation": leader.designation, "initials": _initials(leader.name)} if leader else None, "members": {"count": len(members), "items": [TeamsService._member_card(db, member, project_id, tasks, task_status_map, completed_task_ids) for member in members.values()]}, "task_progress": {"completed": completed, "total": len(tasks), "percentage": _percent(completed, len(tasks))}, "unassigned_task_count": sum(task.assignee_id is None for task in tasks)}
 
     @staticmethod
     def _member_card(db: Session, member: User, project_id: int, tasks: list[Task], task_status_map: dict, completed_task_ids: set[int]):
