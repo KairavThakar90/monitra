@@ -85,6 +85,9 @@ export const V2Shell: React.FC<{
    */
   const canManageProjects = !!currentUser?.permissions?.["projects:create"];
 
+  /** Assign Tasks: the permission `PUT /projects/{id}/tasks/{id}/assignees` is gated on. */
+  const canAssignTasks = !!currentUser?.permissions?.["task_assignees:manage"];
+
   /** Client invitations: administrator/org_admin/super_admin only. */
   const showClients = canManageClients(currentUser);
 
@@ -265,6 +268,30 @@ export const V2Shell: React.FC<{
                 </svg>
                 <span className="flex-1">Project management</span>
               </button>
+
+              {/* Assign Tasks — directly below Project management */}
+              {canAssignTasks && (
+                <button
+                  onClick={(event) => go(event, "/admin/assign-tasks")}
+                  className={
+                    "flex w-full cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3 text-left text-sm font-medium leading-snug transition duration-150 " +
+                    (location.pathname === "/admin/assign-tasks"
+                      ? "text-white shadow-sm"
+                      : "text-[#94A3B8] hover:bg-slate-800/40 hover:text-white")
+                  }
+                  style={location.pathname === "/admin/assign-tasks" ? { background: brandGradient } : undefined}
+                >
+                  <svg
+                    className={"h-5 w-5 " + (location.pathname === "/admin/assign-tasks" ? "text-white" : "text-[#22D3EE]")}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+                  </svg>
+                  <span className="flex-1">Assign Tasks</span>
+                </button>
+              )}
 
               {/* Task Listing */}
               <button

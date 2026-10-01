@@ -249,8 +249,9 @@ def _dispatch(limit: Optional[int], db: Session) -> WfpmTimerDispatchResult:
         "Authenticate with `EMAIL_DISPATCH_TOKEN` -- the one secret every "
         "scheduled job on this backend shares -- in either the "
         "`X-Email-Dispatch-Token` header or as a bearer token. Answers "
-        "`unconfigured: true` and does nothing while `WFPM_TIMER_START_URL` is "
-        "not set."
+        "`unconfigured: true` and does nothing while neither "
+        "`WFPM_TIMER_START_URL` nor `WFPM_TIMER_STOP_URL` is set; an event is "
+        "attempted only while its own URL is set."
     ),
     responses={
         401: {"description": "Missing or incorrect dispatch token."},

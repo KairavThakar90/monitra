@@ -1,4 +1,5 @@
-"""Monitra -> WFPM: a timer started here starts the timer there.
+"""Monitra -> WFPM: a timer started here starts the timer there, and a timer
+stopped here stops it.
 
 What these tests defend, and the production symptom each maps to:
 
@@ -13,6 +14,11 @@ What these tests defend, and the production symptom each maps to:
 * **Failures are retried, refusals are not.** A timeout or a 5xx is retried
   with backoff; a 4xx that a retry cannot change is parked where it can be
   seen rather than re-sent forever.
+* **A stop is told to WFPM exactly once, from every way a timer can end.** The
+  user's Stop, the idle popup's Stop and a deactivated member all finalize the
+  entry through `TimeEntryService.stop_timer`; the event is one row per entry
+  with its own URL, so a timer left running in WFPM after Monitra's ended is
+  the symptom each stop test guards against.
 
 The queue runs against real SQLite rows; WFPM itself is an httpx mock
 transport, so what is asserted about the request is the request that would
@@ -41,7 +47,7 @@ from app.WFPM import client as wfpm_client
 from app.WFPM import timer_sync
 from app.WFPM.client import WfpmDeliveryError
 from app.WFPM.models import (
-    EVENT_TIMER_START, STATUS_FAILED, STATUS_PENDING, STATUS_REJECTED, STATUS_SENT, WfpmTimerEvent,
+    EVENT_TIMER_START, EVENT_TIMER_STOP, STATUS_FAILED, STATUS_PENDING, STATUS_REJECTED, STATUS_SENT, WfpmTimerEvent,
 )
 from app.WFPM.repository import WfpmLinkRepository, WfpmTimerEventRepository
 from app.WFPM.timer_sync import WfpmTimerSync
@@ -49,6 +55,7 @@ from tests.test_project_hours_summary import ORG, _sqlite_schema
 
 UTC = timezone.utc
 URL = "https://wfpm.example.test/api/monitra/timer/start"
+STOP_URL = "https://wfpm.example.test/api/monitra/timer/stop?key=stop-secret"
 USER, PROJECT, LINKED_TASK, UNLINKED_TASK = 54, 7, 70, 71
 STARTED = datetime(2026, 9, 30, 10, 0, 0, tzinfo=UTC)
 
@@ -59,6 +66,8 @@ def wfpm_settings(**overrides):
         "WFPM_REQUEST_TIMEOUT_SECONDS": 5.0, "WFPM_TIMER_MAX_ATTEMPTS": 3,
         "WFPM_TIMER_RETRY_BASE_DELAY_SECONDS": 30, "WFPM_TIMER_RETRY_MAX_DELAY_SECONDS": 900,
         "WFPM_TIMER_DISPATCH_BATCH_SIZE": 50,
+        # Off unless a test turns it on, so a developer's own .env cannot leak in.
+        "WFPM_TIMER_STOP_URL": "",
     }
     defaults.update(overrides)
     return patch.multiple(settings, **defaults)
@@ -615,7 +624,11 @@ class ConfigurationTests(unittest.TestCase):
     def test_the_description_never_carries_the_url_or_the_token(self):
         with wfpm_settings():
             description = timer_sync.describe_configuration()
-        self.assertEqual(description, {"configured": True, "token_present": True})
+        self.assertEqual(description, {"configured": True, "stop_configured": False, "token_present": True})
+        with wfpm_settings(WFPM_TIMER_STOP_URL=STOP_URL):
+            description = timer_sync.describe_configuration()
+        self.assertEqual(description, {"configured": True, "stop_configured": True, "token_present": True})
+        self.assertNotIn("stop-secret", json.dumps(description))
         with wfpm_settings(WFPM_TIMER_START_URL="", WFPM_API_TOKEN=""):
             description = timer_sync.describe_configuration()
         self.assertEqual(description["configured"], False)
@@ -624,9 +637,363 @@ class ConfigurationTests(unittest.TestCase):
     def test_health_reports_whether_the_integration_is_on(self):
         with wfpm_settings():
             body = TestClient(app).get("/health").json()
-        self.assertEqual(body["wfpm_timer_sync"], {"configured": True, "token_present": True})
+        self.assertEqual(body["wfpm_timer_sync"], {"configured": True, "stop_configured": False, "token_present": True})
         self.assertNotIn("wfpm.example.test", json.dumps(body))
         self.assertNotIn("wfpm-test-token", json.dumps(body))
+
+    def test_health_reports_whether_the_stop_url_is_configured(self):
+        with wfpm_settings(WFPM_TIMER_STOP_URL=STOP_URL):
+            body = TestClient(app).get("/health").json()
+        self.assertTrue(body["wfpm_timer_sync"]["stop_configured"])
+        self.assertNotIn("stop-secret", json.dumps(body))
+
+
+# ── the timer stop ───────────────────────────────────────────────────────────
+
+STOPPED = STARTED + timedelta(minutes=11, seconds=15)
+
+
+class _StopDb(_Db):
+    """`_Db` with the stop URL turned on."""
+
+    def setUp(self):
+        super().setUp()
+        stop_enabled = wfpm_settings(WFPM_TIMER_STOP_URL=STOP_URL)
+        stop_enabled.start()
+        self.addCleanup(stop_enabled.stop)
+
+    def ended_entry(self, entry_id=1, task_id=LINKED_TASK, **fields) -> TimeEntry:
+        entry = self.entry(entry_id=entry_id, task_id=task_id, **fields)
+        entry.end_time, entry.total_seconds, entry.status = STOPPED, 675, "stopped"
+        self.db.commit()
+        return entry
+
+
+class StopQueueTests(_StopDb):
+    def test_stopping_a_linked_tasks_timer_queues_exactly_one_stop_event(self):
+        entry = self.ended_entry()
+        first = WfpmTimerSync.queue_timer_stop(self.db, entry)
+        second = WfpmTimerSync.queue_timer_stop(self.db, entry)
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)                 # the first call's event already exists
+        [row] = self.events()
+        self.assertEqual((row.event_type, row.status, row.attempt_count), (EVENT_TIMER_STOP, STATUS_PENDING, 0))
+        self.assertEqual((row.wfpm_task_id, row.wfpm_project_id), ("900", "55"))
+        self.assertEqual((row.time_entry_id, row.task_id, row.project_id, row.user_id), (1, LINKED_TASK, PROJECT, USER))
+
+    def test_stopping_a_timer_on_a_task_with_no_wfpm_id_queues_nothing(self):
+        self.assertIsNone(WfpmTimerSync.queue_timer_stop(self.db, self.ended_entry(task_id=UNLINKED_TASK)))
+        self.assertEqual(self.events(), [])
+
+    def test_a_timer_that_has_not_ended_queues_no_stop(self):
+        self.assertIsNone(WfpmTimerSync.queue_timer_stop(self.db, self.entry()))
+        self.assertEqual(self.events(), [])
+
+    def test_an_empty_stop_url_queues_nothing(self):
+        entry = self.ended_entry()
+        with wfpm_settings(WFPM_TIMER_STOP_URL=""):
+            self.assertIsNone(WfpmTimerSync.queue_timer_stop(self.db, entry))
+        with wfpm_settings(WFPM_TIMER_STOP_URL="   "):
+            self.assertIsNone(WfpmTimerSync.queue_timer_stop(self.db, entry))
+        self.assertEqual(self.events(), [])
+
+    def test_the_start_url_does_not_turn_the_stop_on_or_off(self):
+        entry = self.ended_entry()
+        with wfpm_settings(WFPM_TIMER_START_URL="", WFPM_TIMER_STOP_URL=STOP_URL):
+            self.assertIsNone(WfpmTimerSync.queue_timer_start(self.db, entry))
+            self.assertIsNotNone(WfpmTimerSync.queue_timer_stop(self.db, entry))
+        self.assertEqual([row.event_type for row in self.events()], [EVENT_TIMER_STOP])
+
+    def test_a_start_and_a_stop_for_one_entry_are_two_independent_events(self):
+        entry = self.entry()
+        WfpmTimerSync.queue_timer_start(self.db, entry)
+        entry.end_time, entry.total_seconds, entry.status = STOPPED, 675, "stopped"
+        self.db.commit()
+        WfpmTimerSync.queue_timer_stop(self.db, entry)
+        self.assertEqual([row.event_type for row in self.events()], [EVENT_TIMER_START, EVENT_TIMER_STOP])
+
+    def test_a_failure_while_queueing_never_reaches_the_stop(self):
+        entry = self.ended_entry()
+        with patch.object(WfpmTimerEventRepository, "enqueue", side_effect=RuntimeError("database is down")):
+            self.assertIsNone(WfpmTimerSync.queue_timer_stop(self.db, entry))
+        self.assertIsNone(WfpmTimerSync.queue_timer_stop(None, entry))
+        self.assertEqual(self.events(), [])
+
+
+class StopDeliveryTests(_StopDb):
+    def setUp(self):
+        super().setUp()
+        self.sent = []
+
+    def wfpm(self, outcome=200):
+        def post_event(url, *, token, payload, idempotency_key, timeout_seconds):
+            self.sent.append({"url": url, "token": token, "payload": payload,
+                              "idempotency_key": idempotency_key})
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return patch.object(wfpm_client, "post_event", post_event)
+
+    def queued(self):
+        return WfpmTimerSync.queue_timer_stop(self.db, self.ended_entry())
+
+    def test_the_stop_request_is_the_agreed_document_sent_to_the_stop_url(self):
+        event_id = self.queued()
+        with self.wfpm(200):
+            self.assertEqual(WfpmTimerSync.deliver_one(self.db, event_id), "sent")
+
+        [call] = self.sent
+        self.assertEqual(call["url"], STOP_URL)
+        self.assertEqual(call["idempotency_key"], "monitra:timer_stop:1")
+        self.assertEqual(call["payload"], {
+            "event": "timer_stop",
+            "event_id": "monitra:timer_stop:1",
+            "wfpm_task_id": "900",
+            "wfpm_project_id": "55",
+            "started_at": "2026-09-30T10:00:00+00:00",
+            "stopped_at": "2026-09-30T10:11:15+00:00",
+            "monitra_user_id": USER,
+            "monitra_time_entry_id": 1,
+            "monitra_task_id": LINKED_TASK,
+            "monitra_project_id": PROJECT,
+        })
+        [row] = self.events()
+        self.assertEqual((row.status, row.attempt_count, row.response_status), (STATUS_SENT, 1, 200))
+
+    def test_the_stop_carries_no_email_or_name(self):
+        """WFPM identifies the person by monitra_user_id; the email is not used."""
+        event_id = self.queued()
+        with self.wfpm():
+            WfpmTimerSync.deliver_one(self.db, event_id)
+        self.assertNotIn("user_email", self.sent[0]["payload"])
+        self.assertNotIn("user_name", self.sent[0]["payload"])
+
+    def test_the_stop_duration_matches_monitras_own(self):
+        event_id = self.queued()
+        with self.wfpm():
+            WfpmTimerSync.deliver_one(self.db, event_id)
+        payload = self.sent[0]["payload"]
+        reported = datetime.fromisoformat(payload["stopped_at"]) - datetime.fromisoformat(payload["started_at"])
+        self.assertEqual(int(reported.total_seconds()), self.db.get(TimeEntry, 1).total_seconds)
+
+    def test_a_retry_sends_the_same_event_id_and_idempotency_key(self):
+        event_id = self.queued()
+        with self.wfpm(WfpmDeliveryError("WFPM answered HTTP 503", retryable=True, status_code=503)):
+            self.assertEqual(WfpmTimerSync.deliver_one(self.db, event_id), "retrying")
+        self.make_due(event_id)
+        with self.wfpm(200):
+            self.assertEqual(WfpmTimerSync.dispatch_pending(self.db), {"attempted": 1, "sent": 1})
+
+        self.assertEqual([call["idempotency_key"] for call in self.sent], ["monitra:timer_stop:1"] * 2)
+        self.assertEqual([call["payload"]["event_id"] for call in self.sent], ["monitra:timer_stop:1"] * 2)
+        self.assertEqual([call["url"] for call in self.sent], [STOP_URL] * 2)
+        [row] = self.events()
+        self.assertEqual((row.status, row.attempt_count), (STATUS_SENT, 2))
+
+    def test_a_refused_stop_is_parked_as_rejected_and_not_retried(self):
+        event_id = self.queued()
+        with self.wfpm(WfpmDeliveryError("WFPM answered HTTP 404: unknown task", retryable=False, status_code=404)):
+            self.assertEqual(WfpmTimerSync.deliver_one(self.db, event_id), "rejected")
+            self.make_due(event_id)
+            self.assertEqual(WfpmTimerSync.dispatch_pending(self.db), {"attempted": 0})
+        [row] = self.events()
+        self.assertEqual((row.status, row.response_status), (STATUS_REJECTED, 404))
+        self.assertEqual(len(self.sent), 1)
+
+    def test_the_sweeper_sends_each_event_to_its_own_url(self):
+        started = WfpmTimerSync.queue_timer_start(self.db, self.entry())
+        entry = self.db.get(TimeEntry, 1)
+        entry.end_time, entry.total_seconds, entry.status = STOPPED, 675, "stopped"
+        self.db.commit()
+        stopped = WfpmTimerSync.queue_timer_stop(self.db, entry)
+        self.assertEqual((started, stopped), (1, 2))
+        with self.wfpm():
+            self.assertEqual(WfpmTimerSync.dispatch_pending(self.db), {"attempted": 2, "sent": 2})
+        self.assertEqual([(c["payload"]["event"], c["url"]) for c in self.sent],
+                         [("timer_start", URL), ("timer_stop", STOP_URL)])
+
+    def test_a_stop_waits_unspent_while_its_url_is_unset_and_does_not_starve_a_start(self):
+        stop_id = self.queued()
+        entry = self.db.get(TimeEntry, 1)
+        start_id = WfpmTimerSync.queue_timer_start(self.db, entry)
+        with self.wfpm(), wfpm_settings(WFPM_TIMER_STOP_URL=""):
+            self.assertEqual(WfpmTimerSync.deliver_one(self.db, stop_id), "unconfigured")
+            # The stop is first in line but cannot go; the start behind it still does.
+            self.assertEqual(WfpmTimerSync.dispatch_pending(self.db, limit=1), {"attempted": 1, "sent": 1})
+        self.assertEqual([c["payload"]["event"] for c in self.sent], ["timer_start"])
+        self.assertEqual(self.db.get(WfpmTimerEvent, stop_id).attempt_count, 0)
+        self.assertEqual(self.db.get(WfpmTimerEvent, start_id).status, STATUS_SENT)
+
+    def test_a_stop_for_an_entry_with_no_end_time_is_refused_not_retried(self):
+        event_id = self.queued()
+        self.db.get(TimeEntry, 1).end_time = None
+        self.db.commit()
+        with self.wfpm():
+            self.assertEqual(WfpmTimerSync.deliver_one(self.db, event_id), "rejected")
+        self.assertEqual(self.sent, [])
+
+
+# ── every way a timer ends ───────────────────────────────────────────────────
+
+class StopPathTests(_StopDb):
+    """The real `TimeEntryService.stop_timer` against real rows. Each way a
+    timer can end -- the user, the idle popup, a deactivated member -- goes
+    through it, so the WFPM hook is asserted here rather than once per caller."""
+
+    def setUp(self):
+        super().setUp()
+        from app.models.activity_log import ActivityLog
+        from app.models.time_entry_idle_period import TimeEntryIdlePeriod
+        from app.models.time_entry_adjustment import TimeEntryAdjustment
+        _sqlite_schema(self.engine, ActivityLog, TimeEntryIdlePeriod, TimeEntryAdjustment)
+        self.user = self.db.get(User, USER)
+        rollup = patch("app.services.time_entry.TimeEntryService.refresh_task_rollup")
+        rollup.start()
+        self.addCleanup(rollup.stop)
+        self.started_before = datetime.now(UTC) - timedelta(minutes=10)
+
+    def running(self, entry_id=1, task_id=LINKED_TASK):
+        entry = self.entry(entry_id=entry_id, task_id=task_id)
+        entry.start_time = self.started_before
+        self.db.commit()
+        return entry
+
+    def stop(self, entry_id=1, background_tasks=None):
+        from app.services.time_entry import TimeEntryService
+        return TimeEntryService.stop_timer(
+            self.db, entry_id, None, self.user, background_tasks=background_tasks,
+        )
+
+    def test_a_user_stop_queues_one_event_and_schedules_its_delivery(self):
+        from fastapi import BackgroundTasks
+        self.running()
+        tasks = BackgroundTasks()
+        entry, finalized = self.stop(background_tasks=tasks)
+
+        self.assertTrue(finalized)
+        [row] = self.events()
+        self.assertEqual((row.event_type, row.time_entry_id, row.status), (EVENT_TIMER_STOP, 1, STATUS_PENDING))
+        [task] = tasks.tasks
+        self.assertEqual((task.func, task.args), (timer_sync.deliver_in_background, (row.id,)))
+        self.assertIsNotNone(entry.end_time)
+
+    def test_a_repeated_stop_queues_and_delivers_nothing_more(self):
+        from fastapi import BackgroundTasks
+        self.running()
+        self.stop()
+        tasks = BackgroundTasks()
+        _, finalized = self.stop(background_tasks=tasks)
+
+        self.assertFalse(finalized)
+        self.assertEqual(len(self.events()), 1)
+        self.assertEqual(tasks.tasks, [])
+
+    def test_a_stop_outside_a_request_queues_for_the_sweeper(self):
+        """A deactivated member's timer is stopped with no response to follow."""
+        self.running()
+        self.stop(background_tasks=None)
+        [row] = self.events()
+        self.assertEqual((row.event_type, row.status), (EVENT_TIMER_STOP, STATUS_PENDING))
+
+    def test_stopping_a_task_with_no_wfpm_id_queues_nothing(self):
+        from fastapi import BackgroundTasks
+        self.running(task_id=UNLINKED_TASK)
+        tasks = BackgroundTasks()
+        self.stop(background_tasks=tasks)
+        self.assertEqual(self.events(), [])
+        self.assertEqual(tasks.tasks, [])
+
+    def test_an_empty_stop_url_queues_nothing_from_a_real_stop(self):
+        self.running()
+        with wfpm_settings(WFPM_TIMER_STOP_URL=""):
+            self.stop()
+        self.assertEqual(self.events(), [])
+        self.assertIsNotNone(self.db.get(TimeEntry, 1).end_time)       # the stop itself stood
+
+    def test_a_wfpm_failure_never_fails_the_stop(self):
+        self.running()
+        with patch.object(WfpmTimerEventRepository, "enqueue", side_effect=RuntimeError("database is down")):
+            entry, finalized = self.stop()
+        self.assertTrue(finalized)
+        self.assertEqual(entry.status, "stopped")
+
+    def test_the_idle_popups_stop_goes_through_the_same_hook(self):
+        from fastapi import BackgroundTasks
+        from app.models.time_entry_idle_period import TimeEntryIdlePeriod
+        from app.schemas.time_entry_idle_period import IdlePeriodResolve
+        from app.services.time_entry_idle_period import TimeEntryIdlePeriodService
+
+        entry = self.running()
+        idle_started = self.started_before + timedelta(minutes=2)
+        idle = TimeEntryIdlePeriod(
+            organization_id=ORG, user_id=USER, time_entry_id=entry.id, status="pending",
+            original_project_id=PROJECT, original_task_id=LINKED_TASK,
+            idle_started_at=idle_started, idle_detected_at=idle_started + timedelta(minutes=5),
+        )
+        self.db.add(idle)
+        self.db.commit()
+
+        tasks = BackgroundTasks()
+        TimeEntryIdlePeriodService.resolve(
+            self.db, idle.id,
+            IdlePeriodResolve(
+                keep_idle_time=False, action="stop",
+                resolved_at=idle_started + timedelta(minutes=6),
+            ),
+            self.user, background_tasks=tasks,
+        )
+
+        [row] = self.events()
+        self.assertEqual((row.event_type, row.time_entry_id), (EVENT_TIMER_STOP, entry.id))
+        self.assertEqual([t.args for t in tasks.tasks], [(row.id,)])
+
+    def test_a_deactivated_members_running_timer_is_reported_stopped(self):
+        from app.services.member_service import MemberService
+        self.running()
+        with patch("app.services.auth.AuthService.revoke_all_sessions", return_value=0):
+            MemberService._end_member_access(self.db, self.user)
+        self.assertEqual([row.event_type for row in self.events()], [EVENT_TIMER_STOP])
+
+
+class StopRouteTests(unittest.TestCase):
+    """The stop route hands the service the request's `BackgroundTasks`, which
+    is what makes delivery run right after the response."""
+
+    def setUp(self):
+        user = User()
+        user.id, user.organization_id, user.role_name = USER, ORG, "employee"
+        user.permissions, user.is_active, user.name = {}, True, "Asha"
+        app.dependency_overrides[get_current_user] = lambda: user
+        app.dependency_overrides[get_db] = lambda: None
+        self.client = TestClient(app)
+        self.addCleanup(app.dependency_overrides.clear)
+        net = patch("app.repositories.time_entry_adjustment.TimeEntryAdjustmentRepository.net_for_entries",
+                    return_value={})
+        net.start()
+        self.addCleanup(net.stop)
+        now = datetime.now(UTC)
+        self.entry = TimeEntry(
+            id=61, organization_id=ORG, user_id=USER, project_id=PROJECT, task_id=LINKED_TASK,
+            start_time=now - timedelta(minutes=5), end_time=now, total_seconds=300, status="stopped",
+            is_manual=False, is_billable=False, description=None, client_op=None, created_at=now, updated_at=now,
+        )
+
+    def post_stop(self):
+        with patch("app.api.time_entry.TimeEntryService.stop_timer", return_value=(self.entry, True)) as stop, \
+                patch("app.services.project_budget_alerts.evaluate_project_in_background"):
+            response = self.client.post("/time-entries/61/stop", json={})
+        return response, stop
+
+    def test_the_route_passes_its_background_tasks_to_the_service(self):
+        from fastapi import BackgroundTasks
+        response, stop = self.post_stop()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsInstance(stop.call_args.kwargs["background_tasks"], BackgroundTasks)
+
+    def test_the_stop_response_is_unchanged_by_the_integration(self):
+        response, _ = self.post_stop()
+        self.assertFalse([key for key in response.json() if "wfpm" in key.lower()])
 
 
 if __name__ == "__main__":

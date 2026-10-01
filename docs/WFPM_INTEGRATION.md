@@ -230,7 +230,10 @@ that is archived or not accessible · `404` the project id is not linked ·
 { "assignee_id": 101 }
 ```
 
-Replaces the current assignee. A Monitra task has **one** assignee. The user
+Replaces the current assignee. This route deals in **one** assignee: a Monitra
+task can also be held by several members at once (an administrator or leader
+sets that through Monitra's own `PUT /api/v1/projects/{project_id}/tasks/{task_id}/assignees`),
+and this call replaces that whole set with the single user named here. The user
 must be an active employee and a member of the task's project, otherwise
 `400`. `200` with the task.
 
@@ -274,6 +277,7 @@ Task (routes 6–10):
   "name": "Design the homepage",
   "assignee_id": 101,
   "assignee": { "id": 101, "name": "…", "email": "…", "role": "employee" },
+  "assignees": [ { "id": 101, "name": "…", "email": "…", "role": "employee" } ],
   "status": { "id": 1, "name": "Todo", "color": "#CBD5E1" },
   "estimated_hours": 12.5,
   "created_at": "2026-09-30T10:00:00Z",
@@ -282,6 +286,8 @@ Task (routes 6–10):
 ```
 
 `id` and `project_id` are Monitra's own ids, returned for reference.
+`assignees` lists everyone holding the task, with `assignee` (the primary one)
+first; it is additive, so a consumer that only reads `assignee` is unaffected.
 
 Errors use one shape throughout: `{"detail": "…"}` for `400/401/403/404/409`,
 and `{"detail": [ … ]}` (a list of field errors) for `422`.
@@ -390,18 +396,91 @@ timer by the time WFPM receives the start. In that case `stopped_at` carries
 the stop time, so WFPM can record a finished session (`started_at` →
 `stopped_at`) instead of starting a timer that nothing will stop.
 
-### 3.5 What is *not* sent
+### 3.5 Timer stop
 
-- **Timer stop.** Only the start is announced. Apart from the late-retry case
-  above, Monitra does not tell WFPM when a timer stops. If WFPM's timer should
-  stop when Monitra's does, that is a second event that has to be agreed and
-  added (`wfpm_timer_events.event_type` was designed to carry it).
+When a timer ends in Monitra on a task that has a `wfpm_task_id`, Monitra calls
+WFPM so the matching timer stops there. It is a second, independent event
+alongside the start: its own queue row, its own URL, its own `event_id`.
+
+Every way a Monitra timer can end sends it, because they all finalize the entry
+through the same code: the user pressing Stop, the idle popup's Stop (and the
+desktop's automatic stop, which uses the same call), and a member being
+deactivated while their timer runs. Starting a timer while another is running
+does not stop the other — Monitra refuses with `409` and the client stops the
+first one itself, which is an ordinary stop. `stopped_at` is the entry's stored
+`end_time`, so it is the instant Monitra's own duration was computed from.
+
+```
+POST <WFPM_TIMER_STOP_URL>            (including the ?key=… it carries — never changed)
+Content-Type: application/json
+Idempotency-Key: monitra:timer_stop:3559
+```
+
+No `Authorization` header is sent while `WFPM_API_TOKEN` is empty, which is how
+WFPM's stop endpoint is configured: it authorises by the `?key=` in the URL.
+
+```json
+{
+  "event": "timer_stop",
+  "event_id": "monitra:timer_stop:3559",
+  "wfpm_task_id": "1548",
+  "wfpm_project_id": "390",
+  "started_at": "2026-10-01T10:33:55+00:00",
+  "stopped_at": "2026-10-01T10:45:10+00:00",
+  "monitra_user_id": 238,
+  "monitra_time_entry_id": 3559,
+  "monitra_task_id": 5230,
+  "monitra_project_id": 3383
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `event` | Always `"timer_stop"` |
+| `event_id` | Identifies this stop: `monitra:timer_stop:<time_entry_id>`. **The same value on every retry**, and in the `Idempotency-Key` header |
+| `wfpm_task_id`, `wfpm_project_id` | As in §3.2. Frozen when the stop was queued |
+| `started_at` | The entry's persisted start, UTC, ISO 8601 |
+| `stopped_at` | **Required.** The entry's persisted end, UTC, ISO 8601. WFPM uses it as the end time, so its hours match Monitra's: `round(stopped_at − started_at)` is the entry's `total_seconds` |
+| `monitra_user_id` | How WFPM finds the user (the `monitra_id` on their WFPM account). **No email or name is sent** |
+| `monitra_*` | Monitra's own ids, for reference and support |
+
+Exactly one stop event is queued per time entry (the table's unique key is
+`(event_type, time_entry_id)`), and only when all of these hold:
+
+- `WFPM_TIMER_STOP_URL` is set. Empty → nothing is queued, exactly as with the start URL;
+- the entry's task has a `wfpm_task_id`;
+- the entry has an end time.
+
+**How WFPM answers** is §3.3, unchanged: any `2xx` marks the event sent — this
+includes a repeated `event_id` (`{"status":"duplicate"}`) and a stop with no
+running timer; `401`, `403`, `408`, `425`, `429`, `5xx`, a timeout or no
+connection are retried with the backoff of §3.4; any other `4xx` (an unknown
+task or user, a missing field) parks the event as `rejected` and is not retried.
+The reason WFPM gives is in `wfpm_timer_events.last_error`.
+
+**Ordering.** Start and stop are delivered independently and either can be late.
+A start delivered after the timer ended already carries `stopped_at` (§3.4), so
+WFPM records a finished session; a stop that arrives before its start is
+harmless on WFPM's side — it answers `200` and does nothing. Monitra does not
+hold either event back for the other.
+
+**Timing.** Delivery of a stop runs right after the stop request is answered,
+exactly as a start does, so the user never waits for WFPM. The one exception is
+a stop that is not a user request — a deactivated member's timer — which has no
+response to follow and is delivered by the next minute's sweep.
+
+### 3.6 What is *not* sent
+
 - **Timers on tasks with no `wfpm_task_id`** — Monitra's default project
   tasks, and anything created in Monitra itself.
 - **Manual time entries** and idle-time adjustments. They are not timers.
+- **Idle time reassigned to another task.** That creates an already-finished
+  entry on the destination task; WFPM never saw it start, so it is not
+  announced.
 
-Starting a timer in Monitra never waits for WFPM and never fails because of
-it. The user's timer is saved and answered first; WFPM is told afterwards.
+Starting or stopping a timer in Monitra never waits for WFPM and never fails
+because of it. The user's timer is saved and answered first; WFPM is told
+afterwards.
 
 ---
 
@@ -413,6 +492,7 @@ Set in the backend's environment (`/etc/monitra/backend.env` in production,
 | Variable | Default | Purpose |
 |---|---|---|
 | `WFPM_TIMER_START_URL` | empty | Full URL of WFPM's timer endpoint, **including a `?key=…` if WFPM authorises callers that way**. **Empty = the timer integration is off**: nothing is queued or sent. Treat it as a secret when it carries a key |
+| `WFPM_TIMER_STOP_URL` | empty | Full URL of WFPM's timer-**stop** endpoint, **including its own `?key=…`** (the start and stop keys are separate). **Empty = stops are not announced**: nothing is queued or sent for a stop, independently of the start URL. A secret, like the start URL |
 | `WFPM_API_TOKEN` | empty | Sent as `Authorization: Bearer`. Leave it **empty** (nothing after the `=`) when WFPM authorises by the key in the URL: no `Authorization` header is sent then. Do not type placeholder text such as `(leave empty)` — it would be sent as the token |
 | `WFPM_REQUEST_TIMEOUT_SECONDS` | `10` | Per-attempt timeout |
 | `WFPM_TIMER_MAX_ATTEMPTS` | `6` | Attempts before an event is parked as `failed` |
@@ -436,11 +516,13 @@ Without that timer, a timer start whose first attempt fails is never retried.
    `wfpm_timer_events` table). The new code cannot run without it.
 2. Re-run `sudo bash scheduled-jobs/install.sh` on the VM to install the new
    timer.
-3. When WFPM's endpoint exists, set `WFPM_TIMER_START_URL` (and
-   `WFPM_API_TOKEN` if WFPM wants one) and restart the backend.
+3. When WFPM's endpoints exist, set `WFPM_TIMER_START_URL` and
+   `WFPM_TIMER_STOP_URL` (and `WFPM_API_TOKEN` if WFPM wants one — for the
+   `?key=` endpoints leave it empty) and restart the backend.
    A key carried in the URL's query string is never written to the log or to
    `wfpm_timer_events.last_error`: those show the URL as `…/timer?<redacted>`. `/health` then reports
-   `"wfpm_timer_sync": {"configured": true, "token_present": true}`.
+   `"wfpm_timer_sync": {"configured": true, "stop_configured": true, "token_present": true}`
+   (`configured` is the start URL; `stop_configured` the stop URL).
 
 ---
 
@@ -455,18 +537,18 @@ Without that timer, a timer start whose first attempt fails is never retried.
 | `WFPM_SYNC_TASK_CREATED` / `_REPLAYED` / `_UPDATED` / `_ASSIGNED` / `_UNASSIGNED` | Task operations |
 | `WFPM_SYNC_NOT_FOUND … reason=not_linked` | WFPM used an id Monitra has no record of |
 | `WFPM_SYNC_NOT_FOUND … reason=archived_or_out_of_scope` | The id is linked, but archived or not visible to that user |
-| `WFPM_TIMER_QUEUED` | A timer start was queued for WFPM |
+| `WFPM_TIMER_QUEUED` | A timer start or stop was queued for WFPM (`event=timer_start` / `timer_stop`) |
 | `WFPM_TIMER_SENT` | WFPM accepted it |
 | `WFPM_TIMER_RETRY` | An attempt failed and will be retried; the line says why |
 | `WFPM_TIMER_REJECTED` | WFPM refused it (`4xx`); not retried |
 | `WFPM_TIMER_FAILED` | Out of attempts |
-| `WFPM_TIMER_QUEUE_FAILED` | The event could not be queued. The Monitra timer still started |
+| `WFPM_TIMER_QUEUE_FAILED` | The event could not be queued. The Monitra timer still started or stopped |
 
-**The queue.** One row per timer start in `wfpm_timer_events`:
+**The queue.** One row per timer start and one per timer stop (`event_type`) in `wfpm_timer_events`:
 
 ```sql
 -- everything WFPM was not told, and why
-SELECT id, time_entry_id, wfpm_task_id, status, attempt_count,
+SELECT id, event_type, time_entry_id, wfpm_task_id, status, attempt_count,
        response_status, last_error, created_at
 FROM wfpm_timer_events
 WHERE status IN ('pending', 'failed', 'rejected')
@@ -502,7 +584,8 @@ SELECT id, task_name, project_id, wfpm_task_id FROM tasks WHERE wfpm_task_id = '
 | Part | Status |
 |---|---|
 | Schema, `/WFPM/sync` routes, timer queue | Implemented; automated tests; verified over real HTTP against the development database |
-| Timer delivery to WFPM | Implemented and verified against a **local stand-in** for WFPM's endpoint. **It has never called the real WFPM**, whose endpoint did not exist when this was written. §3 is therefore a proposal until the WFPM team confirms it or asks for changes |
+| Timer start delivery to WFPM | Implemented; WFPM has confirmed it works end to end |
+| Timer stop delivery to WFPM (§3.5) | Implemented to WFPM's specification; automated tests, and verified over real HTTP against a **local stand-in** for WFPM's stop endpoint. **Not yet exercised against the real WFPM** — that needs the deployed backend with `WFPM_TIMER_STOP_URL` set, then a start-and-stop from Monitra checked in WFPM for a matching duration |
 
 To repeat the verification (development database only; it starts its own
 backend, uses disposable `@e2e.invalid` users and removes everything it
@@ -517,5 +600,5 @@ Questions for the WFPM team that would change this document:
 1. Are WFPM ids numbers or strings, and does the timer endpoint accept
    `wfpm_task_id` as a JSON string (§1, §3.2)?
 2. How should Monitra authenticate to WFPM — is a bearer token right (§3.2)?
-3. Should WFPM be told when a timer **stops** (§3.5)?
+3. ~~Should WFPM be told when a timer **stops**?~~ Yes — answered by §3.5.
 4. Does WFPM identify users by email (§3.2)?

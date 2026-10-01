@@ -280,7 +280,13 @@ export const AssigneeSelector: React.FC<{
               happened to work, because nothing there is transformed. A
               portal escapes every ancestor's containing block and overflow,
               so the menu always positions against the real viewport. */}
-          <div className="fixed inset-0 z-10" onClick={onClose}></div>
+          {/* z-50, not lower: this picker also opens from inside dialogs and
+              drawers, which are `fixed inset-0 z-50`. A lower click-away layer
+              sits *beneath* them, so a click anywhere in the dialog never
+              reached it and the menu stayed open. Equal z-index with a later
+              position in the document puts it above the dialog and below the
+              menu that follows it. */}
+          <div className="fixed inset-0 z-50" onClick={onClose}></div>
           <div
             className="fixed z-50 w-64 rounded-xl border border-slate-200 bg-white p-3 shadow-2xl"
             style={{ left: menuPosition.left, top: menuPosition.top }}

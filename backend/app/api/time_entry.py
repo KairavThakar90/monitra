@@ -87,6 +87,7 @@ def stop_timer(
         stopped_at=payload.stopped_at,
         client_time=payload.client_time,
         request_id=_request_id(request),
+        background_tasks=background_tasks,
     )
     if finalized_now:
         # The session's final length is now known: check its project's fixed

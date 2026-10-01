@@ -1,6 +1,7 @@
 """The Monitra -> WFPM timer queue.
 
-A timer started in Monitra has to start the matching timer in WFPM, and WFPM is
+A timer started in Monitra has to start the matching timer in WFPM (and one
+stopped in Monitra has to stop it), and WFPM is
 another system on another machine. So the intent is a row here first and an HTTP
 request second, for the same two reasons the email outbox gives:
 
@@ -45,6 +46,10 @@ STATUS_REJECTED = "rejected"
 #: Wire value for `event_type`, and half of the uniqueness key -- renaming it
 #: would let a second event through for a timer that was already announced.
 EVENT_TIMER_START = "timer_start"
+#: The counterpart: the Monitra timer ended, so the WFPM one must too. Same
+#: table, same uniqueness key -- one stop per time entry -- and no migration,
+#: because `event_type` is a plain string column.
+EVENT_TIMER_STOP = "timer_stop"
 
 
 class WfpmTimerEvent(Base):

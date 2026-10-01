@@ -260,6 +260,10 @@ class Settings(BaseSettings):
     #: populate this with a placeholder -- a queue that fills against a URL
     #: that does not exist is delivered all at once the day it does.
     WFPM_TIMER_START_URL: str = ""
+    #: The full URL of the WFPM endpoint that stops a task timer. It carries
+    #: its own `?key=...` and is a secret exactly as the start URL is. Left
+    #: empty, stops are not announced: nothing is queued, as with the start URL.
+    WFPM_TIMER_STOP_URL: str = ""
     #: The secret WFPM issues to this backend, sent as `Authorization: Bearer`.
     #: Optional only because WFPM may authorise by network instead; when WFPM
     #: issues one, set it here and nowhere else.
@@ -282,6 +286,11 @@ class Settings(BaseSettings):
     def wfpm_timer_sync_configured(self) -> bool:
         """Whether a started timer is announced to WFPM at all."""
         return bool((self.WFPM_TIMER_START_URL or "").strip())
+
+    @property
+    def wfpm_timer_stop_configured(self) -> bool:
+        """Whether a stopped timer is announced to WFPM at all."""
+        return bool((self.WFPM_TIMER_STOP_URL or "").strip())
 
     @property
     def email_configured(self) -> bool:

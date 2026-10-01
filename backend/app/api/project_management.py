@@ -9,7 +9,7 @@ from app.core.security import get_current_user, require_permission
 from app.core.permissions import LEADER_ROLE_NAMES
 from app.models.user import User
 from app.repositories.status_catalog import StatusCatalog
-from app.schemas.project_management import BillingType, ProjectCreate, ProjectHoursSummaryResponse, ProjectListResponse, ProjectManagementMetadata, ProjectMetadataStatusRead, ProjectRead, ProjectUpdate, RoleRead, StatusRead, SyncRevisionRead, TaskCreate, TaskMetadataStatusRead, TaskRead, TaskUpdate
+from app.schemas.project_management import BillingType, ProjectCreate, ProjectHoursSummaryResponse, ProjectListResponse, ProjectManagementMetadata, ProjectMetadataStatusRead, ProjectRead, ProjectUpdate, RoleRead, StatusRead, SyncRevisionRead, TaskAssigneesSet, TaskCreate, TaskMetadataStatusRead, TaskRead, TaskUpdate
 from app.schemas.project_member import ProjectMembersAddRequest, ProjectMembersAddResponse, ProjectMemberRead, ProjectMemberUpdate, ProjectMembersListResponse
 from app.services.member_scope import is_team_scoped
 from app.services import project_ownership
@@ -168,6 +168,11 @@ def list_tasks(project_id: int, status_id: Optional[int] = Query(None, gt=0), as
 @router.patch("/projects/{project_id}/tasks/{task_id}", response_model=TaskRead, dependencies=[Depends(require_permission("tasks:update"))], summary="Update a project task")
 def update_task(project_id: int, task_id: int, payload: TaskUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return ProjectManagementService.update_task(db, user, project_id, task_id, payload)
+
+
+@router.put("/projects/{project_id}/tasks/{task_id}/assignees", response_model=TaskRead, dependencies=[Depends(require_permission("task_assignees:manage"))], summary="Set the members assigned to a task (replaces the whole set)")
+def set_task_assignees(project_id: int, task_id: int, payload: TaskAssigneesSet, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return ProjectManagementService.set_task_assignees(db, user, project_id, task_id, payload)
 
 
 @router.delete("/projects/{project_id}/tasks/{task_id}", summary="Archive a project task", dependencies=[Depends(require_permission("tasks:delete"))])

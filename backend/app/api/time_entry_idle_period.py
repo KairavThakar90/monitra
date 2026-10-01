@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -66,6 +66,7 @@ def get_idle_period(
 def resolve_idle_period(
     idle_period_id: int,
     payload: IdlePeriodResolve,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -77,7 +78,9 @@ def resolve_idle_period(
     decision is idempotent; a different decision on a resolved period is a
     409.
     """
-    return TimeEntryIdlePeriodService.resolve(db, idle_period_id, payload, current_user)
+    return TimeEntryIdlePeriodService.resolve(
+        db, idle_period_id, payload, current_user, background_tasks=background_tasks,
+    )
 
 
 @router.post("/{idle_period_id}/reassign", response_model=IdlePeriodReassignResponse)

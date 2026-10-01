@@ -13,10 +13,11 @@ Two directions, and nothing about either is implemented anywhere else:
                    Monitra frontend uses. No project or task rule is
                    re-implemented here.
 
-**Monitra -> WFPM** (a timer started in Monitra starts the WFPM timer)
+**Monitra -> WFPM** (a timer started or stopped in Monitra starts or stops
+the WFPM timer)
 
-``timer_sync.py``  ``WfpmTimerSync`` -- queues one event per started timer and
-                   delivers it, with retry, backoff and jitter.
+``timer_sync.py``  ``WfpmTimerSync`` -- queues one start and one stop event per
+                   timer and delivers them, with retry, backoff and jitter.
 ``client.py``      The only code that makes an HTTP request to WFPM.
 ``models.py``      ``wfpm_timer_events``, the durable queue behind it.
 

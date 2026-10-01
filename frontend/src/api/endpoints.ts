@@ -87,6 +87,8 @@ export const ENDPOINTS = {
     TASKS: (projectId: string | number) => `${API_BASE_URL}/projects/${projectId}/tasks`,
     TASK_BY_ID: (projectId: string | number, taskId: string | number) =>
       `${API_BASE_URL}/projects/${projectId}/tasks/${taskId}`,
+    TASK_ASSIGNEES: (projectId: string | number, taskId: string | number) =>
+      `${API_BASE_URL}/projects/${projectId}/tasks/${taskId}/assignees`,
   },
   TEAMS: {
     SUMMARY: `${API_BASE_URL}/teams/summary`,

@@ -146,6 +146,13 @@ class TaskCreate(BaseModel):
     #: to invent one, and the only id it had was the signed-in user's, which
     #: this endpoint then refused for every admin.
     assignee_id: Optional[int] = Field(None, gt=0)
+    #: Create the task already held by several members -- the Assign Tasks
+    #: screen's "new task" path. Atomic with the create, so a task is never
+    #: left unassigned (i.e. shared with the whole project) between two
+    #: requests. Requires `task_assignees:manage`, which `tasks:create` alone
+    #: does not grant: an employee may create a task but not hand it to others.
+    #: Mutually exclusive with `assignee_id`; the first id becomes the primary.
+    assignee_ids: Optional[list[int]] = Field(None, max_length=500)
     status_id: int = Field(..., gt=0)
     #: The client's own key for this submission. A create retried with a key
     #: the organization has already seen is answered with the task that key
@@ -164,6 +171,23 @@ class TaskCreate(BaseModel):
         if not value:
             raise ValueError("Task name cannot be empty")
         return value
+
+    @field_validator("assignee_ids")
+    @classmethod
+    def unique_positive_ids(cls, value: Optional[list[int]]):
+        if value is None:
+            return value
+        if any(user_id <= 0 for user_id in value):
+            raise ValueError("assignee_ids must contain positive IDs")
+        if len(value) != len(set(value)):
+            raise ValueError("assignee_ids cannot contain duplicate IDs")
+        return value
+
+    @model_validator(mode="after")
+    def one_way_to_name_assignees(self):
+        if self.assignee_id is not None and self.assignee_ids:
+            raise ValueError("Send either assignee_id or assignee_ids, not both")
+        return self
 
 
 class TaskUpdate(BaseModel):
@@ -185,12 +209,40 @@ class TaskUpdate(BaseModel):
         return value
 
 
+class TaskAssigneesSet(BaseModel):
+    """Who holds a task, as a whole: the complete list, not a delta.
+
+    Replace semantics make the call idempotent -- a retry lands on the same
+    state -- and let one request both add and remove members, which is what the
+    Assign Task screen's Edit does. An empty list leaves the task unassigned,
+    i.e. shared project work (see `unassign_task`).
+    """
+    user_ids: list[int] = Field(..., max_length=500)
+    #: Optional: the Assign Task dialog also sets the task's status, and doing
+    #: both in one request keeps "save" atomic -- a half-saved dialog (members
+    #: changed, status refused) is a worse failure than either alone.
+    status_id: Optional[int] = Field(None, gt=0)
+
+    @field_validator("user_ids")
+    @classmethod
+    def unique_positive_ids(cls, value: list[int]):
+        if any(user_id <= 0 for user_id in value):
+            raise ValueError("user_ids must contain positive IDs")
+        if len(value) != len(set(value)):
+            raise ValueError("user_ids cannot contain duplicate IDs")
+        return value
+
+
 class TaskRead(BaseModel):
     id: int
     project_id: int
     name: str
     assignee_id: Optional[int]
     assignee: Optional[PersonRead]
+    #: Everyone who holds the task, the primary assignee (`assignee`) first. A
+    #: task can be held by several members (`task_assignees`); `assignee` stays
+    #: the single primary one because the desktop and the WFPM contract read it.
+    assignees: list[PersonRead] = Field(default_factory=list)
     status: Optional[StatusRead] = None
     estimated_hours: Optional[float] = None
     created_at: datetime
