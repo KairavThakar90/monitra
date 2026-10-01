@@ -233,6 +233,20 @@ class ProjectManagementService:
         return {task_id: [ProjectManagementService._person(users[user_id]) for user_id in ids if user_id in users] for task_id, ids in held.items()}
 
     @staticmethod
+    def _task_holders(db: Session, user: User, project_id: int, user_ids: list[int]) -> list[User]:
+        """Resolve people who are about to *newly* hold a task, in the order given.
+
+        The one rule for who may hold a task, shared by every path that adds a
+        holder: an active employee of the caller's organization who is a member
+        of this project. Raises 400 before anything is written.
+        """
+        people = ProjectManagementService._users(db, user, user_ids, {"employee"}, "assignees")
+        member_ids = set(db.scalars(select(ProjectMember.user_id).where(ProjectMember.project_id == project_id, ProjectMember.organization_id == user.organization_id, ProjectMember.user_id.in_(user_ids))).all())
+        if len(member_ids) != len(set(user_ids)):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Task assignees must be assigned to this project.")
+        return people
+
+    @staticmethod
     def _task_payload(task: Task, task_status: TaskStatus, assignee: Optional[User], assignees: Optional[list[dict]] = None):
         # A caller that has not loaded the whole set still gets a truthful
         # answer for the common case: the primary assignee is, at the least,
@@ -681,6 +695,18 @@ class ProjectManagementService:
             if not assignee or assignee.role_name != "employee":
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "Task assignee must be an active employee in this organization.")
 
+        # Several holders at once: only for those allowed to assign work to
+        # others (`tasks:create` is not enough -- employees have it). Checked
+        # here rather than on the route because the same route serves the
+        # employee's own create, and refused before any row is written.
+        holders: list[User] = []
+        if payload.assignee_ids:
+            from app.core.security import has_permission
+            if not has_permission(user, "task_assignees:manage"):
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have permission to assign tasks to members.")
+            holders = ProjectManagementService._task_holders(db, user, project.id, payload.assignee_ids)
+            assignee = holders[0]
+
         # An employee's own task is their own. Derived from the bearer token,
         # never from the payload: the desktop does send `assignee_id`, but a
         # modified or older client that omits it would otherwise create an
@@ -705,8 +731,8 @@ class ProjectManagementService:
             if existing is None:
                 raise
             return ProjectManagementService._replayed_task(db, user, project.id, existing)
-        if assignee:
-            db.add(TaskAssignee(task_id=task.id, user_id=assignee.id, assigned_by=user.id))
+        for holder in (holders or ([assignee] if assignee else [])):
+            db.add(TaskAssignee(task_id=task.id, user_id=holder.id, assigned_by=user.id))
         db.commit()
         db.refresh(task)
         # Only a create that inserted a row reaches here; the idempotent
@@ -803,10 +829,7 @@ class ProjectManagementService:
 
         added = [user_id for user_id in wanted if user_id not in holding]
         if added:
-            ProjectManagementService._users(db, user, added, {"employee"}, "assignees")
-            member_ids = set(db.scalars(select(ProjectMember.user_id).where(ProjectMember.project_id == project_id, ProjectMember.organization_id == user.organization_id, ProjectMember.user_id.in_(added))).all())
-            if len(member_ids) != len(added):
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Task assignees must be assigned to this project.")
+            ProjectManagementService._task_holders(db, user, project_id, added)
 
         for row in rows:
             if row.user_id not in wanted_set:

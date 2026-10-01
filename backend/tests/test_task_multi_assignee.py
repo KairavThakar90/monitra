@@ -241,6 +241,77 @@ class WhoMayBeAddedTests(MultiAssigneeCase):
         self.assertEqual(self._holders(), [ANA])
 
 
+class CreateWithAssigneesTests(MultiAssigneeCase):
+    """`POST .../tasks` with `assignee_ids`: create and assign in one atomic step."""
+
+    def _create(self, user_ids, *, caller=None, client_op=None, name="Brand new task", **extra):
+        from app.schemas.project_management import TaskCreate
+        return ProjectManagementService.create_task(
+            self.db, caller or _user(ADMIN, "administrator"), PROJECT,
+            TaskCreate(name=name, status_id=2, assignee_ids=user_ids,
+                       client_op=client_op, **extra))
+
+    def _task_count(self):
+        return self.db.query(Task).count()
+
+    def test_one_request_creates_the_task_and_every_holder(self):
+        created = self._create([BEN, ANA, CAL], estimated_hours=4)
+        self.assertEqual([p["id"] for p in created["assignees"]], [BEN, ANA, CAL])
+        self.assertEqual(created["assignee_id"], BEN)          # first is the primary
+        self.assertEqual(created["status"].id, 2)
+        self.assertEqual(created["estimated_hours"], 4)
+        self.assertEqual(self._holders(created["id"]), [ANA, BEN, CAL])
+
+    def test_a_non_member_refuses_the_whole_create_and_leaves_no_task(self):
+        before = self._task_count()
+        with self.assertRaises(HTTPException) as error:
+            self._create([ANA, DEE])
+        self.assertEqual(error.exception.status_code, 400)
+        self.db.rollback()
+        self.assertEqual(self._task_count(), before)           # nothing half-created
+
+    def test_an_employee_may_not_hand_a_new_task_to_others(self):
+        before = self._task_count()
+        with self.assertRaises(HTTPException) as error:
+            self._create([BEN], caller=_user(ANA, "employee"))
+        self.assertEqual(error.exception.status_code, 403)
+        self.db.rollback()
+        self.assertEqual(self._task_count(), before)
+
+    def test_a_leader_may(self):
+        created = self._create([ANA], caller=_user(LEADER, "leader"))
+        self.assertEqual(created["assignee_id"], ANA)
+
+    def test_a_retried_create_returns_the_same_task_with_the_same_holders(self):
+        first = self._create([ANA, BEN], client_op="op-123456")
+        again = self._create([ANA, BEN], client_op="op-123456")
+        self.assertEqual(first["id"], again["id"])
+        self.assertEqual([p["id"] for p in again["assignees"]], [ANA, BEN])
+        self.assertEqual(self._holders(first["id"]), [ANA, BEN])
+
+    def test_without_assignee_ids_the_create_is_unchanged(self):
+        from app.schemas.project_management import TaskCreate
+        created = ProjectManagementService.create_task(
+            self.db, _user(ADMIN, "administrator"), PROJECT, TaskCreate(name="Plain", status_id=1))
+        self.assertIsNone(created["assignee_id"])
+        self.assertEqual(created["assignees"], [])
+
+    def test_the_single_assignee_path_still_works(self):
+        from app.schemas.project_management import TaskCreate
+        created = ProjectManagementService.create_task(
+            self.db, _user(ADMIN, "administrator"), PROJECT,
+            TaskCreate(name="Solo", status_id=1, assignee_id=CAL))
+        self.assertEqual([p["id"] for p in created["assignees"]], [CAL])
+
+    def test_the_request_shape_is_validated(self):
+        from app.schemas.project_management import TaskCreate
+        for bad in ({"assignee_ids": [1, 1]}, {"assignee_ids": [0]},
+                    {"assignee_ids": [1], "assignee_id": 2}):
+            with self.subTest(bad=bad), self.assertRaises(ValidationError):
+                TaskCreate(name="x", status_id=1, **bad)
+        self.assertEqual(TaskCreate(name="x", status_id=1, assignee_ids=[]).assignee_ids, [])
+
+
 class TaskReachTests(MultiAssigneeCase):
     def test_a_task_in_another_project_is_not_found(self):
         elsewhere = Task(id=3500, organization_id=ORG, project_id=OTHER_PROJECT,
@@ -365,6 +436,18 @@ class HttpTests(MultiAssigneeCase):
         self._as("administrator")
         with patch("app.core.security.permission_withdrawn", return_value=True):
             self.assertEqual(self._put({"user_ids": [ANA]}).status_code, 403)
+
+    def test_create_and_assign_over_http(self):
+        self._as("administrator")
+        url = f"/api/v1/projects/{PROJECT}/tasks"
+        ok = self.client.post(url, json={"name": "Over HTTP", "status_id": 1, "assignee_ids": [ANA, BEN]})
+        self.assertEqual(ok.status_code, 201, ok.text)
+        self.assertEqual([p["id"] for p in ok.json()["assignees"]], [ANA, BEN])
+        self._as("employee")
+        denied = self.client.post(url, json={"name": "Sneaky", "status_id": 1, "assignee_ids": [BEN]})
+        self.assertEqual(denied.status_code, 403, denied.text)
+        both = self.client.post(url, json={"name": "x", "status_id": 1, "assignee_ids": [ANA], "assignee_id": BEN})
+        self.assertEqual(both.status_code, 422)
 
     def test_malformed_bodies_are_422_not_500(self):
         self._as("administrator")

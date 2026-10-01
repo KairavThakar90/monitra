@@ -146,6 +146,13 @@ class TaskCreate(BaseModel):
     #: to invent one, and the only id it had was the signed-in user's, which
     #: this endpoint then refused for every admin.
     assignee_id: Optional[int] = Field(None, gt=0)
+    #: Create the task already held by several members -- the Assign Tasks
+    #: screen's "new task" path. Atomic with the create, so a task is never
+    #: left unassigned (i.e. shared with the whole project) between two
+    #: requests. Requires `task_assignees:manage`, which `tasks:create` alone
+    #: does not grant: an employee may create a task but not hand it to others.
+    #: Mutually exclusive with `assignee_id`; the first id becomes the primary.
+    assignee_ids: Optional[list[int]] = Field(None, max_length=500)
     status_id: int = Field(..., gt=0)
     #: The client's own key for this submission. A create retried with a key
     #: the organization has already seen is answered with the task that key
@@ -164,6 +171,23 @@ class TaskCreate(BaseModel):
         if not value:
             raise ValueError("Task name cannot be empty")
         return value
+
+    @field_validator("assignee_ids")
+    @classmethod
+    def unique_positive_ids(cls, value: Optional[list[int]]):
+        if value is None:
+            return value
+        if any(user_id <= 0 for user_id in value):
+            raise ValueError("assignee_ids must contain positive IDs")
+        if len(value) != len(set(value)):
+            raise ValueError("assignee_ids cannot contain duplicate IDs")
+        return value
+
+    @model_validator(mode="after")
+    def one_way_to_name_assignees(self):
+        if self.assignee_id is not None and self.assignee_ids:
+            raise ValueError("Send either assignee_id or assignee_ids, not both")
+        return self
 
 
 class TaskUpdate(BaseModel):
