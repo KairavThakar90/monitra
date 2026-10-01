@@ -61,6 +61,9 @@ export interface ManualTimeEntryRequest {
   project_name: string;
   task_name: string;
   has_conflict: boolean;
+  /** Why the time was requested after the fact (a `ManualEntryReason` value); absent on older rows. */
+  reason?: string | null;
+  created_at?: string;
 }
 
 export interface GetManualTimeEntryRequestsArgs {

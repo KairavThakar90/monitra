@@ -6,6 +6,7 @@ import { useGetAllMembersQuery, useGetMembersQuery } from '../../store/api/membe
 import { useGetAllProjectsQuery } from '../../store/api/projectsApi';
 import { MemberMultiSelect } from '../dashboard/v2/filters';
 import { useCreateManualTimeEntryRequestMutation, useGetManualTimeEntryRequestsQuery, useApproveManualTimeEntryRequestMutation, useRejectManualTimeEntryRequestMutation, useDeleteManualTimeEntryRequestMutation } from '../../store/api/manualTimeEntryApi';
+import type { ManualTimeEntryRequest } from '../../store/api/manualTimeEntryApi';
 import { useFeedback } from '../../components/FeedbackProvider';
 import { useAuth } from '../auth/authContext';
 import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
@@ -121,6 +122,98 @@ const applyDatePreset = (preset: string) => {
 const formatDate = (dateStr: string) => formatISTDate(dateStr); // e.g. "12 Jun 2026"
 
 const formatDateTime = (dateStr: string | null) => formatISTTime(dateStr);
+
+/** What a person reads for a `ManualEntryReason`; the API stores the raw value. */
+const MANUAL_REASON_LABELS: Record<string, string> = {
+  forgot_timer: 'Forgot to start/stop timer',
+  wrong_task_project: 'Used wrong task/project',
+  other: 'Other',
+};
+const manualReasonLabel = (reason: string | null | undefined) =>
+  reason ? MANUAL_REASON_LABELS[reason] ?? reason.replace(/_/g, ' ') : '-';
+
+const REQUEST_STATUS_STYLES: Record<ManualTimeEntryRequest['approval_status'], { label: string; tone: string }> = {
+  pending: { label: 'Pending', tone: 'bg-amber-50 text-amber-700' },
+  approved: { label: 'Approved', tone: 'bg-emerald-50 text-emerald-700' },
+  rejected: { label: 'Rejected', tone: 'bg-rose-50 text-rose-700' },
+};
+
+/** The full record of one manual time request, for the View button's dialog. */
+const ManualRequestDetailsModal: React.FC<{ request: ManualTimeEntryRequest; onClose: () => void }> = ({ request, onClose }) => {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const status = REQUEST_STATUS_STYLES[request.approval_status] ?? REQUEST_STATUS_STYLES.pending;
+  const decidedLabel = request.approval_status === 'approved' ? 'Approved on' : 'Rejected on';
+  const fields: [string, React.ReactNode][] = [
+    ['Project', request.project_name || '-'],
+    ['Task', request.task_name || '-'],
+    ['Date', formatDate(request.work_date)],
+    ['Start time (IST)', formatDateTime(request.start_time)],
+    ['End time (IST)', formatDateTime(request.end_time)],
+    ['Total time', formatHMS(request.total_seconds)],
+    ['Billable', request.is_billable ? 'Yes' : 'No'],
+    ['Reason', manualReasonLabel(request.reason)],
+    ['Requested on', request.created_at ? `${formatISTDate(request.created_at)}, ${formatISTTime(request.created_at)}` : '-'],
+  ];
+  if (request.approval_status !== 'pending' && request.approved_at) {
+    fields.push([decidedLabel, `${formatISTDate(request.approved_at)}, ${formatISTTime(request.approved_at)}`]);
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm"
+      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" role="dialog" aria-modal="true" aria-label="Manual time request details">
+        <div className="flex items-start justify-between border-b border-slate-100 bg-slate-50 px-6 py-5">
+          <div>
+            <h2 className="text-xl font-black text-slate-800">Manual Time Request</h2>
+            <p className="mt-1 text-sm font-semibold text-slate-500">Details of the time that was requested</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-lg p-2 text-slate-400 transition hover:bg-white hover:text-slate-700" aria-label="Close request details">
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
+        <div className="max-h-[calc(90vh-86px)] overflow-y-auto p-6">
+          <div className="flex items-center gap-4 rounded-xl border border-blue-100 bg-blue-50/60 p-4">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-[#0ea5e9] to-[#8b5cf6] text-sm font-black text-white">
+              {(request.member_name || 'U').slice(0, 2).toUpperCase()}
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="truncate font-black text-slate-800">{request.member_name || 'Unknown'}</h3>
+              <p className="truncate text-sm text-slate-500">{request.member_email || 'No email'}</p>
+            </div>
+            <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ${status.tone}`}>{status.label}</span>
+          </div>
+
+          {request.has_conflict && request.approval_status === 'pending' && (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+              ⚠️ This request overlaps time that is already recorded for this member.
+            </div>
+          )}
+
+          <dl className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-3">
+            {fields.map(([label, value]) => (
+              <div key={label} className="min-h-[76px] rounded-xl border border-slate-100 bg-slate-50 p-4">
+                <dt className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</dt>
+                <dd className="mt-2 break-words text-sm font-bold leading-5 text-slate-800">{value}</dd>
+              </div>
+            ))}
+          </dl>
+
+          <h3 className="mt-6 text-xs font-black uppercase tracking-widest text-blue-500">Description</h3>
+          <p className="mt-2 whitespace-pre-wrap break-words rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm leading-6 text-slate-700">
+            {request.description?.trim() || 'No description was provided.'}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const SearchablePicker: React.FC<{
   label: string;
@@ -381,6 +474,7 @@ export const AdminTimeTracking: React.FC = () => {
   const [approveRequest] = useApproveManualTimeEntryRequestMutation();
   const [rejectRequest] = useRejectManualTimeEntryRequestMutation();
   const [deleteRequest] = useDeleteManualTimeEntryRequestMutation();
+  const [viewingRequest, setViewingRequest] = useState<ManualTimeEntryRequest | null>(null);
 
   const handleApprove = async (id: number) => {
     try {
@@ -803,10 +897,11 @@ export const AdminTimeTracking: React.FC = () => {
                       </td>
                       <td className="px-6 py-4 text-right">
                         <button
+                          type="button"
                           onClick={() => openEmployeeDetails(Number(entry.employeeId))}
-                          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-900"
+                          className="rounded-lg border border-[#2563EB]/25 bg-[#EFF6FF] px-3 py-1.5 text-[11px] font-bold text-[#2563EB] transition hover:bg-[#DBEAFE]"
                         >
-                          View Details
+                          View
                         </button>
                       </td>
                     </tr>
@@ -895,8 +990,16 @@ export const AdminTimeTracking: React.FC = () => {
                         )}
                       </td>
                       <td className="px-6 py-4 text-right">
-                        {req.approval_status === 'pending' && (
-                          <div className="flex justify-end gap-2">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setViewingRequest(req)}
+                              className="rounded-lg border border-[#2563EB]/25 bg-[#EFF6FF] px-3 py-1.5 text-[11px] font-bold text-[#2563EB] transition hover:bg-[#DBEAFE]"
+                            >
+                              View
+                            </button>
+                            {req.approval_status === 'pending' && (
+                              <>
                             <button
                               onClick={() => handleApprove(req.id)}
                               className="rounded-md bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-700 hover:bg-emerald-200"
@@ -916,8 +1019,9 @@ export const AdminTimeTracking: React.FC = () => {
                             >
                               ×
                             </button>
+                              </>
+                            )}
                           </div>
-                        )}
                       </td>
                     </tr>
                   ))}
@@ -973,6 +1077,10 @@ export const AdminTimeTracking: React.FC = () => {
             <PaginationArrow direction="next" disabled={page === totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))} />
           </div>
         </div>
+      )}
+
+      {viewingRequest && (
+        <ManualRequestDetailsModal request={viewingRequest} onClose={() => setViewingRequest(null)} />
       )}
 
       {selectedEmployeeId !== null && (
