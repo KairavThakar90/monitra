@@ -230,7 +230,10 @@ that is archived or not accessible · `404` the project id is not linked ·
 { "assignee_id": 101 }
 ```
 
-Replaces the current assignee. A Monitra task has **one** assignee. The user
+Replaces the current assignee. This route deals in **one** assignee: a Monitra
+task can also be held by several members at once (an administrator or leader
+sets that through Monitra's own `PUT /api/v1/projects/{project_id}/tasks/{task_id}/assignees`),
+and this call replaces that whole set with the single user named here. The user
 must be an active employee and a member of the task's project, otherwise
 `400`. `200` with the task.
 
@@ -274,6 +277,7 @@ Task (routes 6–10):
   "name": "Design the homepage",
   "assignee_id": 101,
   "assignee": { "id": 101, "name": "…", "email": "…", "role": "employee" },
+  "assignees": [ { "id": 101, "name": "…", "email": "…", "role": "employee" } ],
   "status": { "id": 1, "name": "Todo", "color": "#CBD5E1" },
   "estimated_hours": 12.5,
   "created_at": "2026-09-30T10:00:00Z",
@@ -282,6 +286,8 @@ Task (routes 6–10):
 ```
 
 `id` and `project_id` are Monitra's own ids, returned for reference.
+`assignees` lists everyone holding the task, with `assignee` (the primary one)
+first; it is additive, so a consumer that only reads `assignee` is unaffected.
 
 Errors use one shape throughout: `{"detail": "…"}` for `400/401/403/404/409`,
 and `{"detail": [ … ]}` (a list of field errors) for `422`.

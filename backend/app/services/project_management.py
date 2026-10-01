@@ -28,7 +28,7 @@ from app.repositories.reports import ReportsRepository
 from app.repositories.status_catalog import StatusCatalog
 from app.services.activity_log import ActivityLogService
 from app.schemas.project_management import (
-    BillingType, ProjectCreate, ProjectUpdate, TaskCreate, TaskUpdate,
+    BillingType, ProjectCreate, ProjectUpdate, TaskAssigneesSet, TaskCreate, TaskUpdate,
 )
 from app.services.member_scope import is_team_scoped
 from app.services.project_ownership import resolve_owner
@@ -213,8 +213,33 @@ class ProjectManagementService:
         return {"id": item.id, "name": item.name, "email": item.email, "role": item.role_name}
 
     @staticmethod
-    def _task_payload(task: Task, task_status: TaskStatus, assignee: Optional[User]):
-        return {"id": task.id, "project_id": task.project_id, "name": task.task_name, "assignee_id": task.assignee_id, "assignee": ProjectManagementService._person(assignee), "status": task_status, "estimated_hours": float(task.estimated_hours) if task.estimated_hours is not None else None, "created_at": task.created_at, "updated_at": task.updated_at}
+    def _assignees_for(db: Session, tasks: list[Task]) -> dict[int, list[dict]]:
+        """Everyone holding each task, primary assignee first.
+
+        Read from **both** representations, for the reason task_scope gives:
+        `tasks.assignee_id` is the older single column and `task_assignees` the
+        real relationship, and the creation paths write different subsets of
+        them. Two queries however many tasks there are, never one per task.
+        """
+        if not tasks:
+            return {}
+        held: dict[int, list[int]] = {task.id: [task.assignee_id] if task.assignee_id else [] for task in tasks}
+        rows = db.execute(select(TaskAssignee.task_id, TaskAssignee.user_id).where(TaskAssignee.task_id.in_(list(held))).order_by(TaskAssignee.id)).all()
+        for task_id, user_id in rows:
+            if user_id not in held[task_id]:
+                held[task_id].append(user_id)
+        user_ids = {user_id for ids in held.values() for user_id in ids}
+        users = {item.id: item for item in db.scalars(select(User).where(User.id.in_(user_ids))).all()} if user_ids else {}
+        return {task_id: [ProjectManagementService._person(users[user_id]) for user_id in ids if user_id in users] for task_id, ids in held.items()}
+
+    @staticmethod
+    def _task_payload(task: Task, task_status: TaskStatus, assignee: Optional[User], assignees: Optional[list[dict]] = None):
+        # A caller that has not loaded the whole set still gets a truthful
+        # answer for the common case: the primary assignee is, at the least,
+        # one of the people holding the task.
+        if assignees is None:
+            assignees = [ProjectManagementService._person(assignee)] if assignee else []
+        return {"id": task.id, "project_id": task.project_id, "name": task.task_name, "assignee_id": task.assignee_id, "assignee": ProjectManagementService._person(assignee), "assignees": assignees, "status": task_status, "estimated_hours": float(task.estimated_hours) if task.estimated_hours is not None else None, "created_at": task.created_at, "updated_at": task.updated_at}
 
     @staticmethod
     def _detail_payload(db: Session, project: Project, user: User):
@@ -236,7 +261,8 @@ class ProjectManagementService:
         assignees = list(db.scalars(select(User).where(User.id.in_(assignee_ids))).all()) if assignee_ids else []
         assignee_by_id = {item.id: item for item in assignees}
         task_statuses = StatusCatalog.task_statuses(db) if tasks else {}
-        return {"id": project.id, "project_name": project.project_name, "description": project.description, "status": project_status, "owner": ProjectManagementService._person(owner), "leader": ProjectManagementService._person(leader), "employees": [ProjectManagementService._person(employee_by_id[item_id]) for item_id in employee_ids if item_id in employee_by_id], "deadline": project.deadline, "billing_type": project.billing_type, "fixed_hours": project.fixed_hours, "organization_id": project.organization_id, "created_at": project.created_at, "updated_at": project.updated_at, "tasks": [ProjectManagementService._task_payload(task, task_statuses.get(task.status_id), assignee_by_id.get(task.assignee_id)) for task in tasks]}
+        holders = ProjectManagementService._assignees_for(db, tasks)
+        return {"id": project.id, "project_name": project.project_name, "description": project.description, "status": project_status, "owner": ProjectManagementService._person(owner), "leader": ProjectManagementService._person(leader), "employees": [ProjectManagementService._person(employee_by_id[item_id]) for item_id in employee_ids if item_id in employee_by_id], "deadline": project.deadline, "billing_type": project.billing_type, "fixed_hours": project.fixed_hours, "organization_id": project.organization_id, "created_at": project.created_at, "updated_at": project.updated_at, "tasks": [ProjectManagementService._task_payload(task, task_statuses.get(task.status_id), assignee_by_id.get(task.assignee_id), holders.get(task.id)) for task in tasks]}
 
     @staticmethod
     def _task_counts(db: Session, project_ids: list[int], user: User) -> dict[int, int]:
@@ -291,6 +317,7 @@ class ProjectManagementService:
         for member in memberships:
             memberships_by_project.setdefault(member.project_id, []).append(member.user_id)
         tasks_by_project = _group_by_project(tasks)
+        holders = ProjectManagementService._assignees_for(db, tasks)
         payloads = []
         for project in projects:
             employees = [ProjectManagementService._person(users_by_id[user_id]) for user_id in memberships_by_project.get(project.id, []) if user_id in users_by_id]
@@ -299,7 +326,7 @@ class ProjectManagementService:
                              # an empty array is a real answer ("this project has
                              # no tasks") and must not be how "you did not ask"
                              # is spelled.
-                             "tasks": [ProjectManagementService._task_payload(task, task_statuses.get(task.status_id), users_by_id.get(task.assignee_id)) for task in tasks_by_project.get(project.id, [])] if include_tasks else None,
+                             "tasks": [ProjectManagementService._task_payload(task, task_statuses.get(task.status_id), users_by_id.get(task.assignee_id), holders.get(task.id)) for task in tasks_by_project.get(project.id, [])] if include_tasks else None,
                              "employee_count": len(employees),
                              "task_count": task_counts.get(project.id, 0)})
         return payloads
@@ -598,7 +625,8 @@ class ProjectManagementService:
         assignee_ids = [item.assignee_id for item in tasks if item.assignee_id]
         assignees = {item.id: item for item in db.scalars(select(User).where(User.id.in_(assignee_ids))).all()} if assignee_ids else {}
         statuses = StatusCatalog.task_statuses(db) if tasks else {}
-        return [ProjectManagementService._task_payload(item, statuses.get(item.status_id), assignees.get(item.assignee_id)) for item in tasks]
+        holders = ProjectManagementService._assignees_for(db, tasks)
+        return [ProjectManagementService._task_payload(item, statuses.get(item.status_id), assignees.get(item.assignee_id), holders.get(item.id)) for item in tasks]
 
     @staticmethod
     def _task_for_client_op(db: Session, user: User, client_op: str) -> Optional[Task]:
@@ -620,7 +648,7 @@ class ProjectManagementService:
         if task.project_id != project_id:
             raise HTTPException(status.HTTP_409_CONFLICT, "client_op was already used for a task in another project.")
         assignee = db.get(User, task.assignee_id) if task.assignee_id else None
-        return ProjectManagementService._task_payload(task, StatusCatalog.task_status(db, task.status_id), assignee)
+        return ProjectManagementService._task_payload(task, StatusCatalog.task_status(db, task.status_id), assignee, ProjectManagementService._assignees_for(db, [task]).get(task.id))
 
     @staticmethod
     def create_task(db: Session, user: User, project_id: int, payload: TaskCreate, wfpm_task_id: Optional[str] = None):
@@ -689,7 +717,7 @@ class ProjectManagementService:
             "description": f'Added the task "{task.task_name}" to {project.project_name}',
             "project_id": project.id, "task_id": task.id, "entity_id": task.id,
         })
-        return ProjectManagementService._task_payload(task, task_status, assignee)
+        return ProjectManagementService._task_payload(task, task_status, assignee, ProjectManagementService._assignees_for(db, [task]).get(task.id))
 
     @staticmethod
     def _task(db: Session, user: User, project_id: int, task_id: int) -> Task:
@@ -736,7 +764,76 @@ class ProjectManagementService:
             "description": f'Updated the task "{task.task_name}"' + (f" ({changed})" if changed else ""),
             "project_id": project_id, "task_id": task.id, "entity_id": task.id,
         })
-        return ProjectManagementService._task_payload(task, task_status, assignee)
+        return ProjectManagementService._task_payload(task, task_status, assignee, ProjectManagementService._assignees_for(db, [task]).get(task.id))
+
+    @staticmethod
+    def set_task_assignees(db: Session, user: User, project_id: int, task_id: int, payload: TaskAssigneesSet):
+        """Make `payload.user_ids` the complete set of members holding a task.
+
+        This is the many-members counterpart of `update_task`'s single
+        `assignee_id`, which *replaces* the one assignee and so could never
+        leave a task with two. Replace semantics rather than add-one: one
+        request can add and remove together, and a retry lands on the same
+        state.
+
+        Only members **newly** added are validated (an active employee who is
+        a member of this project -- the same rule `update_task` applies to its
+        one assignee). Someone already holding the task who has since left the
+        project or been deactivated may stay on it, or be removed; refusing the
+        whole save because of a person the caller did not touch would make the
+        task impossible to edit. Removing anyone is always allowed.
+
+        `tasks.assignee_id` stays the *primary* assignee -- the one the desktop
+        and the WFPM contract read: kept when that person is still in the set,
+        otherwise the first of the new set, and `None` when the set is empty.
+        Both representations are written together (see `unassign_task`).
+        """
+        ProjectManagementService._project(db, project_id, user)
+        task = ProjectManagementService._task(db, user, project_id, task_id)
+        wanted = payload.user_ids
+        wanted_set = set(wanted)
+        task_status = StatusCatalog.task_status(db, task.status_id)
+        if payload.status_id is not None:
+            task_status = ProjectManagementService._status(db, TaskStatus, payload.status_id, "task")
+            task.status_id, task.status = task_status.id, ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task")
+
+        rows = list(db.scalars(select(TaskAssignee).where(TaskAssignee.task_id == task.id)).all())
+        row_ids = {row.user_id for row in rows}
+        holding = row_ids | ({task.assignee_id} if task.assignee_id else set())
+
+        added = [user_id for user_id in wanted if user_id not in holding]
+        if added:
+            ProjectManagementService._users(db, user, added, {"employee"}, "assignees")
+            member_ids = set(db.scalars(select(ProjectMember.user_id).where(ProjectMember.project_id == project_id, ProjectMember.organization_id == user.organization_id, ProjectMember.user_id.in_(added))).all())
+            if len(member_ids) != len(added):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Task assignees must be assigned to this project.")
+
+        for row in rows:
+            if row.user_id not in wanted_set:
+                db.delete(row)
+        for user_id in wanted:
+            if user_id not in row_ids:
+                db.add(TaskAssignee(task_id=task.id, user_id=user_id, assigned_by=user.id))
+        if task.assignee_id not in wanted_set:
+            task.assignee_id = wanted[0] if wanted else None
+        try:
+            db.commit()
+        except IntegrityError:
+            # A concurrent save inserted the same (task, user) pair between our
+            # read and our write; the unique constraint let exactly one through.
+            db.rollback()
+            raise HTTPException(status.HTTP_409_CONFLICT, "This task's members changed while you were saving. Reload and try again.")
+        db.refresh(task)
+        holders = ProjectManagementService._assignees_for(db, [task])[task.id]
+        primary = db.get(User, task.assignee_id) if task.assignee_id else None
+        names = ", ".join(person["name"] for person in holders) or "nobody"
+        ActivityLogService.capture(db, lambda: {
+            "actor": user,
+            "module": ActivityLogModule.TASK, "action": ActivityLogAction.TASK_UPDATED,
+            "description": f'Assigned the task "{task.task_name}" to {names}',
+            "project_id": project_id, "task_id": task.id, "entity_id": task.id,
+        })
+        return ProjectManagementService._task_payload(task, task_status, primary, holders)
 
     @staticmethod
     def unassign_task(db: Session, user: User, project_id: int, task_id: int):
@@ -760,7 +857,7 @@ class ProjectManagementService:
         task.assignee_id = None
         db.commit()
         db.refresh(task)
-        return ProjectManagementService._task_payload(task, StatusCatalog.task_status(db, task.status_id), None)
+        return ProjectManagementService._task_payload(task, StatusCatalog.task_status(db, task.status_id), None, [])
 
     @staticmethod
     def delete_task(db: Session, user: User, project_id: int, task_id: int):
