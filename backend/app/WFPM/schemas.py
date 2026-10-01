@@ -18,13 +18,13 @@ than by a rule of its own.
 from datetime import date
 from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, BeforeValidator, Field
+from pydantic import AfterValidator, BaseModel, BeforeValidator, Field
 
 from app.core.validation import (
     Identifier, InputValidationError, OptionalIdempotencyKey, OptionalIdentifier,
     validate_idempotency_key, validate_identifier,
 )
-from app.schemas.project_management import BillingType, ProjectRead, TaskRead
+from app.schemas.project_management import BillingType, PersonRead, ProjectRead, TaskRead
 
 
 def _wfpm_id(value: Any) -> str:
@@ -50,6 +50,22 @@ def _wfpm_id(value: Any) -> str:
 
 #: The id a project or task has in WFPM. See `_wfpm_id`.
 WfpmId = Annotated[str, BeforeValidator(_wfpm_id)]
+
+#: Most assignees one request may name. Far above anything a task has, low
+#: enough that a malformed or runaway list is refused (422) instead of walked.
+MAX_ASSIGNEES = 50
+
+
+def _first_occurrence(ids: list[int]) -> list[int]:
+    """Duplicates ignored, order kept -- the first id is the primary assignee,
+    so the order of the list is part of its meaning."""
+    return list(dict.fromkeys(ids))
+
+
+#: A list of Monitra user ids, in order, with repeats dropped.
+AssigneeIds = Annotated[
+    list[Identifier], Field(max_length=MAX_ASSIGNEES), AfterValidator(_first_occurrence),
+]
 
 
 # ── Requests: the original, unmapped routes ─────────────────────────────────
@@ -107,6 +123,13 @@ class WfpmTaskSyncCreate(BaseModel):
     #: A Monitra user id. Optional: a task may be created unassigned and given
     #: an assignee later through the assignee route.
     assignee_id: OptionalIdentifier = None
+    #: Several assignees, in order: the first is the primary. When both this
+    #: and `assignee_id` are sent, this wins (an empty list included -- it
+    #: says "nobody").
+    assignee_ids: Optional[AssigneeIds] = None
+    #: Also add any listed user who is not yet a member of the project.
+    #: Needs `project_members:manage`, like the members route.
+    add_missing_members: bool = False
     estimated_hours: Optional[float] = Field(None, ge=0, le=999.99)
 
 
@@ -124,6 +147,22 @@ class WfpmTaskAssign(BaseModel):
     #: A Monitra user id: an active employee who is a member of the task's
     #: project -- the same rule Monitra's own task screen applies.
     assignee_id: Identifier
+
+
+class WfpmTaskAssigneesSet(BaseModel):
+    """`PUT .../assignees`: the task's complete assignee list, in order."""
+    #: Replaces the whole set. `[]` leaves the task unassigned. The first id is
+    #: the primary assignee. Each *newly added* id must be an active employee
+    #: who is a member of the task's project.
+    assignee_ids: AssigneeIds
+    #: Also add any listed user who is not yet a member of the project.
+    #: Needs `project_members:manage`, like the members route.
+    add_missing_members: bool = False
+
+
+class WfpmTaskAssigneesAdd(BaseModel):
+    """`POST .../assignees`: people to add to whoever already holds the task."""
+    assignee_ids: Annotated[AssigneeIds, Field(min_length=1)]
 
 
 # ── Responses ───────────────────────────────────────────────────────────────

@@ -44,14 +44,14 @@ from app.core.security import get_current_user, require_permission
 from app.core.validation import Identifier
 from app.models.user import User
 from app.schemas.project_management import (
-    ProjectListResponse, ProjectRead, TaskCreate, TaskRead,
+    PersonRead, ProjectListResponse, ProjectRead, TaskCreate, TaskRead,
 )
 from app.schemas.project_member import ProjectMembersAddRequest, ProjectMembersAddResponse
 from app.services.project_management import ProjectManagementService
 from app.WFPM.schemas import (
     WfpmId, WfpmProjectCreate, WfpmProjectRead, WfpmProjectSyncCreate, WfpmProjectSyncUpdate,
-    WfpmTaskAssign, WfpmTaskCreate, WfpmTaskRead, WfpmTaskSyncCreate, WfpmTaskSyncUpdate,
-    WfpmTimerDispatchResult,
+    WfpmTaskAssign, WfpmTaskAssigneesAdd, WfpmTaskAssigneesSet, WfpmTaskCreate, WfpmTaskRead,
+    WfpmTaskSyncCreate, WfpmTaskSyncUpdate, WfpmTimerDispatchResult,
 )
 from app.WFPM.service import WfpmSyncService, _validated
 from app.WFPM.timer_sync import WfpmTimerSync
@@ -213,6 +213,64 @@ def sync_update_task(wfpm_task_id: WfpmId, payload: WfpmTaskSyncUpdate, user: Us
 )
 def sync_assign_task(wfpm_task_id: WfpmId, payload: WfpmTaskAssign, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return WfpmSyncService.assign_task(db, user, wfpm_task_id, payload.assignee_id)
+
+
+# ── Several assignees ───────────────────────────────────────────────────────
+#
+# The list is the task's whole set of holders, the first of them the primary
+# assignee. All gated on the same permissions as the single-assignee routes
+# (`tasks:update` to change, `tasks:view` to read). `assignee_id` / `assignee`
+# in a task body stay the primary, so a caller written against one assignee
+# keeps working.
+
+_BAD_ASSIGNEES = {400: {"description": "An id is not an active employee who is a member of the task's project (or the add_missing_members rules refused it). The ids are in `detail`. Nothing was changed."}}
+
+
+@router.put(
+    "/sync/tasks/{wfpm_task_id}/assignees", response_model=WfpmTaskRead,
+    dependencies=[Depends(require_permission("tasks:update"))],
+    summary="Set the whole assignee list of the Monitra task linked to a WFPM task",
+    description=(
+        "Replaces the task's entire assignee set with `assignee_ids`, in order: the first is the "
+        "primary assignee, duplicates are ignored, and `[]` leaves the task unassigned (shared "
+        "project work). Idempotent -- repeating a call changes nothing. All or nothing: if any "
+        "newly added id is invalid the answer is 400 and the task is untouched."
+    ),
+    responses={**_NOT_LINKED, **_BAD_ASSIGNEES},
+)
+def sync_set_task_assignees(wfpm_task_id: WfpmId, payload: WfpmTaskAssigneesSet, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return WfpmSyncService.set_task_assignees(db, user, wfpm_task_id, payload)
+
+
+@router.get(
+    "/sync/tasks/{wfpm_task_id}/assignees", response_model=list[PersonRead],
+    dependencies=[Depends(require_permission("tasks:view"))],
+    summary="The assignees of the Monitra task linked to a WFPM task, primary first", responses=_NOT_LINKED,
+)
+def sync_get_task_assignees(wfpm_task_id: WfpmId, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return WfpmSyncService.get_task_assignees(db, user, wfpm_task_id)
+
+
+@router.post(
+    "/sync/tasks/{wfpm_task_id}/assignees", response_model=WfpmTaskRead,
+    dependencies=[Depends(require_permission("tasks:update"))],
+    summary="Add assignees to the Monitra task linked to a WFPM task",
+    description="Adds to whoever already holds the task. Someone already assigned is not an error.",
+    responses={**_NOT_LINKED, **_BAD_ASSIGNEES},
+)
+def sync_add_task_assignees(wfpm_task_id: WfpmId, payload: WfpmTaskAssigneesAdd, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return WfpmSyncService.add_task_assignees(db, user, wfpm_task_id, payload)
+
+
+@router.delete(
+    "/sync/tasks/{wfpm_task_id}/assignees/{member_id}", status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("tasks:update"))],
+    summary="Remove one assignee from the Monitra task linked to a WFPM task",
+    responses={404: {"description": "The WFPM id is not linked, or that user is not assigned to the task."}},
+)
+def sync_remove_task_assignee(wfpm_task_id: WfpmId, member_id: Identifier, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # Only the assignment goes; the person's time entries are untouched.
+    WfpmSyncService.remove_task_assignee(db, user, wfpm_task_id, member_id)
 
 
 @router.delete(
