@@ -61,11 +61,15 @@ const Holders: React.FC<{ people: ProjectUser[] }> = ({ people }) => {
 
 const StatusPill: React.FC<{ task: ProjectTask }> = ({ task }) => {
   const color = task.status?.color || '#64748B';
+  // The status colour tints the pill and fills a dot, but the label is always
+  // dark slate: "Todo" is a very pale grey (#CBD5E1), which as text on its own
+  // tint is close to invisible.
   return (
     <span
-      className="inline-flex items-center rounded-md border px-2.5 py-1 text-[11px] font-bold tracking-wide"
-      style={{ color, backgroundColor: `${color}15`, borderColor: `${color}30` }}
+      className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-bold tracking-wide text-slate-700"
+      style={{ backgroundColor: `${color}1A`, borderColor: `${color}66` }}
     >
+      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
       {task.status?.name || 'No status'}
     </span>
   );
