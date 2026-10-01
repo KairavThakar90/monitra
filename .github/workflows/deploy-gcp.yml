@@ -1,0 +1,154 @@
+# Deploys the backend and the web client to the Compute Engine VMs on every
+# push to main that touches them. Each job runs the same deploy scripts a
+# person would run by hand (see deploy/README.md), over SSH.
+#
+# Secret:
+#   GCP_DEPLOY_SSH_KEY     private key authorised for the deploy user on both VMs
+# The VMs' public host keys are pinned in KNOWN_HOSTS below (refresh with
+# `ssh-keyscan -t ed25519 <backend ip> <frontend ip>` if a VM is rebuilt).
+name: Deploy to GCP
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "deploy/**"
+      - ".github/workflows/deploy-gcp.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-gcp
+  cancel-in-progress: false
+
+env:
+  SSH_USER: dell
+  BACKEND_HOST: 35.200.167.240
+  FRONTEND_HOST: 8.234.122.232
+  BACKEND_UPSTREAM: 10.160.0.2:80
+  FRONTEND_DOMAIN: staff.peakworkos.com
+  BACKEND_DOMAIN: api.peakworkos.com
+  KNOWN_HOSTS: |
+    35.200.167.240 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFCmqPJJt6z71K/US7pvKHwjsne8t8wtgBbfptGdSlOp
+    8.234.122.232 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB2XGg9mm6oLzZGhYkXm4QKzeJJ8JssULFSXqdszvAbJ
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'deploy/backend/**'
+              - '.github/workflows/deploy-gcp.yml'
+            frontend:
+              - 'frontend/**'
+              - 'deploy/frontend/**'
+              - '.github/workflows/deploy-gcp.yml'
+
+  backend:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Test
+        working-directory: backend
+        run: |
+          pip install -q -r requirements.txt pytest
+          python -m pytest tests/ -q --ignore=tests/load
+      - name: Package
+        run: |
+          tar -czf backend.tgz -C backend --exclude=venv --exclude=__pycache__ --exclude='.env*' --exclude=tests --exclude=.pytest_cache .
+          tar -czf deploy.tgz -C deploy backend
+      - name: Configure SSH
+        env:
+          DEPLOY_KEY: ${{ secrets.GCP_DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          # The secret is either the key file itself or its base64 (one line,
+          # which survives copy-paste). tr strips CRs pasted from Windows.
+          if printf '%s' "$DEPLOY_KEY" | grep -q 'BEGIN OPENSSH PRIVATE KEY'; then
+            printf '%s\n' "$DEPLOY_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+          else
+            printf '%s' "$DEPLOY_KEY" | tr -d ' \r\n' | base64 -d > ~/.ssh/id_ed25519
+          fi
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null || { echo "GCP_DEPLOY_SSH_KEY is not a valid private key"; exit 1; }
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host *\n  BatchMode yes\n  IdentitiesOnly yes\n  IdentityFile ~/.ssh/id_ed25519\n' > ~/.ssh/config
+      - name: Deploy
+        run: |
+          scp backend.tgz deploy.tgz "$SSH_USER@$BACKEND_HOST:/tmp/"
+          ssh "$SSH_USER@$BACKEND_HOST" "
+            set -euo pipefail
+            mkdir -p /tmp/deploy && tar -xzf /tmp/deploy.tgz -C /tmp/deploy
+            sudo SITE_DOMAIN=$BACKEND_DOMAIN bash /tmp/deploy/backend/setup_vm.sh
+            sudo bash /tmp/deploy/backend/deploy.sh /tmp/backend.tgz
+          "
+      - name: Smoke test
+        run: curl -fsS "http://$BACKEND_HOST/health"
+
+  frontend:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build
+        working-directory: frontend
+        # No VITE_API_BASE override: frontend/src/api/utils.ts already
+        # defaults an unset/relative value to https://api.peakworkos.com/api/v1
+        # in a production build, so the plain build calls the right backend.
+        run: |
+          npm ci
+          npm run lint
+          npm run build
+          tar -czf ../dist.tgz -C dist .
+      - name: Package scripts
+        run: tar -czf deploy.tgz -C deploy frontend
+      - name: Configure SSH
+        env:
+          DEPLOY_KEY: ${{ secrets.GCP_DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          # The secret is either the key file itself or its base64 (one line,
+          # which survives copy-paste). tr strips CRs pasted from Windows.
+          if printf '%s' "$DEPLOY_KEY" | grep -q 'BEGIN OPENSSH PRIVATE KEY'; then
+            printf '%s\n' "$DEPLOY_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+          else
+            printf '%s' "$DEPLOY_KEY" | tr -d ' \r\n' | base64 -d > ~/.ssh/id_ed25519
+          fi
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null || { echo "GCP_DEPLOY_SSH_KEY is not a valid private key"; exit 1; }
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host *\n  BatchMode yes\n  IdentitiesOnly yes\n  IdentityFile ~/.ssh/id_ed25519\n' > ~/.ssh/config
+      - name: Deploy
+        run: |
+          scp dist.tgz deploy.tgz "$SSH_USER@$FRONTEND_HOST:/tmp/"
+          ssh "$SSH_USER@$FRONTEND_HOST" "
+            set -euo pipefail
+            mkdir -p /tmp/deploy && tar -xzf /tmp/deploy.tgz -C /tmp/deploy
+            sudo BACKEND_UPSTREAM=$BACKEND_UPSTREAM SITE_DOMAIN=$FRONTEND_DOMAIN bash /tmp/deploy/frontend/setup_vm.sh
+            sudo bash /tmp/deploy/frontend/deploy.sh /tmp/dist.tgz
+          "
+      - name: Smoke test
+        run: curl -fsSL -o /dev/null "https://$FRONTEND_DOMAIN/"
