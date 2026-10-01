@@ -521,6 +521,9 @@ def main() -> int:
         r = client.post("/time-entries/start", json={"project_id": project_id, "task_id": task_id, "client_op": f"e2e:{STAMP}:5"}, headers=emp1["headers"])
         retry_stop_entry = r.json().get("id")
         check(r.status_code == 201, "start another timer on the linked task -> 201", r.text)
+        # Let the start's own delivery finish before WFPM starts failing, so the
+        # only thing parked is the stop.
+        wait_for_event(engine, retry_stop_entry, "sent")
         fake.status = 503
         stops_before = len(fake.stops)
         r = client.post(f"/time-entries/{retry_stop_entry}/stop", json={}, headers=emp1["headers"])
