@@ -427,7 +427,7 @@ class NoOwnerRoleTests(unittest.TestCase):
             "time_entries:view_all", "manual_time_entries:approve",
             "manual_time_entries:create_for_others", "view_employees", "manage_employees",
             "screenshots:delete", "manage_desktop_releases", "clients:manage",
-            "wfpm:projects:create",
+            "wfpm:projects:create", "manage_member_access",
         })
 
 

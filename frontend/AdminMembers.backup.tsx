@@ -1,12 +1,12 @@
 import React, { useState, useMemo } from 'react';
-import { V2Shell } from '../dashboard/v2/V2Shell';
+import { V2Shell } from './src/features/dashboard/v2/V2Shell';
 import { 
   useGetMembersQuery, 
   useCreateMemberMutation, 
   useUpdateMemberMutation, 
   useDeleteMemberMutation,
-} from '../../store/api/membersApi';
-import type { Member } from '../../store/api/membersApi';
+} from './src/store/api/membersApi';
+import type { Member } from './src/store/api/membersApi';
 
 const GRADIENT_CYAN_PURPLE = 'bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[#8b5cf6]';
 

@@ -4,6 +4,8 @@ import {
   useGetMembersQuery, 
   useCreateMemberMutation, 
   useUpdateMemberMutation, 
+  useUpdateMemberAccessMutation,
+  useLazyGetMembersQuery,
   useDeleteMemberMutation,
   useGetMemberDetailsQuery,
 } from '../../store/api/membersApi';
@@ -54,9 +56,8 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
  * in the permission map, and turning the switch back on restores creation
  * without any other change.
  *
- * Read-only for a directory-only user (HR): the backend refuses the write
- * without `manage_employees`, so they see the state rather than a button
- * that 403s.
+ * Editable by whoever holds `manage_member_access` (administrators and HR);
+ * everyone else sees the state rather than a button that 403s.
  */
 const AddTaskSwitch: React.FC<{
   allowed: boolean;
@@ -97,6 +98,14 @@ const AddTaskSwitch: React.FC<{
       </button>
     </div>
   );
+};
+
+/** The server's reason when it gave one (a string `detail`), else `fallback`. */
+const accessErrorMessage = (err: unknown, fallback: string): string => {
+  const detail = (err as { data?: { detail?: unknown } } | null)?.data?.detail;
+  if (typeof detail === 'string' && detail) return detail;
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
 };
 
 const formatDate = (dateStr: string | null) => {
@@ -620,9 +629,14 @@ export const AdminMembers: React.FC = () => {
   // details and gets no write affordance, rather than a button that 403s.
   const { currentUser } = useAuth();
   const canManageMembers = !!currentUser?.permissions?.['manage_employees'];
+  // The two Members-directory switches (sign-in, Add Task) are a narrower
+  // right than editing a member: HR holds this one and not the one above.
+  const canManageAccess = !!currentUser?.permissions?.['manage_member_access'];
 
   const [createMember] = useCreateMemberMutation();
   const [updateMember, { isLoading: isUpdatingMember }] = useUpdateMemberMutation();
+  const [updateMemberAccess, { isLoading: isUpdatingAccess }] = useUpdateMemberAccessMutation();
+  const [fetchMembersPage] = useLazyGetMembersQuery();
   const [deleteMember, { isLoading: isDeletingMember }] = useDeleteMemberMutation();
 
   // Drawer state
@@ -740,7 +754,8 @@ export const AdminMembers: React.FC = () => {
     if ((member.can_add_tasks !== false) === allowed) return;
     setPendingAddTaskId(member.id);
     try {
-      await updateMember({ id: member.id, body: { can_add_tasks: allowed } }).unwrap();
+      const result = await updateMemberAccess({ member_ids: [member.id], can_add_tasks: allowed }).unwrap();
+      if (result.failed.length) throw new Error(result.failed[0].detail);
       showToast(
         allowed
           ? `${member.name} is now allowed to add tasks.`
@@ -749,7 +764,7 @@ export const AdminMembers: React.FC = () => {
       );
     } catch (err) {
       console.error('Failed to update the add-task permission', err);
-      showToast('Unable to update the add-task permission. Please try again.', 'error');
+      showToast(accessErrorMessage(err, 'Unable to update the add-task permission. Please try again.'), 'error');
     } finally {
       setPendingAddTaskId(null);
     }
@@ -772,7 +787,8 @@ export const AdminMembers: React.FC = () => {
     }
     setPendingLoginId(member.id);
     try {
-      await updateMember({ id: member.id, body: { can_login: allowed } }).unwrap();
+      const result = await updateMemberAccess({ member_ids: [member.id], can_login: allowed }).unwrap();
+      if (result.failed.length) throw new Error(result.failed[0].detail);
       showToast(
         allowed
           ? `${member.name} is now allowed to log in.`
@@ -781,9 +797,99 @@ export const AdminMembers: React.FC = () => {
       );
     } catch (err) {
       console.error('Failed to update the login permission', err);
-      showToast('Unable to update the login permission. Please try again.', 'error');
+      showToast(accessErrorMessage(err, 'Unable to update the login permission. Please try again.'), 'error');
     } finally {
       setPendingLoginId(null);
+    }
+  };
+
+  // Multi-select. The ids are held across pages, so a selection can be built up
+  // from several; the header box selects or clears only the rows on this page.
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // The last switches seen for members who may not be on screen (another page,
+  // or picked by "select all"). Rows on the current page are read live from the
+  // list instead, so this only has to cover the rest.
+  const [knownMembers, setKnownMembers] = useState<Record<number, Member>>({});
+  const rememberMembers = (members: Member[]) =>
+    setKnownMembers((current) => {
+      const next = { ...current };
+      members.forEach((m) => { next[m.id] = m; });
+      return next;
+    });
+  const toggleSelected = (member: Member) => {
+    rememberMembers([member]);
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(member.id)) next.delete(member.id);
+      else next.add(member.id);
+      return next;
+    });
+  };
+
+  // "Select all N": the header box only knows the rows on screen, so this walks
+  // the same filtered list (role + search) page by page -- the API caps a page
+  // at 100 -- and selects every id in it.
+  const [isSelectingAll, setIsSelectingAll] = useState(false);
+  const selectEveryMember = async () => {
+    setIsSelectingAll(true);
+    try {
+      const ids = new Set<number>();
+      const everyone: Member[] = [];
+      let pageNumber = 1;
+      let pages = 1;
+      do {
+        // eslint-disable-next-line no-await-in-loop
+        const result = await fetchMembersPage(
+          { page: pageNumber, limit: 100, role: filterRole, status: 'All', search: searchTerm },
+          true,
+        ).unwrap();
+        result.items.forEach((m) => { ids.add(m.id); everyone.push(m); });
+        pages = result.pages || 1;
+        pageNumber += 1;
+      } while (pageNumber <= pages);
+      rememberMembers(everyone);
+      setSelectedIds(ids);
+    } catch (err) {
+      console.error('Failed to select every member', err);
+      showToast('Unable to select every member. Please try again.', 'error');
+    } finally {
+      setIsSelectingAll(false);
+    }
+  };
+
+  // One request for the whole selection. The server saves each member on its
+  // own and reports the ones it refused (your own login, an administrator's
+  // access when you are HR, someone outside your scope); those stay selected
+  // so the choice is visible and can be retried or cleared.
+  const handleBulkAccess = async (switches: { can_login?: boolean; can_add_tasks?: boolean }) => {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    if (
+      switches.can_login === false &&
+      !(await confirmAction(
+        `Exclude ${ids.length} member${ids.length === 1 ? '' : 's'} from logging in?`,
+        'They will be signed out of the desktop app and the website right away, and any running timer will be stopped. They cannot sign in again until you allow them.',
+      ))
+    ) {
+      return;
+    }
+    try {
+      const result = await updateMemberAccess({ member_ids: ids, ...switches }).unwrap();
+      rememberMembers(result.updated);
+      const refused = new Set(result.failed.map((f) => f.id));
+      setSelectedIds(new Set(ids.filter((id) => refused.has(id))));
+      if (!result.failed.length) {
+        showToast(`Updated ${result.updated.length} member${result.updated.length === 1 ? '' : 's'}.`, 'success');
+      } else {
+        const reasons = Array.from(new Set(result.failed.map((f) => f.detail))).join(' ');
+        showToast(
+          `Updated ${result.updated.length}; ${result.failed.length} could not be changed. ${reasons}`,
+          result.updated.length ? 'info' : 'error',
+        );
+      }
+    } catch (err) {
+      console.error('Failed to update member access in bulk', err);
+      showToast(accessErrorMessage(err, 'Unable to update the selected members. Please try again.'), 'error');
     }
   };
 
@@ -804,6 +910,28 @@ export const AdminMembers: React.FC = () => {
   }, [data?.items]);
 
   const totalPages = data?.pages || 1;
+
+  // The header box is about the whole directory (every page of the current
+  // role / search filter), not the 20 rows on screen.
+  const totalMembers = data?.total ?? 0;
+  const allSelected = totalMembers > 0 && selectedIds.size >= totalMembers;
+  const someSelected = selectedIds.size > 0 && !allSelected;
+  const toggleEveryone = () => {
+    if (allSelected) setSelectedIds(new Set());
+    else void selectEveryMember();
+  };
+
+  // True when pressing Allow (`target` true) or Exclude (`target` false) for
+  // this switch would change at least one selected member. A member whose state
+  // is not known counts as a change, so the button is never wrongly dead.
+  const rowsOnPage = new Map(filteredItems.map((m) => [m.id, m]));
+  const wouldChange = (key: 'can_login' | 'can_add_tasks', target: boolean) =>
+    Array.from(selectedIds).some((id) => {
+      const member = rowsOnPage.get(id) ?? knownMembers[id];
+      return !member || (member[key] !== false) !== target;
+    });
+  // Placeholder rows span every column, including the optional ones.
+  const columnCount = 8 + (canManageAccess ? 1 : 0) + (canManageMembers ? 1 : 0);
 
 
   const selectedMember = selectedProfileId ? data?.items?.find(m => m.id === selectedProfileId) : null;
@@ -843,12 +971,12 @@ export const AdminMembers: React.FC = () => {
         canManageMembers ? (
           <div className="flex items-center gap-3">
             <InlineRefreshIndicator active={isRevalidating || isUpdatingMember || isDeletingMember} />
-            <button
+            {/* <button
               onClick={openCreateDrawer}
               className={`rounded-lg px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90 ${GRADIENT_CYAN_PURPLE}`}
             >
               + Add Member
-            </button>
+            </button> */}
           </div>
         ) : undefined
       }
@@ -911,11 +1039,92 @@ export const AdminMembers: React.FC = () => {
           </div>
         </div>
 
+        {canManageAccess && selectedIds.size > 0 && (
+          <div
+            role="toolbar"
+            aria-label="Bulk member access"
+            className="sticky top-3 z-20 flex flex-wrap items-center gap-x-6 gap-y-3 rounded-2xl border border-blue-200 bg-white/95 px-5 py-3 shadow-lg shadow-blue-900/5 backdrop-blur"
+          >
+            <div className="flex items-center gap-3">
+              <span className="flex h-9 min-w-9 items-center justify-center rounded-full bg-blue-600 px-2.5 text-sm font-bold text-white">
+                {selectedIds.size}
+              </span>
+              <div className="leading-tight">
+                <div className="text-sm font-bold text-slate-800">{selectedIds.size} selected</div>
+                <div className="text-[11px] font-medium text-slate-500">
+                  {isSelectingAll
+                    ? 'Selecting every member…'
+                    : allSelected
+                      ? 'Every member in this list'
+                      : `of ${totalMembers} members`}
+                </div>
+              </div>
+            </div>
+
+            <div className="hidden h-8 w-px bg-slate-200 md:block" />
+
+            {([
+              { label: 'Login', key: 'can_login' as const, noun: 'allowed to log in' },
+              { label: 'Add Task', key: 'can_add_tasks' as const, noun: 'allowed to add tasks' },
+            ]).map(({ label, key, noun }) => {
+              const canAllow = wouldChange(key, true);
+              const canExclude = wouldChange(key, false);
+              return (
+                <div key={key} className="flex items-center gap-2.5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">{label}:</span>
+                  <div className="inline-flex overflow-hidden rounded-lg border border-slate-200 shadow-sm">
+                    <button
+                      type="button"
+                      disabled={isUpdatingAccess || !canAllow}
+                      title={canAllow ? undefined : `Every selected member is already ${noun}`}
+                      onClick={() => handleBulkAccess({ [key]: true })}
+                      className="px-4 py-2 text-[11px] font-bold uppercase tracking-wider text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-slate-50"
+                    >
+                      Allow
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isUpdatingAccess || !canExclude}
+                      title={canExclude ? undefined : `Every selected member is already excluded`}
+                      onClick={() => handleBulkAccess({ [key]: false })}
+                      className="border-l border-slate-200 px-4 py-2 text-[11px] font-bold uppercase tracking-wider text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-slate-50"
+                    >
+                      Exclude
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
+            >
+              <span aria-hidden="true">&times;</span> Clear selection
+            </button>
+          </div>
+        )}
+
         <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="overflow-x-auto pb-4">
             <table className="w-full text-left text-sm">
               <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
                 <tr>
+                  {canManageAccess && (
+                    <th className="w-10 pl-6 py-4">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all members"
+                        title={allSelected ? 'Clear the selection' : `Select all ${totalMembers} members`}
+                        ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                        checked={allSelected}
+                        disabled={!filteredItems.length || isSelectingAll}
+                        onChange={toggleEveryone}
+                        className="h-4 w-4 cursor-pointer rounded border-slate-300 text-blue-600 focus:ring-blue-500/40"
+                      />
+                    </th>
+                  )}
                   <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Employee</th>
                   <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Role</th>
                   <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Status</th>
@@ -932,19 +1141,30 @@ export const AdminMembers: React.FC = () => {
               <tbody className="divide-y divide-slate-100">
                 {showFirstLoad ? (
                   <tr>
-                    <td colSpan={canManageMembers ? 9 : 8} className="px-6 py-8">
+                    <td colSpan={columnCount} className="px-6 py-8">
                       <LoadingSpinner />
                     </td>
                   </tr>
                 ) : isError ? (
                   <tr>
-                    <td colSpan={canManageMembers ? 9 : 8} className="px-6 py-12 text-center text-red-500">
+                    <td colSpan={columnCount} className="px-6 py-12 text-center text-red-500">
                       Failed to fetch members. Please try again.
                     </td>
                   </tr>
                 ) : filteredItems.length > 0 ? (
                   filteredItems.map(member => (
-                    <tr key={member.id} className="transition hover:bg-slate-50/50">
+                    <tr key={member.id} className={`transition hover:bg-slate-50/50 ${selectedIds.has(member.id) ? 'bg-blue-50/40' : ''}`}>
+                      {canManageAccess && (
+                        <td className="w-10 pl-6 py-4">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${member.name || 'member'}`}
+                            checked={selectedIds.has(member.id)}
+                            onChange={() => toggleSelected(member)}
+                            className="h-4 w-4 cursor-pointer rounded border-slate-300 text-blue-600 focus:ring-blue-500/40"
+                          />
+                        </td>
+                      )}
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
                           <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white shadow-sm ${GRADIENT_CYAN_PURPLE}`}>
@@ -974,7 +1194,7 @@ export const AdminMembers: React.FC = () => {
                       <td className="px-6 py-4">
                         <AddTaskSwitch
                           allowed={member.can_add_tasks !== false}
-                          editable={canManageMembers}
+                          editable={canManageAccess}
                           busy={pendingAddTaskId === member.id}
                           onChange={(allowed) => handleSetAddTask(member, allowed)}
                         />
@@ -982,7 +1202,7 @@ export const AdminMembers: React.FC = () => {
                       <td className="px-6 py-4">
                         <AddTaskSwitch
                           allowed={member.can_login !== false}
-                          editable={canManageMembers}
+                          editable={canManageAccess}
                           busy={pendingLoginId === member.id}
                           subject="logging in"
                           allowPhrase="to log in"
@@ -1018,7 +1238,7 @@ export const AdminMembers: React.FC = () => {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={canManageMembers ? 9 : 8} className="px-6 py-12 text-center text-slate-500">
+                    <td colSpan={columnCount} className="px-6 py-12 text-center text-slate-500">
                       No members found matching your criteria.
                     </td>
                   </tr>

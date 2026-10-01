@@ -39,6 +39,17 @@ export type GetMembersArgs = {
   search?: string;
 };
 
+export interface MemberAccessArgs {
+  member_ids: number[];
+  can_login?: boolean;
+  can_add_tasks?: boolean;
+}
+
+export interface MemberAccessResult {
+  updated: Member[];
+  failed: { id: number; detail: string }[];
+}
+
 /** True when a member still belongs in a list fetched with `arg`'s filters. */
 const matchesFilters = (member: Member, arg: GetMembersArgs | undefined) => {
   const role = arg?.role;
@@ -199,6 +210,36 @@ export const membersApi = baseApi.injectEndpoints({
       },
     }),
 
+    // Turns the sign-in and/or Add Task switch on or off for one or more
+    // members. Rows flip at once; the server's answer then replaces the guess
+    // for each member it saved, and any it refused are put back.
+    updateMemberAccess: builder.mutation<MemberAccessResult, MemberAccessArgs>({
+      query: (body) => ({ url: ENDPOINTS.MEMBERS.UPDATE_ACCESS, method: 'PATCH', body }),
+      async onQueryStarted({ member_ids, ...switches }, { dispatch, getState, queryFulfilled }) {
+        const ids = new Set(member_ids);
+        const optimistic = patchEveryCachedQuery({ dispatch, getState }, 'getMembers', (draft) => {
+          draft.items?.forEach((m: Member) => {
+            if (ids.has(m.id)) Object.assign(m, switches);
+          });
+        });
+
+        try {
+          const { data } = await queryFulfilled;
+          const saved = new Map(data.updated.map((m) => [m.id, m]));
+          // Refused rows go back to what the server holds; saved rows take its copy.
+          optimistic.undo();
+          patchEveryCachedQuery({ dispatch, getState }, 'getMembers', (draft) => {
+            draft.items?.forEach((m: Member, index: number) => {
+              const fresh = saved.get(m.id);
+              if (fresh) draft.items[index] = fresh;
+            });
+          });
+        } catch {
+          optimistic.undo();
+        }
+      },
+    }),
+
     // NOTE: the backend deactivates rather than hard-deletes (it returns the
     // member with status "inactive"), so that is what we reflect locally.
     deleteMember: builder.mutation<Member, number>({
@@ -225,8 +266,10 @@ export const membersApi = baseApi.injectEndpoints({
 export const {
   useGetMemberDetailsQuery,
   useGetMembersQuery,
+  useLazyGetMembersQuery,
   useGetAllMembersQuery,
   useCreateMemberMutation,
   useUpdateMemberMutation,
+  useUpdateMemberAccessMutation,
   useDeleteMemberMutation,
 } = membersApi;

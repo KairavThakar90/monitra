@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 from app.models.activity_log import ActivityLogAction, ActivityLogModule
 from app.models.user import User
 from app.repositories.member import MemberRepository
-from app.schemas.member import MemberCreate, MemberUpdate
+from app.core.security import has_permission
+from app.schemas.member import MemberAccessUpdate, MemberCreate, MemberUpdate
 from app.services.activity_log import ActivityLogService
 from app.services.member_scope import may_view_in_directory, may_view_member, visible_directory_ids
 
@@ -19,6 +20,13 @@ _SWITCH_ACTIONS = {
     "can_login": (ActivityLogAction.LOGIN_ALLOWED, ActivityLogAction.LOGIN_EXCLUDED, "signing in"),
     "can_add_tasks": (ActivityLogAction.ADD_TASKS_ALLOWED, ActivityLogAction.ADD_TASKS_EXCLUDED, "adding tasks"),
 }
+
+
+#: Accounts that hold organization-wide authority. Someone who may change only
+#: members' access (HR) must not be able to lock one of these out or take away
+#: their ability to add tasks -- that would let the narrower role override the
+#: wider one.
+_ADMINISTRATOR_ROLES = frozenset({"administrator", "org_admin", "super_admin"})
 
 
 class MemberService:
@@ -142,6 +150,36 @@ class MemberService:
                 saved,
             )
         return saved
+
+    @staticmethod
+    def update_access(db: Session, current_user: User, payload: MemberAccessUpdate) -> dict:
+        """Set the sign-in and/or Add Task switch on several members at once.
+
+        Each member goes through `update` -- the one place that records the
+        change, ends a newly excluded member's sessions and timer, and refuses
+        an administrator locking out their own account -- so a bulk change is
+        exactly N single changes and cannot behave differently from them. A
+        member that cannot be changed is reported in `failed` rather than
+        aborting the rest: the others were already saved.
+
+        A caller who lacks `manage_employees` (HR) is limited to non-
+        administrator accounts.
+        """
+        switches = {
+            key: getattr(payload, key) for key in _SWITCH_ACTIONS
+            if getattr(payload, key) is not None
+        }
+        may_edit_administrators = has_permission(current_user, "manage_employees")
+        updated, failed = [], []
+        for member_id in payload.member_ids:
+            try:
+                target = MemberService.get(db, current_user, member_id)
+                if not may_edit_administrators and (target.role_name or "").lower() in _ADMINISTRATOR_ROLES:
+                    raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an administrator can change an administrator's access.")
+                updated.append(MemberService.update(db, current_user, member_id, MemberUpdate(**switches)))
+            except HTTPException as exc:
+                failed.append({"id": member_id, "detail": str(exc.detail)})
+        return {"updated": updated, "failed": failed}
 
     @staticmethod
     def _end_member_access(db: Session, member: User) -> None:

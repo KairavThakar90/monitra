@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user, require_permission
 from app.models.user import User
-from app.schemas.member import MemberCreate, MemberListResponse, MemberResponse, MemberRole, MemberStatus, MemberUpdate
+from app.schemas.member import MemberAccessResponse, MemberAccessUpdate, MemberCreate, MemberListResponse, MemberResponse, MemberRole, MemberStatus, MemberUpdate
 from app.services.member_service import MemberService
 
 router = APIRouter(prefix="/members", tags=["Member Management"])
@@ -29,6 +29,12 @@ def list_members(
 @router.get("/{member_id}", response_model=MemberResponse, dependencies=[Depends(require_permission("view_employees"))], summary="Get a member")
 def get_member(member_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return MemberService.get(db, current_user, member_id)
+
+
+# Declared before `/{member_id}` so "access" is never read as an id.
+@router.patch("/access", response_model=MemberAccessResponse, dependencies=[Depends(require_permission("manage_member_access"))], summary="Turn sign-in / Add Task on or off for several members")
+def update_member_access(payload: MemberAccessUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return MemberService.update_access(db, current_user, payload)
 
 
 @router.patch("/{member_id}", response_model=MemberResponse, dependencies=[Depends(require_permission("manage_employees"))], summary="Update a member")

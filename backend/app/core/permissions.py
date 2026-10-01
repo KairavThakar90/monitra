@@ -70,6 +70,7 @@ ROLE_PERMISSIONS = {
         "manual_time_entries:create_for_others",
         "view_employees",
         "manage_employees",
+        "manage_member_access",
         "screenshots:delete",
         "manage_desktop_releases",
         "clients:manage",
@@ -92,6 +93,7 @@ ROLE_PERMISSIONS = {
         "manual_time_entries:create_for_others",
         "view_employees",
         "manage_employees",
+        "manage_member_access",
         "screenshots:delete",
         "manage_desktop_releases",
         "clients:manage",
@@ -128,6 +130,9 @@ ROLE_PERMISSIONS = {
         "manual_time_entries:approve",
         "manual_time_entries:create_for_others",
         "view_employees",
+        # Only the two Members-directory switches (sign-in and Add Task), never
+        # the member record itself -- see MemberService.update_access.
+        "manage_member_access",
         "wfpm:projects:create",
     },
     # A team / project leader. `leader` is a role the rest of the application
@@ -175,6 +180,7 @@ ROLE_PERMISSIONS = {
         "manual_time_entries:create_for_others",
         "view_employees",
         "manage_employees",
+        "manage_member_access",
         "screenshots:delete",
         "manage_desktop_releases",
         "clients:manage",

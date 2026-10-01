@@ -67,6 +67,9 @@ export const ENDPOINTS = {
     GET_BY_ID: (id: string | number) => `${API_BASE_URL}/members/${id}`,
     CREATE: `${API_BASE_URL}/members`,
     UPDATE: (id: string | number) => `${API_BASE_URL}/members/${id}`,
+    // Sign-in / Add Task switches for one or many members; the only member
+    // write HR (without `manage_employees`) may make.
+    UPDATE_ACCESS: `${API_BASE_URL}/members/access`,
     DELETE: (id: string | number) => `${API_BASE_URL}/members/${id}`,
   },
   PROJECTS: {

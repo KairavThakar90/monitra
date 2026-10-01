@@ -168,6 +168,40 @@ class MemberResponse(BaseModel):
         return True if value is None else value
 
 
+class MemberAccessUpdate(BaseModel):
+    """Turn the two Members-directory switches on or off for several members.
+
+    Only the switches that are sent change; at least one must be. Nothing else
+    about a member can be written through this body, which is what lets HR --
+    who may not edit members -- use it.
+    """
+
+    member_ids: list[int] = Field(..., min_length=1, max_length=1000)
+    can_login: Optional[bool] = None
+    can_add_tasks: Optional[bool] = None
+
+    @field_validator("member_ids")
+    @classmethod
+    def distinct_ids(cls, value: list[int]):
+        return list(dict.fromkeys(value))
+
+    @model_validator(mode="after")
+    def at_least_one_switch(self):
+        if self.can_login is None and self.can_add_tasks is None:
+            raise ValueError("Send can_login, can_add_tasks, or both")
+        return self
+
+
+class MemberAccessFailure(BaseModel):
+    id: int
+    detail: str
+
+
+class MemberAccessResponse(BaseModel):
+    updated: list[MemberResponse]
+    failed: list[MemberAccessFailure]
+
+
 class MemberListResponse(BaseModel):
     items: list[MemberResponse]
     page: int
