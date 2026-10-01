@@ -26,7 +26,8 @@ const showToast = vi.fn();
 let confirmAnswer = true;
 
 vi.mock('../../dashboard/v2/V2Shell', () => ({
-  V2Shell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  // `actions` hold the page's "+ Add Notification" button, so they are rendered too.
+  V2Shell: ({ actions, children }: { actions?: React.ReactNode; children: React.ReactNode }) => <>{actions}{children}</>,
 }));
 vi.mock('../../../components/FeedbackProvider', () => ({
   useFeedback: () => ({ showToast, confirmAction: async () => confirmAnswer }),
@@ -74,7 +75,7 @@ describe('AdminDesktopNotifications', () => {
     container.querySelector(`input[type="checkbox"][aria-label="Send ${label}"]`) as HTMLInputElement | null;
   const button = (text: string) =>
     Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === text) as HTMLButtonElement | undefined;
-  const rowOf = (label: string) => box(label)!.closest('tr') as HTMLElement;
+  const rowOf = (label: string) => box(label)!.closest('tr, [data-testid="custom-card"]') as HTMLElement;
   const dialog = () => container.querySelector('[role="dialog"]') as HTMLElement | null;
   const writes = () => calls.filter((c) => c.method !== 'GET');
 
@@ -147,6 +148,33 @@ describe('AdminDesktopNotifications', () => {
     expect(rowOf('Lunch break').textContent).toContain('Every day');
     expect(container.textContent).toContain('Built-in reminders (2 of 2 on)');
     expect(container.textContent).toContain('No custom notifications yet.');
+  });
+
+  it('puts the Add Notification button in the page header, above the lists, and offers it in the empty state too', () => {
+    const buttons = Array.from(container.querySelectorAll('button'));
+    const header = buttons.find((b) => b.textContent === '+ Add Notification')!;
+    expect(header).toBeTruthy();
+    // Header action: it comes before everything else on the page.
+    expect(buttons[0]).toBe(header);
+    expect(buttons.some((b) => b.textContent === '+ Add your first notification')).toBe(true);
+  });
+
+  it('lists custom notifications above the built-in reminders', async () => {
+    state.custom.push({ id: 'c1', title: 'Standup', message: 'Soon.', time: '10:25', weekdays: [0, 1, 2, 3, 4], enabled: true, created_at: null, updated_at: null, created_by: 'grace' });
+    await act(async () => { root.unmount(); });
+    root = createRoot(container);
+    const store = configureStore({
+      reducer: { [baseApi.reducerPath]: baseApi.reducer },
+      middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(baseApi.middleware),
+    });
+    await act(async () => { root.render(<Provider store={store}><AdminDesktopNotifications /></Provider>); });
+    await settle();
+
+    const text = container.textContent!;
+    expect(text.indexOf('Custom notifications (1 of 1 on)')).toBeGreaterThan(-1);
+    expect(text.indexOf('Custom notifications')).toBeLessThan(text.indexOf('Built-in reminders'));
+    expect(container.querySelectorAll('[data-testid="custom-card"]')).toHaveLength(1);
+    expect(text).not.toContain('+ Add your first notification');
   });
 
   it('unticking Send switches a reminder off at once and sends exactly {enabled:false}', async () => {

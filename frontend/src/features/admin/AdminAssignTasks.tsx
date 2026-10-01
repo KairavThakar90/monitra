@@ -11,7 +11,7 @@ import {
 } from '../../store/api/projectsApi';
 import { useFeedback } from '../../components/FeedbackProvider';
 import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
-import { PaginationArrow } from '../../components/PaginationArrow';
+import { Pagination } from '../../components/Pagination';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { useAuth } from '../auth/authContext';
 import { formatApiError } from '../../api/utils';
@@ -20,7 +20,8 @@ import { AssignTaskDialog, type AssignTaskSubmit } from './AssignTaskDialog';
 import { filterByCreated, filterByProjectIds, filterProjects, holdersOf } from './assignTasks';
 import { DEFAULT_RANGE, DateRangeFilter, ProjectMultiSelect, type DateRange } from '../dashboard/v2/filters';
 
-const PROJECTS_PER_PAGE = 10;
+/** Page sizes the footer offers; the first is the default. */
+const PAGE_SIZES = [10, 20, 50];
 /** One stable empty list, so memos keyed on `projects` do not re-run on every render before the data lands. */
 const NO_PROJECTS: Project[] = [];
 const AVATAR_COLORS = ['bg-blue-500', 'bg-rose-500', 'bg-emerald-500', 'bg-amber-500', 'bg-purple-500', 'bg-cyan-500'];
@@ -103,6 +104,7 @@ export const AdminAssignTasks: React.FC = () => {
   const [searchInput, setSearchInput] = useState('');
   const query = useDebouncedValue(searchInput, 250);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZES[0]);
   // Opens on the last 7 days, the same default as the reports. "All Time" is
   // one click away in the picker for tasks created earlier.
   const [dateRange, setDateRange] = useState<DateRange>(DEFAULT_RANGE);
@@ -116,9 +118,9 @@ export const AdminAssignTasks: React.FC = () => {
     [projects, projectIds, dateRange, query],
   );
   const filtering = query.trim() !== '' || projectIds.length > 0 || dateRange.preset !== 'all';
-  const totalPages = Math.max(1, Math.ceil(visible.length / PROJECTS_PER_PAGE));
+  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
   const currentPage = Math.min(page, totalPages);
-  const pageProjects = visible.slice((currentPage - 1) * PROJECTS_PER_PAGE, currentPage * PROJECTS_PER_PAGE);
+  const pageProjects = visible.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const showFirstLoad = isLoading && projects.length === 0;
 
   const openDialog = (editing: { projectId: number; taskId: number } | null) => {
@@ -314,20 +316,18 @@ export const AdminAssignTasks: React.FC = () => {
               );
             })}
 
-            {visible.length > PROJECTS_PER_PAGE && (
-              <div className="flex flex-col items-center justify-between gap-4 border-t border-slate-200 pt-5 text-sm text-slate-500 sm:flex-row">
-                <div>
-                  Showing {(currentPage - 1) * PROJECTS_PER_PAGE + 1} to{' '}
-                  {Math.min(currentPage * PROJECTS_PER_PAGE, visible.length)} of {visible.length} projects
-                </div>
-                <div className="flex items-center gap-1">
-                  <PaginationArrow direction="prev" disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)} />
-                  <span className="px-2 font-semibold text-slate-600">
-                    Page {currentPage} of {totalPages}
-                  </span>
-                  <PaginationArrow direction="next" disabled={currentPage === totalPages} onClick={() => setPage(currentPage + 1)} />
-                </div>
-              </div>
+            {visible.length > PAGE_SIZES[0] && (
+              <Pagination
+                page={currentPage}
+                totalPages={totalPages}
+                totalItems={visible.length}
+                limit={pageSize}
+                setPage={setPage}
+                setLimit={setPageSize}
+                noun="projects"
+                pageSizes={PAGE_SIZES}
+                className="mt-2"
+              />
             )}
           </div>
         )}

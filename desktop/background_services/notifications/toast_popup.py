@@ -57,6 +57,9 @@ _LEVEL_ACCENTS = {
 }
 _DEFAULT_ACCENT = _LEVEL_ACCENTS["info"]
 
+#: Qt's QWIDGETSIZE_MAX: "no maximum" for a widget dimension.
+_UNBOUNDED = 16777215
+
 
 class ToastPopup(QWidget):
     """
@@ -96,6 +99,21 @@ class ToastPopup(QWidget):
     #: the title instead of beside it.
     TOP_INSET = 17
 
+    #: The card's horizontal anatomy, left to right. They are the numbers the
+    #: layout below is built from, named so `_text_widths` can work out how wide
+    #: the title and the message really are without asking Qt, whose answer
+    #: depends on how far its layout passes have got (see `_fit_text`).
+    _BORDER_LEFT = 4      # the level's accent bar
+    _BORDER_OTHER = 1     # the hairline on the other three sides
+    _PAD_LEFT = 16        # before the badge
+    _BADGE_GAP = 12       # between the badge and the text column
+    _TEXT_PAD_RIGHT = 16  # after the text column
+    _CLOSE_SIZE = 22
+    _HEADER_GAP = 8       # between the title and the close button
+    _TEXT_GAP = 4         # between the title row and the message
+    _TEXT_PAD_BOTTOM = 17
+    _SHADOW_MARGINS = (32, 24, 32, 42)  # left, top, right, bottom
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(
             parent,
@@ -118,7 +136,7 @@ class ToastPopup(QWidget):
         # clipped at the window's own edge instead of softening into it.
         # Margins are sized to fully contain a 32px blur radius and 10px Y offset.
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(32, 24, 32, 42)
+        outer.setContentsMargins(*self._SHADOW_MARGINS)
 
         self._card = QFrame(self)
         self._card.setObjectName("toastCard")
@@ -157,18 +175,18 @@ class ToastPopup(QWidget):
         # whatever height the row stretches this column to -- exactly
         # undoing the top margin above. The stretch pins the badge to it.
         logo_column.addStretch(1)
-        card_layout.addSpacing(16)
+        card_layout.addSpacing(self._PAD_LEFT)
         card_layout.addLayout(logo_column)
-        card_layout.addSpacing(12)
+        card_layout.addSpacing(self._BADGE_GAP)
 
         body = QVBoxLayout()
-        body.setContentsMargins(0, self.TOP_INSET, 16, 17)
-        body.setSpacing(4)
+        body.setContentsMargins(0, self.TOP_INSET, self._TEXT_PAD_RIGHT, self._TEXT_PAD_BOTTOM)
+        body.setSpacing(self._TEXT_GAP)
         card_layout.addLayout(body, 1)
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(8)
+        header.setSpacing(self._HEADER_GAP)
         body.addLayout(header)
 
         self._title = QLabel(self._card)
@@ -182,7 +200,7 @@ class ToastPopup(QWidget):
         self._close = QPushButton("×", self._card)
         self._close.setObjectName("toastClose")
         self._close.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._close.setFixedSize(22, 22)
+        self._close.setFixedSize(self._CLOSE_SIZE, self._CLOSE_SIZE)
         self._close.setFlat(True)
         self._close.clicked.connect(self.dismissed.emit)
         header.addWidget(self._close, 0, Qt.AlignmentFlag.AlignTop)
@@ -225,8 +243,8 @@ class ToastPopup(QWidget):
             f"""
             QFrame#toastCard {{
                 background: #FFFFFF;
-                border: 1px solid #EAEDF5;
-                border-left: 4px solid {accent};
+                border: {self._BORDER_OTHER}px solid #EAEDF5;
+                border-left: {self._BORDER_LEFT}px solid {accent};
                 border-radius: 14px;
             }}
             QLabel#toastLogo {{
@@ -268,40 +286,78 @@ class ToastPopup(QWidget):
         self._message.setText(message)
         self._apply_style(_LEVEL_ACCENTS.get(level, _DEFAULT_ACCENT))
 
-        # Called twice, deliberately. The card is reused for every
-        # notification (never a fresh window), and a wrapped QLabel's
-        # heightForWidth on an already-visible window is only correct on the
-        # second layout pass after a text change -- the first overshoots
-        # (measured: a message that lays out to 246px tall computed as 533px
-        # immediately after a shorter one was showing). A window that has
-        # never been shown does not have this problem, and a second pass on
-        # an already-correct size is a no-op, so this is safe unconditionally.
-        self._title.setMinimumHeight(0)
-        self.adjustSize()
-        self.adjustSize()
-        # A title that wraps onto a third line was still left a line short by
-        # the two passes, clipping its last words. The title is the one label
-        # whose height this corrects: it is told what it needs at the width
-        # it has, and the window is sized around it once more. It only ever
-        # grows the title, so a title that already fits is untouched.
-        #
-        # The width is read only after the layout has been brought up to date
-        # (until then it can still be a default one, and a height worked out
-        # for that is far too tall), and only trusted once it is wide enough
-        # to be the title's real width.
-        self.layout().activate()
-        width = self._title.width()
-        if width >= self.WIDTH // 3:
-            needed = self._title.heightForWidth(width)
-            if needed > self._title.height():
-                self._title.setMinimumHeight(needed)
-                self.adjustSize()
+        self._fit_text()
         if not self._move_to_corner(lift):
             return False
 
         self.show()
         self.raise_()
         return True
+
+    def _text_widths(self) -> tuple[int, int]:
+        """`(title, message)` widths in pixels, from the card's own geometry.
+
+        The window is a fixed `WIDTH` and the card fills it inside the shadow
+        margins, so each label's width is a sum of the constants the layout is
+        built from -- no dependence on whether a layout pass has run yet.
+        """
+        card = self.WIDTH - self._SHADOW_MARGINS[0] - self._SHADOW_MARGINS[2]
+        text_column = (
+            card - self._BORDER_LEFT - self._BORDER_OTHER - self._PAD_LEFT
+            - self.LOGO_SIZE - self._BADGE_GAP - self._TEXT_PAD_RIGHT
+        )
+        return text_column - self._HEADER_GAP - self._CLOSE_SIZE, text_column
+
+    def _fit_text(self) -> None:
+        """Give the title and the message exactly the room their text needs.
+
+        Both labels word-wrap, and a wrapped label's height depends on its
+        width. Left to the layout, that is a negotiation across three nested
+        layouts that only settles after enough passes -- and what the card
+        measured depended on how many had run and on what width the title
+        happened to have at that moment. The title was measured at an
+        intermediate, too-narrow width and given three lines of room for a
+        one-line title, which is the blank gap between "Follow the 20-20-20
+        Rule" and its message. A message that fitted was clipped for the
+        opposite reason.
+
+        So the width is computed (`_text_widths`) and the height asked of the
+        label at exactly that width, after the stylesheet's font has been
+        applied -- measuring before that sizes the text in the default font.
+        Fixed width and height leave the layout nothing to guess.
+        """
+        self.ensurePolished()
+        title_width, message_width = self._text_widths()
+        for label, width in ((self._title, title_width), (self._message, message_width)):
+            label.ensurePolished()
+            # Release the height the previous notification pinned: a label's
+            # own answer is floored at its minimum size, so a card reused for
+            # a short message after a tall one would measure as tall as before.
+            label.setMinimumHeight(0)
+            label.setMaximumHeight(_UNBOUNDED)
+            label.setFixedWidth(width)
+            height = label.heightForWidth(width) if label.text() else 0
+            # The title's row is as tall as the close button beside it, and
+            # the title takes the whole row, so the badge (which is pinned to
+            # the row's top) and the title's own top edge are the same line.
+            floor = self._CLOSE_SIZE if label is self._title else 0
+            label.setFixedHeight(max(height, label.fontMetrics().lineSpacing(), floor))
+
+        # The card's height is then a sum, and is set outright. Asking the
+        # layouts for it does not work for a card that is reused: the nested
+        # ones only recompute on a later event-loop turn, so a short message
+        # shown after a tall one kept the tall one's height until the next
+        # notification, one step behind.
+        header = max(self._title.height(), self._CLOSE_SIZE)
+        text_column = (
+            self.TOP_INSET + header + self._TEXT_GAP + self._message.height()
+            + self._TEXT_PAD_BOTTOM
+        )
+        borders = 2 * self._BORDER_OTHER
+        card_height = max(text_column, self.TOP_INSET + self.LOGO_SIZE) + borders
+        margins = self._SHADOW_MARGINS
+        self._card.setFixedHeight(card_height)
+        self.setFixedSize(self.WIDTH, card_height + margins[1] + margins[3])
 
     def place(self, lift: int = 0) -> bool:
         """Move the card to `lift` pixels above the corner, as it is.

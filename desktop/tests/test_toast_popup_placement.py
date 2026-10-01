@@ -150,3 +150,62 @@ def test_a_long_title_wraps_instead_of_being_cut_off(qapp):
     assert title.wordWrap()
     assert title.heightForWidth(title.width()) <= title.height(), "the wrapped title is not fully shown"
     assert popup.card_height() > short_card, "the card must grow to hold a wrapped title"
+
+
+def _fit_report(popup):
+    """The sizes the card settled on, after the event loop has run."""
+    return (
+        popup._title.height(), popup._message.height(),
+        popup.card_height(), popup.height(),
+    )
+
+
+def test_the_text_gets_exactly_the_room_it_needs_and_no_blank_gap(qapp):
+    """Reported 2026-10-01: a reminder card ("Follow the 20-20-20 Rule") had a
+    large empty band between its title and its message. The title had been
+    measured at an intermediate, too-narrow width and given lines it did not
+    use. Each label is now exactly as tall as its text at its real width."""
+    popup = ToastPopup()
+    popup.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    for title, message in (
+        ("👁️ Follow the 20-20-20 Rule", "Every 20 minutes, look at something about 20 feet away for 20 seconds."),
+        ("💧 Drink Water", "Keep a water bottle nearby and stay hydrated throughout the day."),
+        ("Standup", "Daily standup in 5 minutes."),
+        ("🤲 Stretch Your Hands & Wrists", "Stretch your fingers, wrists, and arms to reduce stiffness."),
+    ):
+        popup.present(title, message, "info")
+        for _ in range(3):
+            qapp.processEvents()
+        needed_title = popup._title.heightForWidth(popup._title.width())
+        needed_message = popup._message.heightForWidth(popup._message.width())
+        # Exactly the text's height -- the title is only ever as short as the
+        # close button beside it, never taller than its text calls for.
+        assert popup._title.height() == max(needed_title, popup._CLOSE_SIZE), title
+        assert popup._message.height() == needed_message, title
+    popup.deleteLater()
+
+
+def test_a_reused_card_returns_to_the_size_a_fresh_one_would_have(qapp):
+    """The application keeps one card and reuses it. A short notification shown
+    after a tall one must be as short as it would be on its own -- it used to
+    stay as tall as the one before, or lag a notification behind."""
+    notices = [
+        ("🤲 Stretch Your Hands & Wrists", "Stretch your fingers, wrists, and arms to reduce stiffness from typing and mouse use."),
+        ("Standup", "Daily standup in 5 minutes."),
+        ("💧 Drink Water", "Keep a water bottle nearby and stay hydrated throughout the day."),
+        ("Standup", "Daily standup in 5 minutes."),
+    ]
+    reused = ToastPopup()
+    reused.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    for title, message in notices:
+        reused.present(title, message, "info")
+        for _ in range(3):
+            qapp.processEvents()
+        fresh = ToastPopup()
+        fresh.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        fresh.present(title, message, "info")
+        for _ in range(3):
+            qapp.processEvents()
+        assert _fit_report(reused) == _fit_report(fresh), title
+        fresh.deleteLater()
+    reused.deleteLater()
