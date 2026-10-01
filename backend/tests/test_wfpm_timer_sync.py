@@ -19,6 +19,7 @@ transport, so what is asserted about the request is the request that would
 actually leave this process.
 """
 import json
+import logging
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -424,6 +425,87 @@ class ClientTests(unittest.TestCase):
                 self.post(handler)
             self.assertTrue(ctx.exception.retryable)
             self.assertIsNone(ctx.exception.status_code)
+
+    # -- a key carried in the URL ---------------------------------------------
+    #
+    # WFPM may authorise Monitra with `...timer?key=<secret>` instead of (or as
+    # well as) a bearer token. That makes the URL a secret, so it must reach
+    # WFPM intact and must appear nowhere Monitra writes anything down.
+
+    KEYED_URL = URL + "?key=" + "0123456789abcdef" * 3
+
+    def post_keyed(self, handler):
+        self.requests = []
+
+        def recording(request):
+            self.requests.append(request)
+            return handler(request)
+
+        real_client = httpx.Client
+        with patch.object(wfpm_client.httpx, "Client",
+                          lambda **kwargs: real_client(transport=httpx.MockTransport(recording), **kwargs)):
+            return wfpm_client.post_event(
+                self.KEYED_URL, token="", payload={"event": "timer_start"},
+                idempotency_key="monitra:timer_start:1", timeout_seconds=5.0,
+            )
+
+    def test_the_key_reaches_wfpm_in_the_query_string_and_no_bearer_header_is_invented(self):
+        self.post_keyed(lambda request: httpx.Response(200))
+        [request] = self.requests
+        self.assertEqual(request.url.params["key"], "0123456789abcdef" * 3)
+        self.assertEqual(request.url.path, "/api/monitra/timer/start")
+        self.assertNotIn("Authorization", request.headers)
+
+    def test_the_key_is_not_written_to_the_httpx_request_log(self):
+        """httpx logs the full URL of every request at INFO, and the backend
+        runs at INFO. Without the filter in `client.py` every timer start
+        wrote the key into the log."""
+        with self.assertLogs("httpx", level="INFO") as captured:
+            real_client = httpx.Client
+            with patch.object(wfpm_client.httpx, "Client",
+                              lambda **kwargs: real_client(transport=httpx.MockTransport(
+                                  lambda request: httpx.Response(200)), **kwargs)):
+                wfpm_client.post_event(
+                    self.KEYED_URL, token="", payload={}, idempotency_key="k", timeout_seconds=5.0,
+                )
+        text = "\n".join(captured.output)
+        self.assertIn("/api/monitra/timer/start", text)           # still says which endpoint
+        self.assertIn("HTTP/1.1 200 OK", text)                    # and what happened
+        self.assertNotIn("0123456789abcdef", text)
+        self.assertNotIn("key=0", text)
+
+    def test_the_log_filter_leaves_other_requests_alone(self):
+        record = logging.LogRecord("httpx", logging.INFO, __file__, 1,
+                                   'HTTP Request: %s %s "%s"', ("GET", "https://example.test/a?page=2", "HTTP/1.1 200 OK"), None)
+        for f in logging.getLogger("httpx").filters:
+            f.filter(record)
+        # A query string is removed from *any* URL httpx logs -- there is no
+        # way to know which one is a credential -- but nothing else changes.
+        self.assertEqual(record.getMessage(), 'HTTP Request: GET https://example.test/a?<redacted> "HTTP/1.1 200 OK"')
+        plain = logging.LogRecord("httpx", logging.INFO, __file__, 1, "no url here %s", ("at all",), None)
+        for f in logging.getLogger("httpx").filters:
+            f.filter(plain)
+        self.assertEqual(plain.getMessage(), "no url here at all")
+
+    def test_the_key_is_not_stored_in_an_error_however_it_arrives(self):
+        key = "0123456789abcdef" * 3
+        cases = {
+            "response body echoing the request": lambda request: httpx.Response(
+                400, text=f"bad request for {self.KEYED_URL} and https://other.test/x?key={key}&y=1"),
+            "connection error quoting the url": lambda request: (_ for _ in ()).throw(
+                httpx.ConnectError(f"cannot reach {self.KEYED_URL}", request=request)),
+        }
+        for label, handler in cases.items():
+            with self.subTest(case=label), self.assertRaises(WfpmDeliveryError) as ctx:
+                self.post_keyed(handler)
+            stored = wfpm_client.redact_error(ctx.exception)
+            self.assertNotIn(key, stored)
+            self.assertNotIn(key, str(ctx.exception))
+        # An error from outside the client -- e.g. httpx rejecting the URL --
+        # goes through the same choke point.
+        stored = wfpm_client.redact_error(httpx.InvalidURL(f"Invalid URL {self.KEYED_URL}"))
+        self.assertNotIn(key, stored)
+        self.assertIn("/api/monitra/timer/start", stored)
 
     def test_the_token_never_appears_in_an_error(self):
         with self.assertRaises(WfpmDeliveryError) as ctx:
