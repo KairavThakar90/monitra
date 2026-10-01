@@ -1,30 +1,35 @@
-"""Monitra -> WFPM: a timer started here starts the timer there.
+"""Monitra -> WFPM: a timer started here starts the timer there, and a timer
+stopped here stops it.
 
-    User starts a task timer in Monitra
+    User starts (or stops) a task timer in Monitra
         -> the time entry is committed                    (TimeEntryService)
-        -> the task's `wfpm_task_id` is looked up         (queue_timer_start)
-        -> one `wfpm_timer_events` row is queued          (queue_timer_start)
+        -> the task's `wfpm_task_id` is looked up         (queue_timer_start / _stop)
+        -> one `wfpm_timer_events` row is queued          (queue_timer_start / _stop)
         -> WFPM's endpoint is called with that id         (deliver_one)
 
-The first step never waits for the last. Starting a timer is the user's work
-and must succeed whether or not WFPM can be reached, so the event is a row
-first and a request second, and delivery runs in two places:
+The first step never waits for the last. Starting or stopping a timer is the
+user's work and must succeed whether or not WFPM can be reached, so the event
+is a row first and a request second, and delivery runs in two places:
 
 * **Immediately after the response**, through FastAPI's `BackgroundTasks`. In
   the ordinary case WFPM is told within a moment of the timer starting, and a
-  slow WFPM delays nobody.
+  slow WFPM delays nobody. (A stop that happens outside a request -- a member
+  being deactivated -- has no response to follow and waits for the sweeper.)
 * **From the sweeper**, `POST /internal/wfpm/timer-events/dispatch`, on a
   timer. This is the guarantee: whatever the fast path missed -- the process
   restarted, WFPM was down, the network dropped -- is retried with backoff
   until WFPM accepts it, refuses it, or it runs out of attempts.
 
 Nothing is queued for a task that has no `wfpm_task_id`, and nothing is
-queued at all while `WFPM_TIMER_START_URL` is unset: the integration is off,
-and an event queued against a URL that does not exist yet would be delivered
+queued at all while an event's URL is unset -- `WFPM_TIMER_START_URL` for a
+start, `WFPM_TIMER_STOP_URL` for a stop: the integration is off for that
+event, and one queued against a URL that does not exist yet would be delivered
 hours or days late the moment it did.
 
-Only *start* is announced. The specification this was built from does not
-describe a stop, so none is sent; see docs/WFPM_INTEGRATION.md.
+A stop is independent of its start: its own row, its own URL, its own
+`event_id`. WFPM tolerates either arriving first (a stop with nothing running
+is answered 200 and ignored; a late start already carries `stopped_at`), so
+nothing here orders the two. docs/WFPM_INTEGRATION.md is the contract.
 """
 from __future__ import annotations
 
@@ -41,7 +46,7 @@ from app.models.user import User
 from app.WFPM import client as wfpm_client
 from app.WFPM.client import WfpmDeliveryError, redact_error
 from app.WFPM.models import (
-    EVENT_TIMER_START, STATUS_FAILED, STATUS_PENDING, STATUS_REJECTED, WfpmTimerEvent,
+    EVENT_TIMER_START, EVENT_TIMER_STOP, STATUS_FAILED, STATUS_PENDING, STATUS_REJECTED, WfpmTimerEvent,
 )
 from app.WFPM.repository import WfpmLinkRepository, WfpmTimerEventRepository
 
@@ -60,22 +65,45 @@ def _iso(value: Optional[datetime]) -> Optional[str]:
     return value.isoformat()
 
 
-def unconfigured_reason() -> Optional[str]:
-    """Why a started timer is not announced to WFPM, or None if it is."""
-    if not settings.wfpm_timer_sync_configured:
+def url_for(event_type: str) -> str:
+    """The endpoint an event of this type is POSTed to; empty when unset.
+
+    The start and stop endpoints are separate URLs, each carrying its own key.
+    """
+    if event_type == EVENT_TIMER_STOP:
+        return (settings.WFPM_TIMER_STOP_URL or "").strip()
+    return (settings.WFPM_TIMER_START_URL or "").strip()
+
+
+def unconfigured_reason(event_type: str = EVENT_TIMER_START) -> Optional[str]:
+    """Why an event of this type is not sent to WFPM, or None if it is."""
+    if event_type == EVENT_TIMER_STOP:
+        if not settings.wfpm_timer_stop_configured:
+            return "WFPM_TIMER_STOP_URL is not set"
+    elif not settings.wfpm_timer_sync_configured:
         return "WFPM_TIMER_START_URL is not set"
     return None
+
+
+def configured_event_types() -> list[str]:
+    """The event types this deployment will currently send."""
+    return [
+        event_type for event_type in (EVENT_TIMER_START, EVENT_TIMER_STOP)
+        if unconfigured_reason(event_type) is None
+    ]
 
 
 def describe_configuration() -> dict[str, Any]:
     """What this deployment will do, for the boot log and /health.
 
     Non-sensitive by construction: whether a URL and a token are present,
-    never either value.
+    never either value. `configured` is the start URL (the key existing
+    monitors read); `stop_configured` is the stop URL.
     """
     configured = unconfigured_reason() is None
     description: dict[str, Any] = {
         "configured": configured,
+        "stop_configured": unconfigured_reason(EVENT_TIMER_STOP) is None,
         "token_present": bool((settings.WFPM_API_TOKEN or "").strip()),
     }
     if not configured:
@@ -112,7 +140,28 @@ def build_payload(row: WfpmTimerEvent, entry: TimeEntry, user: Optional[User]) -
     Monitra timer is still running and carries the stop instant when a delayed
     retry is delivered after the session has already ended, which lets WFPM
     record a finished session instead of starting a timer nothing will stop.
+
+    A stop is a smaller document: WFPM finds the person by `monitra_user_id`
+    (the `monitra_id` on their WFPM account) and does not use the email, so
+    none is sent. `stopped_at` is required there and is read from the entry,
+    which is the instant Monitra's own duration was computed from.
     """
+    if row.event_type == EVENT_TIMER_STOP:
+        if entry.end_time is None:
+            # Queued only for an ended entry, and an ended entry stays ended.
+            raise WfpmDeliveryError("The time entry has no end time to report", retryable=False)
+        return {
+            "event": row.event_type,
+            "event_id": event_id_for(row.event_type, row.time_entry_id),
+            "wfpm_task_id": row.wfpm_task_id,
+            "wfpm_project_id": row.wfpm_project_id,
+            "started_at": _iso(entry.start_time),
+            "stopped_at": _iso(entry.end_time),
+            "monitra_user_id": row.user_id,
+            "monitra_time_entry_id": row.time_entry_id,
+            "monitra_task_id": row.task_id,
+            "monitra_project_id": row.project_id,
+        }
     return {
         "event": row.event_type,
         "event_id": event_id_for(row.event_type, row.time_entry_id),
@@ -149,18 +198,38 @@ class WfpmTimerSync:
         missing table, a database hiccup -- may turn a started timer into an
         error the user sees. A failure here is logged and the timer stands.
         """
-        if unconfigured_reason() is not None:
+        return WfpmTimerSync._queue(db, entry, EVENT_TIMER_START)
+
+    @staticmethod
+    def queue_timer_stop(db: Session, entry: TimeEntry) -> Optional[int]:
+        """Record that WFPM must be told this timer stopped.
+
+        Returns the id of the event to deliver now, or None when there is
+        nothing to deliver: `WFPM_TIMER_STOP_URL` is unset, the task has no
+        WFPM counterpart, the entry has not ended, or this entry's stop event
+        already exists (one stop per time entry).
+
+        **Never raises**, for the reason `queue_timer_start` does not: the
+        stop has already been committed and is the user's work.
+        """
+        return WfpmTimerSync._queue(db, entry, EVENT_TIMER_STOP)
+
+    @staticmethod
+    def _queue(db: Session, entry: TimeEntry, event_type: str) -> Optional[int]:
+        if unconfigured_reason(event_type) is not None:
             return None
         # Read before anything below can fail: a rollback expires the instance.
         entry_id = getattr(entry, "id", None)
         try:
+            if event_type == EVENT_TIMER_STOP and entry.end_time is None:
+                return None
             link = WfpmLinkRepository.timer_link(db, entry.task_id)
             if link is None:
                 return None
             wfpm_task_id, wfpm_project_id = link
             row, created = WfpmTimerEventRepository.enqueue(
                 db,
-                event_type=EVENT_TIMER_START,
+                event_type=event_type,
                 organization_id=entry.organization_id,
                 time_entry_id=entry.id,
                 user_id=entry.user_id,
@@ -173,17 +242,18 @@ class WfpmTimerSync:
             )
             logger.info(
                 "WFPM_TIMER_QUEUED: id=%s event=%s entry=%s task=%s wfpm_task=%s created=%s",
-                row.id, EVENT_TIMER_START, entry_id, row.task_id, wfpm_task_id, created,
+                row.id, event_type, entry_id, row.task_id, wfpm_task_id, created,
             )
             return row.id if created else None
-        except Exception:  # noqa: BLE001 - a started timer must stay started
+        except Exception:  # noqa: BLE001 - a started or stopped timer must stay so
             try:
                 db.rollback()
             except Exception:  # noqa: BLE001
                 pass
             logger.warning(
-                "WFPM_TIMER_QUEUE_FAILED: entry=%s (the timer started; WFPM was not told)",
-                entry_id, exc_info=True,
+                "WFPM_TIMER_QUEUE_FAILED: event=%s entry=%s (the timer %s; WFPM was not told)",
+                event_type, entry_id, "stopped" if event_type == EVENT_TIMER_STOP else "started",
+                exc_info=True,
             )
             return None
 
@@ -199,15 +269,14 @@ class WfpmTimerSync:
         ``rejected`` (WFPM refused it), ``skipped`` (not due, or already
         handled by another worker) or ``unconfigured``.
         """
-        if unconfigured_reason() is not None:
-            # Checked before claiming, so a deployment with the URL removed
-            # does not spend an event's attempts on its own configuration.
-            return "unconfigured"
-
         now = _now()
         row = WfpmTimerEventRepository.get_by_id(db, event_id)
         if row is None or row.status != STATUS_PENDING:
             return "skipped"
+        if unconfigured_reason(row.event_type) is not None:
+            # Checked before claiming, so a deployment with the URL removed
+            # does not spend an event's attempts on its own configuration.
+            return "unconfigured"
 
         claimed = WfpmTimerEventRepository.claim(
             db,
@@ -230,6 +299,7 @@ class WfpmTimerSync:
         may since have been cascaded away.
         """
         event_id = row.id
+        url = url_for(row.event_type)
         attempt = row.attempt_count
         max_attempts = row.max_attempts
         log_context = (
@@ -247,7 +317,7 @@ class WfpmTimerSync:
             payload = build_payload(row, entry, db.get(User, row.user_id))
             idempotency_key = payload["event_id"]
             response_status = wfpm_client.post_event(
-                settings.WFPM_TIMER_START_URL.strip(),
+                url,
                 token=(settings.WFPM_API_TOKEN or "").strip(),
                 payload=payload,
                 idempotency_key=idempotency_key,
@@ -301,13 +371,17 @@ class WfpmTimerSync:
         Returns a tally by outcome. Called by the sweeper endpoint and safe to
         call concurrently with itself: every row is claimed before it is sent.
         """
-        reason = unconfigured_reason()
-        if reason is not None:
+        # Only events whose own URL is set: one left pending for want of a URL
+        # must not sit at the head of the queue and starve the ones that can go.
+        sendable = configured_event_types()
+        if not sendable:
             return {"attempted": 0, "unconfigured": True}
 
         batch = limit or max(1, settings.WFPM_TIMER_DISPATCH_BATCH_SIZE)
         try:
-            ids = WfpmTimerEventRepository.due_ids(db, now=_now(), limit=batch)
+            ids = WfpmTimerEventRepository.due_ids(
+                db, now=_now(), limit=batch, event_types=sendable,
+            )
         except Exception:  # noqa: BLE001
             logger.exception("WFPM_TIMER_SWEEP_QUERY_FAILED")
             try:
@@ -338,8 +412,8 @@ class WfpmTimerSync:
 def deliver_in_background(event_id: int) -> None:
     """Deliver one event on its own database session.
 
-    This is what `BackgroundTasks` runs after the timer-start response has
-    been written. It opens its own session because the request's is closed by
+    This is what `BackgroundTasks` runs after the timer-start or timer-stop
+    response has been written. It opens its own session because the request's is closed by
     then, and it swallows everything: the row it was working on is still
     queued for the sweeper either way.
     """

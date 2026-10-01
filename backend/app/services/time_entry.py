@@ -27,7 +27,7 @@ identifiers needed to reconstruct a discrepancy from production logs.
 """
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from fastapi import HTTPException, status
+from fastapi import BackgroundTasks, HTTPException, status
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 from app.models.time_entry import TimeEntry
@@ -263,6 +263,7 @@ class TimeEntryService:
         stopped_at: Optional[datetime] = None,
         client_time: Optional[datetime] = None,
         request_id: Optional[str] = None,
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> Tuple[TimeEntry, bool]:
         """
         Stop a timer. Returns `(entry, finalized_now)`.
@@ -272,6 +273,12 @@ class TimeEntryService:
         the idle-period resolve path. The stored entry is returned as it is:
         the first stop's instants stand, and a later replay cannot lengthen
         or shorten the entry.
+
+        Every way a timer ends passes through here -- the user's Stop, the
+        idle popup's Stop, a member being deactivated -- so this is where
+        WFPM is told. Pass `background_tasks` when there is a response to
+        follow, so delivery runs right after it; without it (a stop that is
+        not a request) the queued event waits for the sweeper.
         """
         # 1. Fetch time entry
         time_entry = TimeEntryRepository.get_by_id(db, entry_id)
@@ -358,6 +365,17 @@ class TimeEntryService:
             "project_id": stopped_entry.project_id, "task_id": stopped_entry.task_id,
             "entity_id": stopped_entry.id, "created_at": end_time,
         })
+
+        # A timer on a WFPM-linked task stops the matching timer in WFPM.
+        # Queued only by the stop that finalized the entry -- the replays above
+        # return early, and a second queue would be a no-op on the unique
+        # (event, entry) row anyway. `queue_timer_stop` never raises and
+        # answers None for every task WFPM does not know.
+        from app.WFPM.timer_sync import WfpmTimerSync, deliver_in_background
+
+        wfpm_event_id = WfpmTimerSync.queue_timer_stop(db, stopped_entry)
+        if wfpm_event_id is not None and background_tasks is not None:
+            background_tasks.add_task(deliver_in_background, wfpm_event_id)
         return stopped_entry, True
 
     @staticmethod

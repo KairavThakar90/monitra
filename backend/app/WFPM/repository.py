@@ -22,7 +22,7 @@ now` is the database's comparison to make, not the ORM's.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -155,16 +155,21 @@ class WfpmTimerEventRepository:
         return row, True
 
     @staticmethod
-    def due_ids(db: Session, *, now: datetime, limit: int) -> List[int]:
-        """Ids of pending events whose next attempt is due, oldest first."""
+    def due_ids(
+        db: Session, *, now: datetime, limit: int,
+        event_types: Optional[Sequence[str]] = None,
+    ) -> List[int]:
+        """Ids of pending events whose next attempt is due, oldest first.
+
+        `event_types`, when given, restricts the result to those types."""
+        query = select(WfpmTimerEvent.id).where(
+            WfpmTimerEvent.status == STATUS_PENDING,
+            WfpmTimerEvent.next_attempt_at <= now,
+        )
+        if event_types is not None:
+            query = query.where(WfpmTimerEvent.event_type.in_(list(event_types)))
         return list(db.scalars(
-            select(WfpmTimerEvent.id)
-            .where(
-                WfpmTimerEvent.status == STATUS_PENDING,
-                WfpmTimerEvent.next_attempt_at <= now,
-            )
-            .order_by(WfpmTimerEvent.next_attempt_at, WfpmTimerEvent.id)
-            .limit(limit)
+            query.order_by(WfpmTimerEvent.next_attempt_at, WfpmTimerEvent.id).limit(limit)
         ).all())
 
     @staticmethod

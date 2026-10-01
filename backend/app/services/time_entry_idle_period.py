@@ -51,7 +51,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
-from fastapi import HTTPException, status
+from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.time_format import elapsed_seconds
@@ -373,6 +373,7 @@ class TimeEntryIdlePeriodService:
         idle_period_id: int,
         payload: IdlePeriodResolve,
         current_user: User,
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> TimeEntryIdlePeriod:
         """Resolve a pending idle period with the user's popup answer.
 
@@ -430,6 +431,7 @@ class TimeEntryIdlePeriodService:
                 description=None,
                 current_user=current_user,
                 stopped_at=resolved_at,
+                background_tasks=background_tasks,
             )
         else:
             db.commit()

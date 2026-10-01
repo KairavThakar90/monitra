@@ -6,10 +6,10 @@ Drives the real app over real HTTP against the development database:
 * every `/WFPM/sync` route -- create/update project, add/remove member,
   create/update task, assign/remove assignee -- checking both the response and
   the rows the database actually holds;
-* the Monitra -> WFPM timer call, against a local HTTP server that stands in
-  for WFPM's endpoint: what it is sent, that a slow or failing WFPM never
-  delays or fails a timer start, that the sweeper retries, and that a refusal
-  is parked rather than re-sent.
+* the Monitra -> WFPM timer calls (start and stop), against a local HTTP server
+  that stands in for WFPM's endpoints: what each is sent, that a slow or
+  failing WFPM never delays or fails a timer start, that the sweeper retries,
+  and that a refusal is parked rather than re-sent.
 
 Usage, from backend/:
 
@@ -112,6 +112,7 @@ WFPM_TASK = f"E2E-T-{STAMP}"
 PROJECT_NAME = f"[WFPM-E2E] {STAMP}"
 WFPM_TOKEN = "e2e-wfpm-token"
 DISPATCH_TOKEN = "e2e-dispatch-token"
+STOP_KEY = "e2e-stop-key"
 
 checks: list[tuple[bool, str]] = []
 
@@ -131,7 +132,8 @@ def free_port() -> int:
 
 class FakeWfpm:
     def __init__(self):
-        self.received: list[dict] = []
+        self.received: list[dict] = []     # requests to the start endpoint
+        self.stops: list[dict] = []        # requests to the stop endpoint
         self.status = 200
         self.delay = 0.0
         self.port = free_port()
@@ -143,7 +145,8 @@ class FakeWfpm:
                 status, delay = outer.status, outer.delay
                 if delay:
                     time.sleep(delay)
-                outer.received.append({
+                is_stop = self.path.startswith("/api/monitra/timer/stop")
+                (outer.stops if is_stop else outer.received).append({
                     "path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()},
                     "body": json.loads(body or b"{}"), "answered": status, "at": time.time(),
                 })
@@ -164,10 +167,15 @@ class FakeWfpm:
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}/api/monitra/timer/start"
 
-    def wait_for(self, count: int, timeout: float = 15.0) -> bool:
+    @property
+    def stop_url(self) -> str:
+        # Carries a key in its query string, as WFPM's real stop URL does.
+        return f"http://127.0.0.1:{self.port}/api/monitra/timer/stop?key={STOP_KEY}"
+
+    def wait_for(self, count: int, timeout: float = 15.0, *, stops: bool = False) -> bool:
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if len(self.received) >= count:
+            if len(self.stops if stops else self.received) >= count:
                 return True
             time.sleep(0.1)
         return False
@@ -251,11 +259,12 @@ def rows(engine, sql: str, **params):
         return [dict(r) for r in conn.execute(text(sql), params).mappings().all()]
 
 
-def wait_for_event(engine, entry_id: int, status: str, timeout: float = 15.0):
+def wait_for_event(engine, entry_id: int, status: str, timeout: float = 15.0, event_type: str = "timer_start"):
     deadline = time.time() + timeout
     event = None
     while time.time() < deadline:
-        event = row(engine, "SELECT * FROM wfpm_timer_events WHERE time_entry_id = :e", e=entry_id)
+        event = row(engine, "SELECT * FROM wfpm_timer_events WHERE time_entry_id = :e AND event_type = :t",
+                    e=entry_id, t=event_type)
         if event and event["status"] == status:
             return event
         time.sleep(0.25)
@@ -281,7 +290,7 @@ def main() -> int:
         env = dict(CLEAN_ENV)
         env.update({
             "WFPM_E2E_LEADER_ID": str(admin["id"]), "WFPM_E2E_PORT": str(port),
-            "WFPM_TIMER_START_URL": fake.url, "WFPM_API_TOKEN": WFPM_TOKEN,
+            "WFPM_TIMER_START_URL": fake.url, "WFPM_TIMER_STOP_URL": fake.stop_url, "WFPM_API_TOKEN": WFPM_TOKEN,
             "WFPM_TIMER_RETRY_BASE_DELAY_SECONDS": "1", "WFPM_TIMER_RETRY_MAX_DELAY_SECONDS": "2",
             "EMAIL_DISPATCH_TOKEN": DISPATCH_TOKEN, "PYTHONUNBUFFERED": "1",
         })
@@ -320,7 +329,8 @@ def main() -> int:
 
         print("\n[1] configuration")
         health = client.get("/health").json()
-        check(health.get("wfpm_timer_sync") == {"configured": True, "token_present": True}, "/health reports the WFPM timer integration as configured", str(health.get("wfpm_timer_sync")))
+        check(health.get("wfpm_timer_sync") == {"configured": True, "stop_configured": True, "token_present": True}, "/health reports the WFPM start and stop integration as configured", str(health.get("wfpm_timer_sync")))
+        check(STOP_KEY not in json.dumps(health), "/health never carries the stop URL's key")
 
         print("\n[2] WFPM -> Monitra: project")
         body = {"wfpm_project_id": WFPM_PROJECT, "project_name": PROJECT_NAME, "description": "E2E", "billing_type": "free"}
@@ -426,9 +436,32 @@ def main() -> int:
         time.sleep(2.0)
         check(r.status_code == 200 and r.json()["id"] == entry["id"] and len(fake.received) == 1, "a replayed start (same client_op) -> 200 and WFPM is not told twice", f"{r.status_code} requests={len(fake.received)}")
 
+        print("\n[5b] Monitra -> WFPM: timer stop")
         r = client.post(f"/time-entries/{entry['id']}/stop", json={}, headers=emp1["headers"])
-        time.sleep(1.5)
-        check(r.status_code == 200 and len(fake.received) == 1, "stop -> 200; no WFPM request (stop is not announced)", f"{r.status_code} requests={len(fake.received)}")
+        stopped_entry = r.json()
+        check(r.status_code == 200 and not any("wfpm" in k.lower() for k in stopped_entry), "stop -> 200 and the stop response the desktop reads is unchanged", r.text)
+        check(fake.wait_for(1, stops=True), "WFPM's stop endpoint received a request")
+        check(len(fake.received) == 1, "and the start endpoint was not called again", f"start requests={len(fake.received)}")
+        got = fake.stops[0] if fake.stops else {"body": {}, "headers": {}, "path": ""}
+        b = got["body"]
+        check(got["path"].endswith(f"?key={STOP_KEY}"), "the stop URL's ?key= reaches WFPM unchanged", got["path"])
+        check(b.get("event") == "timer_stop" and b.get("event_id") == f"monitra:timer_stop:{entry['id']}" and got["headers"].get("idempotency-key") == b.get("event_id"), "payload carries event + event_id, and the Idempotency-Key matches", str(b))
+        check(b.get("wfpm_task_id") == WFPM_TASK and b.get("wfpm_project_id") == WFPM_PROJECT, "stop payload names the WFPM task and project", str(b))
+        check(b.get("monitra_user_id") == emp1["id"] and b.get("monitra_time_entry_id") == entry["id"] and b.get("monitra_task_id") == task_id and b.get("monitra_project_id") == project_id, "stop payload carries the Monitra ids", str(b))
+        check("user_email" not in b and "user_name" not in b, "stop payload carries no email or name (WFPM finds the user by monitra_user_id)", str(b))
+        s_at = datetime.fromisoformat(b["started_at"]) if b.get("started_at") else None
+        e_at = datetime.fromisoformat(b["stopped_at"]) if b.get("stopped_at") else None
+        persisted_start = datetime.fromisoformat(stopped_entry["start_time"].replace("Z", "+00:00"))
+        persisted_end = datetime.fromisoformat(stopped_entry["end_time"].replace("Z", "+00:00"))
+        check(s_at == persisted_start and e_at == persisted_end, "started_at / stopped_at are the persisted start_time / end_time", f"{b.get('started_at')} {b.get('stopped_at')} vs {stopped_entry['start_time']} {stopped_entry['end_time']}")
+        check(e_at is not None and s_at is not None and round((e_at - s_at).total_seconds()) == stopped_entry["total_seconds"], "WFPM's duration equals Monitra's total_seconds", f"{stopped_entry['total_seconds']}")
+        stop_event = wait_for_event(engine, entry["id"], "sent", event_type="timer_stop")
+        check(stop_event and stop_event["attempt_count"] == 1 and stop_event["response_status"] == 200, "the timer_stop row is `sent` after one attempt", str(stop_event))
+        check(STOP_KEY not in json.dumps(stop_event, default=str), "the stored event never contains the stop URL's key", str(stop_event))
+        r = client.post(f"/time-entries/{entry['id']}/stop", json={}, headers=emp1["headers"])
+        time.sleep(2.0)
+        stop_rows = row(engine, "SELECT count(*) AS n FROM wfpm_timer_events WHERE time_entry_id = :e AND event_type = 'timer_stop'", e=entry["id"])["n"]
+        check(r.status_code == 200 and len(fake.stops) == 1 and stop_rows == 1, "a repeated stop -> 200 and WFPM is not told twice", f"{r.status_code} requests={len(fake.stops)} rows={stop_rows}")
 
         print("\n[6] a task WFPM does not know starts no WFPM timer")
         default_task = row(engine, "SELECT id FROM tasks WHERE project_id = :p AND wfpm_task_id IS NULL ORDER BY id LIMIT 1", p=project_id)["id"]
@@ -438,6 +471,8 @@ def main() -> int:
         none_queued = row(engine, "SELECT count(*) AS n FROM wfpm_timer_events WHERE time_entry_id = :e", e=unlinked_entry)["n"]
         check(r.status_code == 201 and none_queued == 0 and len(fake.received) == 1, "unlinked task: timer starts, nothing queued, nothing sent", f"{r.status_code} queued={none_queued} requests={len(fake.received)}")
         client.post(f"/time-entries/{unlinked_entry}/stop", json={}, headers=emp1["headers"])
+        time.sleep(1.5)
+        check(len(fake.stops) == 1, "stopping an unlinked task's timer sends no stop either", f"stop requests={len(fake.stops)}")
 
         print("\n[7] WFPM slow and failing: the start does not wait, and the sweeper retries")
         fake.status, fake.delay = 503, 6.0
@@ -452,7 +487,7 @@ def main() -> int:
         deadline = time.time() + 15
         while time.time() < deadline and (not event or event["attempt_count"] < 1 or event["response_status"] != 503):
             time.sleep(0.25)
-            event = row(engine, "SELECT * FROM wfpm_timer_events WHERE time_entry_id = :e", e=retry_entry)
+            event = row(engine, "SELECT * FROM wfpm_timer_events WHERE time_entry_id = :e AND event_type = 'timer_start'", e=retry_entry)
         check(event and event["status"] == "pending" and event["attempt_count"] == 1 and event["response_status"] == 503 and "503" in (event["last_error"] or ""), "event stays `pending` after the 503, attempt 1 recorded with the reason", str(event))
 
         r = client.post("/internal/wfpm/timer-events/dispatch")
@@ -461,7 +496,7 @@ def main() -> int:
         time.sleep(2.5)   # past next_attempt_at (base 1s, cap 2s in this run)
         r = client.post("/internal/wfpm/timer-events/dispatch", headers={"X-Email-Dispatch-Token": DISPATCH_TOKEN})
         check(r.status_code == 200 and r.json().get("sent") == 1 and r.json().get("attempted") == 1, "sweeper delivers the parked event", r.text)
-        event = row(engine, "SELECT * FROM wfpm_timer_events WHERE time_entry_id = :e", e=retry_entry)
+        event = row(engine, "SELECT * FROM wfpm_timer_events WHERE time_entry_id = :e AND event_type = 'timer_start'", e=retry_entry)
         check(event["status"] == "sent" and event["attempt_count"] == 2 and event["last_error"] is None, "event is `sent` on attempt 2", str(event))
         same_event = [x for x in fake.received if x["body"].get("monitra_time_entry_id") == retry_entry]
         check(len(same_event) == 2 and same_event[0]["body"]["event_id"] == same_event[1]["body"]["event_id"] == same_event[1]["headers"].get("idempotency-key"), "both attempts carried the same event_id / Idempotency-Key", str([x["body"].get("event_id") for x in same_event]))
@@ -481,6 +516,30 @@ def main() -> int:
         r2 = client.post("/internal/wfpm/timer-events/dispatch", headers={"X-Email-Dispatch-Token": DISPATCH_TOKEN})
         check(r2.json().get("attempted") == 0 and len(fake.received) == before + 1, "a rejected event is not retried", f"{r2.text} requests={len(fake.received) - before}")
         client.post(f"/time-entries/{rejected_entry}/stop", json={}, headers=emp1["headers"])
+
+        print("\n[9] a stop WFPM cannot take right now is retried, with the same event_id")
+        r = client.post("/time-entries/start", json={"project_id": project_id, "task_id": task_id, "client_op": f"e2e:{STAMP}:5"}, headers=emp1["headers"])
+        retry_stop_entry = r.json().get("id")
+        check(r.status_code == 201, "start another timer on the linked task -> 201", r.text)
+        fake.status = 503
+        stops_before = len(fake.stops)
+        r = client.post(f"/time-entries/{retry_stop_entry}/stop", json={}, headers=emp1["headers"])
+        check(r.status_code == 200, "stop -> 200 while WFPM is answering 503", r.text)
+        check(fake.wait_for(stops_before + 1, stops=True), "WFPM's stop endpoint received the attempt (and answered 503)")
+        stop_event = wait_for_event(engine, retry_stop_entry, "pending", event_type="timer_stop")
+        deadline = time.time() + 15
+        while time.time() < deadline and (not stop_event or stop_event["attempt_count"] < 1 or stop_event["response_status"] != 503):
+            time.sleep(0.25)
+            stop_event = row(engine, "SELECT * FROM wfpm_timer_events WHERE time_entry_id = :e AND event_type = 'timer_stop'", e=retry_stop_entry)
+        check(stop_event and stop_event["status"] == "pending" and stop_event["attempt_count"] == 1 and stop_event["response_status"] == 503, "the stop stays `pending` after the 503", str(stop_event))
+        fake.status = 200
+        time.sleep(2.5)
+        r = client.post("/internal/wfpm/timer-events/dispatch", headers={"X-Email-Dispatch-Token": DISPATCH_TOKEN})
+        check(r.status_code == 200 and r.json().get("sent") == 1, "the sweeper delivers the parked stop", r.text)
+        stop_event = row(engine, "SELECT * FROM wfpm_timer_events WHERE time_entry_id = :e AND event_type = 'timer_stop'", e=retry_stop_entry)
+        check(stop_event["status"] == "sent" and stop_event["attempt_count"] == 2, "the stop is `sent` on attempt 2", str(stop_event))
+        attempts = [x for x in fake.stops if x["body"].get("monitra_time_entry_id") == retry_stop_entry]
+        check(len(attempts) == 2 and attempts[0]["body"]["event_id"] == attempts[1]["body"]["event_id"] == attempts[1]["headers"].get("idempotency-key") == f"monitra:timer_stop:{retry_stop_entry}", "both attempts carried the same event_id / Idempotency-Key", str([x["body"].get("event_id") for x in attempts]))
 
         running = row(engine, "SELECT count(*) AS n FROM time_entries WHERE user_id = :u AND end_time IS NULL", u=emp1["id"])["n"]
         check(running == 0, "no timer left running", str(running))

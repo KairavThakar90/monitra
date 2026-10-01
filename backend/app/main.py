@@ -113,8 +113,9 @@ except Exception:  # noqa: BLE001
     logger.warning("Could not report email configuration", exc_info=True)
 
 # The WFPM timer integration, stated at boot for the same reason again. With
-# WFPM_TIMER_START_URL unset, timers start and stop exactly as they always
-# have and WFPM is simply never told -- nothing anywhere fails. Non-sensitive
+# WFPM_TIMER_START_URL / WFPM_TIMER_STOP_URL unset, timers start and stop
+# exactly as they always have and WFPM is simply never told -- nothing
+# anywhere fails. Non-sensitive
 # by construction: `describe_configuration()` reports whether a URL and a
 # token are present, never either value.
 try:
@@ -123,7 +124,8 @@ try:
     _wfpm_config = _describe_wfpm()
     if _wfpm_config["configured"]:
         logger.info(
-            "WFPM timer integration: enabled (token %s)",
+            "WFPM timer integration: start enabled, stop %s (token %s)",
+            "enabled" if _wfpm_config["stop_configured"] else "DISABLED (WFPM_TIMER_STOP_URL is not set)",
             "present" if _wfpm_config["token_present"] else "NOT set",
         )
     else:
