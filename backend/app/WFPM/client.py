@@ -6,10 +6,15 @@ retries, queues or what the document says. That split is what lets
 different transport, a signed request -- without touching the queue.
 
 What WFPM is sent, and what each answer means, is specified in
-docs/WFPM_INTEGRATION.md. Nothing here ever logs or returns the token.
+docs/WFPM_INTEGRATION.md. Nothing here ever logs or returns the token, and
+nothing here ever logs or stores the URL's query string: WFPM may authorise a
+caller with a key carried in the URL (`...?key=...`), which makes
+`WFPM_TIMER_START_URL` a secret exactly as `WFPM_API_TOKEN` is.
 """
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any, Optional
 
 import httpx
@@ -39,11 +44,53 @@ class WfpmDeliveryError(Exception):
         self.status_code = status_code
 
 
+#: A URL's query string -- everything from the `?` to the end of the URL.
+#: That is where a key in the URL lives, so it is dropped wherever a URL
+#: could be written down.
+_QUERY_STRING = re.compile(r"(https?://[^\s?#\"']+)\?[^\s\"']*")
+
+
+def scrub_urls(text: str) -> str:
+    """`text` with the query string of every URL in it removed.
+
+    The path stays, so a log line still says *which* endpoint; the query goes,
+    because it may be a credential."""
+    return _QUERY_STRING.sub(r"\1?<redacted>", text)
+
+
+class _RedactUrlQueries(logging.Filter):
+    """Keeps a key in a URL out of httpx's own request log.
+
+    httpx logs `HTTP Request: POST <full url> "HTTP/1.1 200 OK"` at INFO for
+    every request, and this backend runs at INFO, so without this every timer
+    start would write the key into the log. Only the query string is removed;
+    the line, and every other request httpx logs, is otherwise untouched.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        scrubbed = scrub_urls(message)
+        if scrubbed != message:
+            record.msg, record.args = scrubbed, ()
+        return True
+
+
+# Installed once, at import: nothing can call `post_event` without importing
+# this module, so there is no request that is not covered.
+_httpx_logger = logging.getLogger("httpx")
+if not any(isinstance(f, _RedactUrlQueries) for f in _httpx_logger.filters):
+    _httpx_logger.addFilter(_RedactUrlQueries())
+
+
 def redact_error(exc: Exception) -> str:
     """A failure reduced to something safe to store and log: its kind and its
-    message, truncated to the column. The token is a header and is never part
-    of an httpx error message, and the URL is configuration, not a secret."""
-    text = f"{type(exc).__name__}: {exc}".replace("\n", " ").strip()
+    message, with any URL's query string removed, truncated to the column.
+
+    The token is a header and is never part of an httpx error message. The URL
+    is another matter: it can carry a key, and an error message can quote it
+    (an invalid-URL error does, as can a response body that echoes the
+    request), so every URL in the text is scrubbed."""
+    text = scrub_urls(f"{type(exc).__name__}: {exc}").replace("\n", " ").strip()
     return text[:500]
 
 
@@ -86,7 +133,7 @@ def post_event(
     if 200 <= status < 300:
         return status
 
-    detail = (response.text or "").replace("\n", " ").strip()[:200]
+    detail = scrub_urls((response.text or "").replace("\n", " ").strip())[:200]
     message = f"WFPM answered HTTP {status}" + (f": {detail}" if detail else "")
     # A 3xx is a wrong or moved URL -- this side's configuration, like a bad
     # token -- so it is retried rather than blamed on the event.

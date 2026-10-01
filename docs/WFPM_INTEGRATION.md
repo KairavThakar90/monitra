@@ -328,7 +328,7 @@ its full URL and, if WFPM requires one, a token (§4).
 ### 3.2 The request Monitra sends
 
 ```
-POST <WFPM_TIMER_START_URL>
+POST <WFPM_TIMER_START_URL>            (including any ?key=… it carries)
 Content-Type: application/json
 Authorization: Bearer <WFPM_API_TOKEN>        (omitted if no token is configured)
 Idempotency-Key: monitra:timer_start:3559
@@ -412,8 +412,8 @@ Set in the backend's environment (`/etc/monitra/backend.env` in production,
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `WFPM_TIMER_START_URL` | empty | Full URL of WFPM's timer endpoint. **Empty = the timer integration is off**: nothing is queued or sent |
-| `WFPM_API_TOKEN` | empty | Sent as `Authorization: Bearer`. Issued by WFPM |
+| `WFPM_TIMER_START_URL` | empty | Full URL of WFPM's timer endpoint, **including a `?key=…` if WFPM authorises callers that way**. **Empty = the timer integration is off**: nothing is queued or sent. Treat it as a secret when it carries a key |
+| `WFPM_API_TOKEN` | empty | Sent as `Authorization: Bearer`. Leave it **empty** (nothing after the `=`) when WFPM authorises by the key in the URL: no `Authorization` header is sent then. Do not type placeholder text such as `(leave empty)` — it would be sent as the token |
 | `WFPM_REQUEST_TIMEOUT_SECONDS` | `10` | Per-attempt timeout |
 | `WFPM_TIMER_MAX_ATTEMPTS` | `6` | Attempts before an event is parked as `failed` |
 | `WFPM_TIMER_RETRY_BASE_DELAY_SECONDS` | `30` | First retry delay; doubles each attempt |
@@ -437,7 +437,9 @@ Without that timer, a timer start whose first attempt fails is never retried.
 2. Re-run `sudo bash scheduled-jobs/install.sh` on the VM to install the new
    timer.
 3. When WFPM's endpoint exists, set `WFPM_TIMER_START_URL` (and
-   `WFPM_API_TOKEN`) and restart the backend. `/health` then reports
+   `WFPM_API_TOKEN` if WFPM wants one) and restart the backend.
+   A key carried in the URL's query string is never written to the log or to
+   `wfpm_timer_events.last_error`: those show the URL as `…/timer?<redacted>`. `/health` then reports
    `"wfpm_timer_sync": {"configured": true, "token_present": true}`.
 
 ---
