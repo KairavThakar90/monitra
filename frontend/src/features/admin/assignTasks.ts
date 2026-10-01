@@ -5,6 +5,7 @@
  * and so the dialog and the page cannot disagree about who holds a task.
  */
 import type { Project, ProjectTask, ProjectUser } from '../../store/api/projectsApi';
+import type { DateRange } from '../dashboard/v2/filters';
 
 /**
  * Everyone holding a task, primary assignee first.
@@ -68,3 +69,37 @@ export const filterProjects = (projects: Project[], query: string): Project[] =>
 /** Two lists of ids name the same people, whatever the order. */
 export const sameMembers = (a: number[], b: number[]): boolean =>
   a.length === b.length && a.every((id) => b.includes(id));
+
+/**
+ * Only the projects whose id is in `ids`. An empty selection means "all
+ * projects", as in every other project filter.
+ */
+export const filterByProjectIds = (projects: Project[], ids: string[]): Project[] =>
+  ids.length === 0 ? projects : projects.filter((project) => ids.includes(String(project.id)));
+
+/** A timestamp's calendar date in the viewer's own time zone, as `YYYY-MM-DD`. */
+const localDate = (timestamp: string): string => {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+};
+
+/**
+ * The projects with only the tasks **created** inside `range`, dropping a
+ * project left with none. The page has no tracked-time data, so creation is
+ * the date a task honestly has; the "All Time" range (empty bounds) filters
+ * nothing. Both ends are inclusive, matching the date picker.
+ */
+export const filterByCreated = (projects: Project[], range: DateRange): Project[] => {
+  if (!range.from || !range.to) return projects;
+  const result: Project[] = [];
+  for (const project of projects) {
+    const tasks = (project.tasks ?? []).filter((task) => {
+      const created = localDate(task.created_at);
+      return created !== '' && created >= range.from && created <= range.to;
+    });
+    if (tasks.length > 0) result.push({ ...project, tasks });
+  }
+  return result;
+};

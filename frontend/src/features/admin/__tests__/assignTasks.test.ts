@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Project, ProjectTask, ProjectUser } from '../../../store/api/projectsApi';
-import { filterProjects, holdersOf, memberOptions, sameMembers } from '../assignTasks';
+import { ALL_TIME_RANGE, rangeFor } from '../../dashboard/v2/filters';
+import { filterByCreated, filterByProjectIds, filterProjects, holdersOf, memberOptions, sameMembers } from '../assignTasks';
 
 const person = (id: number, name: string, role = 'employee'): ProjectUser => ({
   id, name, email: `${name.toLowerCase()}@example.com`, role,
@@ -126,5 +127,53 @@ describe('sameMembers', () => {
     expect(sameMembers([1, 2], [1, 3])).toBe(false);
     expect(sameMembers([1], [1, 2])).toBe(false);
     expect(sameMembers([], [])).toBe(true);
+  });
+});
+
+describe('filterByProjectIds', () => {
+  const projects = [project(1, 'A', []), project(2, 'B', []), project(3, 'C', [])];
+
+  it('an empty selection means every project', () => {
+    expect(filterByProjectIds(projects, [])).toBe(projects);
+  });
+
+  it('keeps only the selected projects, matching the picker string ids', () => {
+    expect(filterByProjectIds(projects, ['1', '3']).map((p) => p.id)).toEqual([1, 3]);
+  });
+});
+
+describe('filterByCreated', () => {
+  const at = (day: string, time = '12:00:00') => new Date(`${day}T${time}`).toISOString();
+  const projects = [
+    project(1, 'A', [task(10, 'old', { created_at: at('2026-09-01') }), task(11, 'new', { created_at: at('2026-10-01') })]),
+    project(2, 'B', [task(20, 'older', { created_at: at('2026-08-15') })]),
+  ];
+  const span = (from: string, to: string) => ({ preset: 'custom' as const, from, to });
+
+  it('All Time filters nothing', () => {
+    expect(filterByCreated(projects, ALL_TIME_RANGE)).toBe(projects);
+    expect(rangeFor('all', ALL_TIME_RANGE)).toEqual(ALL_TIME_RANGE);
+  });
+
+  it('keeps only tasks created in the range and drops a project left with none', () => {
+    const result = filterByCreated(projects, span('2026-09-15', '2026-10-31'));
+    expect(result.map((p) => p.id)).toEqual([1]);
+    expect(result[0].tasks!.map((t) => t.id)).toEqual([11]);
+  });
+
+  it('is inclusive at both ends, in the viewer own day', () => {
+    const edge = [project(1, 'A', [task(1, 'start', { created_at: at('2026-10-01', '00:00:00') }), task(2, 'end', { created_at: at('2026-10-02', '23:59:59') })])];
+    expect(filterByCreated(edge, span('2026-10-01', '2026-10-02'))[0].tasks).toHaveLength(2);
+    expect(filterByCreated(edge, span('2026-10-02', '2026-10-02'))[0].tasks!.map((t) => t.id)).toEqual([2]);
+  });
+
+  it('a task with an unreadable date never matches a bounded range', () => {
+    const bad = [project(1, 'A', [task(1, 'x', { created_at: 'not a date' })])];
+    expect(filterByCreated(bad, span('2026-01-01', '2026-12-31'))).toEqual([]);
+  });
+
+  it('does not mutate the projects it was given', () => {
+    filterByCreated(projects, span('2026-10-01', '2026-10-01'));
+    expect(projects[0].tasks).toHaveLength(2);
   });
 });

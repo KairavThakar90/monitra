@@ -15,7 +15,8 @@ import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { formatApiError } from '../../api/utils';
 import { SEARCH_MAX_LENGTH } from '../../validation';
 import { AssignTaskDialog, type AssignTaskSubmit } from './AssignTaskDialog';
-import { filterProjects, holdersOf } from './assignTasks';
+import { filterByCreated, filterByProjectIds, filterProjects, holdersOf } from './assignTasks';
+import { ALL_TIME_RANGE, DateRangeFilter, ProjectMultiSelect, type DateRange } from '../dashboard/v2/filters';
 
 const PROJECTS_PER_PAGE = 10;
 /** One stable empty list, so memos keyed on `projects` do not re-run on every render before the data lands. */
@@ -94,11 +95,19 @@ export const AdminAssignTasks: React.FC = () => {
   const [searchInput, setSearchInput] = useState('');
   const query = useDebouncedValue(searchInput, 250);
   const [page, setPage] = useState(1);
+  // Opens on All Time: this is where a task is handed out, so the default must
+  // not hide the tasks nobody has touched today.
+  const [dateRange, setDateRange] = useState<DateRange>(ALL_TIME_RANGE);
+  const [projectIds, setProjectIds] = useState<string[]>([]);
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
   const [dialog, setDialog] = useState<DialogState>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const visible = useMemo(() => filterProjects(projects, query), [projects, query]);
+  const visible = useMemo(
+    () => filterProjects(filterByCreated(filterByProjectIds(projects, projectIds), dateRange), query),
+    [projects, projectIds, dateRange, query],
+  );
+  const filtering = query.trim() !== '' || projectIds.length > 0 || dateRange.preset !== 'all';
   const totalPages = Math.max(1, Math.ceil(visible.length / PROJECTS_PER_PAGE));
   const currentPage = Math.min(page, totalPages);
   const pageProjects = visible.slice((currentPage - 1) * PROJECTS_PER_PAGE, currentPage * PROJECTS_PER_PAGE);
@@ -159,6 +168,18 @@ export const AdminAssignTasks: React.FC = () => {
             aria-label="Search projects, tasks or members"
             className="w-full max-w-sm rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-[#3B82F6]"
           />
+          <div className="flex flex-wrap items-center gap-3">
+            <ProjectMultiSelect
+              projects={projects}
+              selected={projectIds}
+              onChange={(ids) => { setProjectIds(ids); setPage(1); }}
+              compact
+            />
+            <DateRangeFilter
+              allowAll
+              value={dateRange}
+              onChange={(range) => { setDateRange(range); setPage(1); }}
+            />
           <button
             type="button"
             onClick={() => {
@@ -172,6 +193,7 @@ export const AdminAssignTasks: React.FC = () => {
           >
             {pageProjects.some((project) => !collapsed[project.id]) ? 'Collapse All' : 'Expand All'}
           </button>
+          </div>
         </div>
 
         {showFirstLoad ? (
@@ -192,11 +214,11 @@ export const AdminAssignTasks: React.FC = () => {
         ) : pageProjects.length === 0 ? (
           <div className="rounded-xl border border-slate-200 bg-white p-12 text-center shadow-sm">
             <h3 className="text-sm font-bold text-slate-800">
-              {query.trim() ? 'No matching projects or tasks' : 'No projects yet'}
+              {filtering ? 'No matching projects or tasks' : 'No projects yet'}
             </h3>
             <p className="mt-1 text-xs font-medium text-slate-500">
-              {query.trim()
-                ? 'Try a different project, task or member name.'
+              {filtering
+                ? 'Nothing matches the current search, project and date filters. Widen them or choose All Time.'
                 : 'Projects and their tasks appear here once they are created in Project Management.'}
             </p>
           </div>

@@ -398,6 +398,7 @@ export type RangePreset =
   | "30d"
   | "month"
   | "lastMonth"
+  | "all"
   | "custom";
 
 export interface DateRange {
@@ -462,10 +463,19 @@ export const rangeFor = (preset: RangePreset, current: DateRange): DateRange => 
       return { preset, from: isoOf(new Date(y, m, 1)), to: shift(0) };
     case "lastMonth":
       return { preset, from: isoOf(new Date(y, m - 1, 1)), to: isoOf(new Date(y, m, 0)) };
+    case "all":
+      return ALL_TIME_RANGE;
     default:
       return { ...current, preset: "custom" };
   }
 };
+
+/**
+ * "No date limit": empty bounds, not a fabricated far-past/far-future span.
+ * Only a `DateRangeFilter` given `allowAll` offers it, and a caller that does
+ * must treat the empty `from`/`to` as "do not filter by date".
+ */
+export const ALL_TIME_RANGE: DateRange = { preset: "all", from: "", to: "" };
 
 /** The preset a hand-picked span happens to match, so the rail stays in sync. */
 const presetOf = (from: string, to: string): RangePreset => {
@@ -525,7 +535,7 @@ const longDate = (iso: string) =>
 
 /** The preset's name, or "Custom range" for a hand-picked span. */
 const presetLabel = (preset: RangePreset) =>
-  PRESETS.find((p) => p.id === preset)?.label ?? "Custom range";
+  preset === "all" ? "All Time" : PRESETS.find((p) => p.id === preset)?.label ?? "Custom range";
 
 /** Six Monday-first weeks covering the given month. */
 const monthGrid = (year: number, month: number) => {
@@ -654,10 +664,12 @@ const viewFor = (from: string) => {
   return { year: shown.getFullYear(), month: shown.getMonth() };
 };
 
-export const DateRangeFilter: React.FC<{ value: DateRange; onChange: (r: DateRange) => void }> = ({
-  value,
-  onChange,
-}) => {
+export const DateRangeFilter: React.FC<{
+  value: DateRange;
+  onChange: (r: DateRange) => void;
+  /** Offer "All Time" at the top of the presets. Off by default: most screens query a bounded span. */
+  allowAll?: boolean;
+}> = ({ value, onChange, allowAll = false }) => {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<string | null>(null);
   const [hover, setHover] = useState<string | null>(null);
@@ -759,9 +771,11 @@ export const DateRangeFilter: React.FC<{ value: DateRange; onChange: (r: DateRan
       >
         <span className="flex items-baseline gap-2">
           <span>{presetLabel(value.preset)}</span>
-          <span className="font-medium text-[#64748B]">
-            {longDate(value.from)} - {longDate(value.to)}
-          </span>
+          {value.preset !== "all" && (
+            <span className="font-medium text-[#64748B]">
+              {longDate(value.from)} - {longDate(value.to)}
+            </span>
+          )}
         </span>
         <svg className="h-4 w-4 text-[#38BDF8]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path
@@ -782,7 +796,7 @@ export const DateRangeFilter: React.FC<{ value: DateRange; onChange: (r: DateRan
           }
         >
           <div className="flex w-[132px] flex-col gap-2">
-            {PRESETS.map((p) => (
+            {(allowAll ? [{ id: "all" as RangePreset, label: "All Time" }, ...PRESETS] : PRESETS).map((p) => (
               <button
                 key={p.id}
                 type="button"
