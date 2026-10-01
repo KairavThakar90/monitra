@@ -883,6 +883,9 @@ export const AdminMembers: React.FC = () => {
                 {roles.map(role => (
                   <option key={role.id} value={role.value}>{role.role_type}</option>
                 ))}
+                {/* Clients are listed in the directory but are not a role the
+                    Add / Edit form offers, so the server's role list omits them. */}
+                {!roles.some(role => role.value === 'client') && <option value="client">Client</option>}
               </select>
               <svg
                 className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"

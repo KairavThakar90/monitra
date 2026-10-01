@@ -41,6 +41,22 @@ class MemberRole(str, Enum):
     employee = "employee"
 
 
+class MemberRoleFilter(str, Enum):
+    """What the Members directory's Role filter accepts.
+
+    Every `MemberRole` plus `client`. A client is an external account, not
+    someone an administrator creates or re-roles from the Members form -- that
+    is why it is not in `MemberRole` -- but the directory lists clients, so it
+    has to be filterable.
+    """
+
+    administrator = "administrator"
+    hr = "hr"
+    leader = "leader"
+    employee = "employee"
+    client = "client"
+
+
 class MemberStatus(str, Enum):
     active = "active"
     inactive = "inactive"

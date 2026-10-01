@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user, require_permission
 from app.models.user import User
-from app.schemas.member import MemberAccessResponse, MemberAccessUpdate, MemberCreate, MemberListResponse, MemberResponse, MemberRole, MemberStatus, MemberUpdate
+from app.schemas.member import MemberAccessResponse, MemberAccessUpdate, MemberCreate, MemberListResponse, MemberResponse, MemberRoleFilter, MemberStatus, MemberUpdate
 from app.services.member_service import MemberService
 
 router = APIRouter(prefix="/members", tags=["Member Management"])
@@ -20,7 +20,7 @@ def create_member(payload: MemberCreate, current_user: User = Depends(get_curren
 @router.get("", response_model=MemberListResponse, dependencies=[Depends(require_permission("view_employees"))], summary="List organization members")
 def list_members(
     page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), search: Optional[str] = Query(None, max_length=100),
-    role: Optional[MemberRole] = None, status: Optional[MemberStatus] = None,
+    role: Optional[MemberRoleFilter] = None, status: Optional[MemberStatus] = None,
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db),
 ):
     return MemberService.list(db, current_user, search, role.value if role else None, status.value if status else None, page, limit)
