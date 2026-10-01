@@ -534,7 +534,7 @@ const monthGrid = (year: number, month: number) => {
   return Array.from({ length: 42 }, (_, i) => addDays(start, i));
 };
 
-const CalendarPane: React.FC<{
+export const CalendarPane: React.FC<{
   year: number;
   month: number;
   from: string;

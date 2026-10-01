@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { IST_TIME_ZONE } from '../../utils/duration';
+import { CalendarPane } from '../dashboard/v2/filters';
 
 /**
  * The screenshots page's date control: one day at a time.
@@ -11,6 +12,9 @@ import { IST_TIME_ZONE } from '../../utils/duration';
  * commits only on a *second* click — picking one day and getting no change is
  * what "the date filter doesn't work" turns out to mean. A day picker commits
  * on the first click and cannot leave the control in a half-chosen state.
+ *
+ * It *looks* like that range picker, though: the same presets rail and the same
+ * two-month `CalendarPane`, so a date control reads the same on every page.
  *
  * Every date here is an IST calendar date, matching what the API means by
  * `from`/`to`, so a viewer in another timezone still asks for the day the
@@ -40,34 +44,6 @@ const addDays = (iso: string, days: number) => {
   return isoOf(d);
 };
 
-const WEEKDAYS = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
-const MONTH_NAMES = [
-  'January',
-  'February',
-  'March',
-  'April',
-  'May',
-  'June',
-  'July',
-  'August',
-  'September',
-  'October',
-  'November',
-  'December',
-];
-
-/** Six Monday-first weeks covering the given month. */
-const monthGrid = (year: number, month: number) => {
-  const first = new Date(year, month, 1);
-  const start = new Date(first);
-  start.setDate(start.getDate() - ((first.getDay() + 6) % 7));
-  return Array.from({ length: 42 }, (_, i) => {
-    const d = new Date(start);
-    d.setDate(d.getDate() + i);
-    return d;
-  });
-};
-
 /** How the chosen day reads on the button, e.g. "Tue, 08 Sep 2026". */
 const longDate = (iso: string) =>
   parseIso(iso).toLocaleDateString('en-GB', {
@@ -77,6 +53,15 @@ const longDate = (iso: string) =>
     year: 'numeric',
   });
 
+/** One-day presets, each a number of days before today. */
+const DAY_PRESETS: { label: string; daysAgo: number }[] = [
+  { label: 'Today', daysAgo: 0 },
+  { label: 'Yesterday', daysAgo: 1 },
+  { label: '2 days ago', daysAgo: 2 },
+  { label: '3 days ago', daysAgo: 3 },
+  { label: 'A week ago', daysAgo: 7 },
+];
+
 export const DayFilter: React.FC<{
   /** The selected IST day, `YYYY-MM-DD`. */
   value: string;
@@ -84,11 +69,26 @@ export const DayFilter: React.FC<{
 }> = ({ value, onChange }) => {
   const today = useMemo(istTodayIso, []);
   const [open, setOpen] = useState(false);
-  const [view, setView] = useState(() => {
-    const d = parseIso(value);
-    return { year: d.getFullYear(), month: d.getMonth() };
-  });
+  /**
+   * The month the left pane opens on. The right pane is always the month after
+   * it and nothing past today is selectable, so the left pane is clamped to one
+   * month before the current one -- otherwise a day in this month would put a
+   * wholly-unselectable future month on the right.
+   */
+  const viewFor = (iso: string) => {
+    const d = parseIso(iso);
+    const t = parseIso(today);
+    const latest = new Date(t.getFullYear(), t.getMonth() - 1, 1);
+    const wanted = new Date(d.getFullYear(), d.getMonth(), 1);
+    const shown = wanted > latest ? latest : wanted;
+    return { year: shown.getFullYear(), month: shown.getMonth() };
+  };
+  const [view, setView] = useState(() => viewFor(value));
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  // Hang the panel from the right edge when hanging from the left would push
+  // it off-screen (it is ~700px wide).
+  const [alignRight, setAlignRight] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -112,11 +112,21 @@ export const DayFilter: React.FC<{
       return { year: d.getFullYear(), month: d.getMonth() };
     });
 
-  // There is nothing to look at past today, so the calendar never opens on a
-  // month made entirely of unselectable days.
-  const atLatestMonth =
-    view.year > parseIso(today).getFullYear() ||
-    (view.year === parseIso(today).getFullYear() && view.month >= parseIso(today).getMonth());
+  const right = new Date(view.year, view.month + 1, 1);
+  // The right pane may reach the current month but never go past it.
+  const todayDate = parseIso(today);
+  const atLastMonth =
+    right.getFullYear() > todayDate.getFullYear() ||
+    (right.getFullYear() === todayDate.getFullYear() && right.getMonth() >= todayDate.getMonth());
+
+  useLayoutEffect(() => {
+    if (!open || !panelRef.current || !wrapRef.current) return;
+    const panel = panelRef.current.getBoundingClientRect();
+    const anchorBox = wrapRef.current.getBoundingClientRect();
+    const margin = 12;
+    const flippedLeft = anchorBox.right - panel.width;
+    setAlignRight(panel.right > window.innerWidth - margin && flippedLeft >= margin);
+  }, [open, view.year, view.month]);
 
   return (
     <div className="relative flex items-center gap-1" ref={wrapRef}>
@@ -134,8 +144,8 @@ export const DayFilter: React.FC<{
       <button
         type="button"
         onClick={() => {
-          const d = parseIso(value);
-          setView({ year: d.getFullYear(), month: d.getMonth() });
+          setView(viewFor(value));
+          setAlignRight(false);
           setOpen((o) => !o);
         }}
         aria-expanded={open}
@@ -188,80 +198,53 @@ export const DayFilter: React.FC<{
       )}
 
       {open && (
-        <div className="absolute left-0 top-full z-40 mt-2 w-[264px] rounded-xl border border-[#E2E8F0] bg-white p-3 shadow-2xl">
-          <div className="mb-1 flex items-center justify-between">
-            <button
-              type="button"
-              onClick={() => step(-1)}
-              aria-label="Previous month"
-              className="flex h-6 w-6 items-center justify-center rounded text-[#94A3B8] transition hover:bg-[#F1F5F9] hover:text-[#0F172A]"
-            >
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7" />
-              </svg>
-            </button>
-            <div className="text-[15px] font-semibold">
-              <span className="text-[#38BDF8]">{MONTH_NAMES[view.month]}</span>{' '}
-              <span className="text-[#94A3B8]">{view.year}</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => !atLatestMonth && step(1)}
-              disabled={atLatestMonth}
-              aria-label="Next month"
-              className={
-                'flex h-6 w-6 items-center justify-center rounded transition ' +
-                (atLatestMonth
-                  ? 'cursor-not-allowed text-[#E2E8F0]'
-                  : 'text-[#94A3B8] hover:bg-[#F1F5F9] hover:text-[#0F172A]')
-              }
-            >
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-          </div>
-
-          <div className="grid grid-cols-7">
-            {WEEKDAYS.map((d) => (
-              <div key={d} className="py-2 text-center text-[12px] font-bold text-[#0F172A]">
-                {d}
-              </div>
-            ))}
-          </div>
-
-          <div className="grid grid-cols-7">
-            {monthGrid(view.year, view.month).map((date) => {
-              const iso = isoOf(date);
-              const outside = date.getMonth() !== view.month;
-              // Tracked time only ever exists in the past.
-              const future = iso > today;
-              const selected = iso === value;
-
+        <div
+          ref={panelRef}
+          className={
+            'absolute top-full z-40 mt-2 flex max-w-[calc(100vw-2rem)] gap-5 overflow-x-auto rounded-xl border border-[#E2E8F0] bg-white p-4 shadow-2xl ' +
+            (alignRight ? 'right-0' : 'left-0')
+          }
+        >
+          <div className="flex w-[132px] flex-col gap-2">
+            {DAY_PRESETS.map((preset) => {
+              const iso = addDays(today, -preset.daysAgo);
               return (
-                <div key={iso} className="flex justify-center py-0.5">
-                  <button
-                    type="button"
-                    disabled={future}
-                    aria-disabled={future}
-                    onClick={() => pick(iso)}
-                    className={
-                      'flex h-8 w-8 items-center justify-center rounded-full text-[13px] transition ' +
-                      (future
-                        ? 'cursor-not-allowed text-[#E2E8F0]'
-                        : selected
-                          ? 'bg-[#38BDF8] font-bold text-white'
-                          : outside
-                            ? 'text-[#CBD5E1] hover:bg-[#F1F5F9]'
-                            : 'text-[#0F172A] hover:bg-[#F1F5F9]') +
-                      (iso === today && !selected ? ' ring-1 ring-inset ring-[#38BDF8]/50' : '')
-                    }
-                  >
-                    {date.getDate()}
-                  </button>
-                </div>
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => pick(iso)}
+                  className={
+                    'rounded-md border px-3 py-1.5 text-[13px] font-medium transition ' +
+                    (value === iso
+                      ? 'border-[#38BDF8] bg-[#38BDF8]/10 text-[#0284C7]'
+                      : 'border-[#E2E8F0] text-[#0F172A] hover:border-[#CBD5E1] hover:bg-[#F8FAFC]')
+                  }
+                >
+                  {preset.label}
+                </button>
               );
             })}
+          </div>
+
+          <div className="flex gap-6">
+            <CalendarPane
+              year={view.year}
+              month={view.month}
+              from={value}
+              to={value}
+              onPick={pick}
+              onHover={() => undefined}
+              onPrev={() => step(-1)}
+            />
+            <CalendarPane
+              year={right.getFullYear()}
+              month={right.getMonth()}
+              from={value}
+              to={value}
+              onPick={pick}
+              onHover={() => undefined}
+              onNext={atLastMonth ? undefined : () => step(1)}
+            />
           </div>
         </div>
       )}

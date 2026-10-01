@@ -13,7 +13,7 @@ import { useFeedback } from "../../components/FeedbackProvider";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
 import { formatHMS } from "../../utils/duration";
 import { PaginationArrow } from '../../components/PaginationArrow';
-import { ProjectMultiSelect } from '../dashboard/v2/filters';
+import { DateRangeFilter, ProjectMultiSelect, rangeFor, DEFAULT_RANGE, type DateRange } from '../dashboard/v2/filters';
 import { FieldError, useFormValidation } from '../../validation';
 import { useAuth } from '../auth/authContext';
 
@@ -24,43 +24,6 @@ const formatDate = (dateStr: string | null) => {
   const month = date.toLocaleString("en-US", { month: "short" });
   const year = date.getFullYear();
   return `${day} ${month} ${year}`;
-};
-
-const applyDatePreset = (preset: string) => {
-  const today = new Date();
-  let start = new Date(today);
-  let end = new Date(today);
-
-  switch (preset) {
-    case 'Today':
-      break;
-    case 'Yesterday':
-      start.setDate(today.getDate() - 1);
-      end = new Date(start);
-      break;
-    case 'Last 7 days':
-      start.setDate(today.getDate() - 6);
-      break;
-    case 'Last week':
-      start.setDate(today.getDate() - 13);
-      end.setDate(today.getDate() - 7);
-      break;
-    case 'Last 2 weeks':
-      start.setDate(today.getDate() - 13);
-      break;
-    case 'This month':
-      start = new Date(today.getFullYear(), today.getMonth(), 1);
-      end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-      break;
-    case 'Last month':
-      start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-      end = new Date(today.getFullYear(), today.getMonth(), 0);
-      break;
-  }
-  return {
-    start: start.toISOString().split('T')[0],
-    end: end.toISOString().split('T')[0]
-  };
 };
 
 const Pagination: React.FC<{
@@ -283,10 +246,9 @@ export const AdminTaskListing: React.FC = () => {
   // what's active today (the backend narrows it regardless of this filter),
   // so the displayed hour totals should match that on first load rather than
   // reading "All Time" next to a list that is quietly scoped to today.
-  const [datePreset, setDatePreset] = useState('Today');
-  const [startDate, setStartDate] = useState(() => applyDatePreset('Today').start);
-  const [endDate, setEndDate] = useState(() => applyDatePreset('Today').end);
-  const [dateFilterOpen, setDateFilterOpen] = useState(false);
+  const [dateRange, setDateRange] = useState<DateRange>(() => rangeFor('today', DEFAULT_RANGE));
+  const startDate = dateRange.from;
+  const endDate = dateRange.to;
   
   const [filterProjectIds, setFilterProjectIds] = useState<string[]>([]);
 
@@ -475,103 +437,11 @@ export const AdminTaskListing: React.FC = () => {
             />
             
             {/* Date Filter */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setDateFilterOpen(!dateFilterOpen)}
-                className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-bold text-[#0ea5e9] transition hover:bg-slate-50 hover:text-[#0ea5e9]"
-              >
-                <span>
-                  {datePreset === 'All Time'
-                    ? 'All Time'
-                    : datePreset === 'Custom'
-                      ? `${formatDate(startDate)} - ${formatDate(endDate)}`
-                      : datePreset}
-                </span>
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-              </button>
-              
-              {dateFilterOpen && (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setDateFilterOpen(false)} />
-                  <div className="absolute right-0 z-20 mt-2 flex flex-col sm:flex-row w-[calc(100vw-2rem)] sm:w-[480px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl animate-in fade-in slide-in-from-top-2 max-w-sm sm:max-w-none">
-                    <div className="w-full sm:w-1/3 border-b sm:border-b-0 sm:border-r border-slate-100 bg-slate-50 p-2 space-y-1 overflow-x-auto sm:overflow-visible flex sm:block gap-2">
-                      {['All Time', 'Today', 'Yesterday', 'Last 7 days', 'Last week', 'Last 2 weeks', 'This month', 'Last month'].map(preset => (
-                        <button
-                          key={preset}
-                          onClick={() => {
-                            setDatePreset(preset);
-                            if (preset === 'All Time') {
-                              setStartDate('');
-                              setEndDate('');
-                            } else {
-                              const { start, end } = applyDatePreset(preset);
-                              setStartDate(start);
-                              setEndDate(end);
-                            }
-                            setPage(1);
-                          }}
-                          className={`shrink-0 w-auto sm:w-full rounded-md px-3 py-2 text-left text-xs font-semibold transition ${datePreset === preset ? 'bg-white border border-slate-200 text-[#0ea5e9] shadow-sm' : 'text-slate-600 hover:bg-slate-200/50'}`}
-                        >
-                          {preset}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="w-full sm:w-2/3 p-4 flex flex-col bg-white">
-                      <h4 className="mb-4 text-sm font-bold text-slate-800">Custom Range</h4>
-                      <div className="space-y-4">
-                        <div>
-                          <label className="mb-1 block text-xs font-semibold text-slate-500">Start Date</label>
-                          <input 
-                            type="date"
-                            value={startDate}
-                            onChange={(e) => {
-                              setStartDate(e.target.value);
-                              setDatePreset('Custom');
-                              setPage(1);
-                            }}
-                            className="w-full rounded-md border border-slate-200 px-3 py-1.5 text-sm outline-none focus:border-[#38bdf8] focus:ring-1 focus:ring-[#38bdf8]"
-                          />
-                        </div>
-                        <div>
-                          <label className="mb-1 block text-xs font-semibold text-slate-500">End Date</label>
-                          <input 
-                            type="date"
-                            value={endDate}
-                            onChange={(e) => {
-                              setEndDate(e.target.value);
-                              setDatePreset('Custom');
-                              setPage(1);
-                            }}
-                            className="w-full rounded-md border border-slate-200 px-3 py-1.5 text-sm outline-none focus:border-[#38bdf8] focus:ring-1 focus:ring-[#38bdf8]"
-                          />
-                        </div>
-                      </div>
-                      <div className="mt-6 flex justify-end gap-2">
-                        <button 
-                          onClick={() => {
-                            setStartDate('');
-                            setEndDate('');
-                            setDatePreset('All Time');
-                            setPage(1);
-                            setDateFilterOpen(false);
-                          }} 
-                          className="rounded-md px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 transition"
-                        >
-                          Clear
-                        </button>
-                        <button onClick={() => setDateFilterOpen(false)} className="rounded-md bg-[#38bdf8] px-4 py-2 text-xs font-bold text-white hover:bg-[#0284c7] transition shadow-sm">
-                          Apply
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-            
+            <DateRangeFilter
+              value={dateRange}
+              onChange={(range) => { setDateRange(range); setPage(1); }}
+            />
+
             <button
               type="button"
               onClick={isAnyExpanded ? collapseAll : expandAll}
