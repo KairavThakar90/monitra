@@ -1,0 +1,302 @@
+import React, { useMemo, useState } from 'react';
+import { V2Shell } from '../dashboard/v2/V2Shell';
+import {
+  useGetAllProjectsQuery,
+  useGetProjectMetadataQuery,
+  useSetTaskAssigneesMutation,
+  type Project,
+  type ProjectTask,
+  type ProjectUser,
+} from '../../store/api/projectsApi';
+import { useFeedback } from '../../components/FeedbackProvider';
+import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
+import { PaginationArrow } from '../../components/PaginationArrow';
+import { useDebouncedValue } from '../../hooks/useDebouncedValue';
+import { formatApiError } from '../../api/utils';
+import { SEARCH_MAX_LENGTH } from '../../validation';
+import { AssignTaskDialog, type AssignTaskSubmit } from './AssignTaskDialog';
+import { filterProjects, holdersOf } from './assignTasks';
+
+const PROJECTS_PER_PAGE = 10;
+/** One stable empty list, so memos keyed on `projects` do not re-run on every render before the data lands. */
+const NO_PROJECTS: Project[] = [];
+const AVATAR_COLORS = ['bg-blue-500', 'bg-rose-500', 'bg-emerald-500', 'bg-amber-500', 'bg-purple-500', 'bg-cyan-500'];
+
+const initialsOf = (name: string) =>
+  (name || 'U').split(' ').map((part) => part[0]).join('').substring(0, 2).toUpperCase();
+
+/** The members holding a task: a stack of avatars with their names beside it. */
+const Holders: React.FC<{ people: ProjectUser[] }> = ({ people }) => {
+  if (people.length === 0) {
+    return (
+      <span className="text-xs font-semibold text-slate-400" title="No one is assigned: every member of the project can see this task">
+        Unassigned · shared
+      </span>
+    );
+  }
+  const names = people.map((person) => person.name).join(', ');
+  return (
+    <div className="flex min-w-0 items-center gap-2" title={names}>
+      <div className="flex shrink-0 items-center -space-x-2">
+        {people.slice(0, 4).map((person) => (
+          <div
+            key={person.id}
+            className={`flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold text-white shadow-sm ring-2 ring-white ${AVATAR_COLORS[person.id % AVATAR_COLORS.length]}`}
+          >
+            {initialsOf(person.name)}
+          </div>
+        ))}
+        {people.length > 4 && (
+          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-[10px] font-bold text-slate-500 shadow-sm ring-2 ring-white">
+            +{people.length - 4}
+          </div>
+        )}
+      </div>
+      <span className="truncate text-xs font-semibold text-slate-600">
+        {people.length <= 2 ? names : `${people[0].name} +${people.length - 1} more`}
+      </span>
+    </div>
+  );
+};
+
+const StatusPill: React.FC<{ task: ProjectTask }> = ({ task }) => {
+  const color = task.status?.color || '#64748B';
+  return (
+    <span
+      className="inline-flex items-center rounded-md border px-2.5 py-1 text-[11px] font-bold tracking-wide"
+      style={{ color, backgroundColor: `${color}15`, borderColor: `${color}30` }}
+    >
+      {task.status?.name || 'No status'}
+    </span>
+  );
+};
+
+type DialogState = { editing: { projectId: number; taskId: number } | null } | null;
+
+/**
+ * Assign Tasks: every project with its tasks and who holds each one, and a
+ * dialog to give a task to several members at once.
+ *
+ * Reads the same project list the rest of the admin screens use, with tasks;
+ * a save writes the server's answer straight into that cache (see
+ * `setTaskAssignees`), so a task shows its new members the moment it is saved.
+ */
+export const AdminAssignTasks: React.FC = () => {
+  const { data: projects = NO_PROJECTS, isLoading, isFetching, isError, refetch } = useGetAllProjectsQuery({ includeTasks: true });
+  const { data: metadata } = useGetProjectMetadataQuery();
+  const [setTaskAssignees, { isLoading: saving }] = useSetTaskAssigneesMutation();
+  const { showToast } = useFeedback();
+
+  const [searchInput, setSearchInput] = useState('');
+  const query = useDebouncedValue(searchInput, 250);
+  const [page, setPage] = useState(1);
+  const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
+  const [dialog, setDialog] = useState<DialogState>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const visible = useMemo(() => filterProjects(projects, query), [projects, query]);
+  const totalPages = Math.max(1, Math.ceil(visible.length / PROJECTS_PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const pageProjects = visible.slice((currentPage - 1) * PROJECTS_PER_PAGE, currentPage * PROJECTS_PER_PAGE);
+  const showFirstLoad = isLoading && projects.length === 0;
+
+  const openDialog = (editing: { projectId: number; taskId: number } | null) => {
+    setSaveError(null);
+    setDialog({ editing });
+  };
+
+  const handleSubmit = async (value: AssignTaskSubmit) => {
+    setSaveError(null);
+    try {
+      await setTaskAssignees({
+        projectId: value.projectId,
+        taskId: value.taskId,
+        body: { user_ids: value.userIds, status_id: value.statusId },
+      }).unwrap();
+      setDialog(null);
+      showToast(
+        value.userIds.length === 0
+          ? 'Task unassigned.'
+          : `Task assigned to ${value.userIds.length} member${value.userIds.length === 1 ? '' : 's'}.`,
+        'success',
+      );
+    } catch (err: any) {
+      const message = formatApiError(err?.data, 'Could not save the assignment. Please try again.');
+      setSaveError(message);
+      showToast(message, 'error');
+    }
+  };
+
+  return (
+    <V2Shell
+      title="Assign Tasks"
+      subtitle="Give a task to one or more members"
+      actions={
+        <div className="flex items-center gap-3">
+          <InlineRefreshIndicator active={isFetching && !showFirstLoad} />
+          <button
+            type="button"
+            onClick={() => openDialog(null)}
+            className="rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90"
+          >
+            + Assign Task
+          </button>
+        </div>
+      }
+    >
+      <div className="w-full px-4 py-8 sm:px-6 lg:px-8">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+          <input
+            type="search"
+            value={searchInput}
+            maxLength={SEARCH_MAX_LENGTH}
+            onChange={(event) => { setSearchInput(event.target.value); setPage(1); }}
+            placeholder="Search projects, tasks or members..."
+            aria-label="Search projects, tasks or members"
+            className="w-full max-w-sm rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-[#3B82F6]"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              const anyOpen = pageProjects.some((project) => !collapsed[project.id]);
+              setCollapsed((previous) => ({
+                ...previous,
+                ...Object.fromEntries(pageProjects.map((project) => [project.id, anyOpen])),
+              }));
+            }}
+            className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-bold text-slate-500 transition hover:bg-slate-50 hover:text-slate-700"
+          >
+            {pageProjects.some((project) => !collapsed[project.id]) ? 'Collapse All' : 'Expand All'}
+          </button>
+        </div>
+
+        {showFirstLoad ? (
+          <div className="flex justify-center p-20">
+            <div className="h-8 w-8 animate-spin rounded-full border-4 border-blue-500 border-t-transparent" />
+          </div>
+        ) : isError && projects.length === 0 ? (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-8 text-center">
+            <p className="text-sm font-bold text-rose-700">Could not load projects.</p>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              className="mt-3 rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-sm font-bold text-rose-700 hover:bg-rose-100"
+            >
+              Try again
+            </button>
+          </div>
+        ) : pageProjects.length === 0 ? (
+          <div className="rounded-xl border border-slate-200 bg-white p-12 text-center shadow-sm">
+            <h3 className="text-sm font-bold text-slate-800">
+              {query.trim() ? 'No matching projects or tasks' : 'No projects yet'}
+            </h3>
+            <p className="mt-1 text-xs font-medium text-slate-500">
+              {query.trim()
+                ? 'Try a different project, task or member name.'
+                : 'Projects and their tasks appear here once they are created in Project Management.'}
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {pageProjects.map((project) => {
+              const tasks = project.tasks ?? [];
+              const open = !collapsed[project.id];
+              return (
+                <section key={project.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                  <button
+                    type="button"
+                    aria-expanded={open}
+                    onClick={() => setCollapsed((previous) => ({ ...previous, [project.id]: open }))}
+                    className="flex w-full items-center justify-between bg-slate-50 p-5 text-left transition hover:bg-slate-100"
+                  >
+                    <div className="flex min-w-0 items-center gap-4">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] text-sm font-bold text-white shadow-sm">
+                        {project.project_name ? project.project_name.charAt(0).toUpperCase() : 'P'}
+                      </div>
+                      <div className="min-w-0">
+                        <h3 className="truncate text-lg font-black text-slate-800">{project.project_name}</h3>
+                        <p className="text-xs font-semibold text-slate-500">
+                          {tasks.length} task{tasks.length === 1 ? '' : 's'} &bull; {project.employee_count} member
+                          {project.employee_count === 1 ? '' : 's'}
+                        </p>
+                      </div>
+                    </div>
+                    <svg
+                      className={`h-5 w-5 shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+
+                  {open && (
+                    <ul className="divide-y divide-slate-100">
+                      {tasks.length === 0 ? (
+                        <li className="p-6 text-center text-sm font-semibold text-slate-500">No tasks in this project.</li>
+                      ) : (
+                        tasks.map((task) => (
+                          <li key={task.id} className="flex flex-wrap items-center justify-between gap-4 px-5 py-4 transition hover:bg-slate-50/50">
+                            <div className="min-w-0 flex-1 basis-56">
+                              <h4 className="truncate text-sm font-bold text-slate-700" title={task.name}>{task.name}</h4>
+                            </div>
+                            <div className="min-w-0 basis-56">
+                              <Holders people={holdersOf(task)} />
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <StatusPill task={task} />
+                              <button
+                                type="button"
+                                onClick={() => openDialog({ projectId: project.id, taskId: task.id })}
+                                aria-label={`Edit ${task.name}`}
+                                className="rounded-md border border-slate-200 px-3 py-1 text-xs font-bold text-slate-600 transition hover:border-[#3B82F6] hover:text-[#3B82F6]"
+                              >
+                                Edit
+                              </button>
+                            </div>
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  )}
+                </section>
+              );
+            })}
+
+            {visible.length > PROJECTS_PER_PAGE && (
+              <div className="flex flex-col items-center justify-between gap-4 border-t border-slate-200 pt-5 text-sm text-slate-500 sm:flex-row">
+                <div>
+                  Showing {(currentPage - 1) * PROJECTS_PER_PAGE + 1} to{' '}
+                  {Math.min(currentPage * PROJECTS_PER_PAGE, visible.length)} of {visible.length} projects
+                </div>
+                <div className="flex items-center gap-1">
+                  <PaginationArrow direction="prev" disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)} />
+                  <span className="px-2 font-semibold text-slate-600">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <PaginationArrow direction="next" disabled={currentPage === totalPages} onClick={() => setPage(currentPage + 1)} />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {dialog && (
+        <AssignTaskDialog
+          // A fresh dialog per open: its fields are seeded from the task being
+          // edited, and must not carry over from the previous one.
+          key={dialog.editing ? `edit-${dialog.editing.taskId}` : 'new'}
+          projects={projects}
+          statuses={metadata?.task_statuses ?? []}
+          editing={dialog.editing}
+          saving={saving}
+          error={saveError}
+          onSubmit={handleSubmit}
+          onClose={() => setDialog(null)}
+        />
+      )}
+    </V2Shell>
+  );
+};

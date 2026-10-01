@@ -32,7 +32,14 @@ export interface ProjectTask {
   id: number;
   project_id: number;
   name: string;
+  /** The primary assignee — the one the desktop and WFPM read. */
   assignee: ProjectUser | null;
+  /**
+   * Everyone holding the task, primary first. Optional so a cached row from a
+   * backend that predates multi-member tasks still reads: absent means "just
+   * `assignee`", never "nobody".
+   */
+  assignees?: ProjectUser[];
   status: { id: number; name: string; color: string };
   /** The task's budgeted hours — what the client portal's Billing page shows
    * as the task's total. `null` when no budget was set. */
@@ -478,6 +485,41 @@ export const projectsApi = baseApi.injectEndpoints({
         }
       },
     }),
+
+    /**
+     * Makes `userIds` the complete set of members holding a task (and, when
+     * `statusId` is given, sets its status in the same request).
+     *
+     * The response is the whole task, so it is written straight into every
+     * cached project list — and the Assign Tasks screen, which reads one of
+     * them, shows the result the moment the server confirms it. Deliberately no
+     * refetch afterwards: see `AdminTaskListing.handleCreateTask` for why a
+     * refetch right after a cache patch hides the patch.
+     */
+    setTaskAssignees: builder.mutation<
+      ProjectTask,
+      { projectId: number; taskId: number; body: { user_ids: number[]; status_id?: number } }
+    >({
+      query: ({ projectId, taskId, body }) => ({
+        url: ENDPOINTS.PROJECTS.TASK_ASSIGNEES(projectId, taskId),
+        method: 'PUT',
+        body,
+      }),
+      // Teams screens are derived from projects and their tasks' assignees.
+      invalidatesTags: [{ type: 'Team', id: 'LIST' }],
+      async onQueryStarted({ projectId, taskId }, { dispatch, getState, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          patchProjectLists({ dispatch, getState }, (items) => {
+            const tasks = items.find((project) => project.id === projectId)?.tasks;
+            const index = tasks?.findIndex((task) => task.id === taskId) ?? -1;
+            if (tasks && index >= 0) tasks[index] = data;
+          });
+        } catch {
+          // The caller surfaces the failure; nothing was patched.
+        }
+      },
+    }),
   }),
 });
 
@@ -496,4 +538,5 @@ export const {
   useDeleteProjectMutation,
   useCreateTaskMutation,
   useUpdateTaskMutation,
+  useSetTaskAssigneesMutation,
 } = projectsApi;

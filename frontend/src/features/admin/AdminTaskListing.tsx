@@ -68,11 +68,33 @@ const Pagination: React.FC<{
   );
 };
 
-const ProjectPicker: React.FC<{
+/**
+ * The searchable single-select behind the Create Task drawer's Project field.
+ *
+ * Exported, with its wording overridable, so the Assign Task dialog's Project
+ * and Task fields are the very same control rather than a lookalike. Every
+ * prop beyond the first three is optional and defaults to this drawer's
+ * behaviour. `projects[].project_name` is just "the label" here -- the Task
+ * field passes task names through it.
+ */
+export const ProjectPicker: React.FC<{
   projects: { id: number; project_name: string }[];
   value: number | "";
   onChange: (value: number | "") => void;
-}> = ({ projects, value, onChange }) => {
+  placeholder?: string;
+  searchPlaceholder?: string;
+  /** The "clear" row at the top. `null` removes it: a required field has no "all". */
+  allLabel?: string | null;
+  emptyText?: string;
+  disabled?: boolean;
+}> = ({
+  projects, value, onChange,
+  placeholder = "Select Project",
+  searchPlaceholder = "Search projects...",
+  allLabel = "All projects",
+  emptyText = "No projects found.",
+  disabled = false,
+}) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const pickerRef = useRef<HTMLDivElement | null>(null);
@@ -95,16 +117,17 @@ const ProjectPicker: React.FC<{
     <div ref={pickerRef} className="relative">
       <button
         type="button"
+        disabled={disabled}
         onClick={() => setOpen((current) => !current)}
         className={
-          "flex w-full items-center justify-between gap-3 rounded-lg border bg-white px-4 py-3 text-left text-sm font-semibold outline-none transition " +
+          "flex w-full items-center justify-between gap-3 rounded-lg border bg-white px-4 py-3 text-left text-sm font-semibold outline-none transition disabled:cursor-not-allowed disabled:bg-slate-50 " +
           (open ? "border-[#3B82F6] ring-2 ring-[#3B82F6]/15" : "border-slate-200 hover:border-slate-300")
         }
         aria-haspopup="listbox"
         aria-expanded={open}
       >
         <span className={selectedProject ? "truncate text-slate-700" : "text-slate-400"}>
-          {selectedProject?.project_name || "Select Project"}
+          {selectedProject?.project_name || placeholder}
         </span>
         <svg className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -118,18 +141,20 @@ const ProjectPicker: React.FC<{
               autoFocus
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search projects..."
+              placeholder={searchPlaceholder}
               className="w-full rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 outline-none placeholder:text-slate-400 focus:ring-2 focus:ring-blue-500/20"
             />
           </div>
           <div className="max-h-64 overflow-y-auto p-1.5" role="listbox">
-            <button
-              type="button"
-              onClick={() => { onChange(""); setOpen(false); setQuery(""); }}
-              className={`w-full rounded-lg px-3 py-2 text-left text-sm transition hover:bg-slate-50 ${value === "" ? "font-bold text-blue-600" : "font-semibold text-slate-500"}`}
-            >
-              All projects
-            </button>
+            {allLabel !== null && (
+              <button
+                type="button"
+                onClick={() => { onChange(""); setOpen(false); setQuery(""); }}
+                className={`w-full rounded-lg px-3 py-2 text-left text-sm transition hover:bg-slate-50 ${value === "" ? "font-bold text-blue-600" : "font-semibold text-slate-500"}`}
+              >
+                {allLabel}
+              </button>
+            )}
             {filteredProjects.length > 0 ? filteredProjects.map((project) => (
               <button
                 type="button"
@@ -143,7 +168,7 @@ const ProjectPicker: React.FC<{
                 {project.project_name}
               </button>
             )) : (
-              <p className="px-3 py-5 text-center text-xs font-semibold text-slate-400">No projects found.</p>
+              <p className="px-3 py-5 text-center text-xs font-semibold text-slate-400">{emptyText}</p>
             )}
           </div>
         </div>

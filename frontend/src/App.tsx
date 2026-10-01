@@ -7,6 +7,7 @@ import { DashboardV2 } from './features/dashboard/v2/DashboardV2'
 import { ReportPage } from './features/dashboard/v2/ReportPage'
 import { AdminProjectManagement } from './features/admin/AdminProjectManagement';
 import { AdminTaskListing } from './features/admin/AdminTaskListing';
+import { AdminAssignTasks } from './features/admin/AdminAssignTasks';
 import { AdminMembers } from './features/admin/AdminMembers';
 import { AdminTimeTracking } from './features/admin/AdminTimeTracking';
 import { AdminScreenshots } from './features/admin/AdminScreenshots';
@@ -48,6 +49,13 @@ import type { UserRead } from './api/auth'
  * screens those permissions are for.
  */
 const canManageProjects = (user: UserRead | null) => !!user?.permissions?.["projects:create"];
+
+/**
+ * Whether this user may give a task to members. The same permission the backend
+ * gates `PUT /projects/{id}/tasks/{id}/assignees` on, and held by administrators
+ * and leaders -- not by employees, HR or clients.
+ */
+const canAssignTasks = (user: UserRead | null) => !!user?.permissions?.["task_assignees:manage"];
 
 /**
  * Whether this user may read the organization's member directory.
@@ -202,6 +210,16 @@ const SystemAdminRoute: React.FC<{ children: React.ReactNode }> = ({ children })
   return canManageSystem(currentUser) ? <>{children}</> : <Navigate to={homeFor(currentUser)} replace />;
 };
 
+/** The Assign Tasks screen: administrators and leaders, by the permission that gates its writes. */
+const AssignRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { isAuthenticated, currentUser, isLoading } = useAuth();
+
+  if (isLoading) return <LoadingScreen label="Loading session..." />;
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+
+  return canAssignTasks(currentUser) ? <>{children}</> : <Navigate to={homeFor(currentUser)} replace />;
+};
+
 const AppRoutes: React.FC = () => {
   const { isAuthenticated, currentUser, isLoading } = useAuth();
 
@@ -229,6 +247,14 @@ const AppRoutes: React.FC = () => {
           <AdminRoute>
             <AdminProjectManagement />
           </AdminRoute>
+        }
+      />
+      <Route
+        path="/admin/assign-tasks"
+        element={
+          <AssignRoute>
+            <AdminAssignTasks />
+          </AssignRoute>
         }
       />
       <Route
