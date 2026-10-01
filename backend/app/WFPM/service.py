@@ -30,17 +30,20 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.security import has_permission
 from app.models.project import Project
 from app.models.task import Task
 from app.models.user import User
 from app.repositories.status_catalog import StatusCatalog
-from app.schemas.project_management import ProjectCreate, ProjectUpdate, TaskCreate, TaskUpdate
+from app.schemas.project_management import (
+    ProjectCreate, ProjectUpdate, TaskAssigneesSet, TaskCreate, TaskUpdate,
+)
 from app.services.project_management import ProjectManagementService
 from app.services.project_member import ProjectMemberService
 from app.WFPM.repository import WfpmLinkRepository
 from app.WFPM.schemas import (
     WfpmProjectCreate, WfpmProjectSyncCreate, WfpmProjectSyncUpdate,
-    WfpmTaskSyncCreate, WfpmTaskSyncUpdate,
+    WfpmTaskAssigneesAdd, WfpmTaskAssigneesSet, WfpmTaskSyncCreate, WfpmTaskSyncUpdate,
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -177,6 +180,21 @@ class WfpmSyncService:
     @staticmethod
     def _task_view(payload: dict, wfpm_task_id: Optional[str]) -> dict:
         return {**payload, "wfpm_task_id": wfpm_task_id}
+
+    @staticmethod
+    def _task_read(db: Session, task: Task, wfpm_task_id: str) -> dict:
+        """A task as WFPM reads it, `assignees` (the whole ordered set) included.
+
+        `assignee_id` / `assignee` are the primary assignee, exactly as before;
+        `assignees` is additive, so a caller that only reads the primary is
+        unaffected.
+        """
+        primary = db.get(User, task.assignee_id) if task.assignee_id else None
+        payload = ProjectManagementService._task_payload(
+            task, StatusCatalog.task_status(db, task.status_id), primary,
+            ProjectManagementService._assignees_for(db, [task]).get(task.id),
+        )
+        return WfpmSyncService._task_view(payload, wfpm_task_id)
 
     # ------------------------------------------------------------------
     # Projects
@@ -342,12 +360,8 @@ class WfpmSyncService:
                 f"WFPM task id {wfpm_task_id!r} is already linked to a Monitra task "
                 "that is archived or that you cannot access.",
             ) from None
-        assignee = db.get(User, task.assignee_id) if task.assignee_id else None
         logger.info("WFPM_SYNC_TASK_REPLAYED: wfpm_task=%s task=%s user=%s", wfpm_task_id, task.id, user.id)
-        return WfpmSyncService._task_view(
-            ProjectManagementService._task_payload(task, StatusCatalog.task_status(db, task.status_id), assignee),
-            wfpm_task_id,
-        )
+        return WfpmSyncService._task_read(db, task, wfpm_task_id)
 
     @staticmethod
     def create_task(db: Session, user: User, wfpm_project_id: str, payload: WfpmTaskSyncCreate) -> tuple[dict, bool]:
@@ -365,12 +379,25 @@ class WfpmSyncService:
         # starts Todo, same as the default tasks project creation seeds. The
         # assignee is optional and held to `ProjectManagementService`'s own
         # rule (an active employee who is a member of this project).
+        #
+        # `assignee_ids` wins over `assignee_id` when both are sent. The shared
+        # create refuses a request that names both, so only one is passed on;
+        # and it is the shared create that holds several assignees to
+        # `task_assignees:manage`, so an employee who may create a task but not
+        # hand it to others gets the same 403 here as in Monitra.
+        several = payload.assignee_ids is not None
+        wanted = list(payload.assignee_ids) if several else ([payload.assignee_id] if payload.assignee_id else [])
+        if payload.add_missing_members and wanted:
+            if several and not has_permission(user, "task_assignees:manage"):
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have permission to assign tasks to members.")
+            WfpmSyncService._add_missing_members(db, user, project_id, wanted)
         todo_status = ProjectManagementService.default_task_status(db)
         full_payload = _validated(
             TaskCreate,
             status_id=todo_status.id,
             name=payload.name,
-            assignee_id=payload.assignee_id,
+            assignee_id=None if several else payload.assignee_id,
+            assignee_ids=(list(payload.assignee_ids) or None) if several else None,
             estimated_hours=payload.estimated_hours,
         )
         try:
@@ -386,19 +413,16 @@ class WfpmSyncService:
             return WfpmSyncService._replayed_task(db, user, project_id, existing, wfpm_task_id), False
 
         logger.info(
-            "WFPM_SYNC_TASK_CREATED: wfpm_task=%s task=%s wfpm_project=%s project=%s user=%s",
+            "WFPM_SYNC_TASK_CREATED: wfpm_task=%s task=%s wfpm_project=%s project=%s user=%s assignees=%s",
             wfpm_task_id, created["id"], wfpm_project_id, project_id, user.id,
+            [person["id"] for person in created.get("assignees") or []],
         )
         return WfpmSyncService._task_view(created, wfpm_task_id), True
 
     @staticmethod
     def get_task(db: Session, user: User, wfpm_task_id: str) -> dict:
         task = WfpmSyncService._linked_task(db, user, wfpm_task_id)
-        assignee = db.get(User, task.assignee_id) if task.assignee_id else None
-        return WfpmSyncService._task_view(
-            ProjectManagementService._task_payload(task, StatusCatalog.task_status(db, task.status_id), assignee),
-            wfpm_task_id,
-        )
+        return WfpmSyncService._task_read(db, task, wfpm_task_id)
 
     @staticmethod
     def update_task(db: Session, user: User, wfpm_task_id: str, payload: WfpmTaskSyncUpdate) -> dict:
@@ -434,3 +458,95 @@ class WfpmSyncService:
         updated = ProjectManagementService.unassign_task(db, user, project_id, task_id)
         logger.info("WFPM_SYNC_TASK_UNASSIGNED: wfpm_task=%s task=%s user=%s", wfpm_task_id, task_id, user.id)
         return WfpmSyncService._task_view(updated, wfpm_task_id)
+
+    # ------------------------------------------------------------------
+    # Several assignees
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _add_missing_members(db: Session, user: User, project_id: int, ids: list[int]) -> None:
+        """`add_missing_members`: put every listed user on the project first.
+
+        Held to the members route's own rules: `project_members:manage`, and --
+        inside `ProjectMemberService.add_members` -- an administrator or the
+        project's own leader. Everything that can be checked is checked before
+        the first write (every id must be an active employee, since that is
+        all an assignee may be), so a bad id changes nothing. What it cannot
+        rule out is the assignment itself failing afterwards on a race; the
+        memberships stay, which is harmless and is what the caller asked for.
+        """
+        if not has_permission(user, "project_members:manage"):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have permission to add members to this project.")
+        ProjectManagementService._users(db, user, ids, {"employee"}, "assignees")
+        result = ProjectMemberService.add_members(db, project_id, ids, user)
+        logger.info(
+            "WFPM_SYNC_MEMBERS_ADDED: project=%s user=%s added=%s already=%s via=add_missing_members",
+            project_id, user.id,
+            result["added_member_ids"], result["already_assigned_member_ids"],
+        )
+
+    @staticmethod
+    def _holder_ids(db: Session, task: Task) -> list[int]:
+        """Who holds the task now, primary first."""
+        return [person["id"] for person in ProjectManagementService._assignees_for(db, [task]).get(task.id, [])]
+
+    @staticmethod
+    def _replace_assignees(db: Session, user: User, task: Task, ids: list[int]) -> dict:
+        """Make `ids` the task's whole assignee list, through the shared service
+        in its `ordered` mode (first id = primary, stored order = given order)."""
+        return ProjectManagementService.set_task_assignees(
+            db, user, task.project_id, task.id, _validated(TaskAssigneesSet, user_ids=ids), ordered=True,
+        )
+
+    @staticmethod
+    def set_task_assignees(db: Session, user: User, wfpm_task_id: str, payload: WfpmTaskAssigneesSet) -> dict:
+        """`PUT /WFPM/sync/tasks/{wfpm_task_id}/assignees`."""
+        task = WfpmSyncService._linked_task(db, user, wfpm_task_id)
+        project_id, task_id = task.project_id, task.id
+        ids = list(payload.assignee_ids)
+        if payload.add_missing_members and ids:
+            WfpmSyncService._add_missing_members(db, user, project_id, ids)
+        updated = WfpmSyncService._replace_assignees(db, user, task, ids)
+        logger.info(
+            "WFPM_SYNC_TASK_ASSIGNEES_SET: wfpm_task=%s task=%s user=%s assignees=%s",
+            wfpm_task_id, task_id, user.id, [person["id"] for person in updated["assignees"]],
+        )
+        return WfpmSyncService._task_view(updated, wfpm_task_id)
+
+    @staticmethod
+    def get_task_assignees(db: Session, user: User, wfpm_task_id: str) -> list[dict]:
+        """`GET /WFPM/sync/tasks/{wfpm_task_id}/assignees`, primary first."""
+        task = WfpmSyncService._linked_task(db, user, wfpm_task_id)
+        return ProjectManagementService._assignees_for(db, [task]).get(task.id, [])
+
+    @staticmethod
+    def add_task_assignees(db: Session, user: User, wfpm_task_id: str, payload: WfpmTaskAssigneesAdd) -> dict:
+        """`POST .../assignees`: add to whoever already holds the task. Someone
+        already holding it is not an error and keeps their place."""
+        task = WfpmSyncService._linked_task(db, user, wfpm_task_id)
+        task_id = task.id
+        current = WfpmSyncService._holder_ids(db, task)
+        wanted = current + [item for item in payload.assignee_ids if item not in current]
+        updated = WfpmSyncService._replace_assignees(db, user, task, wanted)
+        logger.info(
+            "WFPM_SYNC_TASK_ASSIGNEES_ADDED: wfpm_task=%s task=%s user=%s added=%s assignees=%s",
+            wfpm_task_id, task_id, user.id, [item for item in wanted if item not in current],
+            [person["id"] for person in updated["assignees"]],
+        )
+        return WfpmSyncService._task_view(updated, wfpm_task_id)
+
+    @staticmethod
+    def remove_task_assignee(db: Session, user: User, wfpm_task_id: str, member_id: int) -> None:
+        """`DELETE .../assignees/{member_id}`. 404 when that user does not hold
+        the task, so a repeated removal is distinguishable and safe. The
+        person's time entries are untouched: only the assignment goes."""
+        task = WfpmSyncService._linked_task(db, user, wfpm_task_id)
+        task_id = task.id
+        current = WfpmSyncService._holder_ids(db, task)
+        if member_id not in current:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"User {member_id} is not assigned to this task.")
+        updated = WfpmSyncService._replace_assignees(db, user, task, [item for item in current if item != member_id])
+        logger.info(
+            "WFPM_SYNC_TASK_ASSIGNEE_REMOVED: wfpm_task=%s task=%s user=%s removed=%s assignees=%s",
+            wfpm_task_id, task_id, user.id, member_id, [person["id"] for person in updated["assignees"]],
+        )

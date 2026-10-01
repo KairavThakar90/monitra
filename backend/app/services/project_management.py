@@ -158,11 +158,12 @@ class ProjectManagementService:
         users = list(db.scalars(select(User).where(User.id.in_(ids), User.organization_id == user.organization_id, User.is_active.is_(True))).all())
         found = {item.id: item for item in users}
         if len(found) != len(set(ids)):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"One or more selected {label} do not belong to this organization.")
+            missing = sorted(set(ids) - set(found))
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"One or more selected {label} do not belong to this organization: {missing}.")
         if role_names is not None:
             invalid = [item.id for item in users if item.role_name not in role_names]
             if invalid:
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Selected {label} have an invalid role.")
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Selected {label} have an invalid role: {invalid}.")
         return [found[item_id] for item_id in ids]
 
     @staticmethod
@@ -184,6 +185,7 @@ class ProjectManagementService:
         if billing_type == BillingType.free and fixed_hours is not None:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Fixed hours must be empty for free time billing.")
         return project_status, leader, employees
+
 
     @staticmethod
     def default_project_status(db: Session):
@@ -243,7 +245,8 @@ class ProjectManagementService:
         people = ProjectManagementService._users(db, user, user_ids, {"employee"}, "assignees")
         member_ids = set(db.scalars(select(ProjectMember.user_id).where(ProjectMember.project_id == project_id, ProjectMember.organization_id == user.organization_id, ProjectMember.user_id.in_(user_ids))).all())
         if len(member_ids) != len(set(user_ids)):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Task assignees must be assigned to this project.")
+            not_members = [user_id for user_id in dict.fromkeys(user_ids) if user_id not in member_ids]
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Task assignees must be assigned to this project: {not_members}.")
         return people
 
     @staticmethod
@@ -793,7 +796,7 @@ class ProjectManagementService:
         return ProjectManagementService._task_payload(task, task_status, assignee, ProjectManagementService._assignees_for(db, [task]).get(task.id))
 
     @staticmethod
-    def set_task_assignees(db: Session, user: User, project_id: int, task_id: int, payload: TaskAssigneesSet):
+    def set_task_assignees(db: Session, user: User, project_id: int, task_id: int, payload: TaskAssigneesSet, ordered: bool = False):
         """Make `payload.user_ids` the complete set of members holding a task.
 
         This is the many-members counterpart of `update_task`'s single
@@ -813,6 +816,14 @@ class ProjectManagementService:
         and the WFPM contract read: kept when that person is still in the set,
         otherwise the first of the new set, and `None` when the set is empty.
         Both representations are written together (see `unassign_task`).
+
+        `ordered=True` is for a caller whose list *is* the order -- the WFPM
+        integration, where the first id is the primary assignee and the list
+        is read back in the order it was given. The primary is then always the
+        first id (not "whoever kept the role"), and the stored order is made to
+        match, rewriting the rows only when it does not already. Repeating the
+        same list therefore writes nothing at all and leaves no activity-log
+        entry. The default is unchanged for the Assign Tasks screen.
         """
         ProjectManagementService._project(db, project_id, user)
         task = ProjectManagementService._task(db, user, project_id, task_id)
@@ -831,14 +842,35 @@ class ProjectManagementService:
         if added:
             ProjectManagementService._task_holders(db, user, project_id, added)
 
-        for row in rows:
-            if row.user_id not in wanted_set:
-                db.delete(row)
-        for user_id in wanted:
-            if user_id not in row_ids:
-                db.add(TaskAssignee(task_id=task.id, user_id=user_id, assigned_by=user.id))
-        if task.assignee_id not in wanted_set:
+        previous_primary = task.assignee_id
+        previous_holders = [item["id"] for item in ProjectManagementService._assignees_for(db, [task])[task.id]] if ordered else []
+        if ordered:
+            # Rows that survive keep their order and new ones follow, so when
+            # that is already the requested order nothing is rewritten.
+            by_age = [row.user_id for row in sorted(rows, key=lambda row: row.id)]
+            kept_then_added = [user_id for user_id in by_age if user_id in wanted_set] + added
+            if kept_then_added == wanted:
+                for row in rows:
+                    if row.user_id not in wanted_set:
+                        db.delete(row)
+                for user_id in added:
+                    db.add(TaskAssignee(task_id=task.id, user_id=user_id, assigned_by=user.id))
+            else:
+                for row in rows:
+                    db.delete(row)
+                db.flush()
+                for user_id in wanted:
+                    db.add(TaskAssignee(task_id=task.id, user_id=user_id, assigned_by=user.id))
             task.assignee_id = wanted[0] if wanted else None
+        else:
+            for row in rows:
+                if row.user_id not in wanted_set:
+                    db.delete(row)
+            for user_id in wanted:
+                if user_id not in row_ids:
+                    db.add(TaskAssignee(task_id=task.id, user_id=user_id, assigned_by=user.id))
+            if task.assignee_id not in wanted_set:
+                task.assignee_id = wanted[0] if wanted else None
         try:
             db.commit()
         except IntegrityError:
@@ -850,6 +882,10 @@ class ProjectManagementService:
         holders = ProjectManagementService._assignees_for(db, [task])[task.id]
         primary = db.get(User, task.assignee_id) if task.assignee_id else None
         names = ", ".join(person["name"] for person in holders) or "nobody"
+        if ordered and previous_primary == task.assignee_id and previous_holders == [person["id"] for person in holders] and payload.status_id is None:
+            # A repeat of the list the task already has: nothing changed, so
+            # there is nothing to put in the trail.
+            return ProjectManagementService._task_payload(task, task_status, primary, holders)
         ActivityLogService.capture(db, lambda: {
             "actor": user,
             "module": ActivityLogModule.TASK, "action": ActivityLogAction.TASK_UPDATED,

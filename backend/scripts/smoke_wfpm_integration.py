@@ -6,6 +6,9 @@ Drives the real app over real HTTP against the development database:
 * every `/WFPM/sync` route -- create/update project, add/remove member,
   create/update task, assign/remove assignee -- checking both the response and
   the rows the database actually holds;
+* several assignees per task (`/WFPM/sync/tasks/{id}/assignees`): the list,
+  its order and primary, all-or-nothing validation, time entries surviving a
+  removal, and the same task seen through the desktop's own `/api/v1` routes;
 * the Monitra -> WFPM timer calls (start and stop), against a local HTTP server
   that stands in for WFPM's endpoints: what each is sent, that a slow or
   failing WFPM never delays or fails a timer start, that the sweeper retries,
@@ -544,7 +547,113 @@ def main() -> int:
         attempts = [x for x in fake.stops if x["body"].get("monitra_time_entry_id") == retry_stop_entry]
         check(len(attempts) == 2 and attempts[0]["body"]["event_id"] == attempts[1]["body"]["event_id"] == attempts[1]["headers"].get("idempotency-key") == f"monitra:timer_stop:{retry_stop_entry}", "both attempts carried the same event_id / Idempotency-Key", str([x["body"].get("event_id") for x in attempts]))
 
-        running = row(engine, "SELECT count(*) AS n FROM time_entries WHERE user_id = :u AND end_time IS NULL", u=emp1["id"])["n"]
+        print("\n[10] several assignees")
+        a_path = f"/WFPM/sync/tasks/{WFPM_TASK}/assignees"
+        a_headers = admin["headers"]
+
+        def held():
+            """What the database holds: (tasks.assignee_id, task_assignees in insertion order)."""
+            primary = row(engine, "SELECT assignee_id FROM tasks WHERE id = :i", i=task_id)["assignee_id"]
+            members = [r["user_id"] for r in rows(engine, "SELECT user_id FROM task_assignees WHERE task_id = :i ORDER BY id", i=task_id)]
+            return primary, members
+
+        def listed(response):
+            return [person["id"] for person in response.json().get("assignees", [])] if response.status_code in (200, 201) else None
+
+        r = client.put(f"/WFPM/sync/tasks/{WFPM_TASK}/assignee", json={"assignee_id": emp1["id"]}, headers=a_headers)
+        check(r.status_code == 200 and held() == (emp1["id"], [emp1["id"]]), "start from one assignee (the single route)", f"{r.status_code} {held()}")
+
+        r = client.put(a_path, json={"assignee_ids": [emp1["id"], emp2["id"]]}, headers=a_headers)
+        check(r.status_code == 400 and str(emp2["id"]) in r.text and str(emp1["id"]) not in r.json().get("detail", ""), "a non-member in the list -> 400 naming only the offender", r.text)
+        check(held() == (emp1["id"], [emp1["id"]]), "and nothing changed -- not even the valid id was added", str(held()))
+        r = client.put(a_path, json={"assignee_ids": [emp1["id"], 0]}, headers=a_headers)
+        check(r.status_code == 422, "a malformed list -> 422", r.text)
+        r = client.put(a_path, json={"assignee_ids": list(range(1, 52))}, headers=a_headers)
+        check(r.status_code == 422, "more than 50 ids -> 422", r.text[:120])
+        r = client.put(a_path, json={"assignee_ids": "101"}, headers=a_headers)
+        check(r.status_code == 422, "a list that is not a list -> 422", r.text[:120])
+        r = client.put(a_path, json={"assignee_ids": [emp1["id"], emp2["id"]]}, headers=emp1["headers"])
+        check(r.status_code == 400, "an employee may call it (tasks:update) but the same validation applies -> 400", r.text)
+
+        r = client.put(a_path, json={"assignee_ids": [emp1["id"], emp2["id"]], "add_missing_members": True}, headers=a_headers)
+        body = r.json() if r.status_code == 200 else {}
+        check(r.status_code == 200 and listed(r) == [emp1["id"], emp2["id"]], "add_missing_members: the non-member is added to the project and assigned", r.text)
+        check(body.get("assignee_id") == emp1["id"] and (body.get("assignee") or {}).get("id") == emp1["id"], "assignee_id / assignee stay the first (primary) assignee", str(body.get("assignee")))
+        check(held() == (emp1["id"], [emp1["id"], emp2["id"]]), "both representations hold the list", str(held()))
+        is_member = row(engine, "SELECT count(*) AS n FROM project_members WHERE project_id = :p AND user_id = :u", p=project_id, u=emp2["id"])["n"]
+        check(is_member == 1, "the project membership was written", str(is_member))
+
+        ids_before = [r_["id"] for r_ in rows(engine, "SELECT id FROM task_assignees WHERE task_id = :i ORDER BY id", i=task_id)]
+        r = client.put(a_path, json={"assignee_ids": [emp1["id"], emp2["id"]]}, headers=a_headers)
+        ids_after = [r_["id"] for r_ in rows(engine, "SELECT id FROM task_assignees WHERE task_id = :i ORDER BY id", i=task_id)]
+        check(r.status_code == 200 and ids_after == ids_before, "repeating the same call changes nothing (no row rewritten)", f"{ids_before} -> {ids_after}")
+        r = client.put(a_path, json={"assignee_ids": [emp1["id"], emp2["id"], emp1["id"]]}, headers=a_headers)
+        check(r.status_code == 200 and listed(r) == [emp1["id"], emp2["id"]], "duplicates are ignored", r.text)
+
+        r = client.get(a_path, headers=a_headers)
+        check(r.status_code == 200 and [p_["id"] for p_ in r.json()] == [emp1["id"], emp2["id"]] and set(r.json()[0]) == {"id", "name", "email", "role"}, "GET returns the ordered list of {id, name, email, role}", r.text[:200])
+        r = client.get(f"/WFPM/sync/tasks/{WFPM_TASK}", headers=a_headers)
+        check(r.status_code == 200 and listed(r) == [emp1["id"], emp2["id"]], "the task read carries the whole set", r.text[:200])
+        r = client.get(f"/WFPM/sync/projects/{WFPM_PROJECT}", headers=a_headers)
+        project_task = next((t for t in r.json().get("tasks", []) if t.get("wfpm_task_id") == WFPM_TASK), {}) if r.status_code == 200 else {}
+        check([p_["id"] for p_ in project_task.get("assignees", [])] == [emp1["id"], emp2["id"]], "and so does the task inside the project read", str(project_task.get("assignees")))
+
+        r = client.put(a_path, json={"assignee_ids": [emp2["id"], emp1["id"]]}, headers=a_headers)
+        check(r.status_code == 200 and listed(r) == [emp2["id"], emp1["id"]] and r.json()["assignee_id"] == emp2["id"], "reordering changes the primary and the order", r.text[:200])
+        check(held() == (emp2["id"], [emp2["id"], emp1["id"]]), "and the database follows", str(held()))
+
+        # Every assignee can track time -- emp1 is no longer the primary.
+        now = datetime.now(timezone.utc)
+        for person, tag in ((emp1, "a"), (emp2, "b")):
+            r = client.post("/time-entries/start", json={"project_id": project_id, "task_id": task_id, "client_op": f"e2e:{STAMP}:m{tag}",
+                                                          "started_at": now.isoformat(), "client_time": now.isoformat()}, headers=person["headers"])
+            check(r.status_code == 201, f"assignee {tag} ({'primary' if tag == 'b' else 'not primary'}) can start a timer on the task", r.text[:200])
+            if r.status_code == 201:
+                client.post(f"/time-entries/{r.json()['id']}/stop", json={}, headers=person["headers"])
+        entries_before = row(engine, "SELECT count(*) AS n FROM time_entries WHERE task_id = :t AND user_id = :u", t=task_id, u=emp1["id"])["n"]
+        check(entries_before >= 2, "emp1 has time entries on the task", str(entries_before))
+        r = client.get(f"/api/v1/projects/{project_id}/tasks", headers=emp1["headers"])
+        check(r.status_code == 200 and task_id in [t["id"] for t in r.json()], "a non-primary assignee sees the task in the desktop's own task list", r.text[:200])
+
+        r = client.delete(f"{a_path}/{emp1['id']}", headers=a_headers)
+        check(r.status_code == 204 and r.content == b"" and held() == (emp2["id"], [emp2["id"]]), "DELETE one assignee -> 204", f"{r.status_code} {held()}")
+        entries_after = row(engine, "SELECT count(*) AS n FROM time_entries WHERE task_id = :t AND user_id = :u", t=task_id, u=emp1["id"])["n"]
+        check(entries_after == entries_before, "removing an assignee kept their time entries", f"{entries_before} -> {entries_after}")
+        r = client.delete(f"{a_path}/{emp1['id']}", headers=a_headers)
+        check(r.status_code == 404, "removing someone who is not assigned -> 404", r.text)
+
+        r = client.post(a_path, json={"assignee_ids": [emp1["id"], emp2["id"]]}, headers=a_headers)
+        check(r.status_code == 200 and listed(r) == [emp2["id"], emp1["id"]] and r.json()["assignee_id"] == emp2["id"], "POST adds; someone already assigned is not an error; the primary is kept", r.text[:200])
+
+        r = client.put(a_path, json={"assignee_ids": []}, headers=a_headers)
+        check(r.status_code == 200 and r.json()["assignee_id"] is None and r.json()["assignee"] is None and r.json()["assignees"] == [] and held() == (None, []), "[] leaves the task unassigned in both representations", f"{r.text[:160]} {held()}")
+        entries_cleared = row(engine, "SELECT count(*) AS n FROM time_entries WHERE task_id = :t", t=task_id)["n"]
+        check(entries_cleared >= 2, "and every time entry is still there", str(entries_cleared))
+
+        r = client.put(a_path, json={"assignee_ids": [emp1["id"]]}, headers=a_headers)
+        r2 = client.get(a_path, headers=emp2["headers"])
+        check(r.status_code == 200 and r2.status_code == 404, "a task the caller cannot see (held by someone else) -> 404", f"{r2.status_code}")
+        r = client.get("/WFPM/sync/tasks/E2E-NOPE/assignees", headers=a_headers)
+        check(r.status_code == 404, "a task that is not linked -> 404", r.text)
+
+        r = client.put(f"/WFPM/sync/tasks/{WFPM_TASK}/assignee", json={"assignee_id": emp2["id"]}, headers=a_headers)
+        check(r.status_code == 200 and listed(r) == [emp2["id"]] and held() == (emp2["id"], [emp2["id"]]), "the single route still means: the set becomes just this person", f"{r.text[:160]} {held()}")
+
+        second_task = f"{WFPM_TASK}-b"
+        body = {"wfpm_task_id": second_task, "name": f"[WFPM-E2E] two assignees {STAMP}", "assignee_id": emp1["id"], "assignee_ids": [emp2["id"], emp1["id"]]}
+        r = client.post(f"/WFPM/sync/projects/{WFPM_PROJECT}/tasks", json=body, headers=a_headers)
+        created = r.json() if r.status_code == 201 else {}
+        check(r.status_code == 201 and listed(r) == [emp2["id"], emp1["id"]] and created.get("assignee_id") == emp2["id"], "create with assignee_ids (which wins over assignee_id) -> 201", r.text[:200])
+        r = client.post(f"/WFPM/sync/projects/{WFPM_PROJECT}/tasks", json={**body, "assignee_ids": [emp1["id"]]}, headers=a_headers)
+        check(r.status_code == 200 and r.json().get("id") == created.get("id") and listed(r) == [emp2["id"], emp1["id"]], "a repeated create -> 200, the task as it stands, nothing re-applied", r.text[:200])
+        r = client.post(f"/WFPM/sync/projects/{WFPM_PROJECT}/tasks", json={"wfpm_task_id": f"{WFPM_TASK}-c", "name": "bad", "assignee_ids": [emp1["id"], admin["id"]]}, headers=a_headers)
+        nothing = row(engine, "SELECT count(*) AS n FROM tasks WHERE wfpm_task_id = :w", w=f"{WFPM_TASK}-c")["n"]
+        check(r.status_code == 400 and str(admin["id"]) in r.text and nothing == 0, "create with an invalid assignee -> 400 and no task", f"{r.status_code} {r.text[:160]} rows={nothing}")
+
+        r = client.get(f"/WFPM/sync/tasks/{WFPM_TASK}", headers=a_headers)
+        check(r.status_code == 200 and "assignees" in r.json() and r.json()["assignee_id"] == emp2["id"], "assignee_id / assignee / assignees all present for existing callers", r.text[:160])
+
+        running = row(engine, "SELECT count(*) AS n FROM time_entries WHERE user_id = ANY(:u) AND end_time IS NULL", u=[emp1["id"], emp2["id"]])["n"]
         check(running == 0, "no timer left running", str(running))
         client.close()
     finally:

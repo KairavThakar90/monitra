@@ -74,10 +74,14 @@ Base path: `/WFPM/sync`. `{wfpm_project_id}` and `{wfpm_task_id}` are always
 | 8 | Update task | `PATCH /WFPM/sync/tasks/{wfpm_task_id}` | `tasks:update` |
 | 9 | Assign task | `PUT /WFPM/sync/tasks/{wfpm_task_id}/assignee` | `tasks:update` |
 | 10 | Remove assignee | `DELETE /WFPM/sync/tasks/{wfpm_task_id}/assignee` | `tasks:update` |
+| 11 | Set the whole assignee list | `PUT /WFPM/sync/tasks/{wfpm_task_id}/assignees` | `tasks:update` |
+| 12 | Read the assignees | `GET /WFPM/sync/tasks/{wfpm_task_id}/assignees` | `tasks:view` |
+| 13 | Add assignees | `POST /WFPM/sync/tasks/{wfpm_task_id}/assignees` | `tasks:update` |
+| 14 | Remove one assignee | `DELETE /WFPM/sync/tasks/{wfpm_task_id}/assignees/{member_id}` | `tasks:update` |
 
 Which role holds which permission (from `backend/app/core/permissions.py`):
 
-| Role | 1 create project | 2, 7 read | 3 update project | 4, 5 members | 6 create task | 8, 9, 10 update / assign task |
+| Role | 1 create project | 2, 7, 12 read | 3 update project | 4, 5 members | 6 create task | 8–11, 13, 14 update / assign task |
 |---|---|---|---|---|---|---|
 | administrator, org_admin, super_admin | yes | yes | yes | yes | yes | yes |
 | leader, project_leader | yes | yes | yes — own projects | yes — projects they lead | yes | yes |
@@ -89,6 +93,10 @@ Which role holds which permission (from `backend/app/core/permissions.py`):
 administrator or the project's own leader to change membership, so the request
 is refused with `403`. The same applies to a leader on a project somebody else
 leads.
+
+On routes 11 and 6, the optional `add_missing_members` flag additionally needs
+`project_members:manage` and that same member rule (so: an administrator, or the
+project's own leader).
 
 Being allowed to call a route is not the same as being allowed to touch a
 given record. A user can only reach a project or task through its WFPM id if
@@ -196,21 +204,37 @@ unassign their tasks.
 }
 ```
 
+or, for several assignees:
+
+```json
+{ "wfpm_task_id": 900, "name": "Design the homepage", "assignee_ids": [101, 102] }
+```
+
 | Field | Required | Notes |
 |---|---|---|
 | `wfpm_task_id` | yes | See §1 |
 | `name` | yes | 1–150 characters, not blank |
 | `assignee_id` | no | Must be an active **employee** who is a **member of this project** |
+| `assignee_ids` | no | Several assignees, in order — the first is the primary — with the same rules and the same cap (50) as route 11. **If both this and `assignee_id` are sent, `assignee_ids` wins** (`[]` included: it means nobody) |
+| `add_missing_members` | no | As on route 11. Applies to whichever of the two assignee fields is sent. Not applied when the create is a replay |
 | `estimated_hours` | no | 0 – 999.99 |
 
-The task starts in Monitra's **Todo** status. If no `assignee_id` is sent and
-the caller is an employee, the task is assigned to the caller.
+The task starts in Monitra's **Todo** status. If no assignee is sent and the
+caller is an employee, the task is assigned to the caller. Naming several
+assignees is held to Monitra's own rule for it: it needs
+`task_assignees:manage` (administrators, managers and leaders), so an employee
+who sends `assignee_ids` is refused with `403` exactly as in Monitra — an
+employee can still send the single `assignee_id`.
 
 `201` created · `200` the WFPM task id was already linked (existing task,
 unchanged) · `409` the id is linked under a different project, or to a task
 that is archived or not accessible · `404` the project id is not linked ·
-`400` the assignee is not valid for this project. Idempotent on
-`wfpm_task_id`, exactly like project create.
+`400` an assignee is not valid for this project (the `detail` names the ids;
+no task is created) · `403` `assignee_ids` by someone without
+`task_assignees:manage`, or `add_missing_members` without the right to add
+members · `422` a malformed or over-long list. Idempotent on `wfpm_task_id`,
+exactly like project create: a replay (`200`) returns the task as it stands,
+`assignees` included, and applies nothing from the repeated request.
 
 #### 8. Update task — `PATCH /WFPM/sync/tasks/{wfpm_task_id}`
 
@@ -230,18 +254,103 @@ that is archived or not accessible · `404` the project id is not linked ·
 { "assignee_id": 101 }
 ```
 
-Replaces the current assignee. This route deals in **one** assignee: a Monitra
-task can also be held by several members at once (an administrator or leader
-sets that through Monitra's own `PUT /api/v1/projects/{project_id}/tasks/{task_id}/assignees`),
-and this call replaces that whole set with the single user named here. The user
-must be an active employee and a member of the task's project, otherwise
-`400`. `200` with the task.
+Replaces the current assignee. This route deals in **one** assignee: it
+means "the assignee set becomes just this one person", so mixing it with the
+list routes below is predictable — whoever else held the task is removed, and
+the person named becomes the primary. The user must be an active employee and a
+member of the task's project, otherwise `400`. `200` with the task. (For
+several people use route 11.)
 
 #### 10. Remove assignee — `DELETE /WFPM/sync/tasks/{wfpm_task_id}/assignee`
 
 `200` with the task, now unassigned. In Monitra an unassigned task is shared
 project work: every member of the project can see it and track time on it.
 Repeating the call changes nothing and answers the same way.
+
+#### 11. Set the assignee list — `PUT /WFPM/sync/tasks/{wfpm_task_id}/assignees`
+
+The main route for a task held by several people. Send the task's **complete**
+assignee list; Monitra makes its own list exactly that.
+
+```json
+{ "assignee_ids": [101, 102, 103] }
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `assignee_ids` | yes | Monitra user ids, **in order**. The first is the **primary** assignee. Duplicates are ignored (the first occurrence counts). At most **50** ids. `[]` removes everyone |
+| `add_missing_members` | no | `true` also adds any listed user who is not yet a member of the project (see below). Default `false` |
+
+- **Replace, not merge, and idempotent.** The task's entire assignee set becomes
+  this list, so sending the same list again changes nothing — no row is
+  rewritten and nothing is added to the activity trail. The stored order is the
+  order you sent, and is the order `GET` and every task body return.
+- **`[]`** leaves the task unassigned, which in Monitra is shared project work:
+  every member of the project can see it and track time on it. This is the same
+  as route 10.
+- **The primary.** The first id becomes the task's primary assignee —
+  `assignee_id` and `assignee` in the task body — whoever held that role before.
+  Reordering a list therefore changes the primary.
+- **Who may be added.** Each id **newly added** must be an active **employee**
+  who is a **member of the task's project** — the same rule as route 9. Someone
+  who already holds the task is kept without being re-checked, so repeating a
+  list never fails because of a person the call did not change (for instance
+  someone removed from the project since). Removing anyone is always allowed.
+- **All or nothing.** If any id is not valid, the answer is `400`, the `detail`
+  names the offending ids (`"Task assignees must be assigned to this project:
+  [103]."`), and **nothing is changed** — not even the valid ids.
+- **Time.** Every assignee, not only the primary, can start a timer on the task.
+  Removing someone from the list **never deletes the time they already
+  tracked**: their time entries stay exactly as they were.
+
+| Status | Meaning |
+|---|---|
+| `200` | The task (§2.3), with the new `assignees` |
+| `400` | An id is unknown, in another organization, not an employee, or not a member of the project. Nothing changed |
+| `403` | `add_missing_members` was sent without `project_members:manage`, or by someone who may not change this project's members (see below) |
+| `404` | The task id is not linked, or the caller cannot open that task |
+| `422` | `assignee_ids` is missing, not a list of positive whole numbers, or longer than 50 |
+
+**`add_missing_members`** is a convenience for the call WFPM otherwise makes
+first (route 4). It needs the same permission as route 4 (`project_members:manage`)
+**and** the same rule — only an administrator or the project's own leader may
+change a project's members — otherwise `403`. Every listed id must be an active
+employee (else `400`, checked before anything is written, so a bad id never
+leaves a stray membership behind); those not yet on the project are then added,
+and the assignment follows. Without the flag, a listed non-member is a `400`.
+
+#### 12. Read the assignees — `GET /WFPM/sync/tasks/{wfpm_task_id}/assignees`
+
+For checking and support. `200` with the ordered list, primary first:
+
+```json
+[
+  { "id": 101, "name": "…", "email": "…", "role": "employee" },
+  { "id": 102, "name": "…", "email": "…", "role": "employee" }
+]
+```
+
+`[]` for an unassigned task. `404` as above.
+
+#### 13. Add assignees — `POST /WFPM/sync/tasks/{wfpm_task_id}/assignees`
+
+```json
+{ "assignee_ids": [104] }
+```
+
+Adds to whoever already holds the task; the existing assignees keep their
+places (so the primary does not change), and the new ones follow in the order
+sent. Someone already assigned is **not an error**. If the task had no
+assignee, the first id sent becomes the primary. The same validation and
+all-or-nothing rule as route 11 (`400` naming the offending ids; `422` for an
+empty or malformed list). `200` with the task.
+
+#### 14. Remove one assignee — `DELETE /WFPM/sync/tasks/{wfpm_task_id}/assignees/{member_id}`
+
+`204` with no body. `404` if that user is not assigned to the task (so a
+repeated removal answers `404`, which is safe to treat as "already removed"). If
+the primary was removed, the next assignee in order becomes the primary; if it
+was the last one, the task is unassigned. The person's time entries are kept.
 
 ### 2.3 Response bodies
 
@@ -267,7 +376,7 @@ Project (routes 1–3):
 }
 ```
 
-Task (routes 6–10):
+Task (routes 6–11 and 13):
 
 ```json
 {
@@ -286,8 +395,12 @@ Task (routes 6–10):
 ```
 
 `id` and `project_id` are Monitra's own ids, returned for reference.
-`assignees` lists everyone holding the task, with `assignee` (the primary one)
-first; it is additive, so a consumer that only reads `assignee` is unaffected.
+`assignees` lists everyone holding the task, **in order, primary first**; it is
+additive, so a consumer that only reads `assignee` is unaffected.
+`assignee_id` and `assignee` are always the **first** (primary) assignee, and
+`null` when the task has none — exactly as when a task could have only one.
+Every task body carries `assignees`, including the ones inside a project (routes
+1–3) and a replayed create.
 
 Errors use one shape throughout: `{"detail": "…"}` for `400/401/403/404/409`,
 and `{"detail": [ … ]}` (a list of field errors) for `422`.
@@ -535,6 +648,9 @@ Without that timer, a timer start whose first attempt fails is never retried.
 | `WFPM_SYNC_PROJECT_CREATED` / `_REPLAYED` / `_UPDATED` | A project create, a repeated create, an update |
 | `WFPM_SYNC_MEMBERS_ADDED` / `WFPM_SYNC_MEMBER_REMOVED` | Membership changes |
 | `WFPM_SYNC_TASK_CREATED` / `_REPLAYED` / `_UPDATED` / `_ASSIGNED` / `_UNASSIGNED` | Task operations |
+| `WFPM_SYNC_TASK_ASSIGNEES_SET: wfpm_task=… assignees=[…]` | Route 11 applied; `assignees` is the resulting ordered list (logged on a repeat too, with the same list) |
+| `WFPM_SYNC_TASK_ASSIGNEES_ADDED` / `WFPM_SYNC_TASK_ASSIGNEE_REMOVED` | Routes 13 and 14 |
+| `WFPM_SYNC_MEMBERS_ADDED … via=add_missing_members` | Members added by the `add_missing_members` flag |
 | `WFPM_SYNC_NOT_FOUND … reason=not_linked` | WFPM used an id Monitra has no record of |
 | `WFPM_SYNC_NOT_FOUND … reason=archived_or_out_of_scope` | The id is linked, but archived or not visible to that user |
 | `WFPM_TIMER_QUEUED` | A timer start or stop was queued for WFPM (`event=timer_start` / `timer_stop`) |
@@ -584,6 +700,7 @@ SELECT id, task_name, project_id, wfpm_task_id FROM tasks WHERE wfpm_task_id = '
 | Part | Status |
 |---|---|
 | Schema, `/WFPM/sync` routes, timer queue | Implemented; automated tests; verified over real HTTP against the development database |
+| Several assignees per task (routes 11–14, `assignee_ids` on route 6) | Implemented; automated tests; verified over real HTTP against the development database. Not yet exercised by WFPM itself |
 | Timer start delivery to WFPM | Implemented; WFPM has confirmed it works end to end |
 | Timer stop delivery to WFPM (§3.5) | Implemented to WFPM's specification; automated tests, and verified over real HTTP against a **local stand-in** for WFPM's stop endpoint. **Not yet exercised against the real WFPM** — that needs the deployed backend with `WFPM_TIMER_STOP_URL` set, then a start-and-stop from Monitra checked in WFPM for a matching duration |
 
