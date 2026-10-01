@@ -414,7 +414,18 @@ export const projectsApi = baseApi.injectEndpoints({
 
     createTask: builder.mutation<
       ProjectTask,
-      { projectId: number; body: { project_id?: number; name: string; assignee_id: number | null; status_id: number; estimated_hours?: number | null } }
+      {
+        projectId: number;
+        body: {
+          project_id?: number;
+          name: string;
+          assignee_id?: number | null;
+          /** Create the task already held by these members (administrators and leaders only). */
+          assignee_ids?: number[];
+          status_id: number;
+          estimated_hours?: number | null;
+        };
+      }
     >({
       query: ({ projectId, body }) => ({
         url: ENDPOINTS.PROJECTS.TASKS(projectId),

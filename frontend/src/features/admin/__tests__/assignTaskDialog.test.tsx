@@ -140,6 +140,14 @@ describe('AssignTaskDialog', () => {
     expect(buttons).toContain('Save');
   });
 
+  it('slides in as a right-hand drawer like Create Task', async () => {
+    await render();
+    const panel = document.querySelector('[role="dialog"]') as HTMLElement;
+    expect(panel.className).toContain('right-0');
+    expect(panel.className).toContain('inset-y-0');
+    expect(panel.className).toContain('max-w-md');
+  });
+
   it('does not let a task be chosen before its project', async () => {
     await render();
     expect(field('Task').querySelector('button[aria-haspopup="listbox"]')!.hasAttribute('disabled')).toBe(true);
@@ -168,7 +176,7 @@ describe('AssignTaskDialog', () => {
     await click(box('Cal'));
     await click(box('Ben'));
     await save();
-    expect(submitted).toEqual([{ projectId: 1, taskId: 10, userIds: [1, 3, 2], statusId: 1 }]);
+    expect(submitted).toEqual([{ kind: 'existing', projectId: 1, taskId: 10, userIds: [1, 3, 2], statusId: 1 }]);
   });
 
   it('offers only the project\'s employees -- never its leader', async () => {
@@ -205,7 +213,7 @@ describe('AssignTaskDialog', () => {
       statusSelect().dispatchEvent(new Event('change', { bubbles: true }));
     });
     await save();
-    expect(submitted).toEqual([{ projectId: 1, taskId: 11, userIds: [2, 3], statusId: 3 }]);
+    expect(submitted).toEqual([{ kind: 'existing', projectId: 1, taskId: 11, userIds: [2, 3], statusId: 3 }]);
   });
 
   it('changing the project clears the task and its members', async () => {
@@ -244,7 +252,7 @@ describe('AssignTaskDialog', () => {
     await click(box('Ben'));
     expect(field('Members').textContent).toContain('unassigns the task');
     await save();
-    expect(submitted).toEqual([{ projectId: 1, taskId: 11, userIds: [], statusId: 2 }]);
+    expect(submitted).toEqual([{ kind: 'existing', projectId: 1, taskId: 11, userIds: [], statusId: 2 }]);
   });
 
   it('says so when the project has no employees to offer', async () => {
@@ -264,7 +272,7 @@ describe('AssignTaskDialog', () => {
     expect(box('Ana').checked && box('Ben').checked).toBe(true);
     await click(box('Cal'));
     await save();
-    expect(submitted).toEqual([{ projectId: 1, taskId: 11, userIds: [1, 2, 3], statusId: 2 }]);
+    expect(submitted).toEqual([{ kind: 'existing', projectId: 1, taskId: 11, userIds: [1, 2, 3], statusId: 2 }]);
   });
 
   it('shows a rejected save, keeps the dialog open, and blocks a second click while saving', async () => {
@@ -280,5 +288,101 @@ describe('AssignTaskDialog', () => {
     await click([...container.querySelectorAll('button')].find((b) => b.textContent === 'Cancel') ?? null);
     expect(closed).toBe(1);
     expect(submitted).toEqual([]);
+  });
+
+  describe('new task', () => {
+    const tab = (label: string) =>
+      [...container.querySelectorAll('[role="tab"]')].find((t) => t.textContent === label) ?? null;
+    const typeInto = async (input: Element | null, value: string) => {
+      const el = input as HTMLInputElement;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(el, value);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    };
+    const nameInput = () => field('Task Name').querySelector('input');
+
+    it('offers Existing task / New task, defaulting to existing', async () => {
+      await render();
+      expect(tab('Existing task')!.getAttribute('aria-selected')).toBe('true');
+      expect(tab('New task')!.getAttribute('aria-selected')).toBe('false');
+    });
+
+    it('creates a task and assigns several members in one submit', async () => {
+      await render();
+      await click(tab('New task'));
+      await pick('Project', 'Website');
+      await typeInto(nameInput(), 'Build the footer');
+      await typeInto(field('Estimated Hours').querySelector('input'), '2.5');
+      await click(membersTrigger());
+      await click(box('Ana'));
+      await click(box('Cal'));
+      await act(async () => {
+        statusSelect().value = '2';
+        statusSelect().dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await save();
+      expect(submitted).toEqual([
+        { kind: 'new', projectId: 1, name: 'Build the footer', estimatedHours: 2.5, userIds: [1, 3], statusId: 2 },
+      ]);
+    });
+
+    it('a new task may be created with no members: it is shared work, as Create Task makes it', async () => {
+      await render();
+      await click(tab('New task'));
+      await pick('Project', 'Website');
+      await typeInto(nameInput(), 'Unowned');
+      await save();
+      expect(submitted).toEqual([
+        { kind: 'new', projectId: 1, name: 'Unowned', estimatedHours: null, userIds: [], statusId: 1 },
+      ]);
+    });
+
+    it('refuses an empty name with the shared validation message', async () => {
+      await render();
+      await click(tab('New task'));
+      await pick('Project', 'Website');
+      await save();
+      expect(submitted).toEqual([]);
+      expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    });
+
+    it('refuses a negative budget', async () => {
+      await render();
+      await click(tab('New task'));
+      await pick('Project', 'Website');
+      await typeInto(nameInput(), 'Budgeted');
+      await typeInto(field('Estimated Hours').querySelector('input'), '-1');
+      await save();
+      expect(submitted).toEqual([]);
+      expect(container.textContent).toContain('Estimated hours must be a number of 0 or more.');
+    });
+
+    it('needs a project before members unlock, and offers the employees of that project', async () => {
+      await render();
+      await click(tab('New task'));
+      expect(field('Members').textContent).toContain('Select a project first');
+      await pick('Project', 'Website');
+      await click(membersTrigger());
+      expect(menuRows().map((r) => r.textContent)).toHaveLength(3);
+    });
+
+    it('switching tabs clears the choices of the other mode', async () => {
+      await render();
+      await pick('Project', 'Website');
+      await pick('Task', 'Write copy');           // members Ana + Ben come with it
+      await click(tab('New task'));
+      await typeInto(nameInput(), 'Fresh');
+      await click(membersTrigger());
+      expect(box('Ana').checked).toBe(false);
+      expect(box('Ben').checked).toBe(false);
+    });
+
+    it('is not offered when this account may not add tasks, nor when editing', async () => {
+      await render({ canCreateTasks: false });
+      expect(tab('New task')).toBeNull();
+      await render({ canCreateTasks: true, editing: { projectId: 1, taskId: 11 } });
+      expect(tab('New task')).toBeNull();
+    });
   });
 });

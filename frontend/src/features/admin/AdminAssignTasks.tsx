@@ -4,6 +4,7 @@ import {
   useGetAllProjectsQuery,
   useGetProjectMetadataQuery,
   useSetTaskAssigneesMutation,
+  useCreateTaskMutation,
   type Project,
   type ProjectTask,
   type ProjectUser,
@@ -12,6 +13,7 @@ import { useFeedback } from '../../components/FeedbackProvider';
 import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
 import { PaginationArrow } from '../../components/PaginationArrow';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
+import { useAuth } from '../auth/authContext';
 import { formatApiError } from '../../api/utils';
 import { SEARCH_MAX_LENGTH } from '../../validation';
 import { AssignTaskDialog, type AssignTaskSubmit } from './AssignTaskDialog';
@@ -89,7 +91,13 @@ type DialogState = { editing: { projectId: number; taskId: number } | null } | n
 export const AdminAssignTasks: React.FC = () => {
   const { data: projects = NO_PROJECTS, isLoading, isFetching, isError, refetch } = useGetAllProjectsQuery({ includeTasks: true });
   const { data: metadata } = useGetProjectMetadataQuery();
-  const [setTaskAssignees, { isLoading: saving }] = useSetTaskAssigneesMutation();
+  const [setTaskAssignees, { isLoading: assigning }] = useSetTaskAssigneesMutation();
+  const [createTask, { isLoading: creating }] = useCreateTaskMutation();
+  const saving = assigning || creating;
+  // The Members directory's Add Task switch applies here too: the backend
+  // refuses the create, so "New task" is not offered rather than offered and bounced.
+  const { currentUser } = useAuth();
+  const canCreateTasks = currentUser?.can_add_tasks !== false;
   const { showToast } = useFeedback();
 
   const [searchInput, setSearchInput] = useState('');
@@ -118,21 +126,37 @@ export const AdminAssignTasks: React.FC = () => {
     setDialog({ editing });
   };
 
+  const plural = (n: number) => `${n} member${n === 1 ? '' : 's'}`;
+
   const handleSubmit = async (value: AssignTaskSubmit) => {
     setSaveError(null);
     try {
+      if (value.kind === 'new') {
+        // One request creates the task and its holders together, so a failure
+        // never leaves a half-made, unassigned (= shared) task behind.
+        await createTask({
+          projectId: value.projectId,
+          body: {
+            name: value.name,
+            status_id: value.statusId,
+            ...(value.userIds.length > 0 ? { assignee_ids: value.userIds } : {}),
+            ...(value.estimatedHours !== null ? { estimated_hours: value.estimatedHours } : {}),
+          },
+        }).unwrap();
+        setDialog(null);
+        showToast(
+          value.userIds.length === 0 ? 'Task created.' : `Task created and assigned to ${plural(value.userIds.length)}.`,
+          'success',
+        );
+        return;
+      }
       await setTaskAssignees({
         projectId: value.projectId,
         taskId: value.taskId,
         body: { user_ids: value.userIds, status_id: value.statusId },
       }).unwrap();
       setDialog(null);
-      showToast(
-        value.userIds.length === 0
-          ? 'Task unassigned.'
-          : `Task assigned to ${value.userIds.length} member${value.userIds.length === 1 ? '' : 's'}.`,
-        'success',
-      );
+      showToast(value.userIds.length === 0 ? 'Task unassigned.' : `Task assigned to ${plural(value.userIds.length)}.`, 'success');
     } catch (err: any) {
       const message = formatApiError(err?.data, 'Could not save the assignment. Please try again.');
       setSaveError(message);
@@ -317,6 +341,7 @@ export const AdminAssignTasks: React.FC = () => {
           projects={projects}
           statuses={metadata?.task_statuses ?? []}
           editing={dialog.editing}
+          canCreateTasks={canCreateTasks}
           saving={saving}
           error={saveError}
           onSubmit={handleSubmit}
