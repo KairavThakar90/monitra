@@ -88,6 +88,10 @@ class ActivityLogAction:
 
     SCREENSHOT_NOTICE_SENT = "screenshot_notice_sent"
 
+    DESKTOP_NOTIFICATION_CREATED = "desktop_notification_created"
+    DESKTOP_NOTIFICATION_UPDATED = "desktop_notification_updated"
+    DESKTOP_NOTIFICATION_DELETED = "desktop_notification_deleted"
+
     APP_OPENED = "app_opened"
     APP_CLOSED = "app_closed"
 

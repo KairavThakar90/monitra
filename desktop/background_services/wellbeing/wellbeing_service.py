@@ -62,13 +62,40 @@ as its busy timeout, and a reminder is not something to hold up for that.
 
 **Reminders are gated on being signed in.** They accompany a working session.
 Nudging the login screen at three in the morning is not a feature.
+
+**An administrator's schedule is read, never fetched.** What is on, on which
+IST weekdays, and at what time, comes from the snapshot that
+`NotificationScheduleService` keeps (`runtime.notification_schedule.schedule`,
+an immutable object read once per tick). This service does no network work and
+never will: it only reads that snapshot. With none (never fetched, nothing
+persisted) every built-in reminder is on, every day, at the catalogue's time --
+exactly what this service did before the schedule existed.
+
+  * An interval reminder is shown only if it is on and today's IST weekday is
+    allowed. One the schedule suppresses still advances its grid exactly as a
+    shown one would, so switching it on later does not release a backlog.
+  * A built-in daily reminder takes its time, weekdays and on/off from the
+    schedule.
+  * A custom notification is a daily reminder keyed `custom:<id>` whose title
+    and body are the administrator's. It is in the same deadline computation as
+    the built-ins, so it is shown within about a second of its time, and it
+    follows every daily rule: once per IST day, late beyond
+    `DAILY_GRACE_SECONDS` is recorded as missed, `MIN_SPACING_SECONDS`, signed
+    in only, shown first and recorded after.
+  * The persisted record is pruned of keys that no longer exist, so deleted
+    custom notifications do not accumulate in it for ever.
+  * Until the schedule service has read its persisted record the first tick
+    waits (`NotificationScheduleService.ready`), so a reminder an
+    administrator switched off is not shown by a start that has simply not
+    loaded the schedule yet.
 """
 from __future__ import annotations
 
 import math
 import time as _time
-from datetime import datetime
-from typing import Dict, Optional, Tuple
+from dataclasses import dataclass
+from datetime import datetime, time as dtime
+from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QObject
 
@@ -76,7 +103,6 @@ from background_services.notifications import NotificationLevel
 from background_services.wellbeing.reminders import (
     DAILY_REMINDERS,
     INTERVAL_REMINDERS,
-    DailyReminder,
     IntervalReminder,
 )
 from core.service import LoopService
@@ -84,6 +110,20 @@ from core.time_format import IST
 
 #: Where the "which daily reminders have already fired today" record lives.
 DAILY_STATE_KEY = "wellbeing.daily_last_fired"
+
+#: Prefix of a custom notification's key in the daily record.
+CUSTOM_KEY_PREFIX = "custom:"
+
+
+@dataclass(frozen=True)
+class _DailyEntry:
+    """One time-of-day notification as it is scheduled today: a built-in
+    reminder with the schedule applied, or a custom notification."""
+
+    key: str
+    title: str
+    body: str
+    at: dtime
 
 
 class WellbeingService(LoopService):
@@ -102,7 +142,8 @@ class WellbeingService(LoopService):
     #: without spinning.
     MIN_TICK_MS = 200
 
-    #: A tick touches no network. It touches storage only when a daily
+    #: A tick touches no network (the schedule it reads is fetched by
+    #: `NotificationScheduleService`). It touches storage only when a daily
     #: reminder changes state -- at most a handful of writes a day -- but that
     #: write can wait out the database's busy timeout (ten seconds) behind
     #: another writer, and the loop cannot stand down until it returns. The
@@ -190,6 +231,50 @@ class WellbeingService(LoopService):
             gap = max(gap, (now_ist - self._last_tick_wall).total_seconds())
         return gap
 
+    # ── The administrator's schedule ──────────────────────────────────────────
+
+    def _schedule_source(self) -> Any:
+        return getattr(self.runtime, "notification_schedule", None)
+
+    def _schedule(self) -> Any:
+        """The current schedule snapshot, or None for "use the defaults".
+
+        A read of an immutable object the schedule service replaces whole;
+        nothing here waits on it or on the network.
+        """
+        return getattr(self._schedule_source(), "schedule", None)
+
+    @staticmethod
+    def _interval_allowed(schedule: Any, key: str, weekday: int) -> bool:
+        """Whether an interval reminder may be shown on this IST weekday."""
+        if schedule is None:
+            return True
+        setting = schedule.builtin.get(key)
+        if setting is None:
+            return True
+        return bool(setting.enabled) and weekday in setting.weekdays
+
+    def _daily_entries_today(self, schedule: Any, weekday: int) -> List[_DailyEntry]:
+        """Every time-of-day notification that is on for this IST weekday."""
+        entries: List[_DailyEntry] = []
+        for reminder in DAILY_REMINDERS:
+            setting = None if schedule is None else schedule.builtin.get(reminder.key)
+            if setting is not None:
+                if not setting.enabled or weekday not in setting.weekdays:
+                    continue
+                at = setting.at if setting.at is not None else reminder.at
+            else:
+                at = reminder.at
+            entries.append(_DailyEntry(reminder.key, reminder.title, reminder.body, at))
+        if schedule is not None:
+            for custom in schedule.custom:
+                if weekday not in custom.weekdays:
+                    continue
+                entries.append(_DailyEntry(
+                    f"{CUSTOM_KEY_PREFIX}{custom.id}", custom.title, custom.message, custom.at,
+                ))
+        return entries
+
     # ── Gating ────────────────────────────────────────────────────────────────
 
     def _gate_reason(self) -> Optional[str]:
@@ -197,6 +282,9 @@ class WellbeingService(LoopService):
         api_client = getattr(self.runtime, "api_client", None)
         if api_client is None or not getattr(api_client, "access_token", None):
             return "not signed in"
+        source = self._schedule_source()
+        if source is not None and not getattr(source, "ready", True):
+            return "waiting for the notification schedule to load"
         return None
 
     # ── Interval scheduling ───────────────────────────────────────────────────
@@ -208,12 +296,35 @@ class WellbeingService(LoopService):
             for reminder in INTERVAL_REMINDERS
         }
 
-    def _due_interval(self, now: float) -> Optional[IntervalReminder]:
-        """The most overdue interval reminder, or None if none is due."""
-        due = [r for r in INTERVAL_REMINDERS if self._due_at.get(r.key, now) <= now]
+    def _due_interval(
+        self, now: float, schedule: Any = None, weekday: int = 0,
+    ) -> Optional[IntervalReminder]:
+        """The most overdue interval reminder the schedule allows, or None."""
+        due = [
+            r for r in INTERVAL_REMINDERS
+            if self._due_at.get(r.key, now) <= now
+            and self._interval_allowed(schedule, r.key, weekday)
+        ]
         if not due:
             return None
         return min(due, key=lambda r: self._due_at[r.key])
+
+    def _skip_suppressed_intervals(self, now: float, schedule: Any, weekday: int) -> None:
+        """Move on any due interval reminder the schedule does not allow.
+
+        It advances exactly as a shown one would (`_advance`), so the grid is
+        the same whether or not anything was displayed, and switching a
+        reminder on later finds it on its own next deadline instead of owed a
+        backlog. Done before the spacing check, because a suppressed reminder
+        is not waiting for anything.
+        """
+        if schedule is None:
+            return
+        for reminder in INTERVAL_REMINDERS:
+            if self._due_at.get(reminder.key, now) <= now and not self._interval_allowed(
+                schedule, reminder.key, weekday,
+            ):
+                self._advance(reminder, now)
 
     def _advance(self, reminder: IntervalReminder, now: float) -> None:
         """Move `reminder` on to its next deadline, keeping it on its grid.
@@ -269,27 +380,55 @@ class WellbeingService(LoopService):
         except Exception:  # noqa: BLE001
             self.log.exception("could not record the daily reminder state")
 
-    def _due_daily(self, now_ist: datetime) -> Tuple[Optional[DailyReminder], bool]:
-        """The daily reminder to show now, marking anything missed as spent.
+    def _prune_daily_state(self, state: Dict[str, str], schedule: Any) -> bool:
+        """Drop record keys that no longer name anything. Returns whether any
+        were dropped.
 
-        Returns `(reminder, changed)`: at most one reminder, and whether the
-        record changed and needs writing. Nothing is written here -- the
+        A built-in key the catalogue no longer has, and a `custom:<id>` the
+        schedule no longer lists (deleted, or switched off, which the
+        schedule reports identically). Without this the record would gain a
+        key for every custom notification ever created. With no schedule at
+        all the customs are left alone: absence of knowledge is not deletion.
+        """
+        builtin_keys = {r.key for r in DAILY_REMINDERS}
+        live_custom = (
+            None if schedule is None
+            else {f"{CUSTOM_KEY_PREFIX}{c.id}" for c in schedule.custom}
+        )
+        stale = [
+            key for key in state
+            if (key.startswith(CUSTOM_KEY_PREFIX) and live_custom is not None
+                and key not in live_custom)
+            or (not key.startswith(CUSTOM_KEY_PREFIX) and key not in builtin_keys)
+        ]
+        for key in stale:
+            del state[key]
+        return bool(stale)
+
+    def _due_daily(
+        self, now_ist: datetime, schedule: Any = None,
+    ) -> Tuple[Optional[_DailyEntry], bool]:
+        """The daily notification to show now, marking anything missed as spent.
+
+        Returns `(entry, changed)`: at most one, and whether the record
+        changed and needs writing. Nothing is written here -- the
         caller shows the reminder first and persists afterwards, so a slow
         database cannot sit between a reminder's time and its appearing.
 
         A second reminder that is also within its grace window is
         deliberately left unmarked, so a later tick shows it rather than it
-        being silently consumed.
+        being silently consumed. One the schedule has off today (disabled, or
+        not on this weekday) is neither shown nor spent.
         """
         state = self._load_daily_state()
         today = now_ist.date().isoformat()
-        chosen: Optional[DailyReminder] = None
-        changed = False
+        chosen: Optional[_DailyEntry] = None
+        changed = self._prune_daily_state(state, schedule)
 
-        for reminder in DAILY_REMINDERS:
-            if state.get(reminder.key) == today:
+        for entry in self._daily_entries_today(schedule, now_ist.weekday()):
+            if state.get(entry.key) == today:
                 continue
-            scheduled = datetime.combine(now_ist.date(), reminder.at, tzinfo=IST)
+            scheduled = datetime.combine(now_ist.date(), entry.at, tzinfo=IST)
             if now_ist < scheduled:
                 continue
 
@@ -298,23 +437,23 @@ class WellbeingService(LoopService):
                 # Spend it for today without showing it. The user was not here
                 # when it was relevant, and telling them now is worse than
                 # telling them nothing.
-                state[reminder.key] = today
+                state[entry.key] = today
                 changed = True
                 self.log.info(
                     "daily reminder %s was %d minutes late; not shown",
-                    reminder.key, int(late // 60),
+                    entry.key, int(late // 60),
                 )
                 continue
 
             if chosen is None:
-                state[reminder.key] = today
+                state[entry.key] = today
                 changed = True
-                chosen = reminder
+                chosen = entry
 
         return chosen, changed
 
-    def _seconds_until_daily(self, now_ist: datetime) -> Optional[float]:
-        """Seconds until the next daily reminder not yet spent today.
+    def _seconds_until_daily(self, now_ist: datetime, schedule: Any = None) -> Optional[float]:
+        """Seconds until the next daily notification not yet spent today.
 
         0 for one whose time has come and which is still waiting (held back
         by the spacing rule); None when all of today's are spent.
@@ -322,9 +461,9 @@ class WellbeingService(LoopService):
         state = self._daily_fired or {}
         today = now_ist.date().isoformat()
         waits = [
-            (datetime.combine(now_ist.date(), r.at, tzinfo=IST) - now_ist).total_seconds()
-            for r in DAILY_REMINDERS
-            if state.get(r.key) != today
+            (datetime.combine(now_ist.date(), e.at, tzinfo=IST) - now_ist).total_seconds()
+            for e in self._daily_entries_today(schedule, now_ist.weekday())
+            if state.get(e.key) != today
         ]
         return max(0.0, min(waits)) if waits else None
 
@@ -354,7 +493,7 @@ class WellbeingService(LoopService):
 
     # ── The loop ──────────────────────────────────────────────────────────────
 
-    def _next_delay_ms(self, now: float, now_ist: datetime) -> int:
+    def _next_delay_ms(self, now: float, now_ist: datetime, schedule: Any = None) -> int:
         """Milliseconds until there may be something to do.
 
         The nearest deadline -- interval or time of day -- so a reminder is
@@ -366,7 +505,7 @@ class WellbeingService(LoopService):
         wait = ceiling
         if self._due_at:
             wait = min(wait, min(self._due_at.values()) - now)
-        daily_wait = self._seconds_until_daily(now_ist)
+        daily_wait = self._seconds_until_daily(now_ist, schedule)
         if daily_wait is not None:
             wait = min(wait, daily_wait)
         wait = min(ceiling, max(wait, self._spacing_remaining(now)))
@@ -386,6 +525,8 @@ class WellbeingService(LoopService):
 
         now = self._now_monotonic()
         now_ist = self._now_ist()
+        schedule = self._schedule()
+        weekday = now_ist.weekday()
         gap = self._gap_since_last_tick(now, now_ist)
         self._last_tick = now
         self._last_tick_wall = now_ist
@@ -411,16 +552,18 @@ class WellbeingService(LoopService):
                 "reminder cadence running; next due in %d minutes",
                 min(r.offset_minutes + r.every_minutes for r in INTERVAL_REMINDERS),
             )
-            return self._next_delay_ms(now, now_ist)
+            return self._next_delay_ms(now, now_ist, schedule)
+
+        self._skip_suppressed_intervals(now, schedule, weekday)
 
         if self._spacing_remaining(now) > 0:
             # The previous reminder is still on screen, or only just gone.
             # Whatever is due stays due and is shown when the window closes.
-            return self._next_delay_ms(now, now_ist)
+            return self._next_delay_ms(now, now_ist, schedule)
 
         # Time-of-day reminders first: their window is minutes wide, while an
         # interval reminder is equally useful a minute later.
-        daily, daily_changed = self._due_daily(now_ist)
+        daily, daily_changed = self._due_daily(now_ist, schedule)
         if daily is not None:
             scheduled = datetime.combine(now_ist.date(), daily.at, tzinfo=IST)
             self._show(daily.key, daily.title, daily.body)
@@ -433,7 +576,7 @@ class WellbeingService(LoopService):
             self._save_daily_state()
 
         if daily is None:
-            interval = self._due_interval(now)
+            interval = self._due_interval(now, schedule, weekday)
             if interval is not None:
                 late = now - self._due_at[interval.key]
                 self._advance(interval, now)
@@ -444,4 +587,4 @@ class WellbeingService(LoopService):
                     interval.key, late,
                     int(round((self._due_at[interval.key] - now) / 60)),
                 )
-        return self._next_delay_ms(now, now_ist)
+        return self._next_delay_ms(now, now_ist, schedule)

@@ -86,6 +86,8 @@ class Rule(str, Enum):
     VERSION = auto()
     #: A SHA-256 digest in lower-case hexadecimal.
     SHA256 = auto()
+    #: A wall-clock time of day, ``HH:MM`` on a 24-hour clock.
+    TIME_OF_DAY = auto()
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +191,13 @@ VERSION_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 #: would reject a download that was perfectly intact.
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
+#: ``HH:MM`` on a 24-hour clock, and nothing else: no seconds, no ``AM``/``PM``,
+#: no single-digit hour. One spelling per time, so ``9:30`` and ``09:30`` cannot
+#: be two different stored values for the same instant. The *timezone* is not
+#: part of the value -- it is a property of the feature that stores it (the
+#: desktop notification schedule is in IST).
+TIME_OF_DAY_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
 #: The schemes a stored URL may use. ``javascript:`` and ``data:`` are the two
 #: that turn a stored link into script execution in whatever renders it.
 ALLOWED_URL_SCHEMES = ("http", "https")
@@ -262,6 +271,7 @@ __all__ = [
     "IDEMPOTENCY_KEY_PATTERN",
     "VERSION_PATTERN",
     "SHA256_PATTERN",
+    "TIME_OF_DAY_PATTERN",
     "ALLOWED_URL_SCHEMES",
     "HTML_TAG_PATTERN",
     "ENCODED_MARKUP_PATTERN",

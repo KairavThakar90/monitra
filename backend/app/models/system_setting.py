@@ -53,7 +53,12 @@ class SystemSettingKey:
     #: backend reads it to refuse, delay or alter a request.
     MAINTENANCE_MODE = "maintenance_mode"
 
-    ALL = (MAINTENANCE_MODE,)
+    #: The desktop notification schedule: which built-in reminders are on, at
+    #: what time and on which weekdays, plus the administrator's own custom
+    #: notifications. See ``app/services/desktop_notifications.py``.
+    DESKTOP_NOTIFICATIONS = "desktop_notifications"
+
+    ALL = (MAINTENANCE_MODE, DESKTOP_NOTIFICATIONS)
 
 
 class SystemSetting(Base):

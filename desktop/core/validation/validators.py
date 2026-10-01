@@ -53,6 +53,7 @@ from .rules import (
     SEARCH_MAX_LENGTH,
     SHA256_LENGTH,
     SHA256_PATTERN,
+    TIME_OF_DAY_PATTERN,
     TEMPLATE_EXPRESSION_PATTERN,
     URL_MAX_LENGTH,
     UUID_PATTERN,
@@ -536,6 +537,22 @@ def validate_sha256(value: Any, *, field_label: str = "Checksum") -> ValidationR
     return _ok(candidate)
 
 
+def validate_time_of_day(value: Any, *, field_label: str = "Time") -> ValidationResult:
+    """A wall-clock time, ``HH:MM`` on a 24-hour clock.
+
+    Mirrors the backend rule exactly. Rejected rather than repaired, so a
+    schedule has one spelling per time of day.
+    """
+    if not isinstance(value, str):
+        return _fail(f"{field_label} must be text.")
+    candidate = value.strip()
+    if not candidate:
+        return _fail(f"{field_label} is required.")
+    if not TIME_OF_DAY_PATTERN.match(candidate):
+        return _fail(f"{field_label} must be a time like 09:30 (24-hour, HH:MM).")
+    return _ok(candidate)
+
+
 __all__ = [
     "ValidationResult",
     "looks_like_json_document",
@@ -557,6 +574,7 @@ __all__ = [
     "validate_domain",
     "validate_url",
     "validate_version",
+    "validate_time_of_day",
     "validate_sha256",
     "validate_all",
 ]

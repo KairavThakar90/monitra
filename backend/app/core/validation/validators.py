@@ -42,6 +42,7 @@ from .rules import (
     SEARCH_MAX_LENGTH,
     SHA256_LENGTH,
     SHA256_PATTERN,
+    TIME_OF_DAY_PATTERN,
     TEMPLATE_EXPRESSION_PATTERN,
     URL_MAX_LENGTH,
     UUID_PATTERN,
@@ -639,6 +640,67 @@ def validate_sha256(
     return candidate
 
 
+def validate_time_of_day(
+    value: Any,
+    *,
+    field_label: str = "Time",
+    required: bool = True,
+) -> Optional[str]:
+    """A wall-clock time, ``HH:MM`` on a 24-hour clock.
+
+    Rejected rather than repaired: ``9:30`` or ``9.30`` or ``09:30:00`` is not
+    quietly turned into ``09:30``, so a schedule row has exactly one spelling
+    for a time and the client is told what shape is wanted.
+    """
+    if value is None:
+        if required:
+            raise InputValidationError(f"{field_label} is required.")
+        return None
+    if not isinstance(value, str):
+        raise InputValidationError(f"{field_label} must be text.")
+    candidate = value.strip()
+    if not candidate:
+        if required:
+            raise InputValidationError(f"{field_label} is required.")
+        return None
+    if not TIME_OF_DAY_PATTERN.match(candidate):
+        raise InputValidationError(
+            f"{field_label} must be a time like 09:30 (24-hour, HH:MM)."
+        )
+    return candidate
+
+
+def validate_weekdays(
+    value: Any,
+    *,
+    field_label: str = "Days",
+    required: bool = True,
+) -> Optional[list]:
+    """A non-empty set of weekdays, ``0`` (Monday) to ``6`` (Sunday).
+
+    Every member goes through the ``ENUM`` rule, so a stray ``7`` or ``"mon"``
+    is named in the error. Duplicates are folded and the result is sorted, so
+    ``[4, 0, 0]`` and ``[0, 4]`` are one stored value.
+    """
+    if value is None:
+        if required:
+            raise InputValidationError(f"{field_label} is required.")
+        return None
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple, set, frozenset)):
+        raise InputValidationError(f"{field_label} must be a list of weekday numbers.")
+    days = []
+    for item in value:
+        # A boolean is an int to Python; it is never a weekday.
+        if isinstance(item, bool) or not isinstance(item, int):
+            raise InputValidationError(
+                f"{field_label} must be one of: 0, 1, 2, 3, 4, 5, 6."
+            )
+        days.append(validate_enum(item, range(7), field_label=field_label))
+    if not days:
+        raise InputValidationError(f"{field_label}: choose at least one day.")
+    return sorted(set(days))
+
+
 def validate_id_list(
     value: Optional[Sequence[Any]],
     *,
@@ -696,5 +758,7 @@ __all__ = [
     "validate_idempotency_key",
     "validate_version",
     "validate_sha256",
+    "validate_time_of_day",
+    "validate_weekdays",
     "validate_id_list",
 ]

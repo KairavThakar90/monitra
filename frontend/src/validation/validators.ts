@@ -38,6 +38,7 @@ import {
   SCRIPT_URI_PATTERN,
   SEARCH_MAX_LENGTH,
   TEMPLATE_EXPRESSION_PATTERN,
+  TIME_OF_DAY_PATTERN,
   URL_MAX_LENGTH,
   UUID_PATTERN,
   XML_PROLOG_PATTERN,
@@ -541,6 +542,24 @@ export function validateEnum<T>(
   }
   const readable = allowed.map((item) => String(item)).join(', ');
   return fail(`${label} must be one of: ${readable}.`);
+}
+
+/**
+ * A wall-clock time, `HH:MM` on a 24-hour clock. Mirrors the backend rule:
+ * rejected rather than repaired, so a schedule has one spelling per time.
+ */
+export function validateTimeOfDay(
+  value: unknown,
+  options?: { fieldLabel?: string },
+): ValidationResult<string> {
+  const label = options?.fieldLabel ?? 'Time';
+  if (!isString(value)) return fail(`${label} must be text.`);
+  const candidate = value.trim();
+  if (!candidate) return fail(`${label} is required.`);
+  if (!TIME_OF_DAY_PATTERN.test(candidate)) {
+    return fail(`${label} must be a time like 09:30 (24-hour, HH:MM).`);
+  }
+  return ok(candidate);
 }
 
 /** A hostname, lower-cased. */

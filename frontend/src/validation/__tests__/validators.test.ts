@@ -38,6 +38,7 @@ import {
   validatePassword,
   validatePlainText,
   validateSearchTerm,
+  validateTimeOfDay,
   validateUrl,
 } from '../validators';
 import { validateBySpec } from '../useFormValidation';
@@ -741,5 +742,27 @@ describe('search boxes are exempt from the content requirement', () => {
   // is the one direction a client must never be.
   it('still allows a punctuation-only search term', () => {
     expect(accepted(validateSearchTerm('???'))).toBe('???');
+  });
+});
+
+describe('validateTimeOfDay', () => {
+  // The same rule the backend applies (TIME_OF_DAY): HH:MM on a 24-hour clock,
+  // one spelling per time, rejected rather than repaired.
+  it.each(['00:00', '09:30', '13:45', '23:59'])('accepts %s', (value) => {
+    expect(accepted(validateTimeOfDay(value))).toBe(value);
+  });
+
+  it.each(['9:30', '24:00', '09:60', '09:30:00', '0930', '09.30', 'ab:cd', ''])('rejects %j', (value) => {
+    rejected(validateTimeOfDay(value));
+  });
+
+  it('trims surrounding space but does not repair a single-digit hour', () => {
+    expect(accepted(validateTimeOfDay(' 09:30 '))).toBe('09:30');
+    rejected(validateTimeOfDay('9:30'));
+  });
+
+  it('refuses a value that is not text', () => {
+    rejected(validateTimeOfDay(930));
+    rejected(validateTimeOfDay(null));
   });
 });

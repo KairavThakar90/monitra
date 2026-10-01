@@ -503,6 +503,7 @@ def test_desktop_rule_kinds_match_the_backend():
 @pytest.mark.parametrize(
     "pattern_name",
     ["EMAIL_PATTERN", "UUID_PATTERN", "DOMAIN_PATTERN", "DATE_PATTERN",
+     "TIME_OF_DAY_PATTERN",
      "HTML_TAG_PATTERN", "ENCODED_MARKUP_PATTERN", "SCRIPT_URI_PATTERN",
      "EVENT_HANDLER_PATTERN", "XML_PROLOG_PATTERN", "CONTROL_CHARACTER_PATTERN"],
 )
@@ -515,3 +516,29 @@ def test_desktop_patterns_match_the_backend(pattern_name):
         getattr(desktop_rules, pattern_name).pattern
         == getattr(backend_rules, pattern_name).pattern
     ), f"{pattern_name} differs between desktop and backend"
+
+
+# ---------------------------------------------------------------------------
+# Time of day (the notification schedule's HH:MM)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("value", ["09:30", "00:00", "23:59", "12:00", "10:05"])
+def test_a_time_of_day_in_hh_mm_is_accepted(value):
+    from core.validation import validate_time_of_day
+
+    result = validate_time_of_day(value)
+
+    assert result.ok and result.value == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["9:30", "24:00", "09:60", "09:30:00", "", "   ", "0930", "09-30", "9.30",
+     "09:3", "ab:cd", "09:30 PM", None, 930, 9.5, True, ["09:30"], {"t": "09:30"}],
+)
+def test_anything_else_is_rejected_as_a_time_of_day(value):
+    from core.validation import validate_time_of_day
+
+    result = validate_time_of_day(value)
+
+    assert not result.ok and result.error

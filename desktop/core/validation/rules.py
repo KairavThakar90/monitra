@@ -62,6 +62,7 @@ class Rule(str, Enum):
     IDEMPOTENCY_KEY = auto()
     VERSION = auto()
     SHA256 = auto()
+    TIME_OF_DAY = auto()
 
 
 # --- Length limits (mirror of the backend's) -------------------------------
@@ -99,6 +100,7 @@ DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
 VERSION_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+TIME_OF_DAY_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 ALLOWED_URL_SCHEMES = ("http", "https")
 
 HTML_TAG_PATTERN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(\s[^<>]*)?/?>")
@@ -135,6 +137,7 @@ __all__ = [
     "IDEMPOTENCY_KEY_PATTERN",
     "VERSION_PATTERN",
     "SHA256_PATTERN",
+    "TIME_OF_DAY_PATTERN",
     "ALLOWED_URL_SCHEMES",
     "HTML_TAG_PATTERN",
     "ENCODED_MARKUP_PATTERN",

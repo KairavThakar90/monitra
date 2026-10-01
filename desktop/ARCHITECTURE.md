@@ -29,6 +29,8 @@ ApplicationRuntime
     ├── NotificationService   notifications + system tray
     ├── NetworkService        the authoritative network state
     ├── UpdateService         announces a newer release (never installs one)
+    ├── WellbeingService      the one scheduler of wellbeing reminders
+    ├── NotificationScheduleService  fetches the admin's notification schedule
     ├── SyncService           the durable queue's only consumer
     ├── TimerService          the authoritative tracked time
     ├── ActivityService       keyboard/mouse activity capture
@@ -722,6 +724,53 @@ The timing rules, each one a defect that reached users:
   clock so a corrected system clock cannot release a backlog, but that clock
   stands still through a sleep on macOS and Linux, so the wall clock is read
   as well to notice one.
+
+### Notification schedule
+
+`NotificationScheduleService`
+([background_services/notifications/schedule_service.py](background_services/notifications/schedule_service.py))
+fetches the schedule an administrator manages from the web
+(`GET /desktop-notifications/schedule`, contract in
+[docs/DESKTOP_NOTIFICATIONS.md](../docs/DESKTOP_NOTIFICATIONS.md)): which
+built-in reminders are on, on which IST weekdays, a daily one's time, and any
+custom notifications. It owns the fetch, the parse and the snapshot -- and
+nothing about timing. **`WellbeingService` is still the only scheduler** and
+still does no network work; it reads the snapshot
+(`runtime.notification_schedule.schedule`) once per tick.
+
+```
+tick()  ->  first tick: read the persisted schedule, mark ready, wake Wellbeing
+        ->  hold while signed out / offline / endpoint absent
+        ->  GET /desktop-notifications/schedule   (slow, jittered: ~5 min)
+        ->  parse defensively  ->  version changed?  ->  swap snapshot, persist, wake
+```
+
+* **Edge-triggered.** The backend answers the same `version` on every poll.
+  The snapshot is replaced, persisted and logged
+  (`NOTIFICATION_SCHEDULE_APPLIED version=… builtin_off=… custom=…`, one line
+  per change, no payload) and Wellbeing is woken only when the version
+  differs.
+* **Failure is silence; the last good schedule stands.** A failed poll, a 404
+  from an older backend, or a response that does not parse changes nothing.
+  The service has no retry loop of its own: the next poll is the next
+  interval.
+* **An immutable snapshot, swapped atomically** (frozen dataclasses, tuples,
+  a read-only mapping), so Wellbeing's thread never sees a half-built one.
+  Parsing drops unknown built-in keys and malformed items and validates times
+  with `validate_time_of_day`; it never raises.
+* **Persisted in `app_state`** (`notifications.schedule`) so a start while
+  offline uses the last schedule. With nothing fetched and nothing persisted
+  the snapshot is None and Wellbeing uses the defaults -- every built-in
+  reminder on, no custom notifications. Nothing is fabricated. Logout wipes
+  `app_state`; `reset_session()` makes the next poll write the record again.
+* **Wellbeing waits for the first load.** Its first tick is held until
+  `ready`, so a reminder an administrator switched off is not shown by a start
+  that has merely not read the persisted schedule yet.
+* **Registered after Wellbeing** (it feeds it), so it stops first.
+  Wellbeing's rules are unchanged: a suppressed interval reminder advances its
+  grid exactly as a shown one would; a custom notification is a daily reminder
+  keyed `custom:<id>`, once per IST day, with the same grace window and
+  spacing; the daily record is pruned of keys that no longer exist.
 
 **Screenshot capture and URL tracking are likewise not implemented** in the
 client; it only reads screenshots the backend already holds. The mock fallback

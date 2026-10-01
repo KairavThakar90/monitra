@@ -53,6 +53,7 @@ from app.projects.service import ProjectService
 from app.tasks.service import TaskService
 from app.updates.service import UpdateApiService
 from app.maintenance.service import MaintenanceApiService
+from app.desktop_notifications import NotificationScheduleApiService
 from app.feedback.service import FeedbackApiService
 from app.portal.service import PortalService
 from app.time_entries.service import TimeEntryService
@@ -73,6 +74,7 @@ from core.logging_setup import (
     install_excepthook, session_generation,
 )
 from background_services.wellbeing import WellbeingService
+from background_services.notifications.schedule_service import NotificationScheduleService
 from core.service import ServiceManager, ServiceState
 from core.tasks import TaskRunner
 from storage.manager import StorageManager, get_storage_manager
@@ -170,6 +172,7 @@ class ApplicationRuntime(QObject):
         self.screenshot_api = ScreenshotApiService(self.api_client)
         self.update_api = UpdateApiService(self.api_client)
         self.maintenance_api = MaintenanceApiService(self.api_client)
+        self.notification_schedule_api = NotificationScheduleApiService(self.api_client)
         self.feedback_service = FeedbackApiService(self.api_client)
         self.portal_service = PortalService(self.api_client)
         self.activity_log_api = ActivityLogApiService(self.api_client)
@@ -211,6 +214,14 @@ class ApplicationRuntime(QObject):
         # stops before them.
         self.wellbeing: WellbeingService = self.services.register(
             WellbeingService(self, self.cache)
+        )
+        # The administrator's notification schedule. The one thing that asks
+        # the backend for it; the wellbeing scheduler above only reads its
+        # snapshot. It feeds that scheduler, so it is registered after it and
+        # stops first -- the scheduler is never left waiting on a producer
+        # that is already gone.
+        self.notification_schedule: NotificationScheduleService = self.services.register(
+            NotificationScheduleService(self, self.notification_schedule_api, self.cache)
         )
         self.sync: SyncService = self.services.register(
             SyncService(
@@ -396,6 +407,7 @@ class ApplicationRuntime(QObject):
         # The check holds while signed out; a login is the moment it can work.
         self.updates.check_now()
         self.maintenance.check_now()
+        self.notification_schedule.check_now()
 
     def on_logout(self) -> None:
         """
@@ -416,6 +428,8 @@ class ApplicationRuntime(QObject):
         # than inheriting "already announced" from the previous one.
         self.updates.reset_session()
         self.maintenance.reset_session()
+        # Logout wipes app_state below, the persisted schedule with it.
+        self.notification_schedule.reset_session()
         if self.timer.is_running():
             self.timer.stop_tracking()
         # A break, and the task it holds, belong to the session that is
@@ -474,6 +488,7 @@ class ApplicationRuntime(QObject):
         if state in NetworkState.USABLE:
             self.sync.wake()
             self.maintenance.check_now()
+            self.notification_schedule.check_now()
 
     def _on_system_resumed(self, gap_seconds: float) -> None:
         """The machine was asleep for `gap_seconds`; re-establish connectivity."""

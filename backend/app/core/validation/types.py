@@ -260,6 +260,12 @@ OptionalVersion = Annotated[
 #: A SHA-256 digest, lower-cased.
 Sha256 = Annotated[str, BeforeValidator(v.validate_sha256)]
 
+#: A required ``HH:MM`` 24-hour time of day.
+TimeOfDay = Annotated[str, BeforeValidator(v.validate_time_of_day)]
+
+#: One or more weekdays, ``0`` = Monday ... ``6`` = Sunday, sorted and de-duplicated.
+Weekdays = Annotated[list, BeforeValidator(v.validate_weekdays)]
+
 #: An escaped search term, ready for a ``LIKE`` pattern.
 OptionalSearch = Annotated[Optional[str], search_field()]
 
@@ -299,6 +305,8 @@ __all__ = [
     "Version",
     "OptionalVersion",
     "Sha256",
+    "TimeOfDay",
+    "Weekdays",
     "OptionalSearch",
     "IdentifierList",
     "IDENTIFIER_MIN",

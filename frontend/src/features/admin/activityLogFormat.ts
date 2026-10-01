@@ -67,6 +67,9 @@ const ACTION_LABELS: Record<string, string> = {
   screenshot_notice_sent: 'Sent screenshot notice',
   maintenance_enabled: 'Enabled maintenance notice',
   maintenance_disabled: 'Disabled maintenance notice',
+  desktop_notification_created: 'Created desktop notification',
+  desktop_notification_updated: 'Updated desktop notification',
+  desktop_notification_deleted: 'Deleted desktop notification',
 };
 
 /**

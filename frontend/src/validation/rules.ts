@@ -53,7 +53,9 @@ export type Rule =
   /** A semantic version, `major.minor.patch`. */
   | 'version'
   /** A SHA-256 digest in lower-case hexadecimal. */
-  | 'sha256';
+  | 'sha256'
+  /** A wall-clock time of day, `HH:MM` on a 24-hour clock. */
+  | 'time_of_day';
 
 // ---------------------------------------------------------------------------
 // Length limits — identical to the backend's
@@ -161,6 +163,13 @@ export const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 /** Lower-case hex, exactly 64 characters. Case is normalised before matching. */
 export const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+
+/**
+ * `HH:MM` on a 24-hour clock, and nothing else -- one spelling per time of day.
+ * The timezone is not part of the value; it belongs to the feature that stores
+ * it (the desktop notification schedule is in IST).
+ */
+export const TIME_OF_DAY_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /**
  * The schemes a stored URL may use. `javascript:` and `data:` are the two that

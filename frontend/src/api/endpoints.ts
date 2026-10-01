@@ -189,6 +189,14 @@ export const ENDPOINTS = {
     MAINTENANCE_HISTORY: (limit: number) =>
       `${API_BASE_URL}/system/maintenance-mode/history?limit=${encodeURIComponent(String(limit))}`,
   },
+  // Administrator-managed desktop notifications (docs/DESKTOP_NOTIFICATIONS.md).
+  // Administrators only; the desktop itself polls `/schedule`.
+  DESKTOP_NOTIFICATIONS: {
+    BASE: `${API_BASE_URL}/desktop-notifications`,
+    BUILTIN: (key: string) => `${API_BASE_URL}/desktop-notifications/builtin/${encodeURIComponent(key)}`,
+    CUSTOM: `${API_BASE_URL}/desktop-notifications/custom`,
+    CUSTOM_BY_ID: (id: string) => `${API_BASE_URL}/desktop-notifications/custom/${encodeURIComponent(id)}`,
+  },
   // The activity trail: every recorded user action, read employee-wise by the
   // Logs page. Needs `view_employees`; a leader is answered with their team.
   ACTIVITY_LOGS: {

@@ -15,6 +15,7 @@ import { AdminTeams } from './features/admin/AdminTeams';
 import { AdminFeedback } from './features/admin/AdminFeedback';
 import { AdminActivityLogs } from './features/admin/AdminActivityLogs';
 import { AdminSettings } from './features/admin/AdminSettings';
+import { AdminDesktopNotifications } from './features/admin/AdminDesktopNotifications';
 import { AdminUserManagement } from './features/admin/AdminUserManagement';
 import { AdminScreenshotPrivacy } from './features/admin/AdminScreenshotPrivacy';
 import { MaintenanceToast } from './components/MaintenanceToast'
@@ -365,6 +366,14 @@ const AppRoutes: React.FC = () => {
         element={
           <SystemAdminRoute>
             <AdminScreenshotPrivacy />
+          </SystemAdminRoute>
+        }
+      />
+      <Route
+        path="/admin/settings/desktop-notifications"
+        element={
+          <SystemAdminRoute>
+            <AdminDesktopNotifications />
           </SystemAdminRoute>
         }
       />

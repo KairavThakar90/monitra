@@ -17,6 +17,7 @@ from app.api.url_usage import router as url_usage_router
 from app.api.time_entry_idle_period import router as idle_period_router
 from app.api.teams import router as teams_router
 from app.api.time_tracking import router as time_tracking_router
+from app.api.desktop_notifications import router as desktop_notifications_router
 from app.api.desktop_release import router as desktop_release_router
 from app.api.feedback import router as feedback_router
 from app.api.email_notifications import router as email_notifications_router
@@ -155,6 +156,7 @@ app.include_router(idle_period_router)
 app.include_router(desktop_release_router)
 app.include_router(feedback_router)
 app.include_router(system_router)
+app.include_router(desktop_notifications_router)
 app.include_router(activity_rollup_router)
 # Registered once, without the /api/v1 prefix: its routes are a scheduler
 # trigger, a public image URL, and (clients_public_router) an invitation's
@@ -181,6 +183,7 @@ app.include_router(idle_period_router, prefix=api_prefix)
 app.include_router(desktop_release_router, prefix=api_prefix)
 app.include_router(feedback_router, prefix=api_prefix)
 app.include_router(system_router, prefix=api_prefix)
+app.include_router(desktop_notifications_router, prefix=api_prefix)
 app.include_router(activity_rollup_router, prefix=api_prefix)
 
 # 3. Registrations for routers that contain their own /api/v1 internal prefix

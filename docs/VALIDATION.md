@@ -99,6 +99,7 @@ or too tight for prose.
 | `SEARCH` | Search boxes | 100 | Plain text; wildcards escaped server-side | Markup |
 | `VERSION` | Release versions | 32 | `major.minor.patch` only | `v1.0.0`, `1.0`, `1.0.0-rc1`, leading zeros |
 | `SHA256` | Artifact checksums | 64 | 64 hex characters; case folded to lower | Any other length or alphabet |
+| `TIME_OF_DAY` | A wall-clock time in a schedule | 5 | `HH:MM`, 24-hour (trimmed) | `9:30`, `24:00`, `09:30:00`, AM/PM — rejected, never repaired |
 
 ### Versions and checksums
 
