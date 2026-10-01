@@ -18,7 +18,7 @@ import { formatApiError } from '../../api/utils';
 import { SEARCH_MAX_LENGTH } from '../../validation';
 import { AssignTaskDialog, type AssignTaskSubmit } from './AssignTaskDialog';
 import { filterByCreated, filterByProjectIds, filterProjects, holdersOf } from './assignTasks';
-import { ALL_TIME_RANGE, DateRangeFilter, ProjectMultiSelect, type DateRange } from '../dashboard/v2/filters';
+import { DEFAULT_RANGE, DateRangeFilter, ProjectMultiSelect, type DateRange } from '../dashboard/v2/filters';
 
 const PROJECTS_PER_PAGE = 10;
 /** One stable empty list, so memos keyed on `projects` do not re-run on every render before the data lands. */
@@ -103,9 +103,9 @@ export const AdminAssignTasks: React.FC = () => {
   const [searchInput, setSearchInput] = useState('');
   const query = useDebouncedValue(searchInput, 250);
   const [page, setPage] = useState(1);
-  // Opens on All Time: this is where a task is handed out, so the default must
-  // not hide the tasks nobody has touched today.
-  const [dateRange, setDateRange] = useState<DateRange>(ALL_TIME_RANGE);
+  // Opens on the last 7 days, the same default as the reports. "All Time" is
+  // one click away in the picker for tasks created earlier.
+  const [dateRange, setDateRange] = useState<DateRange>(DEFAULT_RANGE);
   const [projectIds, setProjectIds] = useState<string[]>([]);
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
   const [dialog, setDialog] = useState<DialogState>(null);
