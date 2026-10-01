@@ -2,6 +2,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from fastapi import HTTPException
+
 from app.schemas.teams import TeamMemberCardResponse, TeamProjectCardResponse, TeamSummaryResponse
 from app.services.teams import TeamsService, _initials, _percent, _status_key
 
@@ -55,6 +57,44 @@ class TeamsTests(unittest.TestCase):
         for clause in (leaders_where, members_where):
             self.assertIn("organization_id", clause)
             self.assertIn("is_active", clause)
+
+    def test_only_leader_roles_are_listed_as_team_leaders(self):
+        """The Teams directory lists leaders, not administrators.
+
+        An administrator can still lead a project (LEADER_ROLE_NAMES), but the
+        list, the Team Leaders tile and the leader lookup all use the narrower
+        TEAM_LEADER_ROLE_NAMES, so they cannot disagree with each other.
+        """
+        from app.core.permissions import LEADER_ROLE_NAMES, TEAM_LEADER_ROLE_NAMES
+
+        self.assertIn("administrator", LEADER_ROLE_NAMES)
+        self.assertNotIn("administrator", TEAM_LEADER_ROLE_NAMES)
+        self.assertEqual(set(TEAM_LEADER_ROLE_NAMES), {"leader", "project_leader"})
+
+        admin = SimpleNamespace(id=1, organization_id=1, role_name="administrator")
+
+        db = MagicMock()
+        db.scalar.return_value = 0
+        db.scalars.return_value.all.return_value = []
+        TeamsService.leaders(db, admin, 1, 20, None)
+        listing = db.scalar.call_args_list[0][0][0].compile().params
+        self.assertNotIn("administrator", [v for p in listing.values() for v in (p if isinstance(p, (list, tuple, set)) else [p])])
+        self.assertIn("leader", [v for p in listing.values() for v in (p if isinstance(p, (list, tuple, set)) else [p])])
+
+        db = MagicMock()
+        db.scalar.return_value = 0
+        TeamsService.summary(db, admin)
+        tile = db.scalar.call_args_list[0][0][0].compile().params
+        self.assertNotIn("administrator", [v for p in tile.values() for v in (p if isinstance(p, (list, tuple, set)) else [p])])
+
+        # Opening an administrator's team page directly is "not found" too.
+        db = MagicMock()
+        db.scalar.return_value = None
+        with self.assertRaises(HTTPException) as caught:
+            TeamsService.leader_detail(db, admin, 1)
+        self.assertEqual(caught.exception.status_code, 404)
+        lookup = db.scalar.call_args_list[0][0][0].compile().params
+        self.assertNotIn("administrator", [v for p in lookup.values() for v in (p if isinstance(p, (list, tuple, set)) else [p])])
 
     def test_member_card_serializes_task_status(self):
         member = SimpleNamespace(id=7, name="Alice Cooper", designation="Engineer", role_name="employee")

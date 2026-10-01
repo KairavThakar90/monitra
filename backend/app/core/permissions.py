@@ -331,3 +331,10 @@ def with_role_aliases(roles: Iterable[str]) -> list[str]:
 #: and project creation, so a role cannot be assignable on one screen and
 #: unknown on the next.
 LEADER_ROLE_NAMES = with_role_aliases(["administrator", "leader", "project_leader"])
+
+#: The people the Teams screen lists as team leaders: the leader roles only.
+#:
+#: An administrator *may* lead a project (so `LEADER_ROLE_NAMES` above still
+#: includes them for the picker and for project creation), but the Teams
+#: directory is a list of leaders, and administrators are not shown in it.
+TEAM_LEADER_ROLE_NAMES = with_role_aliases(["leader", "project_leader"])

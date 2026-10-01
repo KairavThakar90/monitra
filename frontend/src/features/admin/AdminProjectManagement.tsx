@@ -506,6 +506,8 @@ export const AdminProjectManagement: React.FC = () => {
   const [search, setSearch] = useState('');
   const [searchError, setSearchError] = useState<string | null>(null);
   const [filterStatusId, setFilterStatusId] = useState<number | null>(null);
+  /** '' means every project; otherwise the `billing_type` the API filters on. */
+  const [filterBilling, setFilterBilling] = useState<'' | 'fixed' | 'free'>('');
   /** Empty means every member — the same convention every other filter uses. */
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   const { data: allMembers = [] } = useGetAllMembersQuery();
@@ -547,6 +549,7 @@ export const AdminProjectManagement: React.FC = () => {
     limit: pageSize,
     search: projectSearchCheck.ok ? projectSearchCheck.value : '',
     status_id: filterStatusId,
+    billing_type: filterBilling || null,
     employee_ids: selectedMemberIds,
   });
   const [fetchProjectsForExport] = useLazyGetProjectsQuery();
@@ -832,6 +835,7 @@ export const AdminProjectManagement: React.FC = () => {
           limit: 100,
           search: debouncedSearch,
           status_id: filterStatusId,
+          billing_type: filterBilling || null,
           employee_ids: selectedMemberIds,
         }).unwrap();
         exportedProjects.push(...(response.items || []));
@@ -866,6 +870,7 @@ export const AdminProjectManagement: React.FC = () => {
         [
           ['Search', debouncedSearch || 'All projects'],
           ['Status', metadata?.project_statuses?.find((status) => status.id === filterStatusId)?.project_status || 'All statuses'],
+          ['Billing', filterBilling === 'fixed' ? 'Billing' : filterBilling === 'free' ? 'Free' : 'All billing types'],
           ['Members', selectedMemberIds.length
             ? allMembers.filter((m) => selectedMemberIds.includes(m.id)).map((m) => m.name).join('; ')
             : 'All members'],
@@ -1011,6 +1016,28 @@ export const AdminProjectManagement: React.FC = () => {
                 onChange={(val) => setFilterStatusId(val === 0 ? null : val)}
                 className="w-full sm:w-auto min-h-[38px] flex items-center"
               />
+            <div className="relative">
+              <select
+                aria-label="Filter by billing"
+                value={filterBilling}
+                onChange={(e) => { setFilterBilling(e.target.value as '' | 'fixed' | 'free'); setPage(1); }}
+                className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
+              >
+                <option value="">Budget &amp; Billing</option>
+                <option value="fixed">Billing</option>
+                <option value="free">Free</option>
+              </select>
+              <svg
+                className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                aria-hidden="true"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+              </svg>
+            </div>
             <MemberMultiSelect
               members={allMembers}
               selected={selectedMembers}

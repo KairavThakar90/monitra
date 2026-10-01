@@ -3,7 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { V2Shell } from "./V2Shell";
 import { Sparkline, TrendAreaChart, RankedBars, Donut, Legend, FloatingCard, useHoverAnchor } from "./charts";
 import { AppIcon } from "../../../components/AppIcon";
-import { DateRangeFilter, DEFAULT_RANGE } from "./filters";
+import { DateRangeFilter, DEFAULT_RANGE, ProjectMultiSelect } from "./filters";
+import { useGetAllProjectsQuery } from "../../../store/api/projectsApi";
 import type { DateRange } from "./filters";
 import { brand, series } from "./theme";
 import { useGetReactDashboardQuery } from "../../../store/api/dashboardApi";
@@ -154,14 +155,23 @@ export const DashboardV2: React.FC = () => {
   const navigate = useNavigate();
   const [range, setRange] = useState<DateRange>(DEFAULT_RANGE);
   const [projectTab, setProjectTab] = useState<ProjectFilterTab>("top");
+  /** Empty means every project -- the convention every other filter uses. */
+  const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
+  const { data: allProjects } = useGetAllProjectsQuery();
+  const projectIds = selectedProjects.length ? selectedProjects.map(Number) : undefined;
 
   const { data, isFetching, isError } = useGetReactDashboardQuery({
     start_date: range.from,
     end_date: range.to,
+    project_id: projectIds,
     top_n: TOP_N,
   });
-  // Same endpoint, previous window — only used for the delta badges.
-  const { data: previous } = useGetReactDashboardQuery({ ...previousRange(range), top_n: TOP_N });
+  // Same endpoint, previous window and same projects -- only used for the delta badges.
+  const { data: previous } = useGetReactDashboardQuery({
+    ...previousRange(range),
+    project_id: projectIds,
+    top_n: TOP_N,
+  });
 
   /**
    * The cache is restored from the previous visit, so after a refresh RTK Query
@@ -323,9 +333,16 @@ export const DashboardV2: React.FC = () => {
       <div className="w-full space-y-6 pb-20">
         {/* Filters */}
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E2E8F0] bg-white p-2 pl-4 shadow-sm">
-          <DateRangeFilter value={range} onChange={setRange} />
+          <div className="flex flex-wrap items-center gap-3">
+            <DateRangeFilter value={range} onChange={setRange} />
+            <ProjectMultiSelect
+              projects={allProjects ?? []}
+              selected={selectedProjects}
+              onChange={setSelectedProjects}
+            />
+          </div>
           <button
-            onClick={() => setRange(DEFAULT_RANGE)}
+            onClick={() => { setRange(DEFAULT_RANGE); setSelectedProjects([]); }}
             className="rounded-lg border border-[#E2E8F0] px-4 py-2 text-[13px] font-bold text-[#64748B] transition hover:bg-[#F8FAFC] hover:text-[#0F172A]"
           >
             Reset
