@@ -105,6 +105,17 @@ const MemberRow: React.FC<{
   const panelId = `member-breakdown-${member.member_id}`;
   const dayCount = member.dates.length;
 
+  // Each day is an accordion of its own. The most recent day opens with the
+  // member, so what someone most often wants is already on screen; an explicit
+  // click (or Expand / Collapse all) overrides that for any day.
+  const [dayOverrides, setDayOverrides] = useState<Record<string, boolean>>({});
+  const isDayOpen = (date: string, index: number) => dayOverrides[date] ?? index === 0;
+  const toggleDay = (date: string, index: number) =>
+    setDayOverrides((current) => ({ ...current, [date]: !isDayOpen(date, index) }));
+  const allDaysOpen = member.dates.every((d, index) => isDayOpen(d.date, index));
+  const setAllDays = (open: boolean) =>
+    setDayOverrides(Object.fromEntries(member.dates.map((d) => [d.date, open])));
+
   return (
     <li className="border-b border-[#F1F5F9] last:border-b-0">
       <button
@@ -138,27 +149,58 @@ const MemberRow: React.FC<{
       </button>
 
       <div id={panelId} hidden={!isOpen} className="space-y-3 bg-[#F8FAFC] px-5 pb-4 pt-1">
-        {member.dates.map((d) => (
-          <div key={d.date} className="overflow-hidden rounded-xl border border-[#E2E8F0] bg-white">
-            <div className="flex items-center justify-between bg-[#F8FAFC] px-4 py-2">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-[#64748B]">
-                {formatDateLabel(d.date)}
-              </span>
-              <span className="text-[11px] font-bold text-[#64748B]">{formatHMS(d.seconds)}</span>
-            </div>
-            <ul>
-              {d.items.map((item) => (
-                <li
-                  key={item.name}
-                  className="flex items-center justify-between gap-3 border-t border-[#F1F5F9] px-4 py-2"
-                >
-                  <span className="truncate text-[13px] font-semibold text-[#334155]">{item.name}</span>
-                  <span className="shrink-0 text-[13px] font-bold text-[#0F172A]">{formatHMS(item.seconds)}</span>
-                </li>
-              ))}
-            </ul>
+        {dayCount > 1 && (
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setAllDays(!allDaysOpen)}
+              className="text-[11px] font-bold uppercase tracking-wider text-[#2563EB] hover:underline"
+            >
+              {allDaysOpen ? "Collapse all days" : "Expand all days"}
+            </button>
           </div>
-        ))}
+        )}
+        {member.dates.map((d, index) => {
+          const open = isDayOpen(d.date, index);
+          const dayPanelId = `${panelId}-${d.date}`;
+          return (
+            <div key={d.date} className="overflow-hidden rounded-xl border border-[#E2E8F0] bg-white">
+              <button
+                type="button"
+                aria-expanded={open}
+                aria-controls={dayPanelId}
+                onClick={() => toggleDay(d.date, index)}
+                className="flex w-full items-center justify-between gap-3 bg-[#F8FAFC] px-4 py-2 text-left transition hover:bg-[#F1F5F9]"
+              >
+                <span className="text-[11px] font-bold uppercase tracking-wider text-[#64748B]">
+                  {formatDateLabel(d.date)}
+                </span>
+                <span className="flex items-center gap-3">
+                  <span className="text-[11px] font-bold text-[#64748B]">{formatHMS(d.seconds)}</span>
+                  <svg
+                    className={`h-3.5 w-3.5 shrink-0 text-[#94A3B8] transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </span>
+              </button>
+              <ul id={dayPanelId} hidden={!open}>
+                {d.items.map((item) => (
+                  <li
+                    key={item.name}
+                    className="flex items-center justify-between gap-3 border-t border-[#F1F5F9] px-4 py-2"
+                  >
+                    <span className="truncate text-[13px] font-semibold text-[#334155]">{item.name}</span>
+                    <span className="shrink-0 text-[13px] font-bold text-[#0F172A]">{formatHMS(item.seconds)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
       </div>
     </li>
   );
@@ -182,7 +224,7 @@ export const MemberBreakdownAccordion: React.FC<{
       <header className="border-b border-[#F1F5F9] px-6 py-5">
         <h2 className="text-[16px] font-bold tracking-tight text-[#0F172A]">Member Breakdown</h2>
         <p className="mt-0.5 text-[12px] text-[#94A3B8]">
-          Click a member to see it day-by-day, by {itemLabel.toLowerCase()}
+          Click a member, then a day, to see it by {itemLabel.toLowerCase()}
         </p>
       </header>
 
