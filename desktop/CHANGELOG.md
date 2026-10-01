@@ -20,6 +20,12 @@ re-grant a permission.
 
 ## [Unreleased]
 
+## [1.3.1]
+
+The installer and the macOS bundles are still unsigned: Windows SmartScreen
+will warn on first run ("More info" → "Run anyway"), and macOS will refuse
+the app until you allow it under System Settings → Privacy & Security.
+
 ### Changed
 
 - **The project list shows 20 projects per page**, up from 10.
@@ -66,6 +72,12 @@ re-grant a permission.
   and Feedback category fields was a boxed button with a broken border, and
   on the idle Reassign dialog it was missing altogether. Every drop-down now
   has a clean arrow and the same list.
+- A long notification title wraps onto a second line instead of being cut
+  off.
+- **The last application you were using is no longer recorded twice** when
+  Monitra closes while a timer is still running — a Windows shutdown, or a
+  restart to install an update. The final stretch of application time was
+  stored two times.
 
 ## [1.3.0]
 

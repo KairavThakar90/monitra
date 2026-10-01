@@ -316,6 +316,19 @@ class Soak:
         failures = []
         if remaining > 0:
             failures.append(f"queue did not drain ({remaining} left)")
+            # Which actions are stuck, not only how many: "3 left" reads the
+            # same for a burst that needed ten more seconds and for a stop
+            # that can never be sent.
+            for row in self.storage.query_all(
+                "SELECT action_type, status, COUNT(*) AS n, MAX(retry_count) AS retries, "
+                "MAX(defer_count) AS defers FROM pending_actions "
+                "WHERE status IN ('pending', 'processing', 'retry') "
+                "GROUP BY action_type, status ORDER BY n DESC"
+            ):
+                failures.append(
+                    f"  left in queue: {row['n']} x {row['action_type']} ({row['status']}, "
+                    f"max retries {row['retries']}, max defers {row['defers']})"
+                )
         if threads and max(threads) > threads[0] + 8:
             failures.append(f"thread growth: {threads[0]} -> {max(threads)}")
         if max(pool) > self.runtime.tasks.max_concurrency():
@@ -388,6 +401,18 @@ class Soak:
             print("\nFAILED:")
             for failure in failures:
                 print(f"  - {failure}")
+            if os.environ.get("GITHUB_ACTIONS"):
+                # A job's log needs repository access to read; its annotations
+                # are served with the check run (see run_tests_per_module.py).
+                # The reasons and the figures behind them only -- nothing from
+                # the environment.
+                detail = failures + [
+                    f"queue min {min(queues)} / max {max(queues)} / final {remaining}",
+                    f"threads {threads[0]} -> peak {max(threads)}" if threads else "threads n/a",
+                    f"backend calls {dict(self.backend.calls)}",
+                ]
+                message = "\n".join(detail).replace("%", "%25").replace("\n", "%0A")
+                print(f"::error title=Soak failed::{message}", flush=True)
             return 1
         print("\nPASS: no thread growth, no duplicates, queue drained, clean shutdown.")
         return 0

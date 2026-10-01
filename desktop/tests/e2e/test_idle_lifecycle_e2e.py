@@ -159,7 +159,10 @@ def test_the_popup_answer_reaches_every_display(
     _pump(qapp, lambda: bool(resolved), 30, "the answer to be accepted")
     _pump(qapp, lambda: idle.pending_period() is None, 5, "the popup state to clear")
 
-    counted = keep and action == "resume"
+    # Kept idle time counts whichever button follows: the radio button decides
+    # the time, the action button decides the timer (`counts_idle_time` in
+    # backend/app/services/time_entry_idle_period.py).
+    counted = keep
     period_row = api.get(f"/idle-periods/{period['id']}").json()
     assert period_row["status"] == "resolved"
     assert period_row["counted"] is counted

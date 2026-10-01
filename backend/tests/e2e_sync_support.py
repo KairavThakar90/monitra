@@ -117,6 +117,12 @@ def provision() -> dict:
     with engine.begin() as conn:
         employee_id = _insert_user(conn, org, stamp, "employee", "employee", EMPLOYEE_PERMISSIONS)
         admin_id = _insert_user(conn, org, stamp, "admin", "administrator", ADMIN_PERMISSIONS)
+        # Creating a project on the web names an owner, and only a user granted
+        # the capability may be one (app/services/project_ownership.py). The
+        # disposable admin owns the projects this suite creates.
+        conn.execute(
+            text("UPDATE users SET can_own_projects = true WHERE id = :id"), {"id": admin_id}
+        )
         active_status = _status_id(conn, "project_statuses", "active")
         todo_status = _status_id(conn, "task_statuses", "todo")
         # Project A exists before the desktop opens: the "loads automatically

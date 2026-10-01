@@ -146,6 +146,24 @@ class TestUrlUsageService(unittest.TestCase):
         # Verify new session started
         self.assertEqual(self.service._current_domain, "stackoverflow.com")
 
+    @patch("background_services.activity.url_usage_service.get_active_window_details")
+    def test_a_shutdown_while_tracking_writes_the_open_session_once(self, mock_active_window):
+        """The runtime stops this service, then `TimerService.on_stop` stops
+        its trackers. Both flush, and the second write reused the session's
+        `client_event_id` -- an IntegrityError in the local queue."""
+        self.service.start_tracker({"entry_id": 100})
+        mock_active_window.return_value = ("chrome.exe", "Issues · GitHub", None, 100, 0)
+        self.service.tick()
+        now = time.monotonic()
+        self.service._session_start = now - 10.0
+        self.service._last_observed = now
+
+        self.service.on_stop(1000)
+        self.service.stop_tracker()
+
+        self.cache.save_url_usage.assert_called_once()
+        self.assertEqual(self.cache.save_url_usage.call_args.kwargs["domain"], "github.com")
+
 
 class TestAddressBarExtraction(unittest.TestCase):
     """The real URL source: the browser's address bar, read via UI Automation.

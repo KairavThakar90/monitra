@@ -287,4 +287,9 @@ class UrlUsageService(LoopService):
     def on_stop(self, timeout_ms: int) -> bool:
         self._observe_now()
         self._flush_session()
+        # Written, so forget it -- as in `AppUsageService.on_stop`. Left open,
+        # the `stop_tracker` that `TimerService.on_stop` calls next wrote the
+        # session again under the same `client_event_id`, which the local
+        # queue refused with an IntegrityError on every such shutdown.
+        self._reset_session()
         return super().on_stop(timeout_ms)

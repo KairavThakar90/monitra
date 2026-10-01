@@ -288,4 +288,9 @@ class AppUsageService(LoopService):
     def on_stop(self, timeout_ms: int) -> bool:
         self._observe_now()
         self._flush_segment()
+        # Written, so forget it. When a session is still running at shutdown
+        # (an OS shutdown, an update restart), `TimerService.on_stop` calls
+        # `stop_tracker` after this, which flushes again -- and with the
+        # segment left open that stored the same stretch a second time.
+        self._reset_segment()
         return super().on_stop(timeout_ms)

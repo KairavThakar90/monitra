@@ -237,6 +237,7 @@ def test_a_project_created_on_the_web_appears_without_refresh(qapp, desktop, fix
 
     created = web.post("/api/v1/projects", json={
         "project_name": f"E2E sync B {fixture['stamp']}", "status_id": fixture["active_status_id"],
+        "owner_id": fixture["admin"]["user_id"],
         "leader_id": fixture["admin"]["user_id"], "employee_ids": [fixture["employee"]["user_id"]],
         "deadline": "2030-01-01", "billing_type": "free",
     })
@@ -271,6 +272,7 @@ def test_removing_the_member_on_the_web_makes_the_project_disappear(qapp, deskto
     runtime, window = desktop
     created = web.post("/api/v1/projects", json={
         "project_name": f"E2E sync C {fixture['stamp']}", "status_id": fixture["active_status_id"],
+        "owner_id": fixture["admin"]["user_id"],
         "leader_id": fixture["admin"]["user_id"], "employee_ids": [fixture["employee"]["user_id"]],
         "deadline": "2030-01-01", "billing_type": "free",
     })

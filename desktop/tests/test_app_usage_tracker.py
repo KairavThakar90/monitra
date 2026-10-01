@@ -88,6 +88,23 @@ class TestAppUsageService(unittest.TestCase):
         self.cache.save_app_usage.assert_called_once()
         self.assertIsNone(self.service._entry_id)
 
+    def test_a_shutdown_while_tracking_writes_the_open_segment_once(self):
+        """The runtime stops this service, then `TimerService.on_stop` stops
+        its trackers. Both flush, and the segment was stored twice."""
+        self.service._tracking = True
+        self.service._entry_id = 101
+        self.service._current_app = "VS Code"
+        self.service._current_title = "main.py"
+        self.service._segment_start = time.monotonic() - 10.0
+        self.service._last_observed = time.monotonic()
+        self.service._segment_recorded_at = "2026-08-24T10:00:00Z"
+
+        self.service.on_stop(1000)
+        self.service.stop_tracker()
+
+        self.cache.save_app_usage.assert_called_once()
+        self.assertEqual(self.cache.save_app_usage.call_args.kwargs["duration_seconds"], 10)
+
     @patch("background_services.activity.app_usage_service.get_active_window_details")
     def test_nothing_is_recorded_when_no_session_is_tracked(self, active_window):
         active_window.return_value = window("Code", "main.py")
