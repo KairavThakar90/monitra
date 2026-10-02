@@ -307,7 +307,7 @@ rem when it had no console (see _windows_launch), and a bare `find` can resolve
 rem to a different program entirely when PATH carries a Unix toolkit. Absolute
 rem System32 paths for the same reason.
 set ALIVE=
-for /f "tokens=2 delims=," %%A in ('%SystemRoot%\System32	asklist.exe /FI "PID eq %MONITRA_UPDATE_PID%" /NH /FO CSV 2^>nul') do if "%%~A"=="%MONITRA_UPDATE_PID%" set ALIVE=1
+for /f "tokens=2 delims=," %%A in ('%SystemRoot%\System32\tasklist.exe /FI "PID eq %MONITRA_UPDATE_PID%" /NH /FO CSV 2^>nul') do if "%%~A"=="%MONITRA_UPDATE_PID%" set ALIVE=1
 if not defined ALIVE goto ready
 set /a TRIES-=1
 if %TRIES% LEQ 0 goto ready
@@ -356,7 +356,8 @@ def _write_windows_helper(version: str) -> Path:
     fails exactly where IT control is tightest.
     """
     script = updates_dir() / f"apply-update-{_safe_token(version)}.cmd"
-    script.write_text(_WINDOWS_HELPER.replace("\n", "\r\n"), encoding="ascii")
+    # Bytes, not write_text: on Windows text mode would turn each "\r\n" into "\r\r\n".
+    script.write_bytes(_WINDOWS_HELPER.replace("\n", "\r\n").encode("ascii"))
     return script
 
 

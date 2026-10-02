@@ -896,11 +896,15 @@ class TestWindowsHelper:
         assert list(updates_dir().glob("apply-update-*")) == [], "the helper deletes itself"
 
     def test_the_helper_waits_for_monitra_to_exit_before_installing(self, tmp_path, monkeypatch, fake_binaries):
-        text, _result, victim_exit, _ = _run_helper(monkeypatch, tmp_path, fake_binaries, victim_seconds=3)
+        text, _result, victim_exit, _ = _run_helper(monkeypatch, tmp_path, fake_binaries, victim_seconds=12)
         stamp = [line for line in text.splitlines() if line.startswith("INSTALLER ")][0].split()[1]
         installer_started = int(stamp) / 1000.0
         # Allow a moment of clock-resolution slack; the point is that the
         # installer did not start while the process was still alive.
+        # The victim outlives the helper's grace period (3 s) by a wide margin, so a helper
+        # that does not really wait cannot pass by coincidence -- an earlier version of
+        # this test used a 3 s victim and passed while the helper never ran tasklist at all
+        # (a stray TAB had replaced the backslash in `System32\tasklist.exe`).
         assert installer_started >= victim_exit - 0.5
 
     def test_a_failing_installer_is_recorded_not_hidden(self, tmp_path, monkeypatch, fake_binaries):
@@ -919,6 +923,18 @@ class TestWindowsHelper:
         assert "INSTALLER" in text and "RELAUNCHED" in text
         assert result["exit_code"] == "0"
         assert not artifact.exists()
+
+    def test_the_helper_script_has_no_control_characters_so_every_command_path_is_intact(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MONITRA_DATA_DIR", str(tmp_path))
+        from core import paths
+
+        paths.reset_cache()
+        raw = installer._write_windows_helper("9.9.9").read_bytes()
+        stray = sorted({b for b in raw if b < 32 and b not in (10, 13)})
+        assert stray == [], f"control characters in the helper: {stray}"
+        backslash = bytes([92])
+        assert b"System32" + backslash + b"tasklist.exe" in raw and b"System32" + backslash + b"ping.exe" in raw
+        assert bytes([13, 13]) not in raw, "line endings were doubled"
 
     def test_the_helper_script_is_pure_ascii_and_contains_no_path(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MONITRA_DATA_DIR", str(tmp_path / "Jos\u00e9"))
