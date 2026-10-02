@@ -45,6 +45,20 @@ export interface MemberAccessArgs {
   can_add_tasks?: boolean;
 }
 
+/** Headcounts of active members, for the numbers beside the Add Task and Login columns. */
+export interface MemberAccessSummary {
+  add_task_allowed: number;
+  login_allowed: number;
+  active_members: number;
+}
+
+/**
+ * The summary's own cache tag. Anything that can change who is allowed, or who
+ * is active, invalidates it; the member lists never provide it, so refreshing
+ * the counts does not refetch a single page of the directory.
+ */
+const ACCESS_SUMMARY_TAG = { type: 'Member' as const, id: 'ACCESS_SUMMARY' };
+
 export interface MemberAccessResult {
   updated: Member[];
   failed: { id: number; detail: string }[];
@@ -150,6 +164,11 @@ export const membersApi = baseApi.injectEndpoints({
     }),
 
     
+    getMemberAccessSummary: builder.query<MemberAccessSummary, void>({
+      query: () => ({ url: ENDPOINTS.MEMBERS.ACCESS_SUMMARY }),
+      providesTags: [ACCESS_SUMMARY_TAG],
+    }),
+
     getAllMembers: builder.query<Member[], void>({
       async queryFn(_arg, _api, _extraOptions, baseQuery) {
         const firstResult = await baseQuery(`${ENDPOINTS.MEMBERS.GET_ALL}?page=1&limit=100`);
@@ -179,14 +198,14 @@ export const membersApi = baseApi.injectEndpoints({
       // The members list has no explicit ordering server-side, so we cannot know
       // which page a new row lands on. This is the one mutation that still needs
       // the list refetched; the screen stays interactive while it happens.
-      invalidatesTags: [{ type: 'Member', id: 'LIST' }, { type: 'Team', id: 'LIST' }],
+      invalidatesTags: [{ type: 'Member', id: 'LIST' }, { type: 'Team', id: 'LIST' }, ACCESS_SUMMARY_TAG],
     }),
 
     updateMember: builder.mutation<Member, { id: number; body: Partial<Member> }>({
       query: ({ id, body }) => ({ url: ENDPOINTS.MEMBERS.UPDATE(id), method: 'PATCH', body }),
       // Team summaries count members by role/status, so they are marked stale
       // and refresh the next time a Teams screen is opened — no request now.
-      invalidatesTags: [{ type: 'Team', id: 'LIST' }],
+      invalidatesTags: [{ type: 'Team', id: 'LIST' }, ACCESS_SUMMARY_TAG],
       async onQueryStarted({ id, body }, { dispatch, getState, queryFulfilled }) {
         const optimistic = patchEveryCachedQuery({ dispatch, getState }, 'getMembers', (draft, arg) => {
           const index = draft.items?.findIndex((m: Member) => m.id === id) ?? -1;
@@ -215,6 +234,9 @@ export const membersApi = baseApi.injectEndpoints({
     // for each member it saved, and any it refused are put back.
     updateMemberAccess: builder.mutation<MemberAccessResult, MemberAccessArgs>({
       query: (body) => ({ url: ENDPOINTS.MEMBERS.UPDATE_ACCESS, method: 'PATCH', body }),
+      // Re-read the counts from the server rather than guessing them: a bulk
+      // change can be partly refused, and the server is what counts.
+      invalidatesTags: [ACCESS_SUMMARY_TAG],
       async onQueryStarted({ member_ids, ...switches }, { dispatch, getState, queryFulfilled }) {
         const ids = new Set(member_ids);
         const optimistic = patchEveryCachedQuery({ dispatch, getState }, 'getMembers', (draft) => {
@@ -244,7 +266,7 @@ export const membersApi = baseApi.injectEndpoints({
     // member with status "inactive"), so that is what we reflect locally.
     deleteMember: builder.mutation<Member, number>({
       query: (id) => ({ url: ENDPOINTS.MEMBERS.DELETE(id), method: 'DELETE' }),
-      invalidatesTags: [{ type: 'Team', id: 'LIST' }],
+      invalidatesTags: [{ type: 'Team', id: 'LIST' }, ACCESS_SUMMARY_TAG],
       async onQueryStarted(id, { dispatch, getState, queryFulfilled }) {
         const optimistic = patchEveryCachedQuery({ dispatch, getState }, 'getMembers', (draft, arg) => {
           const index = draft.items?.findIndex((m: Member) => m.id === id) ?? -1;
@@ -266,6 +288,7 @@ export const membersApi = baseApi.injectEndpoints({
 export const {
   useGetMemberDetailsQuery,
   useGetMembersQuery,
+  useGetMemberAccessSummaryQuery,
   useLazyGetMembersQuery,
   useGetAllMembersQuery,
   useCreateMemberMutation,
