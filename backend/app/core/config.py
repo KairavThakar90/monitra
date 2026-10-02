@@ -226,6 +226,13 @@ class Settings(BaseSettings):
     #: Shown as "need help? write to ..." in both templates. Omitted when empty.
     MONITRA_SUPPORT_EMAIL: str = ""
 
+    # ── Member access emails ──────────────────────────────────────────────
+    #: Whether an administrator moving a member's Login or Add Task switch
+    #: emails that member. A runtime kill switch only: a switch that did not
+    #: move is never queued, and a retry of one that did cannot send twice --
+    #: both are properties of the outbox key, not of this flag.
+    ACCESS_CHANGE_EMAIL_ENABLED: bool = True
+
     # ── Client invitations ────────────────────────────────────────────────
     #: This backend's own publicly reachable base URL. The invitation email's
     #: Approve/Reject buttons are direct backend GET links (not frontend

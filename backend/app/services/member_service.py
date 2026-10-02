@@ -11,6 +11,7 @@ from app.repositories.member import MemberRepository
 from app.core.security import has_permission
 from app.schemas.member import MemberAccessUpdate, MemberCreate, MemberUpdate
 from app.services.activity_log import ActivityLogService
+from app.services.email.workflows import MEMBER_ACCESS_SWITCHES, queue_member_access_notification
 from app.services.member_scope import may_view_in_directory, may_view_member, visible_directory_ids
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ class MemberService:
         return member
 
     @staticmethod
-    def update(db: Session, current_user: User, member_id: int, payload: MemberUpdate):
+    def update(db: Session, current_user: User, member_id: int, payload: MemberUpdate, background_tasks=None):
         member = MemberService.get(db, current_user, member_id)
         data = payload.model_dump(exclude_unset=True, mode="python")
         if data.get("can_login") is None:
@@ -106,7 +107,6 @@ class MemberService:
         # out with nobody left able to let them back in.
         if data.get("can_login") is False and member.id == current_user.id:
             raise HTTPException(status.HTTP_409_CONFLICT, "You cannot exclude your own account from logging in.")
-        excluding = data.get("can_login") is False and member.can_login is not False
         if "email" in data:
             existing = MemberRepository.get_by_email(db, data["email"])
             if existing and existing.id != member.id:
@@ -117,6 +117,14 @@ class MemberService:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Date of birth cannot be in the future")
         if dates["date_of_joining"] and dates["date_of_joining"] > date.today():
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Date of joining cannot be in the future")
+        # Lock the row and re-read it, after every check that can refuse the
+        # request so a refusal never holds a lock. Whether a switch *moved* is
+        # what logs the change, ends a session and emails the member, so two
+        # administrators pressing the same button at once must see each other's
+        # result: the second finds nothing changed and does none of it, rather
+        # than both reading the old position and both acting.
+        db.refresh(member, with_for_update=True)
+        excluding = data.get("can_login") is False and member.can_login is not False
         # Read before the save overwrites them: a switch is recorded only when
         # it actually moved, so re-sending the current position logs nothing.
         switched = {
@@ -129,6 +137,9 @@ class MemberService:
         except IntegrityError:
             db.rollback()
             raise HTTPException(status.HTTP_409_CONFLICT, "A member with this email already exists.")
+        # The instant the switch was persisted, read while `saved` is still
+        # loaded: it identifies this transition in the email outbox.
+        changed_at = getattr(saved, "updated_at", None)
         if excluding:
             MemberService._end_member_access(db, saved)
         for key, allowed in switched.items():
@@ -140,6 +151,7 @@ class MemberService:
                 ),
                 saved,
             )
+        MemberService._notify_access_change(db, saved, switched, changed_at, background_tasks)
         if other_fields:
             MemberService._record(
                 db, current_user, ActivityLogAction.MEMBER_UPDATED,
@@ -152,7 +164,34 @@ class MemberService:
         return saved
 
     @staticmethod
-    def update_access(db: Session, current_user: User, payload: MemberAccessUpdate) -> dict:
+    def _notify_access_change(db: Session, member: User, switched: dict, changed_at, background_tasks) -> None:
+        """Email the member about each switch that actually moved.
+
+        Runs after the change is committed and cannot affect it: queueing never
+        raises (see `queue_member_access_notification`), and the delivery attempt
+        is scheduled for after the response so a slow mail server delays nobody.
+        The outbox sweeper delivers anything that attempt misses.
+        """
+        from app.services.email import deliver_in_background
+
+        for key, allowed in switched.items():
+            notification_id = queue_member_access_notification(
+                db, member, switch=MEMBER_ACCESS_SWITCHES[key], allowed=bool(allowed), changed_at=changed_at,
+            )
+            if notification_id is not None and background_tasks is not None:
+                background_tasks.add_task(deliver_in_background, notification_id)
+
+    @staticmethod
+    def access_summary(db: Session, current_user: User) -> dict:
+        """Headcounts behind "Add Task (n)" and "Login (n)" on the Members page.
+
+        Scoped like the directory itself: a leader is counted over their own
+        team, every other role over the organization.
+        """
+        return MemberRepository.access_counts(db, current_user.organization_id, visible_directory_ids(db, current_user))
+
+    @staticmethod
+    def update_access(db: Session, current_user: User, payload: MemberAccessUpdate, background_tasks=None) -> dict:
         """Set the sign-in and/or Add Task switch on several members at once.
 
         Each member goes through `update` -- the one place that records the
@@ -176,7 +215,7 @@ class MemberService:
                 target = MemberService.get(db, current_user, member_id)
                 if not may_edit_administrators and (target.role_name or "").lower() in _ADMINISTRATOR_ROLES:
                     raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an administrator can change an administrator's access.")
-                updated.append(MemberService.update(db, current_user, member_id, MemberUpdate(**switches)))
+                updated.append(MemberService.update(db, current_user, member_id, MemberUpdate(**switches), background_tasks=background_tasks))
             except HTTPException as exc:
                 failed.append({"id": member_id, "detail": str(exc.detail)})
         return {"updated": updated, "failed": failed}

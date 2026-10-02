@@ -218,6 +218,19 @@ class MemberAccessResponse(BaseModel):
     failed: list[MemberAccessFailure]
 
 
+class MemberAccessSummary(BaseModel):
+    """Live headcounts for the Members page's Add Task and Login columns.
+
+    Over the active members the caller can see -- not over the current page,
+    search or role filter -- so the numbers do not move when the table is
+    narrowed.
+    """
+
+    add_task_allowed: int
+    login_allowed: int
+    active_members: int
+
+
 class MemberListResponse(BaseModel):
     items: list[MemberResponse]
     page: int
