@@ -31,6 +31,7 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.database import end_transaction
 from app.models.email_notification import (
     STATUS_FAILED, STATUS_PENDING, EmailNotification,
 )
@@ -177,6 +178,12 @@ class EmailOutboxService:
             f"id={notification_id} type={notification_type} "
             f"key={row.dedupe_key} user={row.user_id} attempt={attempt}/{max_attempts}"
         )
+
+        # Everything above is a local, so the transaction the claim's re-read just
+        # opened can end here. Building the message may download from Drive and
+        # sending it waits on SMTP (timeout SMTP_TIMEOUT_SECONDS, per message, in a
+        # sweep of many): none of that needs a database connection.
+        end_transaction(db)
 
         try:
             builder = BUILDERS.get(notification_type)

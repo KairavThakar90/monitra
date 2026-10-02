@@ -41,6 +41,7 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.database import end_transaction
 from app.models.time_entry import TimeEntry
 from app.models.user import User
 from app.WFPM import client as wfpm_client
@@ -316,6 +317,9 @@ class WfpmTimerSync:
                 raise WfpmDeliveryError("The time entry no longer exists", retryable=False)
             payload = build_payload(row, entry, db.get(User, row.user_id))
             idempotency_key = payload["event_id"]
+            # The payload is complete; the POST below waits on WFPM for up to
+            # WFPM_REQUEST_TIMEOUT_SECONDS and needs no connection while it does.
+            end_transaction(db)
             response_status = wfpm_client.post_event(
                 url,
                 token=(settings.WFPM_API_TOKEN or "").strip(),

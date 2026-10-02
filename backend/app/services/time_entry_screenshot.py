@@ -29,6 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.database import end_transaction
 from app.core.time_format import ist_day_end_utc, ist_day_start_utc, ist_today, to_ist
 from app.models.time_entry import TimeEntry
 from app.models.time_entry_screenshot import TimeEntryScreenshot
@@ -420,6 +421,15 @@ class TimeEntryScreenshotService:
                 detail="Screenshot storage is not configured on this server",
             )
 
+        # Everything the Drive calls and the final write need is read now, because
+        # ending the transaction expires every loaded instance. Drive can take
+        # DRIVE_TIMEOUT_SECONDS per call, with retries on the folder lookups; the
+        # connection must not be held, idle in a transaction, for any of that.
+        owner_id = entry.user_id
+        organization_id = current_user.organization_id
+        owner_name = getattr(db.get(User, owner_id), "name", None)
+        end_transaction(db)
+
         when = captured_at or datetime.now(timezone.utc)
         if when.tzinfo is None:
             when = when.replace(tzinfo=timezone.utc)
@@ -441,11 +451,10 @@ class TimeEntryScreenshotService:
             # shared drive, every upload between 00:00 and 05:30 IST was in
             # the wrong folder, and "today's folder does not exist" was the
             # report that followed.
-            owner = db.get(User, entry.user_id)
             folder_id, logical_path = drive_service.ensure_screenshot_folder(
-                user_id=entry.user_id,
+                user_id=owner_id,
                 captured_on=TimeEntryScreenshotService._ist_day_of(when),
-                user_name=getattr(owner, "name", None),
+                user_name=owner_name,
             )
             file_id, reused = drive_service.upload_file_idempotent(
                 folder_id=folder_id,
@@ -461,7 +470,7 @@ class TimeEntryScreenshotService:
             logger.error(
                 "SCREENSHOT_UPLOAD_FAILED stage=drive client_id=%s user=%s entry=%s "
                 "outcome=503 reason=misconfigured detail=%s",
-                client_screenshot_id, entry.user_id, time_entry_id, exc,
+                client_screenshot_id, owner_id, time_entry_id, exc,
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -472,7 +481,7 @@ class TimeEntryScreenshotService:
             logger.error(
                 "SCREENSHOT_UPLOAD_FAILED stage=drive client_id=%s user=%s entry=%s "
                 "outcome=502 reason=drive_error detail=%s",
-                client_screenshot_id, entry.user_id, time_entry_id, exc,
+                client_screenshot_id, owner_id, time_entry_id, exc,
             )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -487,7 +496,7 @@ class TimeEntryScreenshotService:
             logger.exception(
                 "SCREENSHOT_UPLOAD_FAILED stage=drive client_id=%s user=%s entry=%s "
                 "outcome=502 reason=unexpected",
-                client_screenshot_id, entry.user_id, time_entry_id,
+                client_screenshot_id, owner_id, time_entry_id,
             )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -497,7 +506,7 @@ class TimeEntryScreenshotService:
         try:
             record = TimeEntryScreenshotRepository.create_uploaded(
                 db=db,
-                organization_id=current_user.organization_id,
+                organization_id=organization_id,
                 time_entry_id=time_entry_id,
                 captured_at=when,
                 file_path=f"{logical_path}/{file_name}",
@@ -519,7 +528,7 @@ class TimeEntryScreenshotService:
             # sees a success and the orphan does not accumulate.
             db.rollback()
             winner = TimeEntryScreenshotRepository.get_by_client_id(
-                db, current_user.organization_id, client_screenshot_id
+                db, organization_id, client_screenshot_id
             )
             if winner is None:
                 raise
@@ -528,7 +537,7 @@ class TimeEntryScreenshotService:
             logger.info(
                 "SCREENSHOT_DUPLICATE client_id=%s user=%s entry=%s stored_id=%s "
                 "drive_file=%s reason=concurrent_upload",
-                client_screenshot_id, entry.user_id, time_entry_id,
+                client_screenshot_id, owner_id, time_entry_id,
                 winner.id, winner.google_drive_file_id,
             )
             return winner, True
@@ -545,7 +554,7 @@ class TimeEntryScreenshotService:
                 "SCREENSHOT_DB_WRITE_FAILED client_id=%s user=%s entry=%s folder=%s "
                 "drive_file=%s bytes=%d; the Drive object is kept and the client "
                 "will retry against it",
-                client_screenshot_id, entry.user_id, time_entry_id,
+                client_screenshot_id, owner_id, time_entry_id,
                 folder_id, file_id, len(content),
             )
             raise HTTPException(
@@ -557,7 +566,7 @@ class TimeEntryScreenshotService:
             "SCREENSHOT_STORED client_id=%s user=%s entry=%s id=%s folder=%s "
             "drive_file=%s path=%s bytes=%d geometry=%sx%s displays=%d "
             "drive_reused=%s elapsed_ms=%d",
-            client_screenshot_id, entry.user_id, time_entry_id, record.id,
+            client_screenshot_id, owner_id, time_entry_id, record.id,
             folder_id, file_id, f"{logical_path}/{file_name}", len(content),
             width, height, display_count, reused,
             int((time.monotonic() - started) * 1000),
@@ -593,21 +602,27 @@ class TimeEntryScreenshotService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="This screenshot has no stored image",
             )
+        # The Drive download below is a network wait (a grid asks for one per
+        # thumbnail). Read what is needed, then give the connection back first.
+        drive_file_id = record.google_drive_file_id
+        mime_type = record.mime_type or "image/webp"
+        file_name = record.file_name or f"screenshot_{record.id}.webp"
+        end_transaction(db)
         try:
-            content = drive_service.download_file(record.google_drive_file_id)
+            content = drive_service.download_file(drive_file_id)
         except GoogleDriveError as exc:
-            logger.error("could not read Drive file %s: %s", record.google_drive_file_id, exc)
+            logger.error("could not read Drive file %s: %s", drive_file_id, exc)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Screenshot storage is temporarily unavailable",
             )
         except Exception as exc:  # noqa: BLE001
-            logger.exception("unexpected failure reading Drive file %s", record.google_drive_file_id)
+            logger.exception("unexpected failure reading Drive file %s", drive_file_id)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Screenshot storage is temporarily unavailable",
             ) from exc
-        return content, record.mime_type or "image/webp", record.file_name or f"screenshot_{record.id}.webp"
+        return content, mime_type, file_name
 
     # ── Notice ────────────────────────────────────────────────────────────────
 

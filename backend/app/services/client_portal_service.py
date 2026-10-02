@@ -6,6 +6,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.database import end_transaction
 from app.core.time_format import ist_day_end_utc, ist_day_start_utc, to_ist
 from app.models.client import Client
 from app.models.project import Project
@@ -846,11 +847,16 @@ class ClientPortalService:
         if not screenshot.google_drive_file_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "This screenshot has no stored image")
 
+        # Read what is needed, then return the connection before the Drive wait.
+        drive_file_id = screenshot.google_drive_file_id
+        mime_type = screenshot.mime_type
+        file_name = screenshot.file_name or f"screenshot-{screenshot.id}.webp"
+        end_transaction(db)
         try:
-            content = drive_service.download_file(screenshot.google_drive_file_id)
+            content = drive_service.download_file(drive_file_id)
         except GoogleDriveError:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Screenshot storage is temporarily unavailable")
-        return content, screenshot.mime_type, screenshot.file_name or f"screenshot-{screenshot.id}.webp"
+        return content, mime_type, file_name
 
     @staticmethod
     def get_screenshots_grid(
@@ -1021,8 +1027,13 @@ class ClientPortalService:
         if not screenshot.google_drive_file_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "This screenshot has no stored image")
 
+        # Read what is needed, then return the connection before the Drive wait.
+        drive_file_id = screenshot.google_drive_file_id
+        mime_type = screenshot.mime_type
+        file_name = screenshot.file_name or f"screenshot-{screenshot.id}.webp"
+        end_transaction(db)
         try:
-            content = drive_service.download_file(screenshot.google_drive_file_id)
+            content = drive_service.download_file(drive_file_id)
         except GoogleDriveError:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Screenshot storage is temporarily unavailable")
-        return content, screenshot.mime_type, screenshot.file_name or f"screenshot-{screenshot.id}.webp"
+        return content, mime_type, file_name

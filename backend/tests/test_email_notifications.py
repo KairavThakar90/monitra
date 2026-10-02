@@ -142,10 +142,11 @@ class TestWelcomeEmailTrigger(unittest.TestCase):
         self.assertEqual(welcome_dedupe_key(42), welcome_dedupe_key(42))
 
     def test_a_second_login_never_reaches_the_welcome_workflow(self):
-        """The synchronise branch of login_exchange must not welcome anybody.
+        """The synchronise branch of the login exchange must not welcome anybody.
 
-        Asserted against the source of `login_exchange` rather than by running
-        it: the call is placed inside the provisioning branch, and a future
+        Asserted against the source of `_complete_login_exchange` -- the database
+        half of `login_exchange`, which runs on the thread pool -- rather than by
+        running it: the call is placed inside the provisioning branch, and a future
         edit that hoists it out of that branch -- which is exactly the mistake
         that would mail every existing employee -- changes this.
         """
@@ -153,7 +154,10 @@ class TestWelcomeEmailTrigger(unittest.TestCase):
 
         from app.services.auth import AuthService
 
-        source = inspect.getsource(AuthService.login_exchange)
+        # The async half only talks to the provider and hands over; it must not
+        # welcome anybody either.
+        self.assertEqual(inspect.getsource(AuthService.login_exchange).count("_welcome_new_user"), 0)
+        source = inspect.getsource(AuthService._complete_login_exchange)
         self.assertEqual(source.count("_welcome_new_user"), 1)
         welcome_line = next(
             index for index, line in enumerate(source.splitlines())
