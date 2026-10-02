@@ -126,7 +126,7 @@ ids** (the `id` returned by Monitra's sign-in and member endpoints).
 | `description` | no | Up to 5000 characters |
 | `employee_ids` | no | Monitra user ids to add as members; no duplicates |
 | `deadline` | no | `YYYY-MM-DD`, not in the past. Omit or send `null` for none |
-| `billing_type` | yes | `"free"`. (`"fixed"` needs an hours budget, which this API does not accept, so it is refused) |
+| `billing_type` | yes | `"free"` (flexible time) or `"non_billing"` (not billed). Neither has an hours budget. (`"fixed"` needs one, which this API does not accept, so it is refused) |
 
 Not chosen by the caller: the project starts in Monitra's **Active** status,
 with no owner, and led by the Monitra user the product has fixed as the leader

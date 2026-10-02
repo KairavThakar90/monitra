@@ -11,6 +11,12 @@ from app.models.user import User
 from app.repositories.reports import ReportsRepository
 from app.schemas.reports import BillableFilter, ReportDimension, UsageType
 from app.services.member_scope import visible_member_ids
+from app.services.project_hours import (
+    all_time_project_hours,
+    has_fixed_budget,
+    remaining_seconds,
+    usage_percentage,
+)
 from app.services.project_scope import visible_project_ids
 from app.services.time_tracking import TimeTrackingService
 
@@ -355,6 +361,7 @@ class ReportsService:
         single_date: Optional[date],
         start_date: Optional[date],
         end_date: Optional[date],
+        billing_types: Optional[list[str]] = None,
     ) -> dict:
         if single_date and (start_date or end_date):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Provide either 'date' or 'start_date'/'end_date', not both.")
@@ -404,9 +411,20 @@ class ReportsService:
             }
 
         projects, total_projects = ReportsRepository.paginated_projects(
-            db, organization_id, sorted(active_ids), page, limit
+            db, organization_id, sorted(active_ids), page, limit, billing_types=billing_types
         )
         page_ids = [project.id for project in projects]
+
+        # How much of its budget each fixed-hours project has spent, all time and
+        # excluding Internal -- the dashboard's own "Used", from the same shared
+        # calculation, so both screens band a project into the same colour. Only
+        # fixed projects have a budget to measure, so a page with none of them
+        # costs no extra query.
+        fixed_ids = [p.id for p in projects if has_fixed_budget(p.billing_type, p.fixed_hours)]
+        used_by_project = (
+            {pid: hours.used_seconds for pid, hours in all_time_project_hours(db, organization_id, fixed_ids).items()}
+            if fixed_ids else {}
+        )
 
         start_time = _utc_start(effective_start)
         end_time = _utc_end(effective_end)
@@ -441,11 +459,18 @@ class ReportsService:
                 }
                 for task in tasks
             ]
+            fixed = has_fixed_budget(project.billing_type, project.fixed_hours)
+            used = used_by_project.get(project.id, 0) if fixed else None
             project_items.append({
                 "id": project.id,
                 "project_name": project.project_name,
                 "created_date": project.created_at.date(),
                 "status": statuses.get(project.status_id),
+                "billing_type": project.billing_type,
+                "fixed_hours": float(project.fixed_hours) if fixed else None,
+                "used_seconds": used,
+                "remaining_seconds": remaining_seconds(project.billing_type, project.fixed_hours, used) if fixed else None,
+                "usage_percentage": usage_percentage(project.billing_type, project.fixed_hours, used) if fixed else None,
                 "total_task_count": len(task_items),
                 "total_task_seconds": project_seconds.get(project.id, 0),
                 "total_task_hours": round(project_seconds.get(project.id, 0) / 3600, 2),

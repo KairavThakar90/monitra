@@ -9,8 +9,14 @@ from app.core.validation import OptionalIdempotencyKey
 
 
 class BillingType(str, Enum):
+    #: Billed against an hour budget (`fixed_hours`, required).
     fixed = "fixed"
+    #: Flexible time: no hour budget, not billed.
     free = "free"
+    #: Not billed at all and no hour budget -- the project is created non-billable
+    #: (`is_billable = false`), exactly as `free` is, but is its own type so it
+    #: can be told apart, filtered on, and shown as "Non Billing".
+    non_billing = "non_billing"
 
 
 class StatusRead(BaseModel):
@@ -98,6 +104,8 @@ class ProjectCreate(BaseModel):
             raise ValueError("Fixed hours are required for fixed billing")
         if self.billing_type == BillingType.free and self.fixed_hours is not None:
             raise ValueError("Fixed hours must be empty for free time billing")
+        if self.billing_type == BillingType.non_billing and self.fixed_hours is not None:
+            raise ValueError("Fixed hours must be empty for non-billing projects")
         return self
 
 

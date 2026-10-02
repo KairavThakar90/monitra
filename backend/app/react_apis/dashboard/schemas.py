@@ -136,10 +136,10 @@ class TopAppItem(BaseModel):
 class ProjectBillingProgress(BaseModel):
     project_id: int
     project_name: str
-    billing_type: str = Field(..., description="'fixed' or 'free', from Project.billing_type.")
+    billing_type: str = Field(..., description="'fixed', 'free' or 'non_billing', from Project.billing_type.")
     fixed_hours: Optional[float] = Field(
         None,
-        description="The project's fixed-hour budget. Null for every 'free'-billing project "
+        description="The project's fixed-hour budget. Null for every 'free' or 'non_billing' project "
                     "(the backend refuses to let one have fixed_hours set) and for a 'fixed' one "
                     "still missing its budget.",
         examples=[1200.0],
@@ -215,7 +215,8 @@ class DashboardResponse(BaseModel):
     )
     internal_projects: list[ProjectBillingProgress] = Field(
         ...,
-        description="Non-archived 'free'-billing projects -- the Top Projects card's Free Time / "
-                    "Internal filter tab. usage_percentage is always null here: a free project "
-                    "has no fixed_hours to measure against.",
+        description="Non-archived 'free' and 'non_billing' projects, i.e. every project that is "
+                    "not 'fixed' -- the Top Projects card's Non-Billable filter tab. "
+                    "usage_percentage is always null here: neither type has a fixed_hours "
+                    "to measure against.",
     )

@@ -9,7 +9,7 @@ from datetime import timedelta
 
 from sqlalchemy.orm import Session
 
-from app.services.project_hours import remaining_seconds
+from app.services.project_hours import remaining_seconds, usage_percentage
 from app.react_apis.dashboard.repository import DashboardRepository
 from app.react_apis.reports_page.repository import ReportFilters, ReportsPageRepository
 from app.react_apis.reports_page.service import ReportsPageService
@@ -149,9 +149,10 @@ class DashboardService:
     @staticmethod
     def billing_progress(db: Session, filters: ReportFilters) -> dict:
         """Billable (fixed-hour projects, with usage against that budget) and
-        Internal / Free Hours projects (tracked hours + activity only -- there
-        is no budget to measure a 'free' project against). Backs the Top
-        Projects card's Billable / Free Time / Internal filter tabs."""
+        Internal projects -- 'free' (flexible time) and 'non_billing' alike
+        (tracked hours + activity only -- there is no budget to measure either
+        against). Backs the Top Projects card's Billable / Non-Billable
+        filter tabs."""
         rows = DashboardRepository.billing_progress(db, filters)
         billable, internal = [], []
         for row in rows:
@@ -172,7 +173,7 @@ class DashboardService:
                 "internal_seconds": internal_seconds,
                 "internal_hours": _hours(internal_seconds),
                 "remaining_seconds": remaining,
-                "usage_percentage": round(completed_hours / fixed_hours * 100, 2) if fixed_hours else None,
+                "usage_percentage": usage_percentage(project.billing_type, project.fixed_hours, int(row["completed_seconds"])),
                 "tracked_seconds": int(row["tracked_seconds"]),
                 "tracked_hours": tracked_hours,
                 "avg_activity": round(avg_activity, 2) if avg_activity is not None else None,

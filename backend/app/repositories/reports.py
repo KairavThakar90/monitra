@@ -68,13 +68,20 @@ class ReportsRepository:
         project_ids: Optional[list[int]],
         page: int,
         limit: int,
+        billing_types: Optional[list[str]] = None,
     ) -> tuple[list[Project], int]:
-        """Non-archived projects for this org, optionally narrowed to specific ids,
-        newest first -- the project-wise page behind /reports/project-task-summary."""
+        """Non-archived projects for this org, optionally narrowed to specific ids
+        and to billing types, newest first -- the project-wise page behind
+        /reports/project-task-summary.
+
+        `billing_types` is applied here, before the page is cut, so a filtered
+        list pages and counts truthfully. None or empty means every type."""
         filters = [Project.organization_id == organization_id, Project.status != "archived"]
         # As in `eligible_projects`: None means every project, [] means none.
         if project_ids is not None:
             filters.append(Project.id.in_(project_ids))
+        if billing_types:
+            filters.append(Project.billing_type.in_(billing_types))
         # Page and total in one statement -- see ProjectManagementService.list
         # for why the separate COUNT(*) was worth removing.
         rows = db.execute(

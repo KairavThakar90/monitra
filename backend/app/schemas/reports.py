@@ -118,6 +118,19 @@ class ProjectTaskSummaryProject(BaseModel):
     project_name: str
     created_date: date
     status: Optional[StatusRead] = None
+    #: 'fixed', 'free' or 'non_billing', from Project.billing_type.
+    billing_type: str = "free"
+    #: The hour budget; set only for a fixed-hours project that has one.
+    fixed_hours: Optional[float] = None
+    #: Hours spent against that budget, all time, Internal tasks excluded -- the
+    #: dashboard's "Used". Null when the project has no fixed budget.
+    used_seconds: Optional[int] = None
+    #: Budget minus used; negative when over budget. Null without a budget.
+    remaining_seconds: Optional[int] = None
+    #: Used as a percentage of the budget (the figure the dashboard colours on).
+    #: Null without a budget -- a flexible or non-billing project has nothing
+    #: to measure against.
+    usage_percentage: Optional[float] = None
     total_task_count: int
     total_task_seconds: int
     total_task_hours: float

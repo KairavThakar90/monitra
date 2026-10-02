@@ -6,7 +6,7 @@ import { AppIcon } from "../../../components/AppIcon";
 import { DateRangeFilter, DEFAULT_RANGE, ProjectMultiSelect } from "./filters";
 import { useGetAllProjectsQuery } from "../../../store/api/projectsApi";
 import type { DateRange } from "./filters";
-import { brand, series } from "./theme";
+import { brand, series, usageColor } from "./theme";
 import { useGetReactDashboardQuery } from "../../../store/api/dashboardApi";
 import type { ReactDashboardProjectBilling } from "../../../store/api/dashboardApi";
 import { formatHMS, formatHoursAsHMS, secondsOf } from "../../../utils/duration";
@@ -45,22 +45,6 @@ const longDate = (iso: string) =>
 
 /** The Top Projects card's filter tabs. */
 type ProjectFilterTab = "top" | "billable" | "internal";
-
-/**
- * Budget-usage color for a Billable project's progress bar, against the
- * project's own fixed_hours -- not a generic 0-100 gauge. Under 80% is in
- * progress, 80-99% is closing in, exactly 100% landed on budget, and above
- * 100% is over budget. Bands, not a gradient: a project is either in one
- * state or another, never "a bit of both". Banded on the same rounded value
- * the row prints, so the label and its color always agree.
- */
-const usageColor = (pct: number): string => {
-  const shown = Math.round(pct);
-  if (shown > 100) return "#EF4444"; // red-500 -- over budget
-  if (shown === 100) return "#10B981"; // emerald-500 -- on budget
-  if (shown >= 80) return "#EAB308"; // yellow-500 -- closing in
-  return "#3B82F6"; // blue-500 -- in progress
-};
 
 const HoverStat: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   <div className="flex items-center justify-between gap-4 py-0.5">
@@ -427,7 +411,7 @@ export const DashboardV2: React.FC = () => {
 
           {/* Top Lists */}
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-            {/* Top Projects, with Billable / Free Time-Internal filter tabs */}
+            {/* Top Projects, with Billable / Non-Billable filter tabs */}
             <div className="flex flex-col rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-sm">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-[13px] font-bold uppercase tracking-wider text-[#64748B]">Top Projects</h3>
@@ -447,7 +431,9 @@ export const DashboardV2: React.FC = () => {
                   [
                     { key: "top", label: "Top Projects" },
                     { key: "billable", label: "Billable" },
-                    { key: "internal", label: "Flexible Time" },
+                    // Every project that is not billed against a fixed budget:
+                    // Flexible Time and Non Billing alike.
+                    { key: "internal", label: "Non-Billable" },
                   ] as { key: ProjectFilterTab; label: string }[]
                 ).map((tab) => (
                   <button

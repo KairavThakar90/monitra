@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user, require_permission
 from app.models.user import User
+from app.schemas.project_management import BillingType
 from app.schemas.reports import (
     BillableFilter,
     DetailedLogsResponse,
@@ -130,7 +131,9 @@ def project_task_summary(
     single_date: Optional[date] = Query(None, alias="date", description="Restrict tracked hours to one day. Mutually exclusive with start_date/end_date."),
     start_date: Optional[date] = Query(None, description="Start of a date range (inclusive). Must be paired with end_date."),
     end_date: Optional[date] = Query(None, description="End of a date range (inclusive). Must be paired with start_date. Omit all three date params for all-time totals."),
+    billing_type: Optional[list[BillingType]] = Query(None, description="Only projects of these billing types: fixed, free (flexible time) or non_billing. Repeat to combine, e.g. ?billing_type=fixed&billing_type=free for every billed project. Omit for all types."),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return ReportsService.build_project_task_summary(db, current_user, page, limit, project_ids, single_date, start_date, end_date)
+    billing_types = sorted({item.value for item in billing_type}) if billing_type else None
+    return ReportsService.build_project_task_summary(db, current_user, page, limit, project_ids, single_date, start_date, end_date, billing_types)

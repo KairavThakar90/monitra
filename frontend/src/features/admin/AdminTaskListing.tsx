@@ -8,7 +8,7 @@ import {
   useCreateTaskMutation,
   useUpdateTaskMutation
 } from "../../store/api/projectsApi";
-import type { ProjectTaskSummaryTask } from "../../store/api/reportsApi";
+import type { ProjectTaskSummaryProject, ProjectTaskSummaryTask } from "../../store/api/reportsApi";
 import { useFeedback } from "../../components/FeedbackProvider";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
 import { formatHMS } from "../../utils/duration";
@@ -16,6 +16,8 @@ import { PaginationArrow } from '../../components/PaginationArrow';
 import { DateRangeFilter, ProjectMultiSelect, rangeFor, DEFAULT_RANGE, type DateRange } from '../dashboard/v2/filters';
 import { FieldError, useFormValidation } from '../../validation';
 import { useAuth } from '../auth/authContext';
+import { usageColor } from '../dashboard/v2/theme';
+import { billingTypeLabel, billingTypesFor, type BillingKind, type BillingScope } from '../../utils/billing';
 
 const formatDate = (dateStr: string | null) => {
   if (!dateStr) return "-";
@@ -263,6 +265,74 @@ const TaskBudgetCell: React.FC<{ projectId: number; task: ProjectTaskSummaryTask
   );
 };
 
+/** The chip's colour per billing type, matching the Project Management table's badges. */
+const BILLING_CHIP_COLOR: Record<string, string> = {
+  fixed: '#8B5CF6',
+  free: '#14B8A6',
+  non_billing: '#64748B',
+};
+
+/** The shared look of the toolbar's native selects (the same as Project Management's billing filter). */
+const FILTER_SELECT_CLASS =
+  'min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto';
+
+const SelectChevron: React.FC = () => (
+  <svg
+    className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"
+    fill="none"
+    viewBox="0 0 24 24"
+    stroke="currentColor"
+  >
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+  </svg>
+);
+
+/**
+ * How much of a fixed-hours project's budget has been spent, coloured by the
+ * dashboard's own bands (blue under 80%, yellow 80-99%, green exactly on
+ * budget, red over). The figures are the server's, from the same calculation
+ * the dashboard uses, so a project reads the same here as there. Only a fixed
+ * project with a budget has one; flexible and non-billing projects have nothing
+ * to measure and show no meter.
+ */
+const BudgetUsage: React.FC<{ project: ProjectTaskSummaryProject }> = ({ project }) => {
+  // `== null` on purpose: a backend that predates these fields leaves them
+  // undefined, and that must read as "no budget to show", never as NaN%.
+  if (project.usage_percentage == null || project.fixed_hours == null || project.used_seconds == null) {
+    return null;
+  }
+  const pct = project.usage_percentage;
+  const color = usageColor(pct);
+  const over = project.remaining_seconds !== null && project.remaining_seconds < 0;
+  return (
+    <div
+      className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1"
+      data-testid="budget-usage"
+      title="Hours spent so far, all time, against this project's fixed hours. Internal tasks do not count."
+    >
+      <span className="text-[11px] font-bold" style={{ color }} data-testid="budget-usage-hours">
+        Used {formatHMS(project.used_seconds)} of {Number(project.fixed_hours)}h
+      </span>
+      {/* The whole track carries the band colour as a light tint, so the state reads at
+          a glance even at 0%; the solid fill is the true usage and never grows past it. */}
+      <div className="h-1.5 w-32 overflow-hidden rounded-full" style={{ backgroundColor: `${color}33` }}>
+        <div
+          className="h-full rounded-full transition-all duration-500 ease-out"
+          style={{ width: `${Math.min(Math.max(pct, 0), 100)}%`, backgroundColor: color }}
+        />
+      </div>
+      <span className="text-[11px] font-black" style={{ color }} data-testid="budget-usage-percent">
+        {pct.toFixed(0)}%
+      </span>
+      {over && project.remaining_seconds !== null && (
+        <span className="text-[11px] font-bold" style={{ color }}>
+          Over by {formatHMS(-project.remaining_seconds)}
+        </span>
+      )}
+    </div>
+  );
+};
+
 export const AdminTaskListing: React.FC = () => {
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
@@ -276,6 +346,11 @@ export const AdminTaskListing: React.FC = () => {
   const endDate = dateRange.to;
   
   const [filterProjectIds, setFilterProjectIds] = useState<string[]>([]);
+  // Project type, in two steps like the Create Project form: Billing or Non
+  // Billing first, then (under Billing only) Fixed Hours or Flexible Time.
+  const [billingScope, setBillingScope] = useState<BillingScope>('');
+  const [billingKind, setBillingKind] = useState<BillingKind>('');
+  const billingTypes = useMemo(() => billingTypesFor(billingScope, billingKind), [billingScope, billingKind]);
 
   const [expandedProjects, setExpandedProjects] = useState<Record<number, boolean>>({});
 
@@ -311,6 +386,7 @@ export const AdminTaskListing: React.FC = () => {
     start_date: startDate || undefined,
     end_date: endDate || undefined,
     project_id: filterProjectIds.length ? filterProjectIds.map(Number) : undefined,
+    billing_type: billingTypes,
   });
 
   const showFirstLoad = isLoading && !data;
@@ -460,7 +536,42 @@ export const AdminTaskListing: React.FC = () => {
               }}
               compact
             />
-            
+
+            {/* Project type: Billing / Non Billing, then Fixed Hours / Flexible Time under Billing */}
+            <div className="relative">
+              <select
+                aria-label="Filter by project type"
+                value={billingScope}
+                onChange={(e) => {
+                  setBillingScope(e.target.value as BillingScope);
+                  // The second choice belongs to Billing; leaving Billing clears it.
+                  setBillingKind('');
+                  setPage(1);
+                }}
+                className={FILTER_SELECT_CLASS}
+              >
+                <option value="">All Project Types</option>
+                <option value="billing">Billing</option>
+                <option value="non_billing">Non Billing</option>
+              </select>
+              <SelectChevron />
+            </div>
+            {billingScope === 'billing' && (
+              <div className="relative">
+                <select
+                  aria-label="Filter by billing type"
+                  value={billingKind}
+                  onChange={(e) => { setBillingKind(e.target.value as BillingKind); setPage(1); }}
+                  className={FILTER_SELECT_CLASS}
+                >
+                  <option value="">All Billing</option>
+                  <option value="fixed">{billingTypeLabel('fixed')}</option>
+                  <option value="free">{billingTypeLabel('free')}</option>
+                </select>
+                <SelectChevron />
+              </div>
+            )}
+
             {/* Date Filter */}
             <DateRangeFilter
               value={dateRange}
@@ -503,7 +614,7 @@ export const AdminTaskListing: React.FC = () => {
                 </h3>
                 <p className="mt-1 text-xs font-medium text-slate-500">
                   A project appears here once someone starts one of its tasks today.
-                  If you filtered by project, that filter applies too.
+                  If you filtered by project or project type, those filters apply too.
                 </p>
               </div>
             ) : (
@@ -530,7 +641,7 @@ export const AdminTaskListing: React.FC = () => {
                           <h3 className="text-lg font-black text-slate-800">
                             {project.project_name}
                           </h3>
-                          <div className="flex items-center gap-2 mt-0.5">
+                          <div className="mt-0.5 flex flex-wrap items-center gap-2">
                             <p className="text-xs font-semibold text-slate-500">
                               {project.total_task_count} Task{project.total_task_count !== 1 ? 's' : ''} &bull;{" "}
                               {formatHMS(project.total_task_seconds)} Total Time
@@ -543,7 +654,20 @@ export const AdminTaskListing: React.FC = () => {
                                 {project.status.name}
                               </span>
                             )}
+                            {project.billing_type && (
+                              <span
+                                data-testid="billing-chip"
+                                className="inline-flex items-center rounded border bg-white px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+                                style={{
+                                  color: BILLING_CHIP_COLOR[project.billing_type] ?? '#64748B',
+                                  borderColor: BILLING_CHIP_COLOR[project.billing_type] ?? '#64748B',
+                                }}
+                              >
+                                {billingTypeLabel(project.billing_type)}
+                              </span>
+                            )}
                           </div>
+                          <BudgetUsage project={project} />
                         </div>
                       </div>
                       <div className="flex items-center gap-6">

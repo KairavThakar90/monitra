@@ -184,6 +184,8 @@ class ProjectManagementService:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Fixed hours are required for fixed billing.")
         if billing_type == BillingType.free and fixed_hours is not None:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Fixed hours must be empty for free time billing.")
+        if billing_type == BillingType.non_billing and fixed_hours is not None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Fixed hours must be empty for non-billing projects.")
         return project_status, leader, employees
 
 

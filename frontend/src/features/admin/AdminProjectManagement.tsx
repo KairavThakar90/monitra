@@ -26,6 +26,7 @@ import { exportToCsv, MemberMultiSelect } from '../dashboard/v2/filters';
 import { useGetAllMembersQuery } from '../../store/api/membersApi';
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
 import { formatApiError } from '../../api/utils';
+import type { BillingType } from '../../utils/billing';
 
 const GRADIENT_CYAN_PURPLE = 'bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[#8b5cf6]';
 
@@ -513,7 +514,7 @@ export const AdminProjectManagement: React.FC = () => {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [filterStatusId, setFilterStatusId] = useState<number | null>(null);
   /** '' means every project; otherwise the `billing_type` the API filters on. */
-  const [filterBilling, setFilterBilling] = useState<'' | 'fixed' | 'free'>('');
+  const [filterBilling, setFilterBilling] = useState<'' | BillingType>('');
   /** Empty means every member — the same convention every other filter uses. */
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   const { data: allMembers = [] } = useGetAllMembersQuery();
@@ -580,7 +581,9 @@ export const AdminProjectManagement: React.FC = () => {
   const [formDeadline, setFormDeadline] = useState('');
   const [formStatusId, setFormStatusId] = useState<number>(1);
   const [formEmployees, setFormEmployees] = useState<number[]>([]);
-  const [formBillingType, setFormBillingType] = useState<'fixed' | 'free'>('fixed');
+  const [formBillingType, setFormBillingType] = useState<BillingType>('fixed');
+  /** Billing (Fixed Hours or Flexible Time) as opposed to Non Billing. */
+  const isBilling = formBillingType !== 'non_billing';
   const [formBillingHours, setFormBillingHours] = useState('');
 
   // Dropdown states
@@ -666,7 +669,7 @@ export const AdminProjectManagement: React.FC = () => {
     setFormDeadline(proj.deadline ? proj.deadline.split('T')[0] : '');
     setFormStatusId(proj.status?.id || 1);
     setFormEmployees((proj.employees || []).map(e => e.id));
-    setFormBillingType(proj.billing_type as 'fixed' | 'free' || 'fixed');
+    setFormBillingType((proj.billing_type as BillingType) || 'fixed');
     setFormBillingHours(proj.fixed_hours ? String(proj.fixed_hours) : '');
     
     setDrawerMode('edit');
@@ -862,7 +865,10 @@ export const AdminProjectManagement: React.FC = () => {
         leader: (project) => project.leader?.name || 'Unassigned',
         team: (project) => (project.employees || []).map((employee) => employee.name).join('; '),
         tasks: (project) => project.task_count ?? (project.tasks || []).length,
-        billing: (project) => project.billing_type === 'fixed' ? `${project.fixed_hours || 0} Hours` : 'Free Time',
+        billing: (project) =>
+          project.billing_type === 'fixed'
+            ? `${project.fixed_hours || 0} Hours`
+            : project.billing_type === 'non_billing' ? 'Non Billing' : 'Free Time',
         deadline: (project) => project.deadline ? formatDate(project.deadline) : 'No Deadline',
       };
       const selectedColumns = EXPORT_COLUMNS.filter((column) => selectedExportColumns.includes(column.key));
@@ -876,7 +882,7 @@ export const AdminProjectManagement: React.FC = () => {
         [
           ['Search', debouncedSearch || 'All projects'],
           ['Status', metadata?.project_statuses?.find((status) => status.id === filterStatusId)?.project_status || 'All statuses'],
-          ['Billing', filterBilling === 'fixed' ? 'Billing' : filterBilling === 'free' ? 'Free' : 'All billing types'],
+          ['Billing', filterBilling === 'fixed' ? 'Billing' : filterBilling === 'free' ? 'Free' : filterBilling === 'non_billing' ? 'Non Billing' : 'All billing types'],
           ['Members', selectedMemberIds.length
             ? allMembers.filter((m) => selectedMemberIds.includes(m.id)).map((m) => m.name).join('; ')
             : 'All members'],
@@ -1026,12 +1032,13 @@ export const AdminProjectManagement: React.FC = () => {
               <select
                 aria-label="Filter by billing"
                 value={filterBilling}
-                onChange={(e) => { setFilterBilling(e.target.value as '' | 'fixed' | 'free'); setPage(1); }}
+                onChange={(e) => { setFilterBilling(e.target.value as '' | BillingType); setPage(1); }}
                 className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
               >
                 <option value="">Budget &amp; Billing</option>
                 <option value="fixed">Billing</option>
                 <option value="free">Free</option>
+                <option value="non_billing">Non Billing</option>
               </select>
               <svg
                 className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"
@@ -1123,6 +1130,10 @@ export const AdminProjectManagement: React.FC = () => {
                       {proj.billing_type === 'fixed' ? (
                         <span className="inline-flex items-center rounded-md bg-white px-2.5 py-1 text-[11px] font-bold tracking-wider text-[#8B5CF6] border border-[#8B5CF6]">
                           {proj.fixed_hours} Hours
+                        </span>
+                      ) : proj.billing_type === 'non_billing' ? (
+                        <span className="inline-flex items-center rounded-md bg-white px-2.5 py-1 text-[11px] font-bold tracking-wider text-[#64748B] border border-[#64748B]">
+                          Non Billing
                         </span>
                       ) : (
                         <span className="inline-flex items-center rounded-md bg-white px-2.5 py-1 text-[11px] font-bold tracking-wider text-[#14B8A6] border border-[#14B8A6]">
@@ -1306,7 +1317,9 @@ export const AdminProjectManagement: React.FC = () => {
                 <section>
                   <h3 className="text-xs font-black uppercase tracking-widest text-blue-500">Billing</h3>
                   <p className="mt-3 rounded-xl border border-slate-100 bg-white p-4 text-sm font-semibold text-slate-700 shadow-sm">
-                    {viewingProject.billing_type === 'fixed' ? `${viewingProject.fixed_hours || 0} fixed hours` : 'Free time billing'}
+                    {viewingProject.billing_type === 'fixed'
+                      ? `${viewingProject.fixed_hours || 0} fixed hours`
+                      : viewingProject.billing_type === 'non_billing' ? 'Non billing' : 'Free time billing'}
                   </p>
                 </section>
               </div>
@@ -1490,32 +1503,72 @@ export const AdminProjectManagement: React.FC = () => {
                 <div>
                   <h3 className="mb-4 text-xs font-black uppercase tracking-widest text-[#3B82F6]">Budget & Billing</h3>
                   <div className="space-y-4">
-                    <div className="flex gap-4">
-                      <label className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border-2 p-3 transition ${formBillingType === 'fixed' ? 'border-[#3B82F6] bg-blue-50 text-[#3B82F6]' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'}`}>
+                    {/* First choice: is this project billed at all? Billing then asks how. */}
+                    <div className="flex flex-wrap gap-3" role="radiogroup" aria-label="Billing">
+                      <label className={`flex min-w-[130px] flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border-2 p-3 transition ${isBilling ? 'border-[#3B82F6] bg-blue-50 text-[#3B82F6]' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'}`}>
                         <input
                           type="radio"
-                          name="billingType"
-                          value="fixed"
-                          checked={formBillingType === 'fixed'}
-                          onChange={() => setFormBillingType('fixed')}
+                          name="billingMode"
+                          value="billing"
+                          checked={isBilling}
+                          onChange={() => { if (!isBilling) setFormBillingType('fixed'); }}
                           className="sr-only"
                         />
-                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                        <span className="text-sm font-bold">Fixed Hours</span>
+                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        <span className="text-sm font-bold">Billing</span>
                       </label>
-                      <label className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border-2 p-3 transition ${formBillingType === 'free' ? 'border-[#14B8A6] bg-teal-50 text-[#14B8A6]' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'}`}>
+                      <label className={`flex min-w-[130px] flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border-2 p-3 transition ${formBillingType === 'non_billing' ? 'border-[#64748B] bg-slate-100 text-[#475569]' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'}`}>
                         <input
                           type="radio"
-                          name="billingType"
-                          value="free"
-                          checked={formBillingType === 'free'}
-                          onChange={() => { setFormBillingType('free'); setFormBillingHours(''); }}
+                          name="billingMode"
+                          value="non_billing"
+                          checked={formBillingType === 'non_billing'}
+                          onChange={() => { setFormBillingType('non_billing'); setFormBillingHours(''); }}
                           className="sr-only"
                         />
-                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" /></svg>
-                        <span className="text-sm font-bold">Flexible Time</span>
+                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
+                        <span className="text-sm font-bold">Non Billing</span>
                       </label>
                     </div>
+
+                    {formBillingType === 'non_billing' && (
+                      <p className="text-[11px] font-semibold text-slate-500">
+                        This project is not billed and has no hour budget. Time is still tracked on it.
+                      </p>
+                    )}
+
+                    {/* Billing: how is it billed? Only shown once Billing is chosen. */}
+                    {isBilling && (
+                      <div className="animate-in fade-in slide-in-from-top-2">
+                        <div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Billing Type</div>
+                        <div className="flex flex-wrap gap-3">
+                          <label className={`flex min-w-[130px] flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border-2 p-3 transition ${formBillingType === 'fixed' ? 'border-[#3B82F6] bg-blue-50 text-[#3B82F6]' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'}`}>
+                            <input
+                              type="radio"
+                              name="billingType"
+                              value="fixed"
+                              checked={formBillingType === 'fixed'}
+                              onChange={() => setFormBillingType('fixed')}
+                              className="sr-only"
+                            />
+                            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                            <span className="text-sm font-bold">Fixed Hours</span>
+                          </label>
+                          <label className={`flex min-w-[130px] flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border-2 p-3 transition ${formBillingType === 'free' ? 'border-[#14B8A6] bg-teal-50 text-[#14B8A6]' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'}`}>
+                            <input
+                              type="radio"
+                              name="billingType"
+                              value="free"
+                              checked={formBillingType === 'free'}
+                              onChange={() => { setFormBillingType('free'); setFormBillingHours(''); }}
+                              className="sr-only"
+                            />
+                            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" /></svg>
+                            <span className="text-sm font-bold">Flexible Time</span>
+                          </label>
+                        </div>
+                      </div>
+                    )}
 
                     {formBillingType === 'fixed' && (
                       <div className="animate-in fade-in slide-in-from-top-2">

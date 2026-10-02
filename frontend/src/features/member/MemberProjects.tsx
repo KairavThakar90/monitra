@@ -9,6 +9,7 @@ import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator"
 import { PaginationArrow } from "../../components/PaginationArrow";
 import { series } from "../dashboard/v2/theme";
 import { formatISTDate } from "../../utils/duration";
+import { billingTypeLabel } from "../../utils/billing";
 import { FieldError, SEARCH_MAX_LENGTH, validateSearchTerm } from "../../validation";
 
 /**
@@ -73,7 +74,7 @@ const ProjectCard: React.FC<{ project: Project; onOpenTeam: () => void }> = ({ p
         <div>
           <dt className="text-[11px] font-bold uppercase tracking-wider text-[#94A3B8]">Billing</dt>
           <dd className="mt-1 truncate font-semibold capitalize text-[#0F172A]">
-            {project.billing_type || "—"}
+            {billingTypeLabel(project.billing_type)}
             {project.fixed_hours ? ` · ${project.fixed_hours}h` : ""}
           </dd>
         </div>

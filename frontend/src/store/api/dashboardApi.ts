@@ -65,9 +65,9 @@ export interface ReactDashboardTopApp {
 export interface ReactDashboardProjectBilling {
   project_id: number;
   project_name: string;
-  /** 'fixed' or 'free', from Project.billing_type. */
+  /** 'fixed', 'free' or 'non_billing', from Project.billing_type. */
   billing_type: string;
-  /** The project's fixed-hour budget. Null for every 'free'-billing project. */
+  /** The project's fixed-hour budget. Null for every 'free' or 'non_billing' project. */
   fixed_hours: number | null;
   /** All-time tracked seconds -- not scoped to the dashboard's selected date range. */
   /** All-time Used seconds: work tasks only, the four default (internal) tasks excluded. */
@@ -114,7 +114,7 @@ export interface ReactDashboardResponse {
   top_apps: Page<ReactDashboardTopApp> & { total_app_hours: number };
   /** Non-archived 'fixed'-billing projects -- the Billable filter tab. */
   billable_projects: ReactDashboardProjectBilling[];
-  /** Non-archived 'free'-billing projects -- the Free Time / Internal filter tab. */
+  /** Non-archived 'free' and 'non_billing' projects -- the Non-Billable filter tab. */
   internal_projects: ReactDashboardProjectBilling[];
 }
 

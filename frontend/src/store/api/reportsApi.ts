@@ -193,6 +193,18 @@ export interface ProjectTaskSummaryProject {
   project_name: string;
   created_date: string;
   status: ProjectTaskSummaryStatus | null;
+  /** 'fixed', 'free' (flexible time) or 'non_billing'. */
+  billing_type: string;
+  /** The hour budget; set only for a fixed-hours project that has one. */
+  fixed_hours: number | null;
+  /** Seconds spent against the budget, all time, Internal excluded (the
+   * dashboard's "Used"). `null` when the project has no fixed budget. */
+  used_seconds: number | null;
+  /** Budget minus used; negative when over budget. `null` without a budget. */
+  remaining_seconds: number | null;
+  /** Used as a percentage of the budget -- what the colour bands read.
+   * `null` without a budget. */
+  usage_percentage: number | null;
   total_task_count: number;
   total_task_seconds: number;
   total_task_hours: number;
@@ -216,6 +228,9 @@ export interface ProjectTaskSummaryQueryParams {
   start_date?: string;
   end_date?: string;
   project_id?: number[];
+  /** Only projects of these billing types ('fixed', 'free', 'non_billing');
+   * sent as a repeated param. Omit for every type. */
+  billing_type?: string[];
 }
 
 const buildQueryParams = (params: any) => {

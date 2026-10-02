@@ -85,11 +85,12 @@ describe('Project Management: Billing filter', () => {
   };
   const lastQuery = () => new URLSearchParams(projectListUrls[projectListUrls.length - 1]);
 
-  it('offers Budget & Billing, Billing and Free, defaulting to all', () => {
+  it('offers Budget & Billing, Billing, Free and Non Billing, defaulting to all', () => {
     expect(Array.from(select().options).map((o) => [o.value, o.textContent])).toEqual([
       ['', 'Budget & Billing'],
       ['fixed', 'Billing'],
       ['free', 'Free'],
+      ['non_billing', 'Non Billing'],
     ]);
     expect(select().value).toBe('');
     expect(lastQuery().has('billing_type')).toBe(false);
@@ -98,6 +99,12 @@ describe('Project Management: Billing filter', () => {
   it('asks the API only for fixed-billing projects when Billing is chosen', async () => {
     await choose('fixed');
     expect(lastQuery().get('billing_type')).toBe('fixed');
+    expect(lastQuery().get('page')).toBe('1');
+  });
+
+  it('asks only for non-billing projects when Non Billing is chosen', async () => {
+    await choose('non_billing');
+    expect(lastQuery().get('billing_type')).toBe('non_billing');
     expect(lastQuery().get('page')).toBe('1');
   });
 

@@ -157,6 +157,21 @@ def has_fixed_budget(billing_type: Optional[str], fixed_hours) -> bool:
     return billing_type == "fixed" and bool(fixed_hours)
 
 
+def usage_percentage(billing_type: Optional[str], fixed_hours, used_seconds: int) -> Optional[float]:
+    """Used as a percentage of the fixed allocation, or None when there is none.
+
+    The one definition behind every "how much of its budget has this project
+    spent" figure -- the dashboard's Billable tab and the Task Listing both
+    band their colour on it. Used hours are rounded to two decimals *before*
+    dividing, exactly as the dashboard always printed them, so a project reads
+    the same percentage (and lands in the same colour band) on every screen.
+    """
+    if not has_fixed_budget(billing_type, fixed_hours):
+        return None
+    used_hours = round(float(used_seconds or 0) / 3600, 2)
+    return round(used_hours / float(fixed_hours) * 100, 2)
+
+
 def remaining_seconds(billing_type: Optional[str], fixed_hours, used_seconds: int) -> Optional[int]:
     """Allocation minus Used, or None when the project has no fixed budget.
 

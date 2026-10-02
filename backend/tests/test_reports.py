@@ -213,6 +213,7 @@ class ProjectTaskSummaryTests(unittest.TestCase):
         self.user = SimpleNamespace(id=54, organization_id=1)
         self.project = SimpleNamespace(
             id=1, project_name="Alpha", created_at=datetime(2026, 8, 1), status_id=2,
+            billing_type="free", fixed_hours=None,
         )
         self.tracked_task = SimpleNamespace(
             id=100, task_name="Design", created_at=datetime(2026, 8, 2), project_id=1,
