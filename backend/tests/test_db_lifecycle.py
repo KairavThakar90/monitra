@@ -393,28 +393,94 @@ class TestBackgroundTasksOwnAndCloseTheirSession(unittest.TestCase):
 
     def _run(self, module, function, service_target, *args):
         session = MagicMock()
-        with patch("app.core.database.get_session_local", return_value=lambda: session), \
-                patch(service_target, side_effect=RuntimeError("downstream failure")):
+        with patch("app.core.database.get_session_local", return_value=lambda: session),                 patch(service_target, side_effect=RuntimeError("downstream failure")):
             getattr(module, function)(*args)        # must swallow the failure
         session.close.assert_called_once()
 
     def test_email_delivery(self):
         from app.services.email import outbox
 
-        self._run(outbox, "deliver_in_background",
+        self._run(outbox, "_deliver_blocking",
                   "app.services.email.outbox.EmailOutboxService.deliver_one", 1)
 
     def test_wfpm_delivery(self):
         from app.WFPM import timer_sync
 
-        self._run(timer_sync, "deliver_in_background",
+        self._run(timer_sync, "_deliver_blocking",
                   "app.WFPM.timer_sync.WfpmTimerSync.deliver_one", 1)
 
     def test_budget_evaluation(self):
         from app.services import project_budget_alerts as alerts
 
-        self._run(alerts, "evaluate_project_in_background",
+        self._run(alerts, "_evaluate_blocking",
                   "app.services.project_budget_alerts.ProjectBudgetAlertService.run", 7, "timer_stop")
+
+
+class TestSlowDeliveriesDoNotTakeRequestThreads(unittest.TestCase):
+    """A WFPM or SMTP wait must not occupy the pool the API's own requests run on."""
+
+    def setUp(self):
+        from app.core import background
+
+        self.background = background
+        background._limiter = None                      # rebuilt from the patched setting
+        self.addCleanup(lambda: setattr(background, "_limiter", None))
+
+    def test_the_entry_points_are_coroutines_so_background_tasks_runs_them_on_the_loop(self):
+        from app.services import project_budget_alerts as alerts
+        from app.services.email import outbox, workflows
+        from app.WFPM import timer_sync
+
+        for function in (
+            outbox.deliver_in_background, timer_sync.deliver_in_background,
+            alerts.evaluate_project_in_background, workflows._send_immediately_in_background,
+        ):
+            with self.subTest(function=function.__qualname__):
+                self.assertTrue(inspect.iscoroutinefunction(function))
+
+    def test_concurrency_is_capped_by_the_setting(self):
+        running = []
+        peak = [0]
+        guard = threading.Lock()
+
+        def slow(_):
+            with guard:
+                running.append(1)
+                peak[0] = max(peak[0], len(running))
+            time.sleep(0.05)
+            with guard:
+                running.pop()
+
+        async def run():
+            await asyncio.gather(*(self.background.run_blocking(slow, i) for i in range(24)))
+
+        with patch.object(settings, "BACKGROUND_DELIVERY_CONCURRENCY", 3):
+            asyncio.run(run())
+        self.assertEqual(peak[0], 3)
+
+    def test_a_running_delivery_leaves_the_request_thread_pool_untouched(self):
+        from anyio.to_thread import current_default_thread_limiter
+        from app.WFPM import timer_sync
+
+        entered, release = threading.Event(), threading.Event()
+
+        def blocked_on_wfpm(event_id):
+            entered.set()
+            release.wait(5)
+
+        async def run():
+            with patch.object(timer_sync, "_deliver_blocking", blocked_on_wfpm):
+                task = asyncio.create_task(timer_sync.deliver_in_background(1))
+                while not entered.is_set():
+                    await asyncio.sleep(0.01)
+                borrowed = current_default_thread_limiter().borrowed_tokens
+                release.set()
+                await task
+            return borrowed
+
+        # Zero: the delivery is on the dedicated limiter. On the default pool it
+        # would be 1, and 40 of them would leave no thread for a request.
+        self.assertEqual(asyncio.run(run()), 0)
 
 
 class TestNothingBlocksTheEventLoop(unittest.TestCase):

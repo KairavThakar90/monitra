@@ -40,6 +40,7 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.background import run_blocking
 from app.core.config import settings
 from app.core.database import end_transaction
 from app.models.time_entry import TimeEntry
@@ -413,13 +414,21 @@ class WfpmTimerSync:
         return result
 
 
-def deliver_in_background(event_id: int) -> None:
+async def deliver_in_background(event_id: int) -> None:
+    """What `BackgroundTasks` runs after the timer-start or timer-stop response.
+
+    The delivery itself blocks on WFPM, so it runs under the bounded background
+    limiter (`app.core.background`) instead of taking a request thread.
+    """
+    await run_blocking(_deliver_blocking, event_id)
+
+
+def _deliver_blocking(event_id: int) -> None:
     """Deliver one event on its own database session.
 
-    This is what `BackgroundTasks` runs after the timer-start or timer-stop
-    response has been written. It opens its own session because the request's is closed by
-    then, and it swallows everything: the row it was working on is still
-    queued for the sweeper either way.
+    It opens its own session because the request's is closed by then, and it
+    swallows everything: the row it was working on is still queued for the
+    sweeper either way.
     """
     from app.core.database import get_session_local
 

@@ -39,6 +39,13 @@ minutes: every slot of the pool (2 workers × (5 + 10)) pinned, `QueuePool limit
 - **Background tasks open their own session** and close it in `finally`
   (`deliver_in_background`, `evaluate_project_in_background`). Never pass a
   request's `db` to `BackgroundTasks`.
+- **Background work that waits on a remote server goes through
+  `run_blocking`** (`app/core/background.py`). A plain synchronous task runs on
+  the same 40-thread pool as every synchronous route; during a burst, slow WFPM
+  or SMTP waits filled it and requests queued for a thread *while holding the
+  connection their auth query had checked out* (measured: one held for 6.1 s,
+  the stand-in WFPM's delay). `run_blocking` caps those waits at
+  `BACKGROUND_DELIVERY_CONCURRENCY` threads per worker.
 - **Never store a Session** in a global, a singleton, or app state.
 
 ## Pool sizing
@@ -58,6 +65,7 @@ sum, but they do occupy a worker thread and a connection while they run.
 | `DB_POOL_TIMEOUT_SECONDS` | 10 | wait for a free connection, then 503 |
 | `DB_POOL_RECYCLE_SECONDS` | 1800 | retire connections older than this |
 | `DB_CHECKOUT_WARN_SECONDS` | 5 | log a connection held longer (0 = off) |
+| `BACKGROUND_DELIVERY_CONCURRENCY` | 8 | background WFPM / email / budget threads per worker |
 | `DB_IDLE_IN_TRANSACTION_TIMEOUT_MS` | 0 (off) | server-side backstop, see below |
 
 Defaults: 2 workers × 15 = **30** connections (PostgreSQL allows 800). Serverless

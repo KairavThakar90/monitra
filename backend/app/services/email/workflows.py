@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.background import run_blocking
 from app.core.config import settings
 from app.models.email_notification import (
     TYPE_FEEDBACK, TYPE_FEEDBACK_STATUS, TYPE_RELEASE, TYPE_WELCOME,
@@ -1016,6 +1017,12 @@ def _send_immediately(message) -> bool:
         return False
 
 
+async def _send_immediately_in_background(message) -> bool:
+    """`_send_immediately` for `BackgroundTasks`: SMTP waits under the bounded
+    background limiter (`app.core.background`), not on a request thread."""
+    return await run_blocking(_send_immediately, message)
+
+
 def queue_client_invitation_email(
     db: Session, *, invitation, client, token: str, project_names: list[str], background_tasks=None,
 ) -> bool:
@@ -1037,7 +1044,7 @@ def queue_client_invitation_email(
         message = messages.build_client_invitation_email(payload, recipients)
 
         if background_tasks is not None:
-            background_tasks.add_task(_send_immediately, message)
+            background_tasks.add_task(_send_immediately_in_background, message)
         else:
             _send_immediately(message)
         logger.info(
@@ -1066,7 +1073,7 @@ def queue_client_login_link_email(db: Session, user, handoff_token: str, backgro
         message = messages.build_client_login_link_email(payload, recipients)
 
         if background_tasks is not None:
-            background_tasks.add_task(_send_immediately, message)
+            background_tasks.add_task(_send_immediately_in_background, message)
         else:
             _send_immediately(message)
         logger.info("CLIENT_LOGIN_LINK_EMAIL_QUEUED: user=%s", getattr(user, "id", None))

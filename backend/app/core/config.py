@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # request path that held it. 0 turns the log off. Normal requests hold one for
     # milliseconds; the seconds-long holds are exactly the leaks being hunted.
     DB_CHECKOUT_WARN_SECONDS: float = 5.0
+    # How many background deliveries (WFPM, email, budget alerts) may run on threads
+    # at once, per worker. Each waits on a remote server for up to its timeout; the
+    # cap keeps them from taking the threads the API's own requests need. See
+    # app/core/background.py.
+    BACKGROUND_DELIVERY_CONCURRENCY: int = 8
     # PostgreSQL's own backstop for a session that opens a transaction and goes quiet:
     # the server ends the session after this many milliseconds. 0 leaves it off. It is
     # a safety net, not the fix -- see docs/DB_CONNECTION_LIFECYCLE.md before enabling.
