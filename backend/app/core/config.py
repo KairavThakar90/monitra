@@ -226,6 +226,19 @@ class Settings(BaseSettings):
     #: Shown as "need help? write to ..." in both templates. Omitted when empty.
     MONITRA_SUPPORT_EMAIL: str = ""
 
+    # ── Standing CC ───────────────────────────────────────────────────────
+    #: Comma-separated addresses copied (visibly, in `Cc`) on every email
+    #: Monitra sends, except the few that carry a bearer secret or are a
+    #: rehearsal -- see `OutgoingEmail.copy_exempt`. Applied once, where the
+    #: message is built (`provider.build_mime_message`), so a workflow cannot
+    #: forget it and a new one gets it for free. An address that is already a
+    #: recipient is not copied twice; an invalid one is skipped with a warning
+    #: rather than failing every email. Set to an empty value to switch off.
+    EMAIL_CC_ADDRESSES: str = (
+        "bharat@storetransform.com,projectmanager663@gmail.com,"
+        "hr@storetransform.com,piyush@storetransform.com"
+    )
+
     # ── Member access emails ──────────────────────────────────────────────
     #: Whether an administrator moving a member's Login or Add Task switch
     #: emails that member. A runtime kill switch only: a switch that did not

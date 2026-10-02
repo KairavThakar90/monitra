@@ -849,6 +849,8 @@ def build_release_email(payload: dict[str, Any], recipients: list[str]) -> Outgo
         text="\n".join(text_lines),
         reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
         inline_images=frame["_inline_images"],
+        # A rehearsal reaches its own test list only -- see RELEASE_EMAIL_TEST_RECIPIENTS.
+        copy_exempt=bool(payload.get("test")),
     )
 
 
@@ -946,6 +948,8 @@ def build_client_invitation_email(payload: dict[str, Any], recipients: list[str]
         text="\n".join(text_lines),
         reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
         inline_images=frame["_inline_images"],
+        # Carries Approve/Reject links: copying anyone would let them act as the client.
+        copy_exempt=True,
     )
 
 
@@ -997,6 +1001,8 @@ def build_client_login_link_email(payload: dict[str, Any], recipients: list[str]
         text="\n".join(text_lines),
         reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
         inline_images=frame["_inline_images"],
+        # A one-time sign-in link: anyone copied could use it before the client does.
+        copy_exempt=True,
     )
 
 

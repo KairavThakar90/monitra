@@ -93,6 +93,34 @@ class OutgoingEmail:
     #: still being sent by the one mailbox this system is allowed to send from.
     from_name: Optional[str] = None
     inline_images: Sequence[InlineImage] = field(default_factory=tuple)
+    #: True for a message that must reach its recipient alone, so the standing
+    #: CC (`EMAIL_CC_ADDRESSES`) is not added. Reserved for mail carrying a
+    #: bearer secret -- a one-time sign-in link, an invitation's Approve/Reject
+    #: links -- where copying anyone would hand them the recipient's access, and
+    #: for rehearsals that are meant to reach only their own test list.
+    copy_exempt: bool = False
+
+
+def standing_cc_addresses(exclude: Sequence[str] = ()) -> list[str]:
+    """`EMAIL_CC_ADDRESSES` as clean, de-duplicated addresses.
+
+    Anything already in `exclude` (the message's own recipients) is left out, so
+    nobody gets the same message twice. An entry that is not a valid address is
+    skipped and logged: one typo in configuration must not stop every email.
+    """
+    skip = {address.strip().lower() for address in exclude}
+    cc: list[str] = []
+    for raw in (settings.EMAIL_CC_ADDRESSES or "").split(","):
+        if not raw.strip():
+            continue
+        try:
+            address = normalise_address(raw, field_label="EMAIL_CC_ADDRESSES entry")
+        except EmailAddressError:
+            logger.warning("EMAIL_CC_INVALID_ENTRY: ignoring %r in EMAIL_CC_ADDRESSES", raw.strip())
+            continue
+        if address not in skip and address not in cc:
+            cc.append(address)
+    return cc
 
 
 def assert_header_safe(value: str, *, field_label: str) -> str:
@@ -172,6 +200,10 @@ def build_mime_message(message: OutgoingEmail) -> EmailMessage:
     mime = EmailMessage()
     mime["From"] = formataddr((from_name, from_address))
     mime["To"] = ", ".join(recipients)
+    # `send_message` delivers to Cc as well as To, so this is also the envelope.
+    cc = [] if message.copy_exempt else standing_cc_addresses(exclude=recipients)
+    if cc:
+        mime["Cc"] = ", ".join(cc)
     mime["Subject"] = assert_header_safe(message.subject, field_label="Subject")
     mime["Message-ID"] = make_msgid(domain=from_address.rsplit("@", 1)[-1])
     # Tells well-behaved autoresponders not to reply to an automated message,
