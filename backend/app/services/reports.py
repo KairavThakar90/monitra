@@ -362,6 +362,7 @@ class ReportsService:
         start_date: Optional[date],
         end_date: Optional[date],
         billing_types: Optional[list[str]] = None,
+        member_ids: Optional[list[int]] = None,
     ) -> dict:
         if single_date and (start_date or end_date):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Provide either 'date' or 'start_date'/'end_date', not both.")
@@ -393,6 +394,21 @@ class ReportsService:
         # know about" shape the project routes use.
         project_ids = ReportsService._scoped(project_ids, visible_project_ids(db, current_user))
 
+        # A member filter narrows the page to what *those people* did. It is only
+        # applied when asked for: with none, every project's activity is shown
+        # whoever did it, exactly as before. A leader's filter is intersected
+        # with their team so a hand-made ?member_id= cannot read outside it, and
+        # an empty intersection means "nobody", never "everybody" -- the
+        # repository reads an empty list as no filter, so it is answered here.
+        member_ids = sorted(set(member_ids)) if member_ids else None
+        if member_ids:
+            member_ids = ReportsService._scoped(member_ids, visible_member_ids(db, current_user))
+            if not member_ids:
+                return {
+                    "projects": [],
+                    "pagination": {"page": page, "limit": limit, "total_projects": 0, "total_pages": 0},
+                }
+
         # Only projects somebody has actually started today appear at all --
         # the Task Listing is "what is being worked on today", so a project
         # with no tracking today is absent, not listed with an empty task
@@ -402,7 +418,7 @@ class ReportsService:
         today = ist_today()
         today_start, today_end = _utc_start(today), _utc_end(today)
         active_ids = ReportsRepository.project_ids_tracked_between(
-            db, organization_id, project_ids, today_start, today_end, today, today
+            db, organization_id, project_ids, today_start, today_end, today, today, member_ids=member_ids
         )
         if not active_ids:
             return {
@@ -428,11 +444,15 @@ class ReportsService:
 
         start_time = _utc_start(effective_start)
         end_time = _utc_end(effective_end)
+        # The displayed hours follow the member filter too: "Total Time" on a
+        # project is what the chosen people tracked, not the whole team. The
+        # budget figure above is deliberately not narrowed -- a budget is spent
+        # by everyone.
         project_seconds = ReportsRepository.session_seconds_by(
-            db, organization_id, page_ids, None, start_time, end_time, effective_start, effective_end, "project_id"
+            db, organization_id, page_ids, member_ids, start_time, end_time, effective_start, effective_end, "project_id"
         )
         task_seconds = ReportsRepository.session_seconds_by(
-            db, organization_id, page_ids, None, start_time, end_time, effective_start, effective_end, "task_id"
+            db, organization_id, page_ids, member_ids, start_time, end_time, effective_start, effective_end, "task_id"
         )
         tasks_by_project = ReportsRepository.active_tasks_by_project(db, organization_id, page_ids)
         status_ids = {project.status_id for project in projects if project.status_id}
@@ -441,7 +461,7 @@ class ReportsService:
         # The same "today" rule, one level down: within a shown project, only
         # tasks actively worked on today appear, not every task it ever had.
         touched_today = ReportsRepository.tasks_touched_today(
-            db, organization_id, page_ids, today_start, today_end, today, today
+            db, organization_id, page_ids, today_start, today_end, today, today, member_ids=member_ids
         )
 
         project_items = []

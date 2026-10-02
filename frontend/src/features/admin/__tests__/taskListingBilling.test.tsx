@@ -36,6 +36,12 @@ import { AdminTaskListing } from '../AdminTaskListing';
 
 const HOUR = 3600;
 
+/** Deliberately not anybody real: the picker must offer whatever the API returns. */
+const MEMBERS = [
+  { id: 7, name: 'Asha Example', email: 'asha@example.invalid', role: 'employee', status: 'active' },
+  { id: 9, name: 'Ravi Example', email: 'ravi@example.invalid', role: 'employee', status: 'active' },
+];
+
 const project = (overrides: Record<string, unknown> = {}) => ({
   id: 1,
   project_name: 'Project',
@@ -98,9 +104,13 @@ describe('Task Listing: project type filter and budget colours', () => {
       const url = new URL(request.url);
       if (url.pathname.endsWith('/reports/project-task-summary')) {
         summaryQueries.push(url.searchParams);
-        // Filter the way the server does: before the page is cut.
+        // Filter the way the server does: before the page is cut. A project carries
+        // `by`, the members who worked on it today (a test-only field).
         const types = url.searchParams.getAll('billing_type');
-        const shown = types.length ? summaryProjects.filter((item) => types.includes(String(item.billing_type))) : summaryProjects;
+        const members = url.searchParams.getAll('member_id').map(Number);
+        const shown = summaryProjects
+          .filter((item) => !types.length || types.includes(String(item.billing_type)))
+          .filter((item) => !members.length || ((item as { by?: number[] }).by ?? []).some((id) => members.includes(id)));
         return json({
           projects: shown,
           pagination: { page: 1, limit: 10, total_projects: shown.length, total_pages: 1 },
@@ -113,6 +123,9 @@ describe('Task Listing: project type filter and budget colours', () => {
         return json({ items: [], pagination: { page: 1, limit: 100, total: 0, total_pages: 1 } });
       }
       if (url.pathname.endsWith('/projects/assignable-employees')) return json([]);
+      if (url.pathname.endsWith('/members')) {
+        return json({ items: MEMBERS, page: 1, limit: 100, total: MEMBERS.length, pages: 1 });
+      }
       return json({}, 404);
     }));
     container = document.createElement('div');
@@ -249,6 +262,131 @@ describe('Task Listing: project type filter and budget colours', () => {
       await mount();
       await choose(typeSelect(), 'billing');
       expect(lastQuery().get('page')).toBe('1');
+    });
+  });
+
+  describe('the filter bar (the Reports page\'s design)', () => {
+    /** The white rounded card holding every filter. */
+    const bar = () => container.querySelector('.rounded-2xl') as HTMLElement;
+    const buttonWith = (text: string) =>
+      Array.from(bar().querySelectorAll('button')).find((b) => b.textContent?.trim().includes(text)) as HTMLButtonElement;
+    const press = async (el: Element | undefined) => {
+      expect(el, 'element to click').toBeTruthy();
+      await act(async () => { el!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+      await flush();
+    };
+    /** Pick a member in the Members picker the way a user does: open it, click the name. */
+    const pickMember = async (name: string) => {
+      await press(buttonWith('All members'));
+      await press(Array.from(bar().querySelectorAll('button')).find((b) => b.textContent?.includes(name)));
+    };
+    /** What each project was last worked on by, for the stub's server-side member filter. */
+    const withWorkers = () => [
+      { ...fixedProject(1, 'Fixed one', 40, 10), by: [7] },
+      { ...project({ id: 2, project_name: 'Flexible one', billing_type: 'free' }), by: [9] },
+      { ...project({ id: 3, project_name: 'Internal one', billing_type: 'non_billing' }), by: [7, 9] },
+    ];
+
+    it('puts the calendar on the left and the other filters on the right, in one rounded card', async () => {
+      await mount();
+      const date = bar().querySelector('button') as HTMLButtonElement;
+      expect(date.textContent).toContain('Today');
+      expect(bar().className).toContain('justify-between');
+      expect(bar().children[0].contains(date)).toBe(true);
+      expect(bar().children[1].contains(buttonWith('All members'))).toBe(true);
+      expect(date.compareDocumentPosition(buttonWith('All members')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(date.compareDocumentPosition(buttonWith('All projects')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('orders the right-hand filters Members, Projects, Project type, then Reset and Expand All', async () => {
+      await mount();
+      const order = [buttonWith('All members'), buttonWith('All projects'), typeSelect(), buttonWith('Reset'), buttonWith('Expand All')];
+      for (let i = 0; i < order.length - 1; i += 1) {
+        expect(order[i].compareDocumentPosition(order[i + 1]) & Node.DOCUMENT_POSITION_FOLLOWING, `control ${i}`).toBeTruthy();
+      }
+    });
+
+    it('draws every filter at one height', async () => {
+      await mount();
+      await choose(typeSelect(), 'billing'); // brings the second select in too
+      const controls = [
+        bar().querySelector('button'),
+        buttonWith('All members'),
+        buttonWith('All projects'),
+        typeSelect(),
+        kindSelect(),
+        buttonWith('Reset'),
+        buttonWith('Expand All'),
+      ];
+      expect(controls).toHaveLength(7);
+      for (const control of controls) {
+        expect(control, 'a filter control').toBeTruthy();
+        expect((control as HTMLElement).className).toContain('h-9');
+      }
+      // The Projects picker used to be the compact, smaller one on this page.
+      expect(buttonWith('All projects').className).not.toContain('py-1.5');
+    });
+
+    it('offers a Members filter listing whoever the API returned', async () => {
+      await mount();
+      await press(buttonWith('All members'));
+      expect(bar().textContent).toContain('Asha Example');
+      expect(bar().textContent).toContain('Ravi Example');
+    });
+
+    it('sends the chosen member and shows only that member\'s projects', async () => {
+      summaryProjects = withWorkers() as never;
+      await mount();
+      expect(shown()).toEqual(['Fixed one', 'Flexible one', 'Internal one']);
+      expect(summaryQueries[0].has('member_id')).toBe(false);
+
+      await pickMember('Ravi Example');
+      expect(lastQuery().getAll('member_id')).toEqual(['9']);
+      expect(shown()).toEqual(['Flexible one', 'Internal one']);
+    });
+
+    it('combines the member filter with the project type filter', async () => {
+      summaryProjects = withWorkers() as never;
+      await mount();
+      await pickMember('Asha Example');
+      await choose(typeSelect(), 'non_billing');
+
+      expect(lastQuery().getAll('member_id')).toEqual(['7']);
+      expect(lastQuery().getAll('billing_type')).toEqual(['non_billing']);
+      expect(shown()).toEqual(['Internal one']);
+    });
+
+    it('goes back to the first page when the member changes', async () => {
+      summaryProjects = withWorkers() as never;
+      await mount();
+      await pickMember('Asha Example');
+      expect(lastQuery().get('page')).toBe('1');
+    });
+
+    it('Reset returns every filter to its opening state', async () => {
+      summaryProjects = withWorkers() as never;
+      await mount();
+      await pickMember('Ravi Example');
+      await choose(typeSelect(), 'billing');
+      await choose(kindSelect()!, 'free');
+      expect(shown()).toEqual(['Flexible one']);
+
+      await press(buttonWith('Reset'));
+      expect(typeSelect().value).toBe('');
+      expect(kindSelect()).toBeNull();
+      expect(buttonWith('All members')).toBeTruthy();
+      expect(shown()).toEqual(['Fixed one', 'Flexible one', 'Internal one']);
+    });
+
+    it('says the member filter applies when nothing matches', async () => {
+      summaryProjects = withWorkers() as never;
+      await mount();
+      await choose(typeSelect(), 'non_billing');
+      await pickMember('Ravi Example'); // Internal one is worked by both, so narrow further
+      await choose(typeSelect(), 'billing');
+      await choose(kindSelect()!, 'fixed');
+      expect(shown()).toEqual(['Nothing worked on today']); // Fixed one is Asha's only
+      expect(container.textContent).toContain('member, project or project type');
     });
   });
 

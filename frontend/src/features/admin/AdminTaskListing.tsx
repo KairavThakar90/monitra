@@ -13,7 +13,8 @@ import { useFeedback } from "../../components/FeedbackProvider";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
 import { formatHMS } from "../../utils/duration";
 import { PaginationArrow } from '../../components/PaginationArrow';
-import { DateRangeFilter, ProjectMultiSelect, rangeFor, DEFAULT_RANGE, type DateRange } from '../dashboard/v2/filters';
+import { DateRangeFilter, MemberMultiSelect, ProjectMultiSelect, rangeFor, DEFAULT_RANGE, type DateRange } from '../dashboard/v2/filters';
+import { useGetAllMembersQuery } from '../../store/api/membersApi';
 import { FieldError, useFormValidation } from '../../validation';
 import { useAuth } from '../auth/authContext';
 import { usageColor } from '../dashboard/v2/theme';
@@ -272,20 +273,45 @@ const BILLING_CHIP_COLOR: Record<string, string> = {
   non_billing: '#64748B',
 };
 
-/** The shared look of the toolbar's native selects (the same as Project Management's billing filter). */
-const FILTER_SELECT_CLASS =
-  'min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto';
-
-const SelectChevron: React.FC = () => (
-  <svg
-    className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"
-    fill="none"
-    viewBox="0 0 24 24"
-    stroke="currentColor"
-  >
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-  </svg>
+/**
+ * A native select drawn exactly like the Reports filter bar's controls: the same
+ * 36px height, border, type and blue "something is chosen" state as the calendar,
+ * Members and Projects pickers beside it, so the whole bar reads as one size.
+ */
+const FilterSelect: React.FC<{
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  children: React.ReactNode;
+}> = ({ label, value, onChange, children }) => (
+  <div className="relative">
+    <select
+      aria-label={label}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className={
+        "h-9 appearance-none rounded-lg border bg-white pl-3.5 pr-9 text-[13px] font-semibold outline-none transition focus:border-[#38BDF8] focus:ring-2 focus:ring-[#38BDF8]/20 " +
+        (value !== ""
+          ? "border-[#2563EB]/40 text-[#2563EB]"
+          : "border-[#E2E8F0] text-[#0F172A] hover:border-[#CBD5E1]")
+      }
+    >
+      {children}
+    </select>
+    <svg
+      className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#94A3B8]"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+    </svg>
+  </div>
 );
+
+/** The filter bar's plain buttons (Reset, Expand All), the same height as the controls around them. */
+const FILTER_BUTTON_CLASS =
+  "h-9 rounded-lg border border-[#E2E8F0] px-4 text-[13px] font-bold text-[#64748B] transition hover:bg-[#F8FAFC] hover:text-[#0F172A]";
 
 /**
  * How much of a fixed-hours project's budget has been spent, coloured by the
@@ -346,6 +372,8 @@ export const AdminTaskListing: React.FC = () => {
   const endDate = dateRange.to;
   
   const [filterProjectIds, setFilterProjectIds] = useState<string[]>([]);
+  // Whose work to show; empty means everyone, as on every other filter.
+  const [filterMemberIds, setFilterMemberIds] = useState<string[]>([]);
   // Project type, in two steps like the Create Project form: Billing or Non
   // Billing first, then (under Billing only) Fixed Hours or Flexible Time.
   const [billingScope, setBillingScope] = useState<BillingScope>('');
@@ -355,6 +383,7 @@ export const AdminTaskListing: React.FC = () => {
   const [expandedProjects, setExpandedProjects] = useState<Record<number, boolean>>({});
 
   const { data: allProjects } = useGetAllProjectsQuery();
+  const { data: allMembers = [] } = useGetAllMembersQuery();
   const { data: metadata } = useGetProjectMetadataQuery();
   const { data: employeesData } = useGetAssignableEmployeesQuery();
   const [createTask, { isLoading: isCreatingTask }] = useCreateTaskMutation();
@@ -386,8 +415,19 @@ export const AdminTaskListing: React.FC = () => {
     start_date: startDate || undefined,
     end_date: endDate || undefined,
     project_id: filterProjectIds.length ? filterProjectIds.map(Number) : undefined,
+    member_id: filterMemberIds.length ? filterMemberIds.map(Number) : undefined,
     billing_type: billingTypes,
   });
+
+  /** Back to the page's opening view: today, everyone, every project, every type. */
+  const resetFilters = () => {
+    setDateRange(rangeFor('today', DEFAULT_RANGE));
+    setFilterMemberIds([]);
+    setFilterProjectIds([]);
+    setBillingScope('');
+    setBillingKind('');
+    setPage(1);
+  };
 
   const showFirstLoad = isLoading && !data;
   const projects = data?.projects || [];
@@ -524,67 +564,63 @@ export const AdminTaskListing: React.FC = () => {
       }
     >
       <div className="w-full px-4 py-8 sm:px-6 lg:px-8">
-        {/* Toolbar */}
-        <div className="mb-6 flex flex-wrap items-center justify-end gap-3">
-            {/* Project Filter */}
+        {/* Filters: the same bar the Reports page uses -- the calendar on the left,
+            Members, Projects and the rest on the right, every control one height. */}
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E2E8F0] bg-white p-2 pl-4 shadow-sm">
+          <DateRangeFilter
+            value={dateRange}
+            onChange={(range) => { setDateRange(range); setPage(1); }}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <MemberMultiSelect
+              members={allMembers}
+              selected={filterMemberIds}
+              onChange={(ids) => { setFilterMemberIds(ids); setPage(1); }}
+            />
             <ProjectMultiSelect
               projects={allProjects || []}
               selected={filterProjectIds}
-              onChange={(ids) => {
-                setFilterProjectIds(ids);
-                setPage(1);
-              }}
-              compact
+              onChange={(ids) => { setFilterProjectIds(ids); setPage(1); }}
             />
 
             {/* Project type: Billing / Non Billing, then Fixed Hours / Flexible Time under Billing */}
-            <div className="relative">
-              <select
-                aria-label="Filter by project type"
-                value={billingScope}
-                onChange={(e) => {
-                  setBillingScope(e.target.value as BillingScope);
-                  // The second choice belongs to Billing; leaving Billing clears it.
-                  setBillingKind('');
-                  setPage(1);
-                }}
-                className={FILTER_SELECT_CLASS}
-              >
-                <option value="">All Project Types</option>
-                <option value="billing">Billing</option>
-                <option value="non_billing">Non Billing</option>
-              </select>
-              <SelectChevron />
-            </div>
+            <FilterSelect
+              label="Filter by project type"
+              value={billingScope}
+              onChange={(value) => {
+                setBillingScope(value as BillingScope);
+                // The second choice belongs to Billing; leaving Billing clears it.
+                setBillingKind('');
+                setPage(1);
+              }}
+            >
+              <option value="">All Project Types</option>
+              <option value="billing">Billing</option>
+              <option value="non_billing">Non Billing</option>
+            </FilterSelect>
             {billingScope === 'billing' && (
-              <div className="relative">
-                <select
-                  aria-label="Filter by billing type"
-                  value={billingKind}
-                  onChange={(e) => { setBillingKind(e.target.value as BillingKind); setPage(1); }}
-                  className={FILTER_SELECT_CLASS}
-                >
-                  <option value="">All Billing</option>
-                  <option value="fixed">{billingTypeLabel('fixed')}</option>
-                  <option value="free">{billingTypeLabel('free')}</option>
-                </select>
-                <SelectChevron />
-              </div>
+              <FilterSelect
+                label="Filter by billing type"
+                value={billingKind}
+                onChange={(value) => { setBillingKind(value as BillingKind); setPage(1); }}
+              >
+                <option value="">All Billing</option>
+                <option value="fixed">{billingTypeLabel('fixed')}</option>
+                <option value="free">{billingTypeLabel('free')}</option>
+              </FilterSelect>
             )}
 
-            {/* Date Filter */}
-            <DateRangeFilter
-              value={dateRange}
-              onChange={(range) => { setDateRange(range); setPage(1); }}
-            />
-
+            <button type="button" onClick={resetFilters} className={FILTER_BUTTON_CLASS}>
+              Reset
+            </button>
             <button
               type="button"
               onClick={isAnyExpanded ? collapseAll : expandAll}
-              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-bold text-slate-500 transition hover:bg-slate-50 hover:text-slate-700"
+              className={FILTER_BUTTON_CLASS}
             >
               {isAnyExpanded ? "Collapse All" : "Expand All"}
             </button>
+          </div>
         </div>
 
         {/* Grouped Projects */}
@@ -614,7 +650,7 @@ export const AdminTaskListing: React.FC = () => {
                 </h3>
                 <p className="mt-1 text-xs font-medium text-slate-500">
                   A project appears here once someone starts one of its tasks today.
-                  If you filtered by project or project type, those filters apply too.
+                  If you filtered by member, project or project type, those filters apply too.
                 </p>
               </div>
             ) : (

@@ -35,20 +35,33 @@ def _project(pid, billing_type, fixed_hours=None):
 
 def _summary(projects, used_hours_by_id=None, billing_types=None):
     """Run the service with every repository read stubbed; returns (response, mocks)."""
+    response, paginated, hours, _ = _summary_with_reads(projects, used_hours_by_id, billing_types)
+    return response, paginated, hours
+
+
+def _summary_with_reads(projects, used_hours_by_id=None, billing_types=None, member_ids=None, user=None, allowed_members=None):
+    """As `_summary`, also returning the repository reads that carry the member filter.
+
+    `allowed_members` stands in for `visible_member_ids`: None is "no restriction"
+    (everyone but a leader), a set is a leader's team.
+    """
     used = {pid: ProjectHours(total_seconds=int(h * HOUR)) for pid, h in (used_hours_by_id or {}).items()}
-    user = SimpleNamespace(id=54, organization_id=1)
-    with patch("app.services.reports.ReportsRepository.project_ids_tracked_between", return_value={p.id for p in projects}), \
+    user = user or SimpleNamespace(id=54, organization_id=1)
+    reads = {}
+    with patch("app.services.reports.ReportsRepository.project_ids_tracked_between",
+               return_value={p.id for p in projects}) as reads["tracked"], \
          patch("app.services.reports.ReportsRepository.paginated_projects",
                return_value=(projects, len(projects))) as paginated, \
-         patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}), \
+         patch("app.services.reports.ReportsRepository.session_seconds_by", return_value={}) as reads["seconds"], \
          patch("app.services.reports.ReportsRepository.active_tasks_by_project", return_value={}), \
-         patch("app.services.reports.ReportsRepository.tasks_touched_today", return_value=set()), \
+         patch("app.services.reports.ReportsRepository.tasks_touched_today", return_value=set()) as reads["touched"], \
          patch("app.services.reports.ReportsRepository.project_statuses_lookup", return_value={}), \
+         patch("app.services.reports.visible_member_ids", return_value=allowed_members), \
          patch("app.services.reports.all_time_project_hours", return_value=used) as hours:
         response = ReportsService.build_project_task_summary(
-            None, user, 1, 5, None, None, None, None, billing_types,
+            None, user, 1, 5, None, None, None, None, billing_types, member_ids,
         )
-    return response, paginated, hours
+    return response, paginated, hours, reads
 
 
 class UsagePercentageTests(unittest.TestCase):
@@ -164,8 +177,9 @@ class BillingTypeFilterTests(unittest.TestCase):
 
         seen = {}
 
-        def fake_build(db, user, page, limit, project_ids, single_date, start_date, end_date, billing_types=None):
+        def fake_build(db, user, page, limit, project_ids, single_date, start_date, end_date, billing_types=None, member_ids=None):
             seen["billing_types"] = billing_types
+            seen["member_ids"] = member_ids
             return {"projects": [], "pagination": {"page": 1, "limit": 5, "total_projects": 0, "total_pages": 0}}
 
         admin = NS(id=1, organization_id=1, role_name="administrator", permissions={"time_entries:view_all": True})
@@ -185,8 +199,107 @@ class BillingTypeFilterTests(unittest.TestCase):
 
                 bad = client.get("/api/v1/reports/project-task-summary?billing_type=billable")
                 self.assertEqual(bad.status_code, 422)
+
+                seen.clear()
+                members = client.get("/api/v1/reports/project-task-summary?member_id=7&member_id=9")
+                self.assertEqual(members.status_code, 200, members.text)
+                self.assertEqual(seen["member_ids"], [7, 9])
+
+                seen.clear()
+                client.get("/api/v1/reports/project-task-summary")
+                self.assertIsNone(seen["member_ids"])
         finally:
             app.dependency_overrides.clear()
+
+
+class MemberFilterTests(unittest.TestCase):
+    """The Task Listing's member filter: what those people did today, with their hours."""
+
+    def test_the_filter_reaches_every_read_that_decides_what_is_shown(self):
+        _, _, _, reads = _summary_with_reads([_project(1, "free")], member_ids=[9, 7])
+        self.assertEqual(reads["tracked"].call_args.kwargs["member_ids"], [7, 9])   # which projects appear
+        self.assertEqual(reads["touched"].call_args.kwargs["member_ids"], [7, 9])   # which tasks appear
+        for call in reads["seconds"].call_args_list:                                # the hours shown
+            self.assertEqual(call.args[3], [7, 9])
+
+    def test_no_filter_leaves_everyone_in(self):
+        _, _, _, reads = _summary_with_reads([_project(1, "free")])
+        self.assertIsNone(reads["tracked"].call_args.kwargs["member_ids"])
+        self.assertIsNone(reads["touched"].call_args.kwargs["member_ids"])
+        for call in reads["seconds"].call_args_list:
+            self.assertIsNone(call.args[3])
+
+    def test_duplicates_are_collapsed(self):
+        _, _, _, reads = _summary_with_reads([_project(1, "free")], member_ids=[3, 3, 3])
+        self.assertEqual(reads["tracked"].call_args.kwargs["member_ids"], [3])
+
+    def test_a_budget_is_spent_by_everyone_so_it_is_not_narrowed_to_the_members(self):
+        # Used-vs-fixed must read the same however the page is filtered, or the colour would lie.
+        _, _, hours, _ = _summary_with_reads([_project(1, "fixed", 40)], {1: 10}, member_ids=[7])
+        args, kwargs = hours.call_args
+        self.assertEqual(len(args), 3)  # (db, organization_id, fixed project ids) -- no member argument
+        self.assertNotIn("member_ids", kwargs)
+
+    def test_it_combines_with_the_billing_type_filter(self):
+        _, paginated, _, reads = _summary_with_reads(
+            [_project(1, "fixed", 40)], {1: 5}, billing_types=["fixed"], member_ids=[7],
+        )
+        self.assertEqual(paginated.call_args.kwargs["billing_types"], ["fixed"])
+        self.assertEqual(reads["tracked"].call_args.kwargs["member_ids"], [7])
+
+    def test_a_leader_is_held_to_their_team(self):
+        leader = SimpleNamespace(id=5, organization_id=1)
+        _, _, _, reads = _summary_with_reads(
+            [_project(1, "free")], member_ids=[7, 8, 99], user=leader, allowed_members={5, 7, 8},
+        )
+        self.assertEqual(reads["tracked"].call_args.kwargs["member_ids"], [7, 8])
+
+    def test_a_leader_asking_only_for_outsiders_gets_nobody_not_everybody(self):
+        leader = SimpleNamespace(id=5, organization_id=1)
+        response, paginated, _, reads = _summary_with_reads(
+            [_project(1, "free")], member_ids=[99], user=leader, allowed_members={5, 7},
+        )
+        self.assertEqual(response["projects"], [])
+        self.assertEqual(response["pagination"]["total_projects"], 0)
+        # Answered before any read: an empty list must never decay into "no filter".
+        reads["tracked"].assert_not_called()
+        paginated.assert_not_called()
+
+    def test_without_a_filter_a_leader_is_not_narrowed_to_their_team(self):
+        # Their projects are already scoped; narrowing the *people* too would hide an
+        # admin's time on a project the leader leads.
+        leader = SimpleNamespace(id=5, organization_id=1)
+        _, _, _, reads = _summary_with_reads([_project(1, "free")], user=leader, allowed_members={5, 7})
+        self.assertIsNone(reads["tracked"].call_args.kwargs["member_ids"])
+
+    def test_the_queries_filter_on_the_member(self):
+        captured = []
+
+        class _Session:
+            def scalars(self, statement):
+                captured.append(str(statement.compile(dialect=postgresql.dialect())))
+                return SimpleNamespace(all=lambda: [])
+
+        with_members = ReportsRepository.project_ids_tracked_between(
+            _Session(), 1, None, datetime(2026, 8, 1), datetime(2026, 8, 2), date(2026, 8, 1), date(2026, 8, 1),
+            member_ids=[7],
+        )
+        self.assertEqual(with_members, set())
+        self.assertTrue(all("user_id IN" in sql for sql in captured), captured)
+
+        captured.clear()
+        ReportsRepository.tasks_touched_today(
+            _Session(), 1, [1], datetime(2026, 8, 1), datetime(2026, 8, 2), date(2026, 8, 1), date(2026, 8, 1),
+            member_ids=[7],
+        )
+        self.assertEqual(len(captured), 2)
+        self.assertTrue(all("user_id IN" in sql for sql in captured), captured)
+
+        captured.clear()
+        ReportsRepository.tasks_touched_today(
+            _Session(), 1, [1], datetime(2026, 8, 1), datetime(2026, 8, 2), date(2026, 8, 1), date(2026, 8, 1),
+        )
+        self.assertFalse(any("user_id IN" in sql for sql in captured), captured)
 
 
 if __name__ == "__main__":

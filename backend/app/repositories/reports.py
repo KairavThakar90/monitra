@@ -134,6 +134,7 @@ class ReportsRepository:
         end_time: datetime,
         start_date: date,
         end_date: date,
+        member_ids: Optional[list[int]] = None,
     ) -> set[int]:
         """Task ids with at least one auto or approved-manual entry landing in
         [start_time, end_time) / [start_date, end_date] -- the Task Listing
@@ -145,7 +146,8 @@ class ReportsRepository:
         work does not also change what "total hours this month" means.
         Counts every user's activity, not just the caller's -- two people each
         active on a different task in the same project both keep their task
-        listed.
+        listed. `member_ids` narrows that to those people's entries; None or
+        empty means everyone.
         """
         if not project_ids:
             return set()
@@ -165,6 +167,9 @@ class ReportsRepository:
             ManualTimeEntry.work_date >= start_date,
             ManualTimeEntry.work_date <= end_date,
         ]
+        if member_ids:
+            auto_filters.append(TimeEntry.user_id.in_(member_ids))
+            manual_filters.append(ManualTimeEntry.user_id.in_(member_ids))
         auto_ids = set(db.scalars(select(TimeEntry.task_id).distinct().where(*auto_filters)).all())
         manual_ids = set(db.scalars(select(ManualTimeEntry.task_id).distinct().where(*manual_filters)).all())
         return auto_ids | manual_ids
@@ -352,12 +357,14 @@ class ReportsRepository:
         end_time: datetime,
         start_date: date,
         end_date: date,
+        member_ids: Optional[list[int]] = None,
     ) -> set[int]:
         """Which projects had any tracking in the window -- auto entries plus
         approved unmirrored manual entries, the same two session sources every
         other read here combines. `project_ids=None` means the whole
-        organization; a list narrows to it. Feeds the Task Listing's "only
-        what was worked on today" project filter."""
+        organization; a list narrows to it. `member_ids` narrows it to projects
+        those people tracked on; None or empty means everyone. Feeds the Task
+        Listing's "only what was worked on today" project filter."""
         auto_filters = [
             TimeEntry.organization_id == organization_id,
             TimeEntry.start_time >= start_time,
@@ -374,6 +381,9 @@ class ReportsRepository:
         if project_ids is not None:
             auto_filters.append(TimeEntry.project_id.in_(project_ids))
             manual_filters.append(ManualTimeEntry.project_id.in_(project_ids))
+        if member_ids:
+            auto_filters.append(TimeEntry.user_id.in_(member_ids))
+            manual_filters.append(ManualTimeEntry.user_id.in_(member_ids))
         tracked = set(db.scalars(select(TimeEntry.project_id).where(*auto_filters).distinct()).all())
         tracked.update(db.scalars(select(ManualTimeEntry.project_id).where(*manual_filters).distinct()).all())
         tracked.discard(None)

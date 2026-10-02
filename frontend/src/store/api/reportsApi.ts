@@ -231,6 +231,9 @@ export interface ProjectTaskSummaryQueryParams {
   /** Only projects of these billing types ('fixed', 'free', 'non_billing');
    * sent as a repeated param. Omit for every type. */
   billing_type?: string[];
+  /** Only what these members tracked: the projects and tasks they worked on
+   * today, with their hours. Sent as a repeated param; omit for everyone. */
+  member_id?: number[];
 }
 
 const buildQueryParams = (params: any) => {

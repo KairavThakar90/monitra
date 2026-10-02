@@ -70,7 +70,9 @@ export const MultiSelect: React.FC<{
           (selected.length > 0
             ? "border-[#2563EB]/40 text-[#2563EB]"
             : "border-[#E2E8F0] text-[#0F172A] hover:border-[#CBD5E1]") +
-          (compact ? " px-3 py-1.5 text-xs" : " px-3.5 py-2 text-[13px]")
+          // 36px, the height `MemberMultiSelect` and the calendar already use, so a
+          // row of filters is one height whichever kinds it mixes.
+          (compact ? " px-3 py-1.5 text-xs" : " h-9 px-3.5 text-[13px]")
         }
       >
         {icon}
@@ -765,7 +767,7 @@ export const DateRangeFilter: React.FC<{
         type="button"
         onClick={() => (open ? close() : openPicker())}
         className={
-          "flex items-center gap-3 rounded-lg border bg-white px-3.5 py-2 text-[13px] font-semibold text-[#0F172A] transition " +
+          "flex h-9 items-center gap-3 rounded-lg border bg-white px-3.5 text-[13px] font-semibold text-[#0F172A] transition " +
           (open ? "border-[#38BDF8] ring-2 ring-[#38BDF8]/20" : "border-[#E2E8F0] hover:border-[#CBD5E1]")
         }
       >
