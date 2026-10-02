@@ -103,6 +103,40 @@ class TimeTrackingRepository:
         return list(rows), int(total)
 
     @staticmethod
+    def active_entries_query(organization_id: int, user_ids: Optional[List[int]]):
+        """Every running entry (`end_time IS NULL`) with its member, project
+        and task, oldest start first.
+
+        `user_ids` of `None` means the whole organization; a list narrows to
+        those members (an empty list matches nobody). The elapsed figure is
+        the same net-of-adjustments expression every other tracked-time
+        report uses, measured with the database clock.
+        """
+        adjustments = TimeEntryAdjustmentRepository.net_totals_subquery()
+        elapsed = TimeTrackingRepository._net_duration_expression(adjustments).label("elapsed_seconds")
+        query = (
+            select(TimeEntry, User, Project, Task, elapsed)
+            .join(User, User.id == TimeEntry.user_id)
+            .join(Project, Project.id == TimeEntry.project_id)
+            .join(Task, Task.id == TimeEntry.task_id)
+            .outerjoin(adjustments, adjustments.c.time_entry_id == TimeEntry.id)
+            .where(
+                TimeEntry.organization_id == organization_id,
+                TimeEntry.end_time.is_(None),
+                Project.organization_id == organization_id,
+                Task.organization_id == organization_id,
+            )
+            .order_by(TimeEntry.start_time, TimeEntry.id)
+        )
+        if user_ids is not None:
+            query = query.where(TimeEntry.user_id.in_(user_ids))
+        return query
+
+    @staticmethod
+    def list_active(db: Session, organization_id: int, user_ids: Optional[List[int]]):
+        return db.execute(TimeTrackingRepository.active_entries_query(organization_id, user_ids)).all()
+
+    @staticmethod
     def get_employee(db: Session, organization_id: int, employee_id: int) -> Optional[User]:
         return db.scalar(select(User).where(User.id == employee_id, User.organization_id == organization_id))
 

@@ -54,6 +54,32 @@ export interface TimeTrackingDetails {
   projects: TimeTrackingProject[];
 }
 
+/** A member who has a timer running right now. */
+export interface ActiveTimeTrackingItem {
+  time_entry_id: number;
+  employee_id: number;
+  name: string;
+  email: string | null;
+  designation: string | null;
+  project_id: number;
+  project_name: string;
+  task_id: number;
+  task_name: string;
+  /** UTC instant the running entry started. */
+  start_time: string;
+  /** Net elapsed seconds as of `server_time`, measured by the server. */
+  elapsed_seconds: number;
+  /** `elapsed_seconds` as HH:MM:SS. */
+  elapsed_time: string;
+}
+
+export interface ActiveTimeTrackingResponse {
+  items: ActiveTimeTrackingItem[];
+  total: number;
+  /** When the server produced this answer. */
+  server_time: string;
+}
+
 const addDateParams = (url: string, params: { range?: string; date?: string; start_date?: string; end_date?: string; employee_id?: number }) => {
   const query = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
@@ -69,6 +95,11 @@ export const timeTrackingApi = baseApi.injectEndpoints({
       query: (params) => addDateParams(ENDPOINTS.TIME_TRACKING.GET_ALL, params),
       providesTags: [{ type: 'TimeTracking' as const, id: 'LIST' }],
     }),
+    /** Who is tracking right now. Polled by the Active Users page, not pushed. */
+    getActiveTimeTracking: builder.query<ActiveTimeTrackingResponse, void>({
+      query: () => ENDPOINTS.TIME_TRACKING.GET_ACTIVE,
+      providesTags: [{ type: 'TimeTracking' as const, id: 'ACTIVE' }],
+    }),
     getTimeTrackingDetails: builder.query<TimeTrackingDetails, { employeeId: number; range?: string; date?: string; start_date?: string; end_date?: string }>({
       query: ({ employeeId, ...params }) => addDateParams(ENDPOINTS.TIME_TRACKING.GET_BY_EMPLOYEE(employeeId), params),
       providesTags: (_result, _error, { employeeId }) => [{ type: 'TimeTracking' as const, id: employeeId }],
@@ -76,4 +107,8 @@ export const timeTrackingApi = baseApi.injectEndpoints({
   }),
 });
 
-export const { useGetTimeTrackingQuery, useGetTimeTrackingDetailsQuery } = timeTrackingApi;
+export const {
+  useGetTimeTrackingQuery,
+  useGetActiveTimeTrackingQuery,
+  useGetTimeTrackingDetailsQuery,
+} = timeTrackingApi;

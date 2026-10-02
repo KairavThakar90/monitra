@@ -31,6 +31,32 @@ class TimeTrackingListResponse(BaseModel):
     pagination: dict
 
 
+class ActiveTimeTrackingItem(BaseModel):
+    """One member who has a timer running right now."""
+
+    time_entry_id: int
+    employee_id: int
+    name: str
+    email: Optional[str] = None
+    designation: Optional[str] = None
+    project_id: int
+    project_name: str
+    task_id: int
+    task_name: str
+    #: When the running entry started (UTC instant).
+    start_time: datetime
+    #: Net elapsed seconds as of this response: server-measured, with the
+    #: entry's adjustments applied. Never a client counter.
+    elapsed_seconds: int
+    elapsed_time: str
+
+
+class ActiveTimeTrackingResponse(BaseModel):
+    items: list[ActiveTimeTrackingItem]
+    total: int
+    server_time: datetime
+
+
 class TimeTrackingEntry(BaseModel):
     id: int
     start_time: datetime

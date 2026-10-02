@@ -7,7 +7,11 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
-from app.schemas.time_tracking import TimeTrackingDetailResponse, TimeTrackingListResponse
+from app.schemas.time_tracking import (
+    ActiveTimeTrackingResponse,
+    TimeTrackingDetailResponse,
+    TimeTrackingListResponse,
+)
 from app.services.time_tracking import TimeTrackingService
 
 
@@ -33,6 +37,20 @@ def list_time_tracking(
     return TimeTrackingService.list_daily(
         db, current_user, range, date, start_date, end_date, employee_id, search, page, limit
     )
+
+
+# Declared before `/{employee_id}`: otherwise "active" is matched as an id and
+# refused with a 422.
+@router.get(
+    "/active",
+    response_model=ActiveTimeTrackingResponse,
+    summary="Members with a timer running right now",
+)
+def list_active_time_tracking(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return TimeTrackingService.list_active(db, current_user)
 
 
 @router.get("/{employee_id}", response_model=TimeTrackingDetailResponse)

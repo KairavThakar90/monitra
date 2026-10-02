@@ -10,6 +10,7 @@ import { AdminTaskListing } from './features/admin/AdminTaskListing';
 import { AdminAssignTasks } from './features/admin/AdminAssignTasks';
 import { AdminMembers } from './features/admin/AdminMembers';
 import { AdminTimeTracking } from './features/admin/AdminTimeTracking';
+import { AdminActiveUsers } from './features/admin/AdminActiveUsers';
 import { AdminScreenshots } from './features/admin/AdminScreenshots';
 import { AdminTeams } from './features/admin/AdminTeams';
 import { AdminFeedback } from './features/admin/AdminFeedback';
@@ -279,6 +280,16 @@ const AppRoutes: React.FC = () => {
         element={
           <DirectoryRoute>
             <AdminTimeTracking />
+          </DirectoryRoute>
+        }
+      />
+      {/* Who is tracking right now. Same gate as Time Tracking: the backend
+          answers with the organization, a leader's team, or just the caller. */}
+      <Route
+        path="/admin/active-users"
+        element={
+          <DirectoryRoute>
+            <AdminActiveUsers />
           </DirectoryRoute>
         }
       />

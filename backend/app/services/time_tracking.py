@@ -176,6 +176,40 @@ class TimeTrackingService:
         }
 
     @staticmethod
+    def list_active(db: Session, current_user: User):
+        """Members who have a timer running right now, with the project and
+        task each is on.
+
+        Scoped exactly like the day list: a caller without
+        `time_entries:view_all` sees only themselves, a leader sees their
+        team, everyone else with the permission sees the organization.
+        """
+        user_ids = TimeTrackingService._effective_user_ids(current_user, None, db)
+        rows = TimeTrackingRepository.list_active(db, current_user.organization_id, user_ids)
+        items = []
+        for entry, member, project, task, elapsed in rows:
+            elapsed_seconds = max(0, int(elapsed or 0))
+            items.append({
+                "time_entry_id": entry.id,
+                "employee_id": member.id,
+                "name": member.name,
+                "email": member.email,
+                "designation": member.designation,
+                "project_id": project.id,
+                "project_name": project.project_name,
+                "task_id": task.id,
+                "task_name": task.task_name,
+                "start_time": entry.start_time,
+                "elapsed_seconds": elapsed_seconds,
+                "elapsed_time": format_hms(elapsed_seconds),
+            })
+        return {
+            "items": items,
+            "total": len(items),
+            "server_time": datetime.now(timezone.utc),
+        }
+
+    @staticmethod
     def detail(
         db: Session,
         current_user: User,

@@ -97,6 +97,7 @@ export const V2Shell: React.FC<{
   const onTeams = location.pathname.startsWith("/admin/teams");
   const onFeedback = location.pathname === "/admin/feedback";
   const onLogs = location.pathname === "/admin/logs";
+  const onActiveUsers = location.pathname === "/admin/active-users";
 
   /**
    * Feedback is gated on the role rather than a permission, because that is
@@ -382,6 +383,28 @@ export const V2Shell: React.FC<{
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <span className="flex-1">Time Tracking</span>
+            </button>
+
+            {/* Active Users — who has a timer running right now. Same audience as Time Tracking. */}
+            <button
+              onClick={(event) => go(event, "/admin/active-users")}
+              className={
+                "flex w-full cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3 text-left text-sm font-medium leading-snug transition duration-150 " +
+                (onActiveUsers
+                  ? "text-white shadow-sm"
+                  : "text-[#94A3B8] hover:bg-slate-800/40 hover:text-white")
+              }
+              style={onActiveUsers ? { background: brandGradient } : undefined}
+            >
+              <svg
+                className={"h-5 w-5 " + (onActiveUsers ? "text-white" : "text-[#22D3EE]")}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5.636 18.364a9 9 0 010-12.728m12.728 0a9 9 0 010 12.728m-9.9-2.829a5 5 0 010-7.07m7.072 0a5 5 0 010 7.07M13 12a1 1 0 11-2 0 1 1 0 012 0z" />
+              </svg>
+              <span className="flex-1">Active Users</span>
             </button>
 
             {/* Screenshots */}
