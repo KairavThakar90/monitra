@@ -48,7 +48,7 @@ def list_time_tracking(
 )
 def list_active_time_tracking(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return TimeTrackingService.list_active(db, current_user)
 

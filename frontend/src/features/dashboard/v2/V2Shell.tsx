@@ -4,6 +4,7 @@ import { useAuth } from "../../auth/authContext";
 import { canManageClients, canManageSystem, canViewAllFeedback } from "../../auth/roles";
 import { openPathInNewTab, opensInNewTab } from "../../../utils/navigation";
 import { brandGradient } from "./theme";
+import { ScreenNoticeBanner } from "../../../components/ScreenNoticeBanner";
 
 const getInitials = (name: string) => {
   if (!name) return "ST";
@@ -620,6 +621,7 @@ export const V2Shell: React.FC<{
 
       {/* Main */}
       <div className="flex min-w-0 flex-grow flex-col">
+        <ScreenNoticeBanner />
         <header className="flex min-h-16 shrink-0 items-center gap-4 border-b border-[#E2E8F0] bg-white px-4 lg:px-8 py-3">
           <button 
             className="lg:hidden shrink-0 rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors"

@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/authContext';
 import { openPathInNewTab, opensInNewTab } from '../../utils/navigation';
 import { BrandLockup } from '../dashboard/v2/V2Shell';
+import { ScreenNoticeBanner } from '../../components/ScreenNoticeBanner';
 import { useGetMyProfileQuery } from '../../store/api/clientPortalApi';
 
 /**
@@ -203,6 +204,7 @@ export const ClientShell: React.FC<{
       </aside>
 
       <div className="flex min-w-0 flex-grow flex-col">
+        <ScreenNoticeBanner />
         <header className="flex min-h-16 shrink-0 items-center gap-4 border-b border-[#E2E8F0] bg-white px-4 py-3 lg:px-8">
           <button
             className="shrink-0 rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 lg:hidden"
