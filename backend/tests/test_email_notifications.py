@@ -102,6 +102,10 @@ def email_settings(**overrides):
         "FEEDBACK_HR_EMAIL": "hr@example.com",
         "FEEDBACK_NOTIFICATION_EMAILS": "",
         "WELCOME_EMAIL_ENABLED": True,
+        # Explicit, because the deployment default is OFF: a test that exercises
+        # the announcement is describing a deployment that turned it on.
+        "RELEASE_EMAIL_ENABLED": True,
+        "RELEASE_EMAIL_TEST_RECIPIENTS": "",
         "MONITRA_APP_URL": "",
         "MONITRA_SUPPORT_EMAIL": "",
         "EMAIL_ASSET_BASE_URL": "",
@@ -138,10 +142,11 @@ class TestWelcomeEmailTrigger(unittest.TestCase):
         self.assertEqual(welcome_dedupe_key(42), welcome_dedupe_key(42))
 
     def test_a_second_login_never_reaches_the_welcome_workflow(self):
-        """The synchronise branch of login_exchange must not welcome anybody.
+        """The synchronise branch of the login exchange must not welcome anybody.
 
-        Asserted against the source of `login_exchange` rather than by running
-        it: the call is placed inside the provisioning branch, and a future
+        Asserted against the source of `_complete_login_exchange` -- the database
+        half of `login_exchange`, which runs on the thread pool -- rather than by
+        running it: the call is placed inside the provisioning branch, and a future
         edit that hoists it out of that branch -- which is exactly the mistake
         that would mail every existing employee -- changes this.
         """
@@ -149,7 +154,10 @@ class TestWelcomeEmailTrigger(unittest.TestCase):
 
         from app.services.auth import AuthService
 
-        source = inspect.getsource(AuthService.login_exchange)
+        # The async half only talks to the provider and hands over; it must not
+        # welcome anybody either.
+        self.assertEqual(inspect.getsource(AuthService.login_exchange).count("_welcome_new_user"), 0)
+        source = inspect.getsource(AuthService._complete_login_exchange)
         self.assertEqual(source.count("_welcome_new_user"), 1)
         welcome_line = next(
             index for index, line in enumerate(source.splitlines())
@@ -663,6 +671,27 @@ def _release(version="2.1.0", **overrides):
     return release
 
 
+def _complete_published_set(version, **overrides):
+    """Every required artifact of ``version``, registered, valid and published."""
+    from types import SimpleNamespace
+
+    base = "https://github.com/KairavThakar90/monitra/releases/download/v%s" % version
+    rows = []
+    for platform, arch, name in (
+        ("win32", None, f"Monitra-Setup-{version}.exe"),
+        ("darwin", "arm64", f"Monitra-macOS-arm64-{version}.dmg"),
+        ("darwin", "x86_64", f"Monitra-macOS-x86_64-{version}.dmg"),
+    ):
+        row = dict(
+            version=version, platform=platform, architecture=arch,
+            download_url=f"{base}/{name}", sha256="a" * 64, file_size=1234,
+            signed=True, status="published",
+        )
+        row.update(overrides)
+        rows.append(SimpleNamespace(**row))
+    return rows
+
+
 class TestReleaseAnnouncementTrigger(unittest.TestCase):
 
     def _users(self, count=3):
@@ -681,7 +710,7 @@ class TestReleaseAnnouncementTrigger(unittest.TestCase):
         with email_settings(), \
                 patch(f"{WORKFLOWS}.UserRepository") as repo, \
                 patch(f"{WORKFLOWS}.EmailOutboxService") as outbox:
-            repo.list_announcement_recipients.return_value = self._users(3)
+            repo.list_release_recipients.return_value = self._users(3)
             outbox.enqueue.side_effect = [_notification(id=n) for n in (1, 2, 3)]
             queued = queue_release_announcements(db, _release("2.1.0"))
 
@@ -721,7 +750,10 @@ class TestReleaseAnnouncementTrigger(unittest.TestCase):
                 release = _release(status=status)
                 with patch(
                     "app.services.email.queue_release_announcements"
-                ) as announce:
+                ) as announce, patch(
+                    "app.services.desktop_release.DesktopReleaseRepository.list_for_version",
+                    return_value=_complete_published_set(release.version),
+                ):
                     DesktopReleaseService._announce_if_newly_published(
                         db, release, was_published
                     )
@@ -734,7 +766,7 @@ class TestReleaseAnnouncementTrigger(unittest.TestCase):
         with email_settings(), \
                 patch(f"{WORKFLOWS}.UserRepository") as repo, \
                 patch(f"{WORKFLOWS}.EmailOutboxService") as outbox:
-            repo.list_announcement_recipients.return_value = users
+            repo.list_release_recipients.return_value = users
             outbox.enqueue.return_value = _notification()
             queue_release_announcements(db, _release())
 
@@ -753,7 +785,7 @@ class TestReleaseAnnouncementTrigger(unittest.TestCase):
     def test_publishing_never_fails_because_email_could_not_be_queued(self):
         db = MagicMock()
         with email_settings(), patch(f"{WORKFLOWS}.UserRepository") as repo:
-            repo.list_announcement_recipients.side_effect = RuntimeError("database down")
+            repo.list_release_recipients.side_effect = RuntimeError("database down")
             self.assertEqual(queue_release_announcements(db, _release()), [])
 
     def test_a_release_with_no_version_announces_nothing(self):

@@ -37,6 +37,9 @@ class RequestContext:
     client: Optional[str] = None
     client_version: Optional[str] = None
     ip_address: Optional[str] = None
+    #: Path only, never the query string. Read by the connection-pool log so a
+    #: connection held too long can be traced to the route that held it.
+    path: Optional[str] = None
 
 
 _context: ContextVar[Optional[RequestContext]] = ContextVar("monitra_request_context", default=None)
@@ -84,7 +87,10 @@ def client_address(request: Request) -> Optional[str]:
 
 def context_for(request: Request) -> RequestContext:
     client, version = describe_client(request.headers.get("user-agent"))
-    return RequestContext(client=client, client_version=version, ip_address=client_address(request))
+    return RequestContext(
+        client=client, client_version=version, ip_address=client_address(request),
+        path=request.url.path,
+    )
 
 
 def set_request_context(context: Optional[RequestContext]) -> Token:

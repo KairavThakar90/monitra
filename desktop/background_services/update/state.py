@@ -29,7 +29,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, Optional
 
+from core.logging_setup import get_logger
 from core.validation import validate_sha256, validate_url, validate_version
+
+from . import policy
+
+log = get_logger("updates.state")
 
 
 class UpdateState:
@@ -179,6 +184,13 @@ class ReleaseInfo:
         # fetching an artifact and being told what to execute.
         url = validate_url(payload.get("download_url"), required=True)
         if not url.ok:
+            return None
+        # Where this build is willing to fetch an executable from is decided by
+        # this build (`policy`), not by the backend: https, an approved host, no
+        # credentials. A URL outside that is announce-only -- never installable.
+        host_problem = policy.check_url(url.value)
+        if host_problem:
+            log.warning("update release %s is not installable: %s", version.value, host_problem)
             return None
 
         digest = validate_sha256(payload.get("sha256"))

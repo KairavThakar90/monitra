@@ -36,6 +36,26 @@ class UserRepository:
             ).all()
         )
 
+    #: Accounts that are never a person at a desktop: the release pipeline's own
+    #: identity, and external clients invited to view a project. Neither runs
+    #: Monitra, so neither is told that a new build exists -- and the release
+    #: account in particular is a machine whose address nobody reads.
+    NON_DESKTOP_ROLES = ("release_bot", "client")
+
+    @staticmethod
+    def list_release_recipients(db: Session) -> list[User]:
+        """Who is told that a new desktop version exists.
+
+        `list_announcement_recipients` minus the accounts that never run the
+        desktop (`NON_DESKTOP_ROLES`). A separate method rather than a change to
+        that one, because the weekly and monthly reports share it and this is
+        not the place to alter who receives those.
+        """
+        return [
+            user for user in UserRepository.list_announcement_recipients(db)
+            if user.role_name not in UserRepository.NON_DESKTOP_ROLES
+        ]
+
     @staticmethod
     def get_by_email(db: Session, email: str) -> Optional[User]:
         return db.scalar(select(User).where(User.email == email))

@@ -330,6 +330,77 @@ def test_a_desktop_created_task_reaches_the_web_and_a_retried_create_does_not_du
     assert len([t for t in listed if t["name"] == name]) == 1, "no duplicate task"
 
 
+# ── E2E 4b: a task's description survives Add Task -> Edit Task ──────────────
+
+def _stored_description(db, task_id):
+    from sqlalchemy import text
+
+    with db.connect() as conn:
+        return conn.execute(
+            text("SELECT description FROM tasks WHERE id = :id"), {"id": task_id}
+        ).scalar_one()
+
+
+def test_a_description_typed_when_creating_a_task_is_there_when_editing_it(
+    qapp, desktop, fixture, web, db,
+):
+    from ui.task_table import EditTaskDialog
+
+    runtime, window = desktop
+    _sign_in(qapp, runtime, window, fixture, fixture["project_id"])
+    section = window._task_section
+    project_id = fixture["project_id"]
+    name = f"E2E description task {fixture['stamp']}"
+    typed = "First line\nSecond line, with punctuation & numbers: 100%"
+
+    # Add Task, as the dialog's submission makes it.
+    section._run_task_mutation(
+        lambda: runtime.task_service.create_task(
+            project_id, name, fixture["employee"]["user_id"], description=typed),
+        success_message="Task created successfully.", key=f"create-task:{project_id}:{name}",
+        kind="created", project_id=project_id,
+    )
+    _pump(qapp, lambda: name in _task_names(window), 30, "the created task on screen")
+    _pump(qapp, lambda: not runtime.tasks.in_flight, 30, "the reconciling reload")
+
+    # The backend stored it and every read returns it.
+    task = next(t for t in window._project_tasks if t["name"] == name)
+    task_id = task["id"]
+    assert _stored_description(db, task_id) == typed
+    assert task["description"] == typed, "what the desktop holds after the reconciling reload"
+    listed = next(t for t in web.get(f"/api/v1/projects/{project_id}/tasks").json() if t["id"] == task_id)
+    assert listed["description"] == typed
+
+    # Edit Task opens showing it.
+    dialog = EditTaskDialog(task, runtime.cache.get_cached_task_statuses() or [])
+    assert dialog.desc_input.toPlainText() == typed
+    dialog.deleteLater()
+
+    # Editing it from the dialog's submission changes it...
+    edited = "Rewritten from the desktop"
+    section._run_task_mutation(
+        lambda: runtime.task_service.update_task(
+            project_id, task_id, name, fixture["todo_status_id"], description=edited),
+        success_message="Task updated successfully.", key=f"update-task:{task_id}",
+        kind="updated", project_id=project_id,
+    )
+    _pump(qapp, lambda: next(t for t in window._project_tasks if t["id"] == task_id).get("description") == edited,
+          30, "the edited description on screen")
+    _pump(qapp, lambda: not runtime.tasks.in_flight, 30, "the reconciling reload")
+    assert _stored_description(db, task_id) == edited
+
+    # ...a rename that does not mention it leaves it alone...
+    renamed = web.patch(f"/api/v1/projects/{project_id}/tasks/{task_id}", json={"name": name + " (renamed)"})
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["description"] == edited
+    assert _stored_description(db, task_id) == edited
+
+    # ...and emptying the box clears it.
+    runtime.task_service.update_task(
+        project_id, task_id, name, fixture["todo_status_id"], description="")
+    assert _stored_description(db, task_id) is None
+
+
 # ── E2E 7: overlapping synchronisation, latest state wins ────────────────────
 
 def test_a_list_in_flight_during_a_local_change_cannot_undo_it(qapp, desktop, fixture, web):

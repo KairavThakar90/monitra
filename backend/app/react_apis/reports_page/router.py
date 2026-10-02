@@ -65,7 +65,7 @@ def common_filters(
                     "Omit for all members.",
     ),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Shared, composable filter set. Every filter narrows the same underlying
     tracking data, so they can be combined freely
@@ -105,7 +105,7 @@ def pagination(
 )
 def summary_report(
     filters=Depends(common_filters),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ReportsPageService.summary(db, filters)
 
@@ -123,7 +123,7 @@ def summary_report(
 )
 def trend_report(
     filters=Depends(common_filters),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ReportsPageService.trend(db, filters)
 
@@ -140,7 +140,7 @@ def trend_report(
 def projects_report(
     filters=Depends(common_filters),
     paging=Depends(pagination),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     page, limit, sort_by, sort_order, search = paging
     return ReportsPageService.projects(db, filters, search, sort_by, sort_order, page, limit)
@@ -158,7 +158,7 @@ def projects_report(
 def tasks_report(
     filters=Depends(common_filters),
     paging=Depends(pagination),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     page, limit, sort_by, sort_order, search = paging
     return ReportsPageService.tasks(db, filters, search, sort_by, sort_order, page, limit)
@@ -177,7 +177,7 @@ def tasks_report(
 def apps_report(
     filters=Depends(common_filters),
     paging=Depends(pagination),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     page, limit, sort_by, sort_order, search = paging
     return ReportsPageService.apps(db, filters, search, sort_by, sort_order, page, limit)
@@ -195,7 +195,7 @@ def apps_report(
 def urls_report(
     filters=Depends(common_filters),
     paging=Depends(pagination),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     page, limit, sort_by, sort_order, search = paging
     return ReportsPageService.urls(db, filters, search, sort_by, sort_order, page, limit)

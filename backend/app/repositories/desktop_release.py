@@ -154,6 +154,17 @@ class DesktopReleaseRepository:
         return list(db.execute(stmt).scalars())
 
     @staticmethod
+    def list_for_version(db: Session, version: str) -> List[DesktopRelease]:
+        """Every row of one version, in any status.
+
+        The unit of "is this release complete" is the version, not the row: a
+        version is Windows plus both macOS architectures, and only the set can
+        be judged ready.
+        """
+        stmt = select(DesktopRelease).where(DesktopRelease.version == version)
+        return list(db.execute(stmt.order_by(DesktopRelease.id)).scalars())
+
+    @staticmethod
     def add(db: Session, release: DesktopRelease) -> DesktopRelease:
         """Stage a new release. The caller commits."""
         db.add(release)

@@ -21,9 +21,10 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.background import run_blocking
 from app.core.config import settings
 from app.models.email_notification import (
-    TYPE_FEEDBACK, TYPE_FEEDBACK_STATUS, TYPE_RELEASE, TYPE_WELCOME,
+    TYPE_FEEDBACK, TYPE_FEEDBACK_STATUS, TYPE_MEMBER_ACCESS, TYPE_RELEASE, TYPE_WELCOME,
     TYPE_MANUAL_TIME_DECISION, TYPE_MANUAL_TIME_RECEIPT, TYPE_MANUAL_TIME_REQUEST,
     TYPE_MONTHLY_PROJECT_SUMMARY, TYPE_MONTHLY_REPORT, TYPE_PROJECT_BUDGET_ALERT,
     TYPE_SCREENSHOT_NOTICE, TYPE_WEEKLY_REPORT,
@@ -90,6 +91,30 @@ def release_dedupe_key(version: str, user_id: int) -> str:
     return f"release:{version}:user:{user_id}"
 
 
+def release_test_dedupe_key(version: str, address: str) -> str:
+    """A test announcement's identity: one version, one test address.
+
+    Deliberately a different namespace from `release_dedupe_key`. A test run
+    must never consume the real, once-per-user announcement for the same
+    version -- otherwise rehearsing a release would silently stop it ever being
+    announced to the people it is for.
+    """
+    return f"release-test:{version}:to:{address.strip().lower()}"
+
+
+def _test_recipient_addresses() -> list[str]:
+    """`RELEASE_EMAIL_TEST_RECIPIENTS` as usable addresses, or [] when unset."""
+    raw = [part.strip() for part in (settings.RELEASE_EMAIL_TEST_RECIPIENTS or "").split(",")]
+    usable: list[str] = []
+    for part in raw:
+        if not part:
+            continue
+        address = resolve_user_recipient(part)
+        if address and address[0] not in usable:
+            usable.append(address[0])
+    return usable
+
+
 def queue_release_announcements(db: Session, release) -> list[int]:
     """Tell every active user that a new desktop version is available.
 
@@ -125,7 +150,40 @@ def queue_release_announcements(db: Session, release) -> list[int]:
         }
         subject = messages.release_subject(payload)
 
-        recipients = UserRepository.list_announcement_recipients(db)
+        # Test mode. A configured test list REPLACES the audience: the mail goes
+        # to those addresses and to no user, so a rehearsal cannot reach anyone
+        # who did not ask for it. The list is read from configuration on every
+        # call, never cached, so removing it is what takes a deployment live.
+        if (settings.RELEASE_EMAIL_TEST_RECIPIENTS or "").strip():
+            test_addresses = _test_recipient_addresses()
+            if not test_addresses:
+                # A list was configured but nothing in it is usable. Sending to
+                # the real audience would be the opposite of what was asked for.
+                logger.warning(
+                    "RELEASE_EMAIL_SKIPPED: RELEASE_EMAIL_TEST_RECIPIENTS is set "
+                    "but holds no usable address; nothing sent"
+                )
+                return queued
+            test_payload = {**payload, "test": True, "name": "Tester"}
+            test_subject = messages.release_subject(test_payload)
+            for address in test_addresses:
+                row = EmailOutboxService.enqueue(
+                    db,
+                    notification_type=TYPE_RELEASE,
+                    dedupe_key=release_test_dedupe_key(version, address),
+                    recipients=[address],
+                    subject=test_subject,
+                    payload=test_payload,
+                )
+                if row is not None:
+                    queued.append(row.id)
+            logger.info(
+                "RELEASE_EMAIL_TEST_QUEUED: version=%s addresses=%d notifications=%d",
+                version, len(test_addresses), len(queued),
+            )
+            return queued
+
+        recipients = UserRepository.list_release_recipients(db)
         if not recipients:
             logger.warning("RELEASE_EMAIL_SKIPPED: no active users with an address")
             return queued
@@ -959,6 +1017,12 @@ def _send_immediately(message) -> bool:
         return False
 
 
+async def _send_immediately_in_background(message) -> bool:
+    """`_send_immediately` for `BackgroundTasks`: SMTP waits under the bounded
+    background limiter (`app.core.background`), not on a request thread."""
+    return await run_blocking(_send_immediately, message)
+
+
 def queue_client_invitation_email(
     db: Session, *, invitation, client, token: str, project_names: list[str], background_tasks=None,
 ) -> bool:
@@ -980,7 +1044,7 @@ def queue_client_invitation_email(
         message = messages.build_client_invitation_email(payload, recipients)
 
         if background_tasks is not None:
-            background_tasks.add_task(_send_immediately, message)
+            background_tasks.add_task(_send_immediately_in_background, message)
         else:
             _send_immediately(message)
         logger.info(
@@ -1009,7 +1073,7 @@ def queue_client_login_link_email(db: Session, user, handoff_token: str, backgro
         message = messages.build_client_login_link_email(payload, recipients)
 
         if background_tasks is not None:
-            background_tasks.add_task(_send_immediately, message)
+            background_tasks.add_task(_send_immediately_in_background, message)
         else:
             _send_immediately(message)
         logger.info("CLIENT_LOGIN_LINK_EMAIL_QUEUED: user=%s", getattr(user, "id", None))
@@ -1106,5 +1170,123 @@ def queue_screenshot_notice(
     except Exception:  # noqa: BLE001 - the notice is recorded; the email is what follows from it
         logger.warning(
             "SCREENSHOT_NOTICE_QUEUE_FAILED: screenshot=%s", getattr(screenshot, "id", "?"), exc_info=True,
+        )
+        return None
+
+
+# ----------------------------------------------------------------------
+# Workflow 14 -- an administrator changed a member's Login / Add Task switch
+# ----------------------------------------------------------------------
+
+#: The Members-directory switches an email is sent for, by the `users` column
+#: that holds each. The value is what the payload and the templates call it.
+MEMBER_ACCESS_SWITCHES = {"can_login": "login", "can_add_tasks": "add_tasks"}
+
+
+def _member_access_key_prefix(user_id: int, switch: str) -> str:
+    return f"access:{user_id}:{switch}:"
+
+
+def member_access_dedupe_key(user_id: int, switch: str, allowed: bool, changed_at) -> str:
+    """One transition of one switch, and nothing else.
+
+    The instant the change was persisted is in the key, and that is deliberate:
+    excluded, allowed, excluded again are three genuine events and all three
+    must be delivered, so the state alone (the feedback-status approach) would
+    swallow the second exclusion. It is the *saved* `updated_at`, read back from
+    the row, never the request time or a counter, so a retry of the same
+    transition computes the same key and lands on the same row. Two presses that
+    change nothing never get this far: the caller only queues a switch whose
+    value actually moved.
+    """
+    if hasattr(changed_at, "timestamp"):
+        stamp_source = changed_at if changed_at.tzinfo else changed_at.replace(tzinfo=timezone.utc)
+        stamp = int(stamp_source.timestamp() * 1_000_000)
+    else:
+        stamp = int(datetime.now(timezone.utc).timestamp() * 1_000_000)
+    state = "allowed" if allowed else "excluded"
+    return f"{_member_access_key_prefix(user_id, switch)}{state}:{stamp}"
+
+
+def queue_member_access_notification(
+    db: Session, member, *, switch: str, allowed: bool, changed_at,
+) -> Optional[int]:
+    """Tell `member` that an administrator excluded them from, or allowed them to,
+    log in (`switch="login"`) or add tasks (`switch="add_tasks"`).
+
+    **The recipient is `member`, and `member` is the row the switch was just
+    changed on** -- there is no address anywhere on this path for a request to
+    set. The administrator chooses whom to change, and that alone decides who is
+    written to. The administrator is not named in the email: who acted is an
+    internal matter, and the notice is from Monitra.
+
+    Called after the change is committed; it cannot undo it and never raises.
+    Returns the queued notification's id, or None when nothing was queued
+    (feature off, deactivated account, no usable address).
+
+    Queueing a notice also withdraws any not-yet-sent notice for the *opposite*
+    state of the same switch. If the mail server is down when a member is
+    excluded and then allowed again, delivering "you have been excluded" after
+    the member has already been let back in would be wrong, and the allowed
+    notice is the one that is true.
+    """
+    try:
+        if not settings.ACCESS_CHANGE_EMAIL_ENABLED:
+            return None
+        if switch not in MEMBER_ACCESS_SWITCHES.values():
+            raise ValueError(f"Unknown access switch {switch!r}")
+        if getattr(member, "is_active", True) is False:
+            logger.info(
+                "MEMBER_ACCESS_EMAIL_SKIPPED: user=%s switch=%s reason=account_deactivated",
+                getattr(member, "id", None), switch,
+            )
+            return None
+
+        recipients = resolve_user_recipient(getattr(member, "email", "") or "")
+        if not recipients:
+            logger.warning(
+                "MEMBER_ACCESS_EMAIL_SKIPPED: user=%s switch=%s reason=no_usable_email",
+                getattr(member, "id", None), switch,
+            )
+            return None
+
+        changed = changed_at if hasattr(changed_at, "isoformat") else datetime.now(timezone.utc)
+        payload: dict[str, Any] = {
+            # What the email shows and nothing more -- no administrator, no
+            # permission map, no token.
+            "user_id": member.id,
+            "name": getattr(member, "name", None),
+            "switch": switch,
+            "allowed": bool(allowed),
+            "changed_at": changed.isoformat(),
+        }
+
+        withdrawn = EmailNotificationRepository.cancel_pending_by_key_prefix(
+            db,
+            notification_type=TYPE_MEMBER_ACCESS,
+            key_prefix=f"{_member_access_key_prefix(member.id, switch)}{'excluded' if allowed else 'allowed'}:",
+        )
+        row = EmailOutboxService.enqueue(
+            db,
+            notification_type=TYPE_MEMBER_ACCESS,
+            dedupe_key=member_access_dedupe_key(member.id, switch, allowed, changed_at),
+            recipients=recipients,
+            subject=messages.member_access_subject(payload),
+            payload=payload,
+            organization_id=getattr(member, "organization_id", None),
+            user_id=member.id,
+        )
+        if row is None:
+            return None
+        logger.info(
+            "MEMBER_ACCESS_EMAIL_QUEUED: user=%s switch=%s allowed=%s notification=%s "
+            "state=%s superseded=%d",
+            member.id, switch, allowed, row.id, row.status, withdrawn,
+        )
+        return row.id
+    except Exception:  # noqa: BLE001 - the change is committed; the email is secondary
+        logger.warning(
+            "MEMBER_ACCESS_EMAIL_QUEUE_FAILED: user=%s switch=%s",
+            getattr(member, "id", "?"), switch, exc_info=True,
         )
         return None

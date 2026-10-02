@@ -18,3 +18,9 @@ pyinstaller==6.22.2
 # `python -m pytest tests/ -q` must pass in the same environment (see the
 # Definition of Done in CLAUDE.md).
 pytest==9.1.1
+
+# Parses .github/workflows/desktop-release.yml in tests/test_release_pipeline.py,
+# which guards the release pipeline's structure (an `if:` that can never be true
+# once left signing silently skipped). Test-time only: nothing imports it at
+# runtime and it is not packaged.
+pyyaml==6.0.3

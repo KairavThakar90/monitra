@@ -942,7 +942,7 @@ class TestExistingWorkflowsStillWork(unittest.TestCase):
             {"welcome", "feedback", "feedback_status", "release", "weekly_report",
              "monthly_report", "manual_time_request", "manual_time_receipt",
              "manual_time_decision", "monthly_project_summary", "project_budget_alert",
-             "screenshot_notice"},
+             "screenshot_notice", "member_access"},
         )
 
 

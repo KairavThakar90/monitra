@@ -35,7 +35,7 @@ def hash_token(token: str) -> str:
 
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security_scheme),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ) -> User:
     if not credentials or credentials.scheme.lower() != "bearer":
         raise HTTPException(

@@ -116,9 +116,12 @@ def make_service(payload=None, error=None, *, cache=None, tasks=None,
     return service, api
 
 
+#: An artifact URL this build is willing to fetch from (an approved host).
+GH_SETUP = "https://github.com/acme/monitra/releases/download/v9.9.9/Monitra-Setup-9.9.9.exe"
+
 INSTALLABLE = {
     "latest_version": "9.9.9",
-    "download_url": "https://example.invalid/Monitra-Setup-9.9.9.exe",
+    "download_url": "https://github.com/acme/monitra/releases/download/v9.9.9/Monitra-Setup-9.9.9.exe",
     "release_notes_url": None,
     "release_notes": "Faster startup.",
     "sha256": "a" * 64,
@@ -471,7 +474,7 @@ def test_a_matching_artifact_is_kept(scratch, monkeypatch):
     body = b"installer bytes" * 100
     _serve(monkeypatch, body)
     result = download_and_verify(
-        url="https://example.invalid/setup.exe",
+        url=GH_SETUP,
         expected_sha256=hashlib.sha256(body).hexdigest(),
         version="9.9.9",
         expected_size=len(body),
@@ -486,7 +489,7 @@ def test_a_mismatched_checksum_is_rejected_and_the_file_discarded(scratch, monke
     _serve(monkeypatch, body)
     with pytest.raises(DownloadError) as caught:
         download_and_verify(
-            url="https://example.invalid/setup.exe",
+            url=GH_SETUP,
             expected_sha256="b" * 64,
             version="9.9.9",
         )
@@ -502,7 +505,7 @@ def test_a_truncated_download_is_rejected(scratch, monkeypatch):
     _serve(monkeypatch, body)
     with pytest.raises(DownloadError) as caught:
         download_and_verify(
-            url="https://example.invalid/setup.exe",
+            url=GH_SETUP,
             expected_sha256=hashlib.sha256(body).hexdigest(),
             version="9.9.9",
             expected_size=len(body) * 4,
@@ -531,7 +534,7 @@ def test_a_server_error_leaves_nothing_behind(scratch, monkeypatch):
     _serve(monkeypatch, b"", status=503)
     with pytest.raises(DownloadError):
         download_and_verify(
-            url="https://example.invalid/setup.exe",
+            url=GH_SETUP,
             expected_sha256="a" * 64, version="9.9.9",
         )
     assert list((scratch / "updates").glob("*")) == []
@@ -542,7 +545,7 @@ def test_cancellation_stops_promptly_and_discards_the_partial(scratch, monkeypat
     _serve(monkeypatch, body)
     with pytest.raises(DownloadError) as caught:
         download_and_verify(
-            url="https://example.invalid/setup.exe",
+            url=GH_SETUP,
             expected_sha256=hashlib.sha256(body).hexdigest(),
             version="9.9.9",
             should_stop=lambda: True,
@@ -556,7 +559,7 @@ def test_progress_is_reported_while_downloading(scratch, monkeypatch):
     _serve(monkeypatch, body)
     seen = []
     download_and_verify(
-        url="https://example.invalid/setup.exe",
+        url=GH_SETUP,
         expected_sha256=hashlib.sha256(body).hexdigest(),
         version="9.9.9",
         expected_size=len(body),
@@ -595,6 +598,14 @@ def _offered_service(scratch, monkeypatch, payload=None, body=b"installer"):
     # which is what the test suite runs as.
     monkeypatch.setattr(
         "background_services.update.update_service.can_install", lambda: None
+    )
+    # The artifact here is a few bytes, not a signed installer. Signature
+    # verification has its own tests (test_update_hardening.py, and against real
+    # signed and unsigned binaries); what is under test in this module is the
+    # orchestration around it, so the step is a pass-through.
+    monkeypatch.setattr(
+        "background_services.update.update_service.verify_installer",
+        lambda path: None,
     )
     service.tick()
     service.tick()

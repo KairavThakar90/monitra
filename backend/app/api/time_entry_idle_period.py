@@ -29,7 +29,7 @@ def get_idle_config(current_user: User = Depends(get_current_user)):
 def report_idle_period(
     payload: IdlePeriodCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Report that the user's idle threshold has been reached.
 
@@ -45,7 +45,7 @@ def report_idle_period(
 def get_pending_idle_period(
     time_entry_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """The unresolved idle period for one of the caller's time entries, if
     any. The desktop calls this on restart so a pending popup survives a
@@ -57,7 +57,7 @@ def get_pending_idle_period(
 def get_idle_period(
     idle_period_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return TimeEntryIdlePeriodService.get(db, idle_period_id, current_user)
 
@@ -68,7 +68,7 @@ def resolve_idle_period(
     payload: IdlePeriodResolve,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Resolve the idle period with the user's popup answer.
 
@@ -88,7 +88,7 @@ def reassign_idle_period(
     idle_period_id: int,
     payload: IdlePeriodReassign,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Attribute this idle period's elapsed time to another project/task.
 

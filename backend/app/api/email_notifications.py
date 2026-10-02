@@ -136,7 +136,7 @@ def dispatch_email_notifications(
         description="Most notifications to attempt. Defaults to EMAIL_DISPATCH_BATCH_SIZE.",
     ),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     result = EmailOutboxService.dispatch_pending(db, limit=limit)
     # `dispatch_pending` returns only the outcomes that actually occurred;
@@ -158,7 +158,7 @@ def dispatch_email_notifications(
 def dispatch_email_notifications_get(
     limit: Optional[int] = Query(None, ge=1, le=200),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """GET alias for schedulers that can only issue a GET.
 
@@ -210,7 +210,7 @@ def run_weekly_reports(
         False, description="Aggregate and report the tally without queueing anything.",
     ),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return WeeklyReportRunResult(**{
         key: value
@@ -232,7 +232,7 @@ def run_weekly_reports_get(
     user_id: Optional[int] = Query(None, ge=1),
     dry_run: bool = Query(False),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """GET alias for schedulers that can only issue a GET.
 
@@ -258,7 +258,7 @@ def preview_weekly_report(
         None, description="Any date inside the week. Defaults to the previous completed week.",
     ),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """The exact HTML that user would be sent, for eyes-on verification.
 
@@ -312,7 +312,7 @@ def run_monthly_reports(
     user_id: Optional[int] = Query(None, ge=1, description="Restrict the run to one user."),
     dry_run: bool = Query(False, description="Aggregate and report the tally without queueing."),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return MonthlyReportRunResult(**{
         key: value
@@ -334,7 +334,7 @@ def run_monthly_reports_get(
     user_id: Optional[int] = Query(None, ge=1),
     dry_run: bool = Query(False),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """GET alias for Vercel Cron, which can only issue a GET. Same operation as the POST."""
     return run_monthly_reports(
@@ -354,7 +354,7 @@ def preview_monthly_report(
         None, description="Any date inside the month. Defaults to the previous completed month.",
     ),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """The exact HTML that user would be sent, for eyes-on verification."""
     from app.services.email import messages
@@ -395,7 +395,7 @@ def run_monthly_project_summary(
     user_id: Optional[int] = Query(None, ge=1, description="Restrict the run to one recipient."),
     dry_run: bool = Query(False, description="Compute and report the tally without queueing."),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return MonthlyProjectSummaryRunResult(**{
         key: value
@@ -417,7 +417,7 @@ def run_monthly_project_summary_get(
     user_id: Optional[int] = Query(None, ge=1),
     dry_run: bool = Query(False),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """GET alias for Vercel Cron, which can only issue a GET. Same operation as the POST."""
     return run_monthly_project_summary(
@@ -435,7 +435,7 @@ def preview_monthly_project_summary(
     user_id: int = Query(..., ge=1, description="The recipient whose summary to render."),
     month_start: Optional[date] = Query(None, description="Any date inside the month."),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """The exact HTML that recipient would be sent. Queues, sends and writes nothing.
     404 for anyone who is not an eligible recipient, so it cannot be used to
@@ -468,7 +468,7 @@ def run_project_budget_alerts(
     project_id: Optional[int] = Query(None, ge=1),
     dry_run: bool = Query(False),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     from app.services.project_budget_alerts import ProjectBudgetAlertService
 
@@ -488,7 +488,7 @@ def run_project_budget_alerts_get(
     project_id: Optional[int] = Query(None, ge=1),
     dry_run: bool = Query(False),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """GET alias for Vercel Cron. Same operation as the POST."""
     return run_project_budget_alerts(project_id=project_id, dry_run=dry_run, _=None, db=db)
@@ -505,7 +505,7 @@ def preview_project_budget_alert(
     user_id: int = Query(..., ge=1, description="A recipient of this project's alerts."),
     event: str = Query("remaining_50", pattern="^(remaining_50|remaining_20|remaining_10|exhausted)$"),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Current figures for the project, rendered as `event`. 404 unless the
     project is a monitored fixed-hours project and `user_id` would receive its

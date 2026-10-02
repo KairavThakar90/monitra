@@ -13,14 +13,14 @@ router = APIRouter(prefix="/projects", tags=["Projects"])
 def create_project(
     project_in: ProjectCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return ProjectService.create_project(db, project_in, current_user)
 
 @router.get("", response_model=List[ProjectRead])
 def list_projects(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return ProjectService.list_projects(db, current_user)
 
@@ -28,7 +28,7 @@ def list_projects(
 def get_project(
     id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return ProjectService.get_project(db, id, current_user)
 
@@ -37,7 +37,7 @@ def update_project(
     id: int,
     project_in: ProjectUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return ProjectService.update_project(db, id, project_in, current_user)
 
@@ -45,6 +45,6 @@ def update_project(
 def archive_project(
     id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return ProjectService.archive_project(db, id, current_user)

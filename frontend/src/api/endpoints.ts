@@ -70,6 +70,8 @@ export const ENDPOINTS = {
     // Sign-in / Add Task switches for one or many members; the only member
     // write HR (without `manage_employees`) may make.
     UPDATE_ACCESS: `${API_BASE_URL}/members/access`,
+    // How many active members may add tasks / log in: the numbers beside those two columns.
+    ACCESS_SUMMARY: `${API_BASE_URL}/members/access-summary`,
     DELETE: (id: string | number) => `${API_BASE_URL}/members/${id}`,
   },
   PROJECTS: {

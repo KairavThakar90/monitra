@@ -33,7 +33,7 @@ def create_manual_entry_v2(
     payload: ManualTimeEntryCreate,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ManualTimeEntryService.create_manual_entry(db, payload, current_user, background_tasks)
 
@@ -50,7 +50,7 @@ def list_manual_entries_for_review(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ManualTimeEntryService.list_for_review(
         db, current_user, approval_status, project_id, task_id, user_id,
@@ -59,26 +59,26 @@ def list_manual_entries_for_review(
 
 
 @router.get("/{id}", response_model=ManualTimeEntryRead, summary="Get a manual time entry")
-def get_manual_entry_v2(id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_manual_entry_v2(id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ManualTimeEntryService.get_manual_entry(db, id, current_user)
 
 
 @router.patch("/{id}", response_model=ManualTimeEntryRead, summary="Edit a pending manual time entry")
-def update_manual_entry(id: int, payload: ManualTimeEntryUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_manual_entry(id: int, payload: ManualTimeEntryUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ManualTimeEntryService.update_manual_entry(db, id, payload, current_user)
 
 
 @router.patch("/{id}/approve", response_model=ManualTimeEntryRead, dependencies=[Depends(require_permission("manual_time_entries:approve"))], summary="Approve a manual time entry")
-def approve_manual_entry_v2(id: int, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def approve_manual_entry_v2(id: int, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ManualTimeEntryService.update_approval(db, id, "approved", current_user, background_tasks)
 
 
 @router.patch("/{id}/reject", response_model=ManualTimeEntryRead, dependencies=[Depends(require_permission("manual_time_entries:approve"))], summary="Reject a manual time entry")
-def reject_manual_entry_v2(id: int, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def reject_manual_entry_v2(id: int, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ManualTimeEntryService.update_approval(db, id, "rejected", current_user, background_tasks)
 
 
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT, summary="Withdraw a pending manual time entry (soft delete)")
-def delete_manual_entry(id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_manual_entry(id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     ManualTimeEntryService.delete_manual_entry(db, id, current_user)
     return None

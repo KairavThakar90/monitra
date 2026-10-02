@@ -34,7 +34,7 @@ router = APIRouter(prefix="/system", tags=["System"])
 )
 def maintenance_status(
     _current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return MaintenanceModeService.get_status(db)
 
@@ -47,7 +47,7 @@ def maintenance_status(
 )
 def maintenance_mode_detail(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return MaintenanceModeService.get_detail(db, current_user)
 
@@ -67,7 +67,7 @@ def maintenance_mode_detail(
 def set_maintenance_mode(
     payload: MaintenanceModeUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return MaintenanceModeService.set_maintenance_mode(
         db, current_user, enabled=payload.enabled
@@ -83,7 +83,7 @@ def set_maintenance_mode(
 def maintenance_mode_history(
     limit: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     rows = MaintenanceModeService.list_history(db, current_user, limit=limit)
     return MaintenanceAuditList(

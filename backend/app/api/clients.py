@@ -37,7 +37,7 @@ def create_invitation(
     payload: ClientInvitationCreate,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     client = ClientInvitationService.create_invitation(
         db, current_user, payload.email, payload.project_ids or [],
@@ -56,7 +56,7 @@ def list_clients(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ClientInvitationService.list_clients(db, current_user, page, limit)
 
@@ -70,7 +70,7 @@ def update_client_access(
     client_id: int,
     payload: ClientAccessUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     client = ClientInvitationService.update_client_access(
         db, current_user, client_id, payload.project_ids or [], payload.permissions.model_dump(),
@@ -86,7 +86,7 @@ def update_client_access(
 def deactivate_client(
     client_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     client = ClientInvitationService.deactivate_client(db, current_user, client_id)
     return {"id": client.id, "status": client.status}
@@ -101,7 +101,7 @@ def resend_invitation(
     client_id: int,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     client = ClientInvitationService.resend_invitation(
         db, current_user, client_id, background_tasks=background_tasks,
@@ -120,7 +120,7 @@ def resend_invitation(
     "/clients/invitations/{token}/approve",
     summary="Approve a client invitation (opened from the invitation email)",
 )
-def approve_invitation(token: str, db: Session = Depends(get_db)):
+def approve_invitation(token: str, db: Session = Depends(get_db, scope="function")):
     handoff_token, _expires_at = ClientInvitationService.approve_invitation(db, token)
     base = (settings.MONITRA_APP_URL or "").rstrip("/")
     return RedirectResponse(url=f"{base}/login?token={handoff_token}")
@@ -130,7 +130,7 @@ def approve_invitation(token: str, db: Session = Depends(get_db)):
     "/clients/invitations/{token}/reject",
     summary="Reject a client invitation (opened from the invitation email)",
 )
-def reject_invitation(token: str, db: Session = Depends(get_db)):
+def reject_invitation(token: str, db: Session = Depends(get_db, scope="function")):
     ClientInvitationService.reject_invitation(db, token)
     base = (settings.MONITRA_APP_URL or "").rstrip("/")
     return RedirectResponse(url=f"{base}/login?client_invite=rejected")
@@ -176,7 +176,7 @@ _MEMBER_IDS_Q = Query(None, description="Repeat to filter to specific members")
 
 
 @router.get("/clients/me", summary="The signed-in client's name and sharing permissions")
-def get_my_profile(current_user: User = Depends(_require_client), db: Session = Depends(get_db)):
+def get_my_profile(current_user: User = Depends(_require_client), db: Session = Depends(get_db, scope="function")):
     return ClientPortalService.get_my_profile(db, current_user)
 
 
@@ -186,7 +186,7 @@ def list_my_projects(
     end_date: Optional[str] = _END_DATE_Q,
     project_ids: Optional[list[int]] = _PROJECT_IDS_Q,
     current_user: User = Depends(_require_client),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ClientPortalService.list_my_projects(
         db, current_user,
@@ -202,7 +202,7 @@ def list_my_members(
     project_ids: Optional[list[int]] = _PROJECT_IDS_Q,
     member_ids: Optional[list[int]] = _MEMBER_IDS_Q,
     current_user: User = Depends(_require_client),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ClientPortalService.list_member_hours(
         db, current_user,
@@ -220,7 +220,7 @@ def get_my_member(
     start_date: Optional[str] = _START_DATE_Q,
     end_date: Optional[str] = _END_DATE_Q,
     current_user: User = Depends(_require_client),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ClientPortalService.get_member_detail(
         db, current_user, member_id,
@@ -235,7 +235,7 @@ def list_my_tasks(
     project_ids: Optional[list[int]] = _PROJECT_IDS_Q,
     member_ids: Optional[list[int]] = _MEMBER_IDS_Q,
     current_user: User = Depends(_require_client),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ClientPortalService.list_task_hours(
         db, current_user,
@@ -254,7 +254,7 @@ def list_my_timesheet(
     project_ids: Optional[list[int]] = _PROJECT_IDS_Q,
     member_ids: Optional[list[int]] = _MEMBER_IDS_Q,
     current_user: User = Depends(_require_client),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ClientPortalService.list_timesheet(
         db, current_user,
@@ -270,7 +270,7 @@ def list_my_timesheet(
 def list_my_billing(
     project_ids: Optional[list[int]] = _PROJECT_IDS_Q,
     current_user: User = Depends(_require_client),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     # No date range: a budget is spent across the project's whole life, so
     # used hours here are always all-time (see ClientPortalService.list_billing).
@@ -283,7 +283,7 @@ def get_my_project(
     start_date: Optional[str] = _START_DATE_Q,
     end_date: Optional[str] = _END_DATE_Q,
     current_user: User = Depends(_require_client),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ClientPortalService.get_project_detail(
         db, current_user, project_id,
@@ -300,7 +300,7 @@ def list_my_project_screenshots(
     start_date: Optional[str] = _START_DATE_Q,
     end_date: Optional[str] = _END_DATE_Q,
     current_user: User = Depends(_require_client),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ClientPortalService.list_project_screenshots(
         db, current_user, project_id,
@@ -317,7 +317,7 @@ def view_my_project_screenshot(
     project_id: int,
     screenshot_id: int,
     current_user: User = Depends(_require_client),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     content, mime_type, file_name = ClientPortalService.get_project_screenshot_bytes(
         db, current_user, project_id, screenshot_id,
@@ -341,7 +341,7 @@ def list_my_screenshots(
     end_date: Optional[str] = _END_DATE_Q,
     project_ids: Optional[list[int]] = _PROJECT_IDS_Q,
     current_user: User = Depends(_require_client),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ClientPortalService.get_screenshots_grid(
         db, current_user,
@@ -358,7 +358,7 @@ def list_my_screenshots(
 def view_my_screenshot(
     screenshot_id: int,
     current_user: User = Depends(_require_client),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     content, mime_type, file_name = ClientPortalService.get_screenshot_bytes(
         db, current_user, screenshot_id,

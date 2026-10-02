@@ -30,7 +30,7 @@ from PySide6.QtCore import Signal
 
 from app.activity_log.service import CLIENT_EVENTS, ActivityLogApiService
 from app.api.exceptions import ApiError
-from app.tasks.service import TaskService
+from app.tasks.service import UNSET, TaskService
 from app.time_entries.service import TimeEntryService
 from background_services.network import NetworkState
 from background_services.screenshot import store
@@ -630,15 +630,20 @@ class SyncService(LoopService):
             payload.get("assignee_id"),
             payload.get("status_id") or 1,
             client_op=payload.get("client_op"),
+            description=payload.get("description"),
         )
 
     def _handle_update_task(self, payload):
+        # An edit queued before descriptions were synced has no such key, and
+        # must not clear the stored one.
+        description = payload["description"] if "description" in payload else UNSET
         return self._task_service.update_task(
             payload["project_id"],
             payload["task_id"],
             payload["task_name"],
             payload.get("status_id") or 1,
             payload.get("assignee_id"),
+            description=description,
         )
 
     def _handle_delete_task(self, payload):

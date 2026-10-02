@@ -79,7 +79,7 @@ class UpdateAccessTests(unittest.TestCase):
 
     def _run(self, caller, payload):
         with patch.object(MemberService, "get", side_effect=lambda db, u, i: self.people[i]), \
-                patch.object(MemberService, "update", side_effect=lambda db, u, i, body: self.people[i]) as update:
+                patch.object(MemberService, "update", side_effect=lambda db, u, i, body, **_: self.people[i]) as update:
             return MemberService.update_access(self.db, caller, payload), update
 
     def test_each_member_goes_through_the_single_member_update(self):
@@ -105,7 +105,7 @@ class UpdateAccessTests(unittest.TestCase):
         self.assertEqual([m.id for m in result["updated"]], [9])
 
     def test_one_refusal_does_not_abort_the_rest(self):
-        def update(db, user, member_id, body):
+        def update(db, user, member_id, body, **_):
             if member_id == 2:
                 raise HTTPException(409, "You cannot exclude your own account from logging in.")
             return self.people[member_id]

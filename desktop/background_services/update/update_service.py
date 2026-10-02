@@ -52,12 +52,15 @@ hours.
 from __future__ import annotations
 
 import random
+import sys
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from PySide6.QtCore import Signal
 
 import version
+from app.api.client import MACHINE_ARCH
 from app.api.exceptions import ApiError
 from app.updates.service import UpdateApiService
 from background_services.network import NetworkState
@@ -65,7 +68,8 @@ from background_services.notifications import NotificationLevel
 from core.service import LoopService, ServiceState
 
 from .downloader import DownloadError, clear_stale_downloads, download_and_verify
-from .installer import InstallError, can_install, launch_installer
+from .installer import InstallError, can_install, launch_installer, read_and_clear_result
+from .signature import verify_installer
 from .state import ReleaseInfo, UpdateState, can_transition
 
 #: Where the announced versions are persisted. One row in `app_state`, which
@@ -110,6 +114,36 @@ def newer_than_installed(versions: List[str], installed: str) -> List[str]:
         return []
     newer = [v for v in versions if (_version_tuple(v) or ()) > current]
     return sorted(set(newer), key=lambda v: _version_tuple(v) or ())
+
+
+def _fold_platform(value: Optional[str]) -> Optional[str]:
+    """`win32`/`darwin`, whatever spelling the backend used, or None."""
+    token = (value or "").strip().lower()
+    if token in ("win32", "win64", "windows"):
+        return "win32"
+    if token in ("darwin", "macos", "mac", "osx"):
+        return "darwin"
+    return token or None
+
+
+def _fold_arch(value: Optional[str]) -> Optional[str]:
+    token = (value or "").strip().lower()
+    if token in ("amd64", "x86_64", "x64", "em64t"):
+        return "x86_64"
+    if token in ("arm64", "aarch64"):
+        return "arm64"
+    return token or None
+
+
+def _is_https_url(value: Any) -> bool:
+    """A plain https URL with a host -- the only kind opened in a browser."""
+    if not isinstance(value, str) or not value or any(c in value for c in " \\\t\r\n\x00"):
+        return False
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
+    return parts.scheme.lower() == "https" and bool(parts.hostname) and parts.username is None
 
 
 class UpdateService(LoopService):
@@ -195,6 +229,11 @@ class UpdateService(LoopService):
         #: True while a mandatory update is outstanding. The window reads it to
         #: decide whether the application may be used at all.
         self._force_pending = False
+        #: What the previous process's installer helper reported, read once at
+        #: start: ``("success"|"failed"|"interrupted"|"not-applied", target)``.
+        #: None when no update was in flight. For diagnostics and tests; the
+        #: user is told through a notification.
+        self.last_install_outcome: Optional[tuple] = None
 
     # ── Public state ──────────────────────────────────────────────────────────
 
@@ -245,7 +284,23 @@ class UpdateService(LoopService):
         """
         if not self._latest:
             return None
-        return self._latest.get("download_url") or None
+        url = self._latest.get("download_url") or None
+        # This is opened in the user's browser, so it is held to plain https: a
+        # `file:` or custom-scheme URL from a misbehaving backend must never be
+        # handed to the operating system to launch.
+        return url if _is_https_url(url) else None
+
+    def manual_download_url(self) -> Optional[str]:
+        """Where the user can fetch the new version by hand, when an automatic
+        update cannot (or did not) install it. None if there is no safe link.
+
+        The installable release's own artifact URL is preferred; otherwise the
+        link the backend announced. Both must be plain https.
+        """
+        release = self._release
+        if release is not None and _is_https_url(release.download_url):
+            return release.download_url
+        return self.download_url()
 
     @property
     def latest_release(self) -> Optional[Dict[str, Any]]:
@@ -447,11 +502,76 @@ class UpdateService(LoopService):
         # A partial download from a process that was killed mid-transfer cannot
         # be resumed and has no value; leaving it would spend the user's disk
         # on nothing. Cheap, and it runs before any download of our own.
+        # Read *before* anything is cleared or checked: this is what the helper
+        # recorded about the install that just relaunched us.
+        try:
+            self._report_previous_install()
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not report the previous update's result")
         try:
             clear_stale_downloads()
         except Exception:  # noqa: BLE001
             self.log.exception("could not clear stale update downloads")
         super().on_start()
+
+    def _report_previous_install(self) -> None:
+        """Tell the user how the update that relaunched us actually went.
+
+        The installer helper outlives the application and cannot show anything
+        itself, so it records what happened (`installer.read_and_clear_result`)
+        and this reads it. The comparison that matters is the recorded target
+        against the version *running now*: a relaunch of the old version after a
+        failed installer must read as a failure, never as success.
+        """
+        result = read_and_clear_result()
+        if not result:
+            return
+        target = result.get("target", "")
+        code = result.get("exit_code")
+        running = version.VERSION
+        self.log.info(
+            "UPDATE_RESULT target=%s running=%s stage=%s exit_code=%s",
+            target, running, result.get("stage"), code,
+        )
+
+        target_t, running_t = _version_tuple(target), _version_tuple(running)
+        if target_t is not None and running_t is not None and running_t > target_t:
+            # A stale record from an earlier attempt; the app has since moved on.
+            return
+
+        if code == "0" and target_t is not None and target_t == running_t:
+            outcome = "success"
+            message = f"Monitra was updated to version {running}."
+            level, title = NotificationLevel.SUCCESS, "Update installed"
+        elif code == "0":
+            outcome = "not-applied"
+            message = (
+                f"The installer for Monitra {target} finished, but you are still "
+                f"on version {running}. You can try the update again from the "
+                "account menu, or download it manually."
+            )
+            level, title = NotificationLevel.WARNING, "Update not applied"
+        elif code is None:
+            outcome = "interrupted"
+            message = (
+                f"The update to Monitra {target} did not finish installing, so "
+                f"you are still on version {running}. Your data is safe. You "
+                "can try again from the account menu, or download it manually."
+            )
+            level, title = NotificationLevel.WARNING, "Update did not finish"
+        else:
+            outcome = "failed"
+            message = (
+                f"The update to Monitra {target} could not be installed, so you "
+                f"are still on version {running}. Your data is safe. You can try "
+                "again from the account menu, or download it manually."
+            )
+            level, title = NotificationLevel.WARNING, "Update failed"
+
+        self.last_install_outcome = (outcome, target)
+        notifications = getattr(self.runtime, "notifications", None)
+        if notifications is not None:
+            notifications.notify(message, level, title=title, key="update-result")
 
     def _record_version(self, announced: str) -> None:
         """Add a newly announced version to the durable record."""
@@ -507,6 +627,21 @@ class UpdateService(LoopService):
             self._set_update_state(UpdateState.IDLE)
             return self._jittered(self.HOLD_INTERVAL_MS)
 
+        # The answer is a claim to be checked, not a value to be trusted: JSON
+        # `null`, an array or a bare string is valid JSON and is not a release
+        # description. A malformed answer is a failed check -- the schedule is
+        # not moved, the state returns to rest, and nothing downstream sees it.
+        checked = self._checked_payload(payload)
+        if checked is None:
+            self.log.warning(
+                "update check returned an unusable answer (%s); ignoring it",
+                type(payload).__name__,
+            )
+            self.heartbeat(success=False)
+            self._set_update_state(UpdateState.IDLE)
+            return self._jittered(self.HOLD_INTERVAL_MS)
+        payload = checked
+
         self._latest = payload
         self.heartbeat()
         self._record_check_time()
@@ -514,16 +649,75 @@ class UpdateService(LoopService):
             self._set_state(ServiceState.RUNNING)
         self.log.info(
             "update check completed: latest=%s available=%s",
-            (payload or {}).get("latest_version"),
-            bool((payload or {}).get("update_available")),
+            payload.get("latest_version"),
+            bool(payload.get("update_available")),
         )
 
         # Recording and announcing are separate on purpose. The badge is
         # durable and survives a restart; the toast fires once per version per
         # session. A user who dismissed the toast still has the menu entry.
-        self._record(payload)
-        self._announce(payload)
+        try:
+            self._record(payload)
+            self._announce(payload)
+        finally:
+            # Whatever the handlers above did, the check itself is over. Left in
+            # CHECKING it would read as busy -- dropping the next manual check
+            # and refusing Update Now -- until something else moved it.
+            if self._state == UpdateState.CHECKING:
+                self._set_update_state(UpdateState.IDLE)
         return self._jittered(self.CHECK_INTERVAL_MS)
+
+    def _checked_payload(self, payload: Any) -> Optional[Dict[str, Any]]:
+        """The backend's answer, validated and normalised, or None if unusable.
+
+        Normalised means: an answer that says "update available" for a version
+        that is not strictly newer than the one running, or for another
+        platform or architecture, is turned into "no update". The server makes
+        the same comparison; making it here as well is what stops a backend bug
+        (or a hostile backend) from offering an older or equal build -- or
+        another machine's artifact -- as an installable update.
+        """
+        if not isinstance(payload, dict):
+            return None
+        available = payload.get("update_available")
+        if not isinstance(available, bool):
+            return None
+        latest = payload.get("latest_version")
+        if latest is not None and not isinstance(latest, str):
+            return None
+
+        checked = dict(payload)
+        if available:
+            problem = self._not_an_update(checked)
+            if problem:
+                self.log.warning(
+                    "update check: the backend offered %r but %s; treating it as "
+                    "no update", latest, problem,
+                )
+                checked["update_available"] = False
+                checked["force_update"] = False
+        return checked
+
+    def _not_an_update(self, payload: Dict[str, Any]) -> Optional[str]:
+        """Why an "update available" answer cannot be an update for this
+        machine, or None if it can."""
+        offered = _version_tuple(payload.get("latest_version"))
+        running = _version_tuple(version.VERSION)
+        if offered is None:
+            return "its version is not major.minor.patch"
+        if running is None:
+            return "the running version is unreadable"
+        if offered <= running:
+            return f"it is not newer than the installed {version.VERSION}"
+
+        claimed_platform = _fold_platform(payload.get("platform"))
+        if claimed_platform and claimed_platform != _fold_platform(sys.platform):
+            return f"it is built for {claimed_platform}, not this machine"
+        claimed_arch = _fold_arch(payload.get("architecture"))
+        machine_arch = _fold_arch(MACHINE_ARCH)
+        if claimed_arch and machine_arch and claimed_arch != machine_arch:
+            return f"it is built for {claimed_arch}, not {machine_arch}"
+        return None
 
     def _record(self, payload: Dict[str, Any]) -> None:
         """Persist an announced version and republish the badge count."""
@@ -684,7 +878,7 @@ class UpdateService(LoopService):
 
     def _download(self, release: ReleaseInfo, task_handle):
         """The blocking half, on the task pool. Never touches a widget."""
-        return download_and_verify(
+        result = download_and_verify(
             url=release.download_url,
             expected_sha256=release.sha256,
             version=release.version,
@@ -694,6 +888,19 @@ class UpdateService(LoopService):
             # shutdown during a download costs one chunk, not one file.
             should_stop=lambda: task_handle.cancelled or self.stopping,
         )
+        # The checksum says this is the file the backend named; the signature
+        # says who built it. Checked here, on the pool, because revocation
+        # checking can wait on the network and must never run on the GUI thread
+        # -- and before the artifact is ever handed to anything that executes it.
+        try:
+            verify_installer(result.path)
+        except BaseException:
+            try:
+                result.path.unlink(missing_ok=True)
+            except OSError:
+                self.log.warning("could not remove the unverified update artifact")
+            raise
+        return result
 
     def _emit_progress(self, received: int, total: Optional[int]) -> None:
         """Publish download progress. Called from the task pool thread.
@@ -719,6 +926,17 @@ class UpdateService(LoopService):
             # Nothing has been installed and nothing replaced; the running
             # application is exactly as it was.
             self._fail(exc.message, detail=exc.detail)
+            return
+        except Exception as exc:  # noqa: BLE001
+            # `launch_installer` classifies its own failures, so this is a bug --
+            # but a bug here must not strand the state machine at
+            # READY_TO_INSTALL with a dialog that can never finish.
+            self.log.exception("unexpected failure handing off to the installer")
+            self._fail(
+                "The update could not be started. Your current version of "
+                "Monitra is unaffected.",
+                detail=repr(exc),
+            )
             return
 
         self._set_update_state(UpdateState.INSTALLING)

@@ -15,7 +15,7 @@ def create_manual_entry(
     payload: ManualTimeEntryCreate,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return ManualTimeEntryService.create_manual_entry(db, payload, current_user, background_tasks)
 
@@ -30,7 +30,7 @@ def list_manual_entries(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=10000),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     entries, _ = ManualTimeEntryService.list_manual_entries(
         db=db,
@@ -50,7 +50,7 @@ def list_manual_entries(
 def get_manual_entry(
     id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return ManualTimeEntryService.get_manual_entry(db, id, current_user)
 
@@ -58,7 +58,7 @@ def get_manual_entry(
 def approve_manual_entry(
     id: int, background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return ManualTimeEntryService.update_approval(db, id, "approved", current_user, background_tasks)
 
@@ -66,6 +66,6 @@ def approve_manual_entry(
 def reject_manual_entry(
     id: int, background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return ManualTimeEntryService.update_approval(db, id, "rejected", current_user, background_tasks)

@@ -67,12 +67,12 @@ internal_router = APIRouter(tags=["WFPM Tools"])
 # ── The original routes: addressed by Monitra ids ───────────────────────────
 
 @router.get("/projects", response_model=ProjectListResponse, dependencies=[Depends(require_permission("projects:view"))], summary="List projects accessible to the caller")
-def list_projects(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), search: Optional[str] = Query(None, max_length=100), include_tasks: bool = Query(False, description="Embed each project's tasks."), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_projects(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), search: Optional[str] = Query(None, max_length=100), include_tasks: bool = Query(False, description="Embed each project's tasks."), user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectManagementService.list(db, user, page, limit, search, None, None, None, include_tasks, None)
 
 
 @router.post("/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_permission("wfpm:projects:create"))], summary="Create a project (no WFPM id recorded)")
-def create_project(payload: WfpmProjectCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_project(payload: WfpmProjectCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     # Status, leader and fixed hours are not the caller's to choose -- see
     # `WfpmSyncService._full_project_payload`, which this and the mapped
     # create below share.
@@ -80,12 +80,12 @@ def create_project(payload: WfpmProjectCreate, user: User = Depends(get_current_
 
 
 @router.get("/projects/{project_id}", response_model=ProjectRead, dependencies=[Depends(require_permission("projects:view"))], summary="Get a project")
-def get_project(project_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_project(project_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectManagementService.get(db, user, project_id)
 
 
 @router.post("/projects/{project_id}/tasks", response_model=TaskRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_permission("tasks:create"))], summary="Create a project task assigned to the caller (no WFPM id recorded)")
-def create_task(project_id: int, payload: WfpmTaskCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_task(project_id: int, payload: WfpmTaskCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     # A WFPM caller does not name a `status_id` either; every task it
     # creates starts Todo, same as the default tasks project creation seeds.
     # Nor does it name an `assignee_id`: a task created through this route is
@@ -100,7 +100,7 @@ def create_task(project_id: int, payload: WfpmTaskCreate, user: User = Depends(g
 
 
 @router.get("/projects/{project_id}/tasks", response_model=list[TaskRead], dependencies=[Depends(require_permission("tasks:view"))], summary="List project tasks")
-def list_tasks(project_id: int, search: Optional[str] = Query(None, max_length=100), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_tasks(project_id: int, search: Optional[str] = Query(None, max_length=100), user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectManagementService.tasks(db, user, project_id, None, None, search)
 
 
@@ -124,7 +124,7 @@ _CONFLICT = {409: {"description": "This WFPM id is already linked to a record th
     summary="Create a project in Monitra for a WFPM project",
     responses={**_REPLAY, **_CONFLICT},
 )
-def sync_create_project(payload: WfpmProjectSyncCreate, response: Response, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_create_project(payload: WfpmProjectSyncCreate, response: Response, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     project, created = WfpmSyncService.create_project(db, user, payload)
     if not created:
         # Idempotent replay: nothing was created, so say so.
@@ -137,7 +137,7 @@ def sync_create_project(payload: WfpmProjectSyncCreate, response: Response, user
     dependencies=[Depends(require_permission("projects:view"))],
     summary="Get the Monitra project linked to a WFPM project", responses=_NOT_LINKED,
 )
-def sync_get_project(wfpm_project_id: WfpmId, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_get_project(wfpm_project_id: WfpmId, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return WfpmSyncService.get_project(db, user, wfpm_project_id)
 
 
@@ -146,7 +146,7 @@ def sync_get_project(wfpm_project_id: WfpmId, user: User = Depends(get_current_u
     dependencies=[Depends(require_permission("projects:update"))],
     summary="Update the Monitra project linked to a WFPM project", responses=_NOT_LINKED,
 )
-def sync_update_project(wfpm_project_id: WfpmId, payload: WfpmProjectSyncUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_update_project(wfpm_project_id: WfpmId, payload: WfpmProjectSyncUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return WfpmSyncService.update_project(db, user, wfpm_project_id, payload)
 
 
@@ -155,7 +155,7 @@ def sync_update_project(wfpm_project_id: WfpmId, payload: WfpmProjectSyncUpdate,
     dependencies=[Depends(require_permission("project_members:manage"))],
     summary="Assign members to the Monitra project linked to a WFPM project", responses=_NOT_LINKED,
 )
-def sync_add_project_members(wfpm_project_id: WfpmId, payload: ProjectMembersAddRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_add_project_members(wfpm_project_id: WfpmId, payload: ProjectMembersAddRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     # `member_ids` are Monitra user ids. Adding someone who is already a
     # member is not an error; the response says which ids were which.
     return WfpmSyncService.add_members(db, user, wfpm_project_id, payload.member_ids)
@@ -167,7 +167,7 @@ def sync_add_project_members(wfpm_project_id: WfpmId, payload: ProjectMembersAdd
     summary="Remove a member from the Monitra project linked to a WFPM project",
     responses={404: {"description": "The WFPM id is not linked, or that user is not a member of the project."}},
 )
-def sync_remove_project_member(wfpm_project_id: WfpmId, member_id: Identifier, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_remove_project_member(wfpm_project_id: WfpmId, member_id: Identifier, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     WfpmSyncService.remove_member(db, user, wfpm_project_id, member_id)
 
 
@@ -177,7 +177,7 @@ def sync_remove_project_member(wfpm_project_id: WfpmId, member_id: Identifier, u
     summary="Create a task in Monitra for a WFPM task",
     responses={**_REPLAY, **_NOT_LINKED, **_CONFLICT},
 )
-def sync_create_task(wfpm_project_id: WfpmId, payload: WfpmTaskSyncCreate, response: Response, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_create_task(wfpm_project_id: WfpmId, payload: WfpmTaskSyncCreate, response: Response, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     task, created = WfpmSyncService.create_task(db, user, wfpm_project_id, payload)
     if not created:
         response.status_code = status.HTTP_200_OK
@@ -189,7 +189,7 @@ def sync_create_task(wfpm_project_id: WfpmId, payload: WfpmTaskSyncCreate, respo
     dependencies=[Depends(require_permission("tasks:view"))],
     summary="Get the Monitra task linked to a WFPM task", responses=_NOT_LINKED,
 )
-def sync_get_task(wfpm_task_id: WfpmId, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_get_task(wfpm_task_id: WfpmId, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return WfpmSyncService.get_task(db, user, wfpm_task_id)
 
 
@@ -198,7 +198,7 @@ def sync_get_task(wfpm_task_id: WfpmId, user: User = Depends(get_current_user), 
     dependencies=[Depends(require_permission("tasks:update"))],
     summary="Update the Monitra task linked to a WFPM task", responses=_NOT_LINKED,
 )
-def sync_update_task(wfpm_task_id: WfpmId, payload: WfpmTaskSyncUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_update_task(wfpm_task_id: WfpmId, payload: WfpmTaskSyncUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return WfpmSyncService.update_task(db, user, wfpm_task_id, payload)
 
 
@@ -211,7 +211,7 @@ def sync_update_task(wfpm_task_id: WfpmId, payload: WfpmTaskSyncUpdate, user: Us
     dependencies=[Depends(require_permission("tasks:update"))],
     summary="Assign the Monitra task linked to a WFPM task", responses=_NOT_LINKED,
 )
-def sync_assign_task(wfpm_task_id: WfpmId, payload: WfpmTaskAssign, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_assign_task(wfpm_task_id: WfpmId, payload: WfpmTaskAssign, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return WfpmSyncService.assign_task(db, user, wfpm_task_id, payload.assignee_id)
 
 
@@ -238,7 +238,7 @@ _BAD_ASSIGNEES = {400: {"description": "An id is not an active employee who is a
     ),
     responses={**_NOT_LINKED, **_BAD_ASSIGNEES},
 )
-def sync_set_task_assignees(wfpm_task_id: WfpmId, payload: WfpmTaskAssigneesSet, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_set_task_assignees(wfpm_task_id: WfpmId, payload: WfpmTaskAssigneesSet, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return WfpmSyncService.set_task_assignees(db, user, wfpm_task_id, payload)
 
 
@@ -247,7 +247,7 @@ def sync_set_task_assignees(wfpm_task_id: WfpmId, payload: WfpmTaskAssigneesSet,
     dependencies=[Depends(require_permission("tasks:view"))],
     summary="The assignees of the Monitra task linked to a WFPM task, primary first", responses=_NOT_LINKED,
 )
-def sync_get_task_assignees(wfpm_task_id: WfpmId, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_get_task_assignees(wfpm_task_id: WfpmId, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return WfpmSyncService.get_task_assignees(db, user, wfpm_task_id)
 
 
@@ -258,7 +258,7 @@ def sync_get_task_assignees(wfpm_task_id: WfpmId, user: User = Depends(get_curre
     description="Adds to whoever already holds the task. Someone already assigned is not an error.",
     responses={**_NOT_LINKED, **_BAD_ASSIGNEES},
 )
-def sync_add_task_assignees(wfpm_task_id: WfpmId, payload: WfpmTaskAssigneesAdd, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_add_task_assignees(wfpm_task_id: WfpmId, payload: WfpmTaskAssigneesAdd, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return WfpmSyncService.add_task_assignees(db, user, wfpm_task_id, payload)
 
 
@@ -268,7 +268,7 @@ def sync_add_task_assignees(wfpm_task_id: WfpmId, payload: WfpmTaskAssigneesAdd,
     summary="Remove one assignee from the Monitra task linked to a WFPM task",
     responses={404: {"description": "The WFPM id is not linked, or that user is not assigned to the task."}},
 )
-def sync_remove_task_assignee(wfpm_task_id: WfpmId, member_id: Identifier, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_remove_task_assignee(wfpm_task_id: WfpmId, member_id: Identifier, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     # Only the assignment goes; the person's time entries are untouched.
     WfpmSyncService.remove_task_assignee(db, user, wfpm_task_id, member_id)
 
@@ -278,7 +278,7 @@ def sync_remove_task_assignee(wfpm_task_id: WfpmId, member_id: Identifier, user:
     dependencies=[Depends(require_permission("tasks:update"))],
     summary="Remove the assignee from the Monitra task linked to a WFPM task", responses=_NOT_LINKED,
 )
-def sync_unassign_task(wfpm_task_id: WfpmId, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_unassign_task(wfpm_task_id: WfpmId, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     # Answers with the task rather than 204 so the caller sees the state it
     # left behind: unassigned, which in Monitra means shared with the project.
     return WfpmSyncService.unassign_task(db, user, wfpm_task_id)
@@ -319,7 +319,7 @@ def _dispatch(limit: Optional[int], db: Session) -> WfpmTimerDispatchResult:
 def dispatch_wfpm_timer_events(
     limit: Optional[int] = Query(None, ge=1, le=500, description="Most events to attempt. Defaults to WFPM_TIMER_DISPATCH_BATCH_SIZE."),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return _dispatch(limit, db)
 
@@ -332,7 +332,7 @@ def dispatch_wfpm_timer_events(
 def dispatch_wfpm_timer_events_get(
     limit: Optional[int] = Query(None, ge=1, le=500),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """GET alias for schedulers that can only issue a GET (Vercel Cron). Same
     authenticated, side-effecting operation as the POST above."""

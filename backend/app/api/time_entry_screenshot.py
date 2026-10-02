@@ -64,7 +64,7 @@ def get_screenshot_config(current_user: User = Depends(get_current_user)):
     status_code=status.HTTP_201_CREATED,
     summary="Upload one captured screenshot",
 )
-async def upload_screenshot(
+def upload_screenshot(
     time_entry_id: int = Path(..., gt=0),
     file: UploadFile = File(
         ...,
@@ -78,7 +78,7 @@ async def upload_screenshot(
     monitor_number: int = Form(1),
     display_count: int = Form(1, ge=1, le=16),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Store a screenshot captured by the desktop client.
 
@@ -91,7 +91,12 @@ async def upload_screenshot(
     not produce a second Drive file. A repeat returns the original record with
     `duplicate: true`, which the client treats as success.
     """
-    content = await file.read()
+    # A plain `def`, so FastAPI runs it on the thread pool. It was `async def`, which
+    # ran the Google Drive upload (seconds, blocking) on the event loop and stalled
+    # every other request on this worker -- including the responses of requests that
+    # had already finished, whose connections then stayed checked out. The multipart
+    # body is already parsed by now; `file.file` is its spooled temporary file.
+    content = file.file.read()
     record, duplicate = TimeEntryScreenshotService.upload_screenshot(
         db=db,
         time_entry_id=time_entry_id,
@@ -119,7 +124,7 @@ def get_screenshot_timeline(
     user_id: Optional[int] = Query(None, description="Defaults to the caller"),
     target_date: Optional[date] = Query(None, alias="date", description="IST calendar date"),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """A day as fixed windows, each carrying its own screenshots and its own
     activity percentage.
@@ -149,7 +154,7 @@ def get_screenshot_day(
     date_to: Optional[date] = Query(None, alias="to", description="Last IST day, inclusive"),
     user_id: Optional[int] = Query(None, description="Narrow to one member"),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """A span of days across the whole team, grouped by member, then day, then
     window.
@@ -185,7 +190,7 @@ def get_screenshot_day(
 def view_screenshot(
     screenshot_id: int = Path(..., gt=0),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Return the image bytes for an authorised caller.
 
@@ -221,7 +226,7 @@ def send_screenshot_notice(
     background_tasks: BackgroundTasks,
     screenshot_id: int = Path(..., gt=0),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Send the screenshot, with a written notice, to the person who captured it.
 
@@ -247,7 +252,7 @@ def send_screenshot_notice(
 def delete_screenshot(
     screenshot_id: int = Path(..., gt=0),
     current_user: User = Depends(require_screenshot_delete),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Destroy a screenshot — the image in Google Drive and its metadata row.
 
@@ -283,7 +288,7 @@ def delete_screenshot(
 def create_screenshot(
     payload: TimeEntryScreenshotCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return TimeEntryScreenshotService.create_screenshot(
         db=db,
@@ -298,7 +303,7 @@ def list_screenshots(
     user_id: Optional[int] = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return TimeEntryScreenshotService.list_screenshots(
         db=db,

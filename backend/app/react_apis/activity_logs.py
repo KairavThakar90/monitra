@@ -52,7 +52,7 @@ def list_activity_logs(
     module: Optional[str] = Query(None, max_length=50, description="Only this module, e.g. `timer` or `auth`."),
     search: Optional[str] = Query(None, max_length=SEARCH_MAX_LENGTH, description="Words that appear in the description."),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ActivityLogService.list_grouped(
         db, current_user,
@@ -77,7 +77,7 @@ def list_activity_logs(
 def record_client_event(
     payload: ClientEventCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return ActivityLogService.record_client_event(
         db, current_user, event=payload.event, occurred_at=payload.occurred_at

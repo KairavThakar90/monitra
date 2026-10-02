@@ -115,6 +115,14 @@ TYPE_CLIENT_LOGIN_LINK = "client_login_link"
 #: double click or a retried request is one email while a genuinely new notice
 #: about the same screenshot is another.
 TYPE_SCREENSHOT_NOTICE = "screenshot_notice"
+#: "You have been excluded from / allowed to log in or add tasks", sent to the
+#: member whose Members-directory switch an administrator just moved. Keyed
+#: `access:<user>:<switch>:<allowed|excluded>:<changed-at microseconds>`: each
+#: genuine transition is its own event (excluded, allowed, excluded again must
+#: all be delivered), while a retry of the same transition collapses onto its
+#: row. A press that changes nothing never reaches the queue at all -- the
+#: caller only queues a switch that actually moved.
+TYPE_MEMBER_ACCESS = "member_access"
 
 
 class EmailNotification(Base):

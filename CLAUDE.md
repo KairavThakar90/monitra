@@ -182,6 +182,12 @@ change it in all three.
 - **Backend:** respect the api → services → repositories → models layering. Any schema change
   requires an Alembic migration in `backend/alembic/` — never edit a model without one. Keep
   Pydantic schemas in `app/schemas` in sync with what routes actually return.
+- **Backend database connections:** **[docs/DB_CONNECTION_LIFECYCLE.md](docs/DB_CONNECTION_LIFECYCLE.md)
+  is authoritative.** Every route declares `Depends(get_db, scope="function")` (never bare
+  `Depends(get_db)` — a test fails on it); call `end_transaction(db)` before any wait on SMTP,
+  WFPM or Google Drive; routes that use the database are plain `def`, never `async def` with
+  blocking calls; background tasks open and close their own session. A request-scoped session
+  once pinned every pooled connection `idle in transaction` and took the API down.
 - **Backend ↔ desktop contract:** if you change a response shape the desktop consumes, you must
   update the desktop side in the same change, or the desktop's optimistic UI and sync queue will
   silently diverge.

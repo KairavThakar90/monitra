@@ -14,7 +14,7 @@ def add_project_member(
     project_id: int,
     payload: ProjectMemberCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return ProjectMemberService.add_member(db, project_id, payload.user_id, current_user)
 
@@ -22,7 +22,7 @@ def add_project_member(
 def list_project_members(
     project_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return ProjectMemberService.list_members(db, project_id, current_user)
 
@@ -31,7 +31,7 @@ def remove_project_member(
     project_id: int,
     user_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     ProjectMemberService.remove_member(db, project_id, user_id, current_user)
     return

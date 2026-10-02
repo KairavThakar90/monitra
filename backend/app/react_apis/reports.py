@@ -42,7 +42,7 @@ def _filters(
     dependencies=[_view_all],
     summary="Projects report grouped by project: routed hours and activity, filtered by date range, members, projects and billing type",
 )
-def projects_report(filters=Depends(_filters), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def projects_report(filters=Depends(_filters), current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     from_date, to_date, member_ids, project_ids, billing_type = filters
     return ReportsService.build_grouped(
         db, current_user, ReportDimension.projects, from_date, to_date, member_ids, project_ids, billing_type, UsageType.app
@@ -55,7 +55,7 @@ def projects_report(filters=Depends(_filters), current_user: User = Depends(get_
     dependencies=[_view_all],
     summary="Members report grouped by member: routed hours and activity per member",
 )
-def members_report(filters=Depends(_filters), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def members_report(filters=Depends(_filters), current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     from_date, to_date, member_ids, project_ids, billing_type = filters
     return ReportsService.build_grouped(
         db, current_user, ReportDimension.members, from_date, to_date, member_ids, project_ids, billing_type, UsageType.app
@@ -68,7 +68,7 @@ def members_report(filters=Depends(_filters), current_user: User = Depends(get_c
     dependencies=[_view_all],
     summary="Tasks report grouped by task: routed hours and activity per task",
 )
-def tasks_report(filters=Depends(_filters), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def tasks_report(filters=Depends(_filters), current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     from_date, to_date, member_ids, project_ids, billing_type = filters
     return ReportsService.build_grouped(
         db, current_user, ReportDimension.tasks, from_date, to_date, member_ids, project_ids, billing_type, UsageType.app
@@ -85,7 +85,7 @@ def apps_report(
     filters=Depends(_filters),
     usage_type: UsageType = Query(UsageType.app, description="Group by application (app) or by domain (url)."),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     from_date, to_date, member_ids, project_ids, billing_type = filters
     return ReportsService.build_grouped(
@@ -109,7 +109,7 @@ def detailed_logs(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     from_date, to_date, member_ids, project_ids, billing_type = filters
     return ReportsService.build_detailed_logs(
@@ -134,7 +134,7 @@ def project_task_summary(
     billing_type: Optional[list[BillingType]] = Query(None, description="Only projects of these billing types: fixed, free (flexible time) or non_billing. Repeat to combine, e.g. ?billing_type=fixed&billing_type=free for every billed project. Omit for all types."),
     member_ids: Optional[list[int]] = Query(None, alias="member_id", description="Only what these members tracked: the projects and tasks they worked on today, with their hours. Repeat to select several, e.g. ?member_id=1&member_id=2. Omit for everyone."),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     billing_types = sorted({item.value for item in billing_type}) if billing_type else None
     return ReportsService.build_project_task_summary(

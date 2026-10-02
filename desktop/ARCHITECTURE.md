@@ -28,7 +28,7 @@ ApplicationRuntime
     ├── RecoveryService       runtime liveness, unclean-shutdown detection
     ├── NotificationService   notifications + system tray
     ├── NetworkService        the authoritative network state
-    ├── UpdateService         announces a newer release (never installs one)
+    ├── UpdateService         announces a newer release; downloads, verifies and installs it only when the user chooses
     ├── WellbeingService      the one scheduler of wellbeing reminders
     ├── NotificationScheduleService  fetches the admin's notification schedule
     ├── SyncService           the durable queue's only consumer
@@ -608,40 +608,100 @@ detector or the period; both outlive it.
 > `QDialog::closeEvent` is implemented in terms of `reject()`, so a popup the
 > user had already answered could never close.
 
-### Update notice
+### Update notice and installer
 
 `UpdateService` ([background_services/update/update_service.py](background_services/update/update_service.py))
 asks the backend on a slow loop whether a newer release has been published,
-and tells the user through the `NotificationService` that already owns
-notifications. **It announces; it does not download and it does not install.**
-Anything that fetches and runs an installer is a materially larger change to
-this runtime and is gated on code signing — an updater that silently runs an
-unsigned installer is a worse posture than the manual download it replaces.
+tells the user, and — **only when the user chooses "Update Now"** — downloads,
+verifies and installs it. It is a `LoopService` registered with the runtime; the
+download runs on the shared `TaskRunner`; notifications go through the
+`NotificationService`. It has no thread, timer, queue or notification path of
+its own. There is no silent-update code path.
 
 ```
-tick()  ->  hold while signed out / offline / endpoint absent
-        ->  GET /desktop/latest-version   (User-Agent: Monitra/<version>)
-        ->  update_available? and version changed?  ->  notify once
+tick()  ->  first tick: wait 30 s (or the rest of the 10 h since the last
+            successful check — persisted, so a restart does not re-check early)
+        ->  hold while signed out / offline / endpoint absent
+        ->  GET /desktop/latest-version   (User-Agent: Monitra/<v>, X-Monitra-Platform/-Arch)
+        ->  VALIDATE: a dict? `update_available` a bool? strictly newer than the
+            running version? this platform and architecture?   (else: not an update)
+        ->  announce once per version per session; dialog when installable
+
+Update Now ->  state machine: IDLE ▸ CHECKING ▸ UPDATE_AVAILABLE ▸ DOWNLOADING
+               ▸ VERIFYING ▸ READY_TO_INSTALL ▸ INSTALLING   (illegal moves refused)
+           on the task pool:  download (policy.check_url, redirects judged hop by hop)
+               ▸ SHA-256 + size  ▸ signature (signature.verify_installer)
+           on the GUI thread: installer.launch_installer — writes a helper, starts it
+               ▸ install_started ▸ the window exits as a RESTART (timer not stopped)
+helper:    wait for the process to exit ▸ run the installer ▸ record the result
+               ▸ relaunch ▸ delete itself
+next launch: read the recorded result, compare it with the version RUNNING NOW,
+               tell the user whether the update happened
 ```
 
-Three properties, each of them a rule this project has already paid for:
+Properties, each a rule this project has already paid for:
 
-- **Edge-triggered.** The backend keeps answering "1.1.0 is available" on
-  every poll. Notifying per answer would be the level-triggered signal that
-  once produced a worker storm; the announcement fires only when the announced
-  version *changes*, so it is one message per release, per session.
-- **The backend decides.** `update_available` is computed server-side from one
-  comparison rule. A deployment that has not been told its latest release
-  answers "unknown", and an unknown is never rendered as an update — no
-  placeholder version, no placeholder link.
-- **Failure is silence.** Signed out, offline, or an older deployment without
-  the endpoint are all reasons to wait quietly. Not knowing whether an update
-  exists is not something the person tracking time can act on, and a failed
-  update check must never affect tracking.
+- **Edge-triggered.** The backend keeps answering "X is available" on every poll.
+  The announcement fires only when the announced version *changes*; the badge is
+  derived from a durable record and the installed version, so installing the
+  update empties it by arithmetic.
+- **The answer is a claim, not an instruction.** A JSON `null`, array, string or
+  an object without a boolean `update_available` is a *failed check*: nothing is
+  recorded, the schedule does not move, the state returns to rest (an earlier
+  version left the updater "checking" — and refusing Update Now — after one).
+  An "update" for a version that is not strictly newer than the one running, or
+  built for another platform or architecture, is turned into "no update" **by
+  the client**, whatever the server says. A failed check never counts as a
+  successful one.
+- **The client decides where it fetches from, not the backend**
+  ([policy.py](background_services/update/policy.py)). https only, no
+  credentials, default port, host on `ALLOWED_DOWNLOAD_HOSTS`; redirects are
+  followed by hand and every hop must stay https on an approved host or the
+  GitHub CDN. A URL outside that makes a release announce-only, never
+  installable. The download carries no `Authorization` header.
+- **Nothing unverified runs.** SHA-256 is computed while streaming and compared,
+  as is the size; a mismatch, a truncated body, an HTML error page served as
+  200, or a full disk deletes the partial file. After the digest, the
+  **signature** ([signature.py](background_services/update/signature.py)):
+  `WinVerifyTrust` through `ctypes` on Windows — unsigned or tampered is refused
+  in a production build, and the signer is matched against
+  `policy.WINDOWS_SIGNER_PINS` when set. It runs on the task pool because
+  revocation checking can wait on the network. macOS verifies the mounted bundle
+  (`codesign`, `spctl`, Team ID) inside the helper, before the old bundle is
+  touched — **never yet run on a real Mac**.
+- **Failure is never silent, and never success.** The helper outlives the
+  application and cannot show anything, so it writes `update-result.txt` in the
+  data directory (target version, installer exit code). The next launch reads it
+  (`UpdateService._report_previous_install`) and compares the target with the
+  version actually running: a relaunch of the *old* version after a failed
+  installer is reported as a failure, never as nothing and never as success.
+- **A failed update is never a dead end.** When an automatic update is refused or
+  fails the dialog stays open with *Try Again* and, if there is a safe https link,
+  *Download manually*. For an unsupported install (source checkout, portable
+  build) the same applies.
+- **Failure is silence for the check, and a message for the user's own action.**
+  Signed out, offline, or an older deployment without the endpoint are all
+  reasons to wait quietly; a failed *check* never affects tracking. A failed
+  *update the user asked for* says so.
+- **The session survives the restart.** The window exits through
+  `MainWindow.exit_for_restart`, which does not stop the timer; the relaunch
+  recovers the same entry from the durable session record
+  ([docs/TIMING_MODEL.md](../docs/TIMING_MODEL.md) §7). The gap while the
+  installer runs is an interruption and is decided by the user through the
+  ordinary idle prompt.
+- **No path is written into a script.** On Windows every path reaches the helper
+  through environment variables and the script is pure ASCII: a username with a
+  space, an accent, `&` or `%` is ordinary. The helper runs with a hidden console
+  (`CREATE_NO_WINDOW`); under `DETACHED_PROCESS` (no console) `tasklist | find`
+  hangs for ever, so the installer never ran and the application was never
+  relaunched.
 
 The same request carries the client's own version (the `User-Agent` the
-`ApiClient` now sends on every call), which is what the backend records for
-fleet version visibility.
+`ApiClient` sends on every call), which is what the backend records for fleet
+version visibility. The backend's release policy (hosting, completeness, signing,
+who may publish, the announcement email) is in
+[docs/Desktop_Artifact_Hosting.md](../docs/Desktop_Artifact_Hosting.md) and
+[docs/Desktop_Release_Runbook.md](../docs/Desktop_Release_Runbook.md).
 
 ### Maintenance notice
 

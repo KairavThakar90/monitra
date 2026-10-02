@@ -30,7 +30,9 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.background import run_blocking
 from app.core.config import settings
+from app.core.database import end_transaction
 from app.models.email_notification import (
     STATUS_FAILED, STATUS_PENDING, EmailNotification,
 )
@@ -178,6 +180,12 @@ class EmailOutboxService:
             f"key={row.dedupe_key} user={row.user_id} attempt={attempt}/{max_attempts}"
         )
 
+        # Everything above is a local, so the transaction the claim's re-read just
+        # opened can end here. Building the message may download from Drive and
+        # sending it waits on SMTP (timeout SMTP_TIMEOUT_SECONDS, per message, in a
+        # sweep of many): none of that needs a database connection.
+        end_transaction(db)
+
         try:
             builder = BUILDERS.get(notification_type)
             if builder is None:
@@ -261,11 +269,19 @@ class EmailOutboxService:
         return result
 
 
-def deliver_in_background(notification_id: int) -> None:
+async def deliver_in_background(notification_id: int) -> None:
+    """What `BackgroundTasks` runs after a response has been written.
+
+    Sending blocks on SMTP, so it runs under the bounded background limiter
+    (`app.core.background`) instead of taking a request thread.
+    """
+    await run_blocking(_deliver_blocking, notification_id)
+
+
+def _deliver_blocking(notification_id: int) -> None:
     """Deliver one notification on its own database session.
 
-    This is what `BackgroundTasks` runs after a response has been written. It
-    opens its own session because the request's session is closed by the time
+    It opens its own session because the request's session is closed by the time
     it executes, and it swallows everything: a background task that raises is
     logged by the framework and helps nobody, while the outbox row it was
     working on is still queued for the sweeper either way.

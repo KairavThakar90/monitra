@@ -22,7 +22,7 @@ from markupsafe import Markup
 from app.core.config import settings
 from app.core.time_format import IST, to_ist
 from app.models.email_notification import (
-    TYPE_MANUAL_TIME_DECISION, TYPE_MANUAL_TIME_RECEIPT, TYPE_MANUAL_TIME_REQUEST,
+    TYPE_MEMBER_ACCESS, TYPE_MANUAL_TIME_DECISION, TYPE_MANUAL_TIME_RECEIPT, TYPE_MANUAL_TIME_REQUEST,
     TYPE_MONTHLY_PROJECT_SUMMARY, TYPE_MONTHLY_REPORT, TYPE_PROJECT_BUDGET_ALERT,
     TYPE_SCREENSHOT_NOTICE, TYPE_WEEKLY_REPORT,
 )
@@ -683,10 +683,16 @@ def build_feedback_status_email(
 
 def release_subject(payload: dict[str, Any]) -> str:
     version = str(payload.get("version") or "").strip()
-    return clean_subject(
+    subject = (
         f"Monitra {version} is available — what's new" if version
         else "A new version of Monitra is available"
     )
+    # A rehearsal (RELEASE_EMAIL_TEST_RECIPIENTS) says so in the subject. The
+    # subject is rebuilt from the payload at delivery, so the marker has to
+    # live here and not only on the queued row.
+    if payload.get("test"):
+        subject = f"[TEST] {subject}"
+    return clean_subject(subject)
 
 
 def download_page_url() -> Optional[str]:
@@ -843,6 +849,8 @@ def build_release_email(payload: dict[str, Any], recipients: list[str]) -> Outgo
         text="\n".join(text_lines),
         reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
         inline_images=frame["_inline_images"],
+        # A rehearsal reaches its own test list only -- see RELEASE_EMAIL_TEST_RECIPIENTS.
+        copy_exempt=bool(payload.get("test")),
     )
 
 
@@ -940,6 +948,8 @@ def build_client_invitation_email(payload: dict[str, Any], recipients: list[str]
         text="\n".join(text_lines),
         reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
         inline_images=frame["_inline_images"],
+        # Carries Approve/Reject links: copying anyone would let them act as the client.
+        copy_exempt=True,
     )
 
 
@@ -991,6 +1001,8 @@ def build_client_login_link_email(payload: dict[str, Any], recipients: list[str]
         text="\n".join(text_lines),
         reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
         inline_images=frame["_inline_images"],
+        # A one-time sign-in link: anyone copied could use it before the client does.
+        copy_exempt=True,
     )
 
 
@@ -2340,3 +2352,186 @@ def build_screenshot_notice_email(payload: dict[str, Any], recipients: list[str]
 
 
 BUILDERS[TYPE_SCREENSHOT_NOTICE] = build_screenshot_notice_email
+
+
+# ----------------------------------------------------------------------
+# Workflow 14 -- an administrator changed a member's Login / Add Task switch
+# ----------------------------------------------------------------------
+
+#: Each of the four emails, by (switch, allowed). The copy is fixed -- nothing
+#: in it is typed by a person -- and only says what the switch really does:
+#: Login stops every sign-in and ends the running timer (`MemberService`), and
+#: Add Task withdraws the single `tasks:create` permission and nothing else.
+#: No reason is quoted because none is recorded: the administrator is not asked
+#: for one, and inventing one would be worse than saying nothing.
+_ACCESS_EXCLUDED_STYLE = {
+    "label": "Excluded", "accent": "#BE123C", "chip_bg": "#FFF1F2", "chip_border": "#FECDD3",
+}
+_ACCESS_ALLOWED_STYLE = {
+    "label": "Allowed", "accent": "#047857", "chip_bg": "#ECFDF5", "chip_border": "#A7F3D0",
+}
+
+MEMBER_ACCESS_PRESENTATION: dict[tuple[str, bool], dict[str, str]] = {
+    ("login", False): {
+        **_ACCESS_EXCLUDED_STYLE,
+        "what": "Logging in",
+        "subject": "Monitra Access Update — You Have Been Excluded from Logging In",
+        "preheader": "An administrator has excluded your account from logging in to Monitra.",
+        "heading": "You have been excluded from logging in",
+        "lead": "An administrator has excluded your account from logging in to Monitra.",
+        "body": (
+            "You have been signed out of the Monitra desktop app and website. If a timer "
+            "was running, it was stopped and the time tracked up to that point has been "
+            "saved. You will not be able to sign in again until an administrator allows "
+            "your account. If you believe this is a mistake, or you need access to be "
+            "restored, please contact your administrator or HR."
+        ),
+        "cta": "",
+    },
+    ("login", True): {
+        **_ACCESS_ALLOWED_STYLE,
+        "what": "Logging in",
+        "subject": "Monitra Access Update — You Can Log In Again",
+        "preheader": "Good news — you have been allowed to log in to Monitra again.",
+        "heading": "You can log in to Monitra again",
+        "lead": (
+            "Good news — an administrator has allowed your account to log in to Monitra "
+            "again. The issue has been resolved."
+        ),
+        "body": (
+            "You can now sign in to the desktop app and the website as usual, and pick up "
+            "where you left off. If you still cannot sign in, please contact your "
+            "administrator or HR."
+        ),
+        "cta": "Log In to Monitra",
+    },
+    ("add_tasks", False): {
+        **_ACCESS_EXCLUDED_STYLE,
+        "what": "Adding tasks",
+        "subject": "Monitra Access Update — You Have Been Excluded from Adding Tasks",
+        "preheader": "An administrator has turned off adding tasks for your account.",
+        "heading": "You have been excluded from adding tasks",
+        "lead": "An administrator has excluded your account from adding tasks in Monitra.",
+        "body": (
+            "You can still sign in, track your time and use the rest of Monitra as before — "
+            "only creating new tasks is turned off, until an administrator allows it again. "
+            "If you need a task created in the meantime, please ask your administrator or "
+            "team leader. If you believe this is a mistake, please contact your "
+            "administrator or HR."
+        ),
+        "cta": "",
+    },
+    ("add_tasks", True): {
+        **_ACCESS_ALLOWED_STYLE,
+        "what": "Adding tasks",
+        "subject": "Monitra Access Update — You Can Add Tasks Again",
+        "preheader": "Good news — you have been allowed to add tasks in Monitra again.",
+        "heading": "You can add tasks again",
+        "lead": (
+            "Good news — an administrator has allowed your account to add tasks in Monitra "
+            "again. The issue has been resolved."
+        ),
+        "body": (
+            "You can now create new tasks from the desktop app and the website, exactly as "
+            "before. If adding a task still does not work, please contact your "
+            "administrator or HR."
+        ),
+        "cta": "",
+    },
+}
+
+
+def member_access_presentation(payload: dict[str, Any]) -> dict[str, str]:
+    """How one switch in one position is worded.
+
+    An unknown pair raises rather than falling back to neutral wording: the
+    payload is written by `queue_member_access_notification`, which only queues
+    the four pairs above, so anything else means the two have drifted apart and
+    a vague-but-wrong email is worse than a row that retries and is logged.
+    """
+    key = (str(payload.get("switch") or ""), bool(payload.get("allowed")))
+    presentation = MEMBER_ACCESS_PRESENTATION.get(key)
+    if presentation is None:
+        raise KeyError(f"No member access email is defined for {key!r}.")
+    return presentation
+
+
+def member_access_subject(payload: dict[str, Any]) -> str:
+    """"Monitra Access Update — You Have Been Excluded from Logging In".
+
+    No name and no administrator: it is the line shown on a lock screen.
+    """
+    return clean_subject(member_access_presentation(payload)["subject"])
+
+
+def build_member_access_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
+    """The Excluded / Allowed notice for Login or Add Task, to the member it concerns."""
+    presentation = member_access_presentation(payload)
+    subject = member_access_subject(payload)
+    greeting = _greeting(payload.get("name"))
+    _day, _clock, changed = _display_times(payload.get("changed_at"))
+
+    frame = _frame_context(
+        subject=subject,
+        preheader=presentation["preheader"],
+        footer_note=(
+            "You are receiving this because an administrator changed your access in "
+            "Monitra. It is sent once for each change."
+        ),
+    )
+
+    rows = detail_rows([
+        ("Access", presentation["what"]),
+        ("Status", presentation["label"]),
+        ("Changed", changed),
+    ])
+    # Only the "allowed" emails link anywhere, and only when MONITRA_APP_URL is a
+    # real https:// address: an excluded member has nothing to open, and a button
+    # to localhost is worse than none.
+    url = _app_url("/login") if presentation["cta"] else None
+    cta_block = _manual_cta(url, presentation["cta"])
+
+    html = render_page(
+        "member_access.html",
+        {
+            **frame,
+            "status_chip": _status_chip(presentation),
+            "heading": presentation["heading"],
+            "greeting": greeting,
+            "lead": presentation["lead"],
+            "body": presentation["body"],
+            "detail_rows": rows,
+            "cta_block": cta_block,
+        },
+    )
+
+    text_lines = [
+        presentation["heading"].upper(),
+        "",
+        greeting,
+        "",
+        presentation["lead"],
+        "",
+        presentation["body"],
+        "",
+        f"  Access   {presentation['what']}",
+        f"  Status   {presentation['label']}",
+        f"  Changed  {changed}",
+    ]
+    if url:
+        text_lines += ["", f"{presentation['cta']}: {url}"]
+    if (support := (settings.MONITRA_SUPPORT_EMAIL or "").strip()):
+        text_lines += ["", f"Need a hand? Write to {support}."]
+    text_lines += ["", "Monitra — Staff Management System", "Store Transform"]
+
+    return OutgoingEmail(
+        to=recipients,
+        subject=subject,
+        html=html,
+        text="\n".join(text_lines),
+        reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
+        inline_images=frame["_inline_images"],
+    )
+
+
+BUILDERS[TYPE_MEMBER_ACCESS] = build_member_access_email

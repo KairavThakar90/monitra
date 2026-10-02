@@ -32,7 +32,7 @@ def list_time_tracking(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return TimeTrackingService.list_daily(
         db, current_user, range, date, start_date, end_date, employee_id, search, page, limit
@@ -61,7 +61,7 @@ def time_tracking_detail(
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return TimeTrackingService.detail(
         db, current_user, employee_id, range, date, start_date, end_date

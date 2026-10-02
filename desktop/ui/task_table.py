@@ -2578,7 +2578,8 @@ class TaskSection(QWidget):
 
         self._run_task_mutation(
             lambda: self.task_service.create_task(
-                project_id, task_name, assignee_id, client_op=client_op
+                project_id, task_name, assignee_id, client_op=client_op,
+                description=data["description"],
             ),
             success_message="Task created successfully.",
             key=f"create-task:{project_id}:{task_name}",
@@ -2685,7 +2686,8 @@ class TaskSection(QWidget):
             task_id = row.task.get("id")
             self._run_task_mutation(
                 lambda: self.task_service.update_task(
-                    row.project_id, task_id, data["task_name"], data["status_id"]
+                    row.project_id, task_id, data["task_name"], data["status_id"],
+                    description=data["description"],
                 ),
                 success_message="Task updated successfully.",
                 key=f"update-task:{task_id}",

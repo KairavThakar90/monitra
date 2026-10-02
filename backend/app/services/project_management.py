@@ -50,8 +50,8 @@ _PROJECT_FIELD_LABELS = {
     "deadline": "deadline", "billing_type": "billing", "fixed_hours": "hour budget",
 }
 _TASK_FIELD_LABELS = {
-    "name": "name", "status_id": "status", "assignee_id": "assignee",
-    "estimated_hours": "estimated hours",
+    "name": "name", "description": "description", "status_id": "status",
+    "assignee_id": "assignee", "estimated_hours": "estimated hours",
 }
 
 # Stand-in bounds for "every entry there has ever been" -- the same sentinel
@@ -258,7 +258,7 @@ class ProjectManagementService:
         # one of the people holding the task.
         if assignees is None:
             assignees = [ProjectManagementService._person(assignee)] if assignee else []
-        return {"id": task.id, "project_id": task.project_id, "name": task.task_name, "assignee_id": task.assignee_id, "assignee": ProjectManagementService._person(assignee), "assignees": assignees, "status": task_status, "estimated_hours": float(task.estimated_hours) if task.estimated_hours is not None else None, "created_at": task.created_at, "updated_at": task.updated_at}
+        return {"id": task.id, "project_id": task.project_id, "name": task.task_name, "description": task.description, "assignee_id": task.assignee_id, "assignee": ProjectManagementService._person(assignee), "assignees": assignees, "status": task_status, "estimated_hours": float(task.estimated_hours) if task.estimated_hours is not None else None, "created_at": task.created_at, "updated_at": task.updated_at}
 
     @staticmethod
     def _detail_payload(db: Session, project: Project, user: User):
@@ -722,7 +722,7 @@ class ProjectManagementService:
         # legacy route has always done.
         if assignee is None and is_task_scoped(user):
             assignee = user
-        task = Task(organization_id=user.organization_id, project_id=project.id, task_name=payload.name, assignee_id=assignee.id if assignee else None, status_id=task_status.id, status=ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task"), created_by=user.id, client_op=payload.client_op, estimated_hours=payload.estimated_hours, wfpm_task_id=wfpm_task_id)
+        task = Task(organization_id=user.organization_id, project_id=project.id, task_name=payload.name, description=payload.description, assignee_id=assignee.id if assignee else None, status_id=task_status.id, status=ProjectManagementService._legacy_status(task_status, TASK_STATUS_NAMES, "task"), created_by=user.id, client_op=payload.client_op, estimated_hours=payload.estimated_hours, wfpm_task_id=wfpm_task_id)
         db.add(task)
         try:
             db.flush()
@@ -785,6 +785,7 @@ class ProjectManagementService:
             db.add(TaskAssignee(task_id=task.id, user_id=assignee.id, assigned_by=user.id))
             task.assignee_id = assignee.id
         if "name" in values: task.task_name = values["name"]
+        if "description" in values: task.description = values["description"]
         if "estimated_hours" in values: task.estimated_hours = values["estimated_hours"]
         db.commit()
         db.refresh(task)

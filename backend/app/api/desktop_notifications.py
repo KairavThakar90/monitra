@@ -36,7 +36,7 @@ _FORBIDDEN = {403: {"description": "The caller is not an administrator."}}
         "`version` rises on every change."
     ),
 )
-def schedule(_current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def schedule(_current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return DesktopNotificationService.get_schedule(db)
 
 
@@ -46,7 +46,7 @@ def schedule(_current_user: User = Depends(get_current_user), db: Session = Depe
     summary="Every desktop notification, for the administrator. Administrators only.",
     responses=_FORBIDDEN,
 )
-def list_notifications(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_notifications(current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return DesktopNotificationService.get_admin(db, current_user)
 
 
@@ -64,7 +64,7 @@ def update_builtin(
     key: str,
     payload: BuiltinNotificationUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return DesktopNotificationService.update_builtin(db, current_user, key, payload)
 
@@ -79,7 +79,7 @@ def update_builtin(
 def create_custom(
     payload: CustomNotificationCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return DesktopNotificationService.create_custom(db, current_user, payload)
 
@@ -94,7 +94,7 @@ def update_custom(
     notification_id: str,
     payload: CustomNotificationUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return DesktopNotificationService.update_custom(db, current_user, notification_id, payload)
 
@@ -108,6 +108,6 @@ def update_custom(
 def delete_custom(
     notification_id: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return DesktopNotificationService.delete_custom(db, current_user, notification_id)

@@ -30,7 +30,7 @@ class RecordingTasks:
     def __init__(self):
         self.updated = []
 
-    def update_task(self, project_id, task_id, task_name, status_id, assignee_id=None):
+    def update_task(self, project_id, task_id, task_name, status_id, assignee_id=None, description=None):
         self.updated.append(task_id)
         return {"id": task_id, "name": task_name}
 

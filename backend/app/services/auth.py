@@ -18,6 +18,7 @@ from app.models.sso_handoff_token import SsoHandoffToken
 from app.core.login_access import login_disabled, refuse_if_login_disabled
 from app.core.permissions import ROLE_PERMISSIONS, resolve_role_alias
 from fastapi import HTTPException, status
+from starlette.concurrency import run_in_threadpool
 from app.services.external_auth_service import ExternalAuthService
 from app.services.email import deliver_in_background, queue_welcome_email
 from app.models.activity_log import ActivityLogAction, ActivityLogModule
@@ -354,6 +355,17 @@ class AuthService:
             logger.error("AUTH_LOGIN_FAILED: Unexpected error during login exchange for %s: %s", normalized_username, str(e))
             raise HTTPException(status_code=500, detail=f"Authentication exchange failed: {str(e)}")
 
+        # Everything from here is synchronous SQLAlchemy -- a dozen or so queries,
+        # each a round trip to the database. Run on the event loop they stall every
+        # other request on this worker, and a morning sign-in burst becomes an outage.
+        return await run_in_threadpool(
+            AuthService._complete_login_exchange, db, wp_user, background_tasks,
+        )
+
+    @staticmethod
+    def _complete_login_exchange(db: Session, wp_user: dict, background_tasks=None) -> TokenPair:
+        """Provision or update the local account for an authenticated identity and
+        issue its session. The database half of `login_exchange`."""
         hubstaff_user_id = wp_user.get("hubstaff_user_id")
         hubstaff_user_id = str(hubstaff_user_id).strip() if hubstaff_user_id is not None else None
         email = str(wp_user.get("email", "")).strip().lower()
@@ -726,10 +738,21 @@ class AuthService:
         the provider and a provider token is never matched against local rows.
         """
         if (provider_token or "").strip().startswith(HANDOFF_TOKEN_PREFIX):
-            return AuthService._redeem_handoff_token(db, provider_token.strip())
+            return await run_in_threadpool(
+                AuthService._redeem_handoff_token, db, provider_token.strip(),
+            )
 
         profile = await ExternalAuthService.authenticate_token(provider_token)
 
+        # The rest is synchronous database work; see `login_exchange`.
+        return await run_in_threadpool(
+            AuthService._complete_sso_exchange, db, profile, background_tasks,
+        )
+
+    @staticmethod
+    def _complete_sso_exchange(db: Session, profile: dict, background_tasks=None) -> TokenPair:
+        """Match or provision the local account behind a verified provider profile
+        and issue its session. The database half of `sso_exchange`."""
         email = str(profile.get("email", "")).strip().lower()
         name = (
             str(profile.get("display_name") or "").strip()

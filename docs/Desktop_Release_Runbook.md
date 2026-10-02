@@ -95,67 +95,101 @@ Only when the pilot signs off does the draft get published.
 ## 3. Publishing and announcing
 
 Publishing is **two** acts, and both are deliberate: the GitHub release
-carries the bytes, the `desktop_releases` row is what makes clients and the
+carries the bytes, the `desktop_releases` rows are what make clients and the
 website offer them. CI has already registered a **draft** row per artifact
-(`desktop/tools/register_release.py`), with each artifact's own SHA-256, size
-and derived download URL.
+(`desktop/tools/register_release.py`), with each artifact's own SHA-256, size,
+derived download URL and — read back from the finished file — whether its code
+signature was verified.
+
+The release job refuses to start publishing at all unless the whole set is
+sound (`desktop/tools/verify_release_artifacts.py`): all three installers
+present once and named for this version, each matching its checksum, the tag
+agreeing with `version.py`, and — when the repository variable
+`REQUIRE_SIGNED_RELEASE` is `true` — every one validly signed.
 
 1. **Publish the draft GitHub release.** Until this happens the asset URLs in
    the draft rows are not reachable, so do this first.
 
-   > **The release must live in a public repository.** This source repository
-   > is private, and a private repository's release assets are *never*
-   > publicly downloadable — assets inherit the repository's visibility and
-   > there is no per-asset public switch. Publishing the release does not
-   > change that. The failure is easy to misread as a browser bug: the only
-   > thing that varies is whether that browser carries a GitHub session with
-   > repository access, so the installer downloads fine in the maintainer's
-   > signed-in browser and 404s in every other one.
-   >
-   > The release job therefore publishes to the repository named by the
-   > `RELEASES_REPO` variable — a public, source-free repository holding
-   > installers only — using `RELEASES_REPO_TOKEN`. Set both, or downloads
-   > stay private to collaborators.
-2. **Publish each release row.** For every artifact registered by CI:
+   > **Release assets are public only if their repository is.** GitHub has no
+   > per-asset public switch: a private repository's release assets answer `404`
+   > to everyone without access, and the installed client carries no GitHub
+   > credential (and must never be given one). The source repository is
+   > **currently public**, which is why downloads work today. To keep the source
+   > private, publish installers to a separate public, source-free repository
+   > through `RELEASES_REPO` / `RELEASES_REPO_TOKEN`. The full plan, order of
+   > operations and rollback are in
+   > [Desktop_Artifact_Hosting.md](Desktop_Artifact_Hosting.md) §5 — **do not
+   > change the source repository's visibility before it is done.**
+2. **Ask whether the version is ready**, as a signed-in administrator:
 
    ```
-   POST /desktop/releases/{id}/publish
+   GET /desktop/releases/versions/{version}/readiness
    ```
 
-   Requires the `manage_desktop_releases` permission. `GET /desktop/releases`
-   lists the drafts with their ids. From the moment a row is published, the
-   update check offers it to matching clients and the website's download page
-   serves it — so publish the rows only after the pilot has signed off.
+   It lists *every* problem at once — a platform with no row, a row whose URL is
+   not on an approved host or whose file name is not this version's installer, a
+   missing size or checksum, a row registered as unsigned — so a release is fixed
+   in one pass rather than one refusal at a time. `ready: true` is the same
+   judgement publishing applies.
+3. **Publish the whole version together:**
 
-   Publish **every** artifact for the version, not just one. A version with
-   only the Windows row published leaves every Mac user's download button
-   saying "Not available yet".
-3. **Nothing else needs changing.** The public download page
+   ```
+   POST /desktop/releases/versions/{version}/publish
+   ```
+
+   All or nothing: Windows and both macOS architectures go live in one commit, or
+   none does. (Publishing a single row, `POST /desktop/releases/{id}/publish`, is
+   still possible and applies the same gate — it is refused while the rest of the
+   version is missing or invalid.) From the moment a row is published, the update
+   check offers it to matching clients and the website's download page serves it
+   — so publish only after the pilot has signed off.
+
+   **Who can:** a signed-in administrator holding `manage_desktop_releases`. The
+   CI release credential holds the same permission so it can *register* drafts,
+   but publishing, withdrawing and changing a row's status are refused for it
+   outright — a leaked pipeline secret costs a stray draft, never a release.
+4. **The announcement email follows by itself — and only when you have turned it
+   on.** `RELEASE_EMAIL_ENABLED` is **off by default**. When on, the email is
+   queued once **every required artifact is published** (not at the first), once
+   per user per version (a unique constraint in the outbox), to active users —
+   the release pipeline's own account and invited external clients are excluded.
+   Before the first real send, rehearse it:
+
+   ```
+   RELEASE_EMAIL_TEST_RECIPIENTS=you@example.com
+   ```
+
+   While that is set the announcement goes **only** to those addresses, tagged
+   `[TEST]`, and to no user — and uses its own dedupe keys, so rehearsing never
+   consumes the real announcement. Remove it to go live. Delivery is paced by the
+   outbox sweeper (20 per 5-minute sweep by default), so a large audience takes
+   a while; raise `EMAIL_DISPATCH_BATCH_SIZE` if that matters.
+5. **Nothing else needs changing.** The public download page
    (`/download` in the frontend) asks the backend for "the latest published
-   release per platform" and renders whatever comes back. There is no
-   frontend edit, redeploy, or URL to update when a version ships. The three
+   release per platform" and renders whatever comes back. The three
    `DESKTOP_LATEST_VERSION` / `DESKTOP_DOWNLOAD_URL` /
    `DESKTOP_RELEASE_NOTES_URL` settings still exist, but only as a **fallback**
    for a deployment that has registered no releases at all; as soon as one
    published row exists for a platform, the table wins and they are ignored.
    Do not use them to announce a release that has rows.
-4. **Announce it**, naming three distinct downloads — Windows, macOS Apple
+6. **Announce it**, naming three distinct downloads — Windows, macOS Apple
    Silicon, macOS Intel. macOS ships one build per architecture, deliberately
    (see `BUILD.md` §6), so an announcement that says "the Mac build" will
    generate support traffic.
-5. Until code signing is in place, say plainly in the announcement that the
-   installer is unsigned and what warning to expect. Training staff to click
-   past a security warning without explanation is its own risk.
+7. Until code signing is in place, say plainly in the announcement that the
+   installer is unsigned and what warning to expect. **An unsigned installer is
+   also refused by the in-app updater in production** — people on it must
+   download the new version by hand (the update dialog offers a "Download
+   manually" button when an automatic install is refused or fails).
 
 ### Never publish a row with a placeholder URL
 
-A published row is what the download button and the auto-updater both read. A
-row whose `download_url` does not point at the real artifact turns the public
-download page into a broken download, and there is no client-side check that
-will save you — the desktop verifies the SHA-256 it was given, so a row that
-is internally consistent but points somewhere fake still fails at the worst
-moment. Register rows with `register_release.py`, which derives the URL and
-computes the digest from the actual file, rather than by hand.
+A published row is what the download button and the auto-updater both read. The
+backend now refuses to register or publish a row whose URL is not on an approved
+host, is not https, or does not name the installer this version's build scripts
+produce — but it cannot tell that a well-formed URL points at the *right file*.
+Register rows with `register_release.py`, which derives the URL and computes the
+digest from the actual file, rather than by hand.
 
 ## 4. Retention policy
 
@@ -169,16 +203,24 @@ permanent.
 
 ## 5. Withdrawing a bad release
 
-1. **Stop the in-app prompt first.** Clear `DESKTOP_LATEST_VERSION` on the
-   backend (or set it to the previous good version). The update notice stops
-   recommending the bad build immediately, on every client, without shipping
-   anything. This is the fastest lever available and it is why the endpoint
-   reads configuration rather than the newest tag.
-2. **Un-publish or clearly mark the GitHub release** so nobody downloads it.
+**Use the rows (§6); the configuration lever below only works for a deployment
+that has registered none.** Once any published row exists for a platform the
+table wins and `DESKTOP_LATEST_VERSION` is ignored, so clearing it does *not*
+stop the in-app prompt — an earlier version of this section said it did, and was
+wrong for every deployment that has used the release table.
+
+1. **Stop the offer first:** `POST /desktop/releases/{id}/rollback` for **every**
+   artifact of the bad version (§6). Clients stop being offered it on their next
+   check.
+2. **Un-publish or clearly mark the GitHub release** so nobody downloads it by
+   hand.
 3. **Tell affected users to install the previous version.** Both installers
    accept installing an older version over a newer one — there is no downgrade
    guard — so this works with no new code. On macOS, drag the older `Monitra.app`
-   over the current one.
+   over the current one. **The updater cannot do this for them:** it only ever
+   moves forward (an equal or older version is never an update, on the server or
+   the client), so a client already on the bad build is not told to go back.
+   Fix forward with a new patch version, which *is* an update.
 4. **User data is safe in both directions.** `~/.monitra` (the local database,
    the durable sync queue, the logs) lives outside the installation directory
    and is untouched by an install, an upgrade or a downgrade.
@@ -188,6 +230,9 @@ permanent.
 6. **Fix forward.** Cut a new patch version. Never re-publish a different build
    under a version number that has already shipped — a version must identify
    exactly one build, or every support report becomes untrustworthy.
+7. **An announcement email cannot be unsent.** That is the strongest reason the
+   email is off by default, rehearsed in test mode first, and sent only when the
+   whole version is live.
 
 ## 6. Withdrawing a release, in the table
 
@@ -208,33 +253,42 @@ or a Windows user stops being offered it while a Mac user is still handed it.
 
 Honest list, so nobody assumes otherwise:
 
-- **Code signing.** Nothing is signed. **Both** CI jobs are now wired for it and
-  need only the credentials — the Windows job signs `Monitra.exe` and the
-  installer with `signtool` (RFC 3161 timestamped) before the checksums are
-  computed, and the macOS job imports a certificate and passes an identity and
-  notary profile to `build_macos.sh`. Each step is gated on its secret being
-  present, so with the secrets absent the build produces unsigned artifacts and
-  says so. Approved as a production-release requirement, and it is the stated
-  prerequisite in `docs/Desktop_Update_Distribution_Decisions.md` §2 for
-  publishing a release to real users. Registering drafts and piloting them is
-  fine meanwhile.
-- **Auto-update (Phase 1).** **Built** (2026-09-08) as the approved *prompted*
-  update — see `background_services/update/` and the decision record. It is not
-  yet safe to switch on for real users, for the signing reason above, and no
-  build has yet been installed, superseded and updated on a real machine.
+- **Code signing.** Nothing is signed yet. Both CI jobs are wired for it and
+  need only the credentials: the Windows job signs `Monitra.exe` **before** the
+  installer is built (so the installer contains a signed program), then signs the
+  installer, then reads the signature back with the same verifier the desktop
+  uses; the macOS job imports a certificate and passes an identity and notary
+  profile to `build_macos.sh`, then verifies. Each step is gated on a step
+  *output* decided once from the secrets. (The earlier `if: env.X != ''`
+  conditions could never be true and left signing silently skipped even with the
+  secrets set; `tests/test_release_pipeline.py` now fails on that pattern.)
+  **The desktop updater refuses an unsigned installer in a production build**, so
+  until a certificate exists no auto-update can complete — by design. Approved as
+  a production-release requirement; see `Desktop_Update_Distribution_Decisions.md`
+  §2 and `Desktop_Artifact_Hosting.md` §7.
+- **Auto-update.** Built, hardened and tested (see `desktop/ARCHITECTURE.md`,
+  "Update notice and installer"), but **not yet safe to switch on for real
+  users**: no certificate, the publisher is not yet pinned, the macOS path has
+  never run on a real Mac, and a first real end-to-end update on a signed build
+  has not happened.
+- **A first real end-to-end update on real hardware.** The Windows helper has been
+  run for real against stand-in executables (and a defect that would have left a
+  user with Monitra closed and no update was found and fixed that way) but not
+  against a real signed Inno Setup upgrade of a real installation.
 - **macOS on real hardware.** Every macOS build so far has been produced and
-  smoke-tested in CI only, which now also covers the macOS *update* path.
-  The first real-world macOS install will also be the first real test — the
-  pilot ring matters more, not less, for that platform.
+  smoke-tested in CI only, which also covers the macOS *update* path.
+- **Keeping the source repository private** — the plan exists
+  ([Desktop_Artifact_Hosting.md](Desktop_Artifact_Hosting.md) §5); none of it has
+  been applied.
 - **CI secrets for release registration.** `MONITRA_API_BASE_URL` plus
   `MONITRA_RELEASE_CREDENTIAL`. Without these the release job skips
   registration and says so; the artifacts and the GitHub release are
   unaffected, and the rows can be registered by re-running that step later.
   `MONITRA_RELEASE_TOKEN` is still honoured for registering a build by hand
   from an existing session, and is unset in CI.
-
 - **The release account still has to be provisioned.** Nothing creates it
   automatically. See §8.
+- **Rollback cannot downgrade a client already on the bad build** (§5.3).
 
 ## 8. The release credential
 

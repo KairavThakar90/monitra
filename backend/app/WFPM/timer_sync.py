@@ -40,7 +40,9 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.background import run_blocking
 from app.core.config import settings
+from app.core.database import end_transaction
 from app.models.time_entry import TimeEntry
 from app.models.user import User
 from app.WFPM import client as wfpm_client
@@ -316,6 +318,9 @@ class WfpmTimerSync:
                 raise WfpmDeliveryError("The time entry no longer exists", retryable=False)
             payload = build_payload(row, entry, db.get(User, row.user_id))
             idempotency_key = payload["event_id"]
+            # The payload is complete; the POST below waits on WFPM for up to
+            # WFPM_REQUEST_TIMEOUT_SECONDS and needs no connection while it does.
+            end_transaction(db)
             response_status = wfpm_client.post_event(
                 url,
                 token=(settings.WFPM_API_TOKEN or "").strip(),
@@ -409,13 +414,21 @@ class WfpmTimerSync:
         return result
 
 
-def deliver_in_background(event_id: int) -> None:
+async def deliver_in_background(event_id: int) -> None:
+    """What `BackgroundTasks` runs after the timer-start or timer-stop response.
+
+    The delivery itself blocks on WFPM, so it runs under the bounded background
+    limiter (`app.core.background`) instead of taking a request thread.
+    """
+    await run_blocking(_deliver_blocking, event_id)
+
+
+def _deliver_blocking(event_id: int) -> None:
     """Deliver one event on its own database session.
 
-    This is what `BackgroundTasks` runs after the timer-start or timer-stop
-    response has been written. It opens its own session because the request's is closed by
-    then, and it swallows everything: the row it was working on is still
-    queued for the sweeper either way.
+    It opens its own session because the request's is closed by then, and it
+    swallows everything: the row it was working on is still queued for the
+    sweeper either way.
     """
     from app.core.database import get_session_local
 

@@ -15,7 +15,7 @@ def add_task_assignee(
     task_id: int,
     payload: TaskAssigneeCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return TaskAssigneeService.add_assignee(db, project_id, task_id, payload.user_id, current_user)
 
@@ -24,7 +24,7 @@ def list_task_assignees(
     project_id: int,
     task_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return TaskAssigneeService.list_assignees(db, project_id, task_id, current_user)
 
@@ -34,7 +34,7 @@ def remove_task_assignee(
     task_id: int,
     user_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     TaskAssigneeService.remove_assignee(db, project_id, task_id, user_id, current_user)
     return

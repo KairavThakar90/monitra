@@ -7,6 +7,33 @@ logger = logging.getLogger(__name__)
 class Settings(BaseSettings):
     DATABASE_URL_DEV: str = ""
     DATABASE_URL: str = ""
+
+    # Connection pool, per process. Every Uvicorn worker builds its own engine, so the
+    # most connections one deployment can open is
+    #     workers x (DB_POOL_SIZE + DB_MAX_OVERFLOW).
+    # The scheduled jobs (deploy/backend/scheduled-jobs) are HTTP calls into the same
+    # workers, so they add nothing to that sum. The defaults give 15 per worker -- the
+    # same ceiling as before -- but wait 10s, not 30s, for a free connection: a busy
+    # server should answer 503 quickly rather than hold a request until nginx gives up.
+    # A serverless deployment multiplies this by its instance count, so it should set
+    # smaller values in its own environment.
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 5
+    DB_POOL_TIMEOUT_SECONDS: float = 10.0
+    DB_POOL_RECYCLE_SECONDS: int = 1800
+    # A connection checked out longer than this is logged when it is returned, with the
+    # request path that held it. 0 turns the log off. Normal requests hold one for
+    # milliseconds; the seconds-long holds are exactly the leaks being hunted.
+    DB_CHECKOUT_WARN_SECONDS: float = 5.0
+    # How many background deliveries (WFPM, email, budget alerts) may run on threads
+    # at once, per worker. Each waits on a remote server for up to its timeout; the
+    # cap keeps them from taking the threads the API's own requests need. See
+    # app/core/background.py.
+    BACKGROUND_DELIVERY_CONCURRENCY: int = 8
+    # PostgreSQL's own backstop for a session that opens a transaction and goes quiet:
+    # the server ends the session after this many milliseconds. 0 leaves it off. It is
+    # a safety net, not the fix -- see docs/DB_CONNECTION_LIFECYCLE.md before enabling.
+    DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: int = 0
     EXTERNAL_AUTH_BASE_URL: str = "https://nothing.peakworkos.com"
     EXTERNAL_AUTH_LOGIN_PATH: str = "/wp-json/st-performance/v1/auth/hubstaff/login"
     # Single sign-on: the provider signs its own JWT for the browser handoff, so the
@@ -47,6 +74,49 @@ class Settings(BaseSettings):
     DESKTOP_LATEST_VERSION: str = ""
     DESKTOP_DOWNLOAD_URL: str = ""
     DESKTOP_RELEASE_NOTES_URL: str = ""
+
+    # Where a release artifact may be hosted. A release row's download_url is
+    # what every installed client fetches and then RUNS, so who may be named
+    # there is a security decision, not a formatting one. Enforced when a row is
+    # registered, again when it is published, and again when the update check
+    # would serve it -- so a row written before this policy existed, or by
+    # hand, still cannot reach a client.
+    #
+    # HOSTS: comma-separated exact hostnames. https only, no credentials in the
+    # URL, no non-default port. PREFIXES (optional, recommended in production):
+    # comma-separated https URL prefixes the URL must additionally start with --
+    # e.g. https://github.com/<owner>/<releases-repo>/releases/download/ pins
+    # downloads to one repository, which is what keeps a private source
+    # repository private while installers live in a public installer-only one.
+    DESKTOP_DOWNLOAD_ALLOWED_HOSTS: str = "github.com"
+    DESKTOP_DOWNLOAD_URL_PREFIXES: str = ""
+
+    # The artifacts a version must have, registered and valid, before ANY of its
+    # rows may be published -- and before the release announcement is sent.
+    # `platform` or `platform:architecture`, comma-separated. Windows ships one
+    # build for every machine; macOS ships one per architecture.
+    DESKTOP_REQUIRED_ARTIFACTS: str = "win32,darwin:arm64,darwin:x86_64"
+
+    # Refuse to publish a row whose registration says its artifact is unsigned.
+    # The registering pipeline reports this after verifying the signature itself;
+    # it is a process gate that stops an operator publishing an unsigned build by
+    # mistake, NOT the security boundary -- the desktop verifies the real
+    # signature before it runs anything. Set to false only for a pilot ring.
+    DESKTOP_REQUIRE_SIGNED_RELEASES: bool = True
+
+    # The oldest desktop client that is offered an update it can INSTALL itself.
+    # A client below this is told an update exists and given the link, and
+    # nothing else (no checksum, so its updater announces and stops) -- the
+    # manual path every older deployment already took.
+    #
+    # Why: 1.3.1 and earlier ship an updater whose Windows helper waits on the
+    # old process with `tasklist | find` under DETACHED_PROCESS. With no console
+    # that wait does not reliably complete: measured from a windowless parent, a
+    # process still alive at the helper's first check left the installer unstarted
+    # long after it exited (it works only if the app has already gone by then).
+    # A fleet on that updater must not be sent through it. Fixed in the first release that carries the hardened updater;
+    # set this to that version. Empty disables the floor.
+    DESKTOP_AUTO_UPDATE_MIN_CLIENT_VERSION: str = "1.3.2"
 
     # ── Desktop → web single sign-on handoff ──────────────────────────────
     # How long the desktop's "Profile" handoff token stays valid. It only has
@@ -156,6 +226,26 @@ class Settings(BaseSettings):
     #: Shown as "need help? write to ..." in both templates. Omitted when empty.
     MONITRA_SUPPORT_EMAIL: str = ""
 
+    # ── Standing CC ───────────────────────────────────────────────────────
+    #: Comma-separated addresses copied (visibly, in `Cc`) on every email
+    #: Monitra sends, except the few that carry a bearer secret or are a
+    #: rehearsal -- see `OutgoingEmail.copy_exempt`. Applied once, where the
+    #: message is built (`provider.build_mime_message`), so a workflow cannot
+    #: forget it and a new one gets it for free. An address that is already a
+    #: recipient is not copied twice; an invalid one is skipped with a warning
+    #: rather than failing every email. Set to an empty value to switch off.
+    EMAIL_CC_ADDRESSES: str = (
+        "bharat@storetransform.com,projectmanager663@gmail.com,"
+        "hr@storetransform.com,piyush@storetransform.com"
+    )
+
+    # ── Member access emails ──────────────────────────────────────────────
+    #: Whether an administrator moving a member's Login or Add Task switch
+    #: emails that member. A runtime kill switch only: a switch that did not
+    #: move is never queued, and a retry of one that did cannot send twice --
+    #: both are properties of the outbox key, not of this flag.
+    ACCESS_CHANGE_EMAIL_ENABLED: bool = True
+
     # ── Client invitations ────────────────────────────────────────────────
     #: This backend's own publicly reachable base URL. The invitation email's
     #: Approve/Reject buttons are direct backend GET links (not frontend
@@ -171,7 +261,17 @@ class Settings(BaseSettings):
     #: of the same version sends nothing. Turn this off to publish quietly (a
     #: pilot, a re-publish after a withdrawal); as with the welcome email, the
     #: once-per-user guarantee does not depend on this flag.
-    RELEASE_EMAIL_ENABLED: bool = True
+    #
+    # OFF BY DEFAULT. Announcing a release mails every eligible user and cannot
+    # be unsent, so it is something a person turns on deliberately, after the
+    # release has been verified, rather than something a deployment does because
+    # nobody turned it off.
+    RELEASE_EMAIL_ENABLED: bool = False
+    #: Test mode. When non-empty (comma-separated addresses), a release
+    #: announcement goes to THESE addresses only, with "[TEST]" in the subject,
+    #: and to no user at all. Leave empty for the real fan-out. This is what
+    #: makes it possible to see the email arrive without mailing the company.
+    RELEASE_EMAIL_TEST_RECIPIENTS: str = ""
 
     # ── Weekly productivity report ────────────────────────────────────────
     #: Whether the Monday sweep queues anything at all. A runtime kill switch

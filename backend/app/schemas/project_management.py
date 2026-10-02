@@ -5,7 +5,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.core.validation import OptionalIdempotencyKey
+from app.core.validation import OptionalDescription, OptionalIdempotencyKey
 
 
 class BillingType(str, Enum):
@@ -147,6 +147,9 @@ class ProjectUpdate(BaseModel):
 
 class TaskCreate(BaseModel):
     name: str = Field(..., max_length=150)
+    #: Optional free text. Validated by the shared rule, so a blank one is
+    #: stored as no description rather than as whitespace.
+    description: OptionalDescription = None
     #: Optional. A task created by someone who is not an employee -- an admin
     #: or a leader -- starts unassigned and is given an owner later through
     #: the update endpoint, because only an active employee who is a member
@@ -200,6 +203,9 @@ class TaskCreate(BaseModel):
 
 class TaskUpdate(BaseModel):
     name: Optional[str] = Field(None, max_length=150)
+    #: Omitted leaves the description alone; sent as null or blank, it clears
+    #: it (the service applies `exclude_unset`).
+    description: OptionalDescription = None
     assignee_id: Optional[int] = Field(None, gt=0)
     status_id: Optional[int] = Field(None, gt=0)
     #: Sent explicitly as null, this *clears* the budget (the service applies
@@ -245,6 +251,9 @@ class TaskRead(BaseModel):
     id: int
     project_id: int
     name: str
+    #: `None` for a task that has none -- including every task created before
+    #: the field existed, whose text was never stored.
+    description: Optional[str] = None
     assignee_id: Optional[int]
     assignee: Optional[PersonRead]
     #: Everyone who holds the task, the primary assignee (`assignee`) first. A

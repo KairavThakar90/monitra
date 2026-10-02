@@ -1,6 +1,6 @@
 from typing import Optional
 
-from sqlalchemy import false, func, or_, select, text
+from sqlalchemy import case, false, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.models.user import User
@@ -51,6 +51,30 @@ class MemberRepository:
         total = db.scalar(select(func.count(User.id)).where(*filters)) or 0
         items = list(db.scalars(query.offset((page - 1) * limit).limit(limit)).all())
         return items, total
+
+    @staticmethod
+    def access_counts(db: Session, organization_id: int, member_ids: Optional[set[int]] = None) -> dict:
+        """How many *active* members are allowed to add tasks / to log in.
+
+        Counted in one query over the same rows the directory shows: the
+        organization, narrowed to `member_ids` when the caller only sees part of
+        it (a leader's team). "Active" is the directory's own definition -- the
+        Status column reads Active -- so a deactivated member, who cannot sign
+        in whatever their switch says, is not counted as someone who can. Only
+        an explicit False excludes, exactly as everywhere else: a row that
+        predates the columns counts as allowed.
+        """
+        filters = [User.organization_id == organization_id, User.status == "active", User.is_active.is_(True)]
+        if member_ids is not None:
+            filters.append(User.id.in_(member_ids) if member_ids else false())
+
+        def allowed(column):
+            return func.count(case((column.is_not(False), User.id)))
+
+        row = db.execute(
+            select(allowed(User.can_add_tasks), allowed(User.can_login), func.count(User.id)).where(*filters)
+        ).one()
+        return {"add_task_allowed": row[0], "login_allowed": row[1], "active_members": row[2]}
 
     @staticmethod
     def create(db: Session, organization_id: int, data: dict) -> User:

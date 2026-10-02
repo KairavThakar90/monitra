@@ -59,6 +59,6 @@ def member_activity_log(
         description="The IST calendar day to read, YYYY-MM-DD. Defaults to today in Asia/Kolkata.",
     ),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return MemberActivityLogService.build(db, current_user, member_id, day)

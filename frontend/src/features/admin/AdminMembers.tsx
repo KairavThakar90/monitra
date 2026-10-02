@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { V2Shell } from '../dashboard/v2/V2Shell';
 import { 
   useGetMembersQuery, 
+  useGetMemberAccessSummaryQuery,
   useCreateMemberMutation, 
   useUpdateMemberMutation, 
   useUpdateMemberAccessMutation,
@@ -22,7 +23,26 @@ import { DateRangeFilter, DEFAULT_RANGE, type DateRange } from '../dashboard/v2/
 import { AppIcon } from "../../components/AppIcon";
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
 
+/**
+ * How often the Add Task / Login headcounts are re-read while the page is in
+ * view. The counts also refresh at once after any change made here, when the
+ * tab regains focus and when it is opened; polling is what carries a change
+ * another administrator made. It pauses while the tab is in the background.
+ */
+const ACCESS_SUMMARY_POLL_MS = 15_000;
+
 const GRADIENT_CYAN_PURPLE = 'bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[#8b5cf6]';
+
+/** "(20)" beside a column title: how many active members hold that permission. */
+const HeaderCount: React.FC<{ value: number | undefined; meaning: string }> = ({ value, meaning }) =>
+  typeof value === 'number' ? (
+    <span
+      className="ml-1.5 tabular-nums text-slate-700"
+      title={`${value} active ${value === 1 ? 'member is' : 'members are'} ${meaning}`}
+    >
+      ({value})
+    </span>
+  ) : null;
 
 /**
  * Badge tone per role. A role with no entry falls back to slate rather than
@@ -444,6 +464,16 @@ export const AdminMembers: React.FC = () => {
     role: filterRole,
     status: 'All',
     search: searchTerm,
+  });
+
+  // The headcounts beside Add Task and Login. Deliberately not derived from
+  // `data` above: that is one page, filtered by search and role, and these
+  // numbers must not move when the table is narrowed. An error or a first load
+  // shows no number at all rather than a made-up zero.
+  const { data: accessSummary } = useGetMemberAccessSummaryQuery(undefined, {
+    pollingInterval: ACCESS_SUMMARY_POLL_MS,
+    skipPollingIfUnfocused: true,
+    refetchOnMountOrArgChange: true,
   });
 
   // Only block on the very first load. Once rows are on screen a refetch runs
@@ -949,8 +979,12 @@ export const AdminMembers: React.FC = () => {
                   <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Designation</th>
                   <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Date of Joining</th>
                   <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Date of Birth</th>
-                  <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Add Task</th>
-                  <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Login</th>
+                  <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">
+                    Add Task<HeaderCount value={accessSummary?.add_task_allowed} meaning="allowed to add tasks" />
+                  </th>
+                  <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">
+                    Login<HeaderCount value={accessSummary?.login_allowed} meaning="allowed to log in" />
+                  </th>
                   {canManageMembers && (
                     <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px] text-right">Action</th>
                   )}

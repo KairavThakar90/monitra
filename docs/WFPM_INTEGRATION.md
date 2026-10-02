@@ -384,6 +384,7 @@ Task (routes 6–11 and 13):
   "wfpm_task_id": "900",
   "project_id": 2467,
   "name": "Design the homepage",
+  "description": null,
   "assignee_id": 101,
   "assignee": { "id": 101, "name": "…", "email": "…", "role": "employee" },
   "assignees": [ { "id": 101, "name": "…", "email": "…", "role": "employee" } ],
@@ -395,6 +396,9 @@ Task (routes 6–11 and 13):
 ```
 
 `id` and `project_id` are Monitra's own ids, returned for reference.
+`description` is the task's free text, or `null` when it has none. It is
+additive: Monitra's own Add Task and Edit Task screens write it, WFPM neither
+sets nor needs to send it, and a consumer that ignores it is unaffected.
 `assignees` lists everyone holding the task, **in order, primary first**; it is
 additive, so a consumer that only reads `assignee` is unaffected.
 `assignee_id` and `assignee` are always the **first** (primary) assignee, and

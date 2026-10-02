@@ -32,7 +32,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 async def login(
     payload: LoginRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     try:
         return await AuthService.login_exchange(
@@ -65,7 +65,7 @@ async def login(
 async def sso_token_login(
     payload: SsoTokenRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     try:
         return await AuthService.sso_exchange(
@@ -94,7 +94,7 @@ async def sso_token_login(
 )
 def sso_handoff(
     current_user: User = Depends(forbid_service_principal),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     token, expires_at = AuthService.issue_handoff_token(db, current_user)
     return SsoHandoffResponse(token=token, expires_at=expires_at)
@@ -115,7 +115,7 @@ def sso_handoff(
         401: {"description": "Session is expired, revoked, unknown, or its user is inactive"},
     },
 )
-def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
+def refresh(payload: RefreshRequest, db: Session = Depends(get_db, scope="function")):
     return AuthService.refresh_session(db, payload.refresh_token)
 
 
@@ -129,7 +129,7 @@ def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
         "never gets stuck retrying."
     ),
 )
-def logout(payload: LogoutRequest, db: Session = Depends(get_db)):
+def logout(payload: LogoutRequest, db: Session = Depends(get_db, scope="function")):
     AuthService.revoke_session(db, payload.refresh_token)
     return Response(status_code=204)
 
@@ -154,7 +154,7 @@ def get_me(current_user: User = Depends(get_current_user)):
 def request_client_login_link(
     payload: ClientLoginLinkRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     AuthService.request_client_login_link(db, payload.email, background_tasks=background_tasks)
     return Response(status_code=204)
@@ -174,7 +174,7 @@ def request_client_login_link(
     ),
     responses={404: {"description": "No active client account matches this email"}},
 )
-def client_direct_login(payload: ClientLoginLinkRequest, db: Session = Depends(get_db)):
+def client_direct_login(payload: ClientLoginLinkRequest, db: Session = Depends(get_db, scope="function")):
     return AuthService.client_direct_login(db, payload.email)
 
 
@@ -193,7 +193,7 @@ def client_direct_login(payload: ClientLoginLinkRequest, db: Session = Depends(g
         "(`app/services/service_credential.py`)."
     ),
 )
-def dev_login(payload: DevLoginRequest, db: Session = Depends(get_db)):
+def dev_login(payload: DevLoginRequest, db: Session = Depends(get_db, scope="function")):
     if settings.ENV == "production":
         raise HTTPException(status_code=404)
     return AuthService.dev_login(db, payload.email, payload.password)

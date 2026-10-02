@@ -57,6 +57,7 @@ from typing import Any, Iterable, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.background import run_blocking
 from app.core.config import settings
 from app.models.project_budget_alert import (
     EVENT_EXHAUSTED, EVENT_REMAINING_10, EVENT_REMAINING_20, EVENT_REMAINING_50, EVENT_START,
@@ -403,14 +404,23 @@ class ProjectBudgetAlertService:
         return finish()
 
 
-def evaluate_project_in_background(project_id: Optional[int], source: str) -> None:
+async def evaluate_project_in_background(project_id: Optional[int], source: str) -> None:
+    """What `BackgroundTasks` runs after a timer stop or a manual-time approval.
+
+    Evaluation can end in an immediate email send, so it runs under the bounded
+    background limiter (`app.core.background`) instead of taking a request thread.
+    """
+    if project_id is None:
+        return
+    await run_blocking(_evaluate_blocking, project_id, source)
+
+
+def _evaluate_blocking(project_id: int, source: str) -> None:
     """Evaluate one project on its own session, after a response was written.
 
     The fast path behind timer stops and manual-time approvals. It swallows
     everything: the reconciliation cron catches whatever this misses.
     """
-    if project_id is None:
-        return
     from app.core.database import get_session_local
 
     db = None

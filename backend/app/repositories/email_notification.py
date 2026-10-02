@@ -21,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.email_notification import (
-    STATUS_PENDING, STATUS_SENT, EmailNotification,
+    STATUS_CANCELLED, STATUS_PENDING, STATUS_SENT, EmailNotification,
 )
 
 
@@ -101,6 +101,31 @@ class EmailNotificationRepository:
         db.commit()
         db.refresh(row)
         return row, True
+
+    @staticmethod
+    def cancel_pending_by_key_prefix(
+        db: Session, *, notification_type: str, key_prefix: str
+    ) -> int:
+        """Withdraw still-pending notifications whose key starts with `key_prefix`.
+
+        For an email that a later event makes untrue before it has left -- an
+        "excluded" notice still retrying when the member is allowed again. Only
+        `pending` rows move: one already sent stays sent, and one a worker has
+        claimed is mid-delivery and cannot be recalled. Returns how many were
+        cancelled. The prefix is matched literally (`autoescape`), so the
+        underscores in a key are not LIKE wildcards.
+        """
+        result = db.execute(
+            update(EmailNotification)
+            .where(
+                EmailNotification.notification_type == notification_type,
+                EmailNotification.status == STATUS_PENDING,
+                EmailNotification.dedupe_key.startswith(key_prefix, autoescape=True),
+            )
+            .values(status=STATUS_CANCELLED)
+        )
+        db.commit()
+        return result.rowcount or 0
 
     @staticmethod
     def due_ids(db: Session, *, now: datetime, limit: int) -> List[int]:

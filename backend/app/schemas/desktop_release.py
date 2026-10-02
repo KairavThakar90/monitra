@@ -25,6 +25,9 @@ PlatformToken = Annotated[str, plain_text_field(label="Platform", max_length=32,
 OptionalArchToken = Annotated[
     Optional[str], plain_text_field(label="Architecture", max_length=32)
 ]
+OptionalSigner = Annotated[
+    Optional[str], plain_text_field(label="Signer", max_length=255)
+]
 
 
 class LatestVersionResponse(BaseModel):
@@ -123,6 +126,11 @@ class DesktopReleaseCreate(BaseModel):
     release_notes_url: OptionalUrl = None
     force_update: bool = False
     min_supported_version: OptionalVersion = None
+    #: Whether the pipeline verified this artifact's code signature before
+    #: registering it, and who signed it. Gate for publishing, see
+    #: `desktop_release_policy`; the desktop verifies the real signature itself.
+    signed: bool = False
+    signer: OptionalSigner = None
 
 
 class DesktopReleaseUpdate(BaseModel):
@@ -156,12 +164,42 @@ class DesktopReleaseRead(BaseModel):
     status: str
     force_update: bool
     min_supported_version: Optional[str] = None
+    signed: bool = False
+    signer: Optional[str] = None
     created_at: datetime
     published_at: Optional[datetime] = None
 
 
 class DesktopReleaseListResponse(BaseModel):
     releases: List[DesktopReleaseRead] = Field(default_factory=list)
+
+
+class ReleaseProblemRead(BaseModel):
+    """One reason a version is not ready to publish."""
+
+    code: str
+    message: str
+    artifact: Optional[str] = None
+
+
+class ReleaseReadinessResponse(BaseModel):
+    """Whether a version has a complete, valid set of artifacts to publish."""
+
+    version: str
+    ready: bool
+    #: The artifacts (platform or platform/arch) that are registered and live.
+    present: List[str] = Field(default_factory=list)
+    problems: List[ReleaseProblemRead] = Field(default_factory=list)
+
+
+class PublishVersionResponse(BaseModel):
+    """The outcome of publishing a whole version at once."""
+
+    version: str
+    published: List[DesktopReleaseRead] = Field(default_factory=list)
+    #: Whether the release announcement was queued by this call. Always false
+    #: while RELEASE_EMAIL_ENABLED is off.
+    announcement_queued: bool = False
 
 
 class PublicReleaseResponse(BaseModel):

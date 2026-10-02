@@ -512,7 +512,7 @@ def test_a_queued_create_task_keeps_a_missing_assignee_missing(runtime):
     )
 
     assert seen["args"] == (7, "X", None, 1)
-    assert seen["kwargs"] == {"client_op": "task:abc"}
+    assert seen["kwargs"] == {"client_op": "task:abc", "description": None}
 
 
 def test_a_retried_create_reuses_its_idempotency_key(qapp, runtime):
