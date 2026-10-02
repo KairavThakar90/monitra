@@ -5,6 +5,11 @@ from core.logging_setup import get_logger
 
 log = get_logger("tasks")
 
+#: "The caller said nothing about the description" -- distinct from None/"",
+#: which mean "clear it". An edit queued by an older build carries no
+#: description at all and must leave the stored one alone.
+UNSET: Any = object()
+
 
 def _explain(action: str, exc: ApiHttpError) -> ApiError:
     """
@@ -71,6 +76,7 @@ class TaskService:
         assignee_id: Optional[int] = None,
         status_id: int = 1,
         client_op: Optional[str] = None,
+        description: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create a new task nested under the specified project.
@@ -88,6 +94,9 @@ class TaskService:
         created, instead of a second task with the same name. An older
         backend ignores the field.
 
+        `description` is sent only when there is one; an empty or missing
+        description creates a task with none.
+
         The creating user is never sent -- the backend derives it from the
         bearer token, which is the only identity that can be trusted.
         """
@@ -99,6 +108,8 @@ class TaskService:
             payload["assignee_id"] = assignee_id
         if client_op:
             payload["client_op"] = client_op
+        if description:
+            payload["description"] = description
         try:
             response = self.api_client.post(f"/api/v1/projects/{project_id}/tasks", json_data=payload)
             return response.json()
@@ -121,16 +132,30 @@ class TaskService:
         except Exception as e:
             raise ApiError(f"Failed to create task: {str(e)}")
  
-    def update_task(self, project_id: int, task_id: int, task_name: str, status_id: int, assignee_id: Optional[int] = None) -> Dict[str, Any]:
+    def update_task(
+        self,
+        project_id: int,
+        task_id: int,
+        task_name: str,
+        status_id: int,
+        assignee_id: Optional[int] = None,
+        description: Optional[str] = UNSET,
+    ) -> Dict[str, Any]:
         """
         Update an existing task.
+
+        `description` left at `UNSET` is not sent, so the stored one is kept.
+        Passing a string sets it; passing None or "" clears it, which is what
+        emptying the box in Edit Task means.
         """
-        payload = {
+        payload: Dict[str, Any] = {
             "name": task_name,
             "status_id": status_id
         }
         if assignee_id is not None:
             payload["assignee_id"] = assignee_id
+        if description is not UNSET:
+            payload["description"] = description or None
         try:
             response = self.api_client.patch(f"/api/v1/projects/{project_id}/tasks/{task_id}", json_data=payload)
             return response.json()
