@@ -48,6 +48,35 @@ class Settings(BaseSettings):
     DESKTOP_DOWNLOAD_URL: str = ""
     DESKTOP_RELEASE_NOTES_URL: str = ""
 
+    # Where a release artifact may be hosted. A release row's download_url is
+    # what every installed client fetches and then RUNS, so who may be named
+    # there is a security decision, not a formatting one. Enforced when a row is
+    # registered, again when it is published, and again when the update check
+    # would serve it -- so a row written before this policy existed, or by
+    # hand, still cannot reach a client.
+    #
+    # HOSTS: comma-separated exact hostnames. https only, no credentials in the
+    # URL, no non-default port. PREFIXES (optional, recommended in production):
+    # comma-separated https URL prefixes the URL must additionally start with --
+    # e.g. https://github.com/<owner>/<releases-repo>/releases/download/ pins
+    # downloads to one repository, which is what keeps a private source
+    # repository private while installers live in a public installer-only one.
+    DESKTOP_DOWNLOAD_ALLOWED_HOSTS: str = "github.com"
+    DESKTOP_DOWNLOAD_URL_PREFIXES: str = ""
+
+    # The artifacts a version must have, registered and valid, before ANY of its
+    # rows may be published -- and before the release announcement is sent.
+    # `platform` or `platform:architecture`, comma-separated. Windows ships one
+    # build for every machine; macOS ships one per architecture.
+    DESKTOP_REQUIRED_ARTIFACTS: str = "win32,darwin:arm64,darwin:x86_64"
+
+    # Refuse to publish a row whose registration says its artifact is unsigned.
+    # The registering pipeline reports this after verifying the signature itself;
+    # it is a process gate that stops an operator publishing an unsigned build by
+    # mistake, NOT the security boundary -- the desktop verifies the real
+    # signature before it runs anything. Set to false only for a pilot ring.
+    DESKTOP_REQUIRE_SIGNED_RELEASES: bool = True
+
     # ── Desktop → web single sign-on handoff ──────────────────────────────
     # How long the desktop's "Profile" handoff token stays valid. It only has
     # to survive the trip from minting it to the browser opening the web
@@ -171,7 +200,17 @@ class Settings(BaseSettings):
     #: of the same version sends nothing. Turn this off to publish quietly (a
     #: pilot, a re-publish after a withdrawal); as with the welcome email, the
     #: once-per-user guarantee does not depend on this flag.
-    RELEASE_EMAIL_ENABLED: bool = True
+    #
+    # OFF BY DEFAULT. Announcing a release mails every eligible user and cannot
+    # be unsent, so it is something a person turns on deliberately, after the
+    # release has been verified, rather than something a deployment does because
+    # nobody turned it off.
+    RELEASE_EMAIL_ENABLED: bool = False
+    #: Test mode. When non-empty (comma-separated addresses), a release
+    #: announcement goes to THESE addresses only, with "[TEST]" in the subject,
+    #: and to no user at all. Leave empty for the real fan-out. This is what
+    #: makes it possible to see the email arrive without mailing the company.
+    RELEASE_EMAIL_TEST_RECIPIENTS: str = ""
 
     # ── Weekly productivity report ────────────────────────────────────────
     #: Whether the Monday sweep queues anything at all. A runtime kill switch

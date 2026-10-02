@@ -138,6 +138,16 @@ class DesktopRelease(Base):
     #: is newer. Null means "no floor", which is the normal case.
     min_supported_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
+    #: Whether the release pipeline verified this artifact's code signature
+    #: before registering it. A process gate (see `desktop_release_policy`), not
+    #: the security boundary: the desktop verifies the real signature itself.
+    signed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false",
+    )
+    #: Who signed it, as the pipeline read it from the verified signature
+    #: (certificate subject, or the Apple team). For support reports only.
+    signer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now(),
     )

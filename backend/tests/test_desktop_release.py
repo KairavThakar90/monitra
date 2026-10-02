@@ -14,8 +14,8 @@ from unittest.mock import MagicMock, patch
 from app.models.desktop_release import Platform, ReleaseStatus
 from app.schemas.desktop_release import DesktopReleaseCreate
 from app.services.desktop_release import (
-    DesktopReleaseService, normalize_architecture, normalize_platform,
-    parse_client_version, version_tuple,
+    DesktopReleaseService, ReleaseConflict, ReleasePolicyViolation,
+    normalize_architecture, normalize_platform, parse_client_version, version_tuple,
 )
 
 SVC = "app.services.desktop_release"
@@ -26,11 +26,12 @@ def released(**overrides):
     row = dict(
         version="1.1.0", version_major=1, version_minor=1, version_patch=0,
         platform=Platform.WINDOWS, architecture=None,
-        download_url="https://example.invalid/Monitra-Setup-1.1.0.exe",
+        download_url="https://github.com/KairavThakar90/monitra/releases/download/v1.1.0/Monitra-Setup-1.1.0.exe",
         file_size=90_000_000, sha256="a" * 64,
         release_notes="Faster startup.", release_notes_url=None,
         status=ReleaseStatus.PUBLISHED, force_update=False,
         min_supported_version=None, published_at=None,
+        signed=True, signer="Monitra",
     )
     row.update(overrides)
     return SimpleNamespace(**row)
@@ -131,13 +132,13 @@ class LatestVersionResponseTests(unittest.TestCase):
         with patch(f"{SVC}.settings") as settings, \
                 patch(f"{SVC}.DesktopClientVersionRepository"):
             settings.DESKTOP_LATEST_VERSION = "1.1.0"
-            settings.DESKTOP_DOWNLOAD_URL = "https://example.invalid/releases"
+            settings.DESKTOP_DOWNLOAD_URL = "https://github.com/KairavThakar90/monitra/releases"
             settings.DESKTOP_RELEASE_NOTES_URL = "https://example.invalid/notes"
             result = DesktopReleaseService.latest_version(
                 MagicMock(), self._user(), "1.0.1", "darwin"
             )
         self.assertEqual(result.latest_version, "1.1.0")
-        self.assertEqual(result.download_url, "https://example.invalid/releases")
+        self.assertEqual(result.download_url, "https://github.com/KairavThakar90/monitra/releases")
         self.assertTrue(result.update_available)
         self.assertEqual(result.client_version, "1.0.1")
 
@@ -344,7 +345,7 @@ class ReleaseCreationTests(unittest.TestCase):
     def _payload(self, **overrides):
         data = dict(
             version="1.2.0", platform="Windows", architecture="AMD64",
-            download_url="https://example.invalid/Monitra-Setup-1.2.0.exe",
+            download_url="https://github.com/KairavThakar90/monitra/releases/download/v1.2.0/Monitra-Setup-1.2.0.exe",
             sha256="B" * 64, file_size=1234,
         )
         data.update(overrides)
@@ -364,7 +365,10 @@ class ReleaseCreationTests(unittest.TestCase):
         with patch(f"{SVC}.DesktopReleaseRepository") as repo:
             repo.get_artifact.return_value = None
             release = DesktopReleaseService.create_release(
-                db, self._payload(version="1.10.3")
+                db, self._payload(
+                    version="1.10.3",
+                    download_url="https://github.com/KairavThakar90/monitra/releases/download/v1.10.3/Monitra-Setup-1.10.3.exe",
+                )
             )
         # These columns are what make "newest" an ORDER BY rather than a string
         # comparison, under which 1.9.0 would sort above 1.10.3.
@@ -394,7 +398,7 @@ class ReleaseCreationTests(unittest.TestCase):
         db = MagicMock()
         with patch(f"{SVC}.DesktopReleaseRepository") as repo:
             repo.get_artifact.return_value = object()
-            with self.assertRaises(ValueError):
+            with self.assertRaises(ReleaseConflict):
                 DesktopReleaseService.create_release(db, self._payload())
 
     def test_publishing_stamps_the_date_once(self):

@@ -90,6 +90,30 @@ def release_dedupe_key(version: str, user_id: int) -> str:
     return f"release:{version}:user:{user_id}"
 
 
+def release_test_dedupe_key(version: str, address: str) -> str:
+    """A test announcement's identity: one version, one test address.
+
+    Deliberately a different namespace from `release_dedupe_key`. A test run
+    must never consume the real, once-per-user announcement for the same
+    version -- otherwise rehearsing a release would silently stop it ever being
+    announced to the people it is for.
+    """
+    return f"release-test:{version}:to:{address.strip().lower()}"
+
+
+def _test_recipient_addresses() -> list[str]:
+    """`RELEASE_EMAIL_TEST_RECIPIENTS` as usable addresses, or [] when unset."""
+    raw = [part.strip() for part in (settings.RELEASE_EMAIL_TEST_RECIPIENTS or "").split(",")]
+    usable: list[str] = []
+    for part in raw:
+        if not part:
+            continue
+        address = resolve_user_recipient(part)
+        if address and address[0] not in usable:
+            usable.append(address[0])
+    return usable
+
+
 def queue_release_announcements(db: Session, release) -> list[int]:
     """Tell every active user that a new desktop version is available.
 
@@ -125,7 +149,40 @@ def queue_release_announcements(db: Session, release) -> list[int]:
         }
         subject = messages.release_subject(payload)
 
-        recipients = UserRepository.list_announcement_recipients(db)
+        # Test mode. A configured test list REPLACES the audience: the mail goes
+        # to those addresses and to no user, so a rehearsal cannot reach anyone
+        # who did not ask for it. The list is read from configuration on every
+        # call, never cached, so removing it is what takes a deployment live.
+        if (settings.RELEASE_EMAIL_TEST_RECIPIENTS or "").strip():
+            test_addresses = _test_recipient_addresses()
+            if not test_addresses:
+                # A list was configured but nothing in it is usable. Sending to
+                # the real audience would be the opposite of what was asked for.
+                logger.warning(
+                    "RELEASE_EMAIL_SKIPPED: RELEASE_EMAIL_TEST_RECIPIENTS is set "
+                    "but holds no usable address; nothing sent"
+                )
+                return queued
+            test_payload = {**payload, "test": True, "name": "Tester"}
+            test_subject = messages.release_subject(test_payload)
+            for address in test_addresses:
+                row = EmailOutboxService.enqueue(
+                    db,
+                    notification_type=TYPE_RELEASE,
+                    dedupe_key=release_test_dedupe_key(version, address),
+                    recipients=[address],
+                    subject=test_subject,
+                    payload=test_payload,
+                )
+                if row is not None:
+                    queued.append(row.id)
+            logger.info(
+                "RELEASE_EMAIL_TEST_QUEUED: version=%s addresses=%d notifications=%d",
+                version, len(test_addresses), len(queued),
+            )
+            return queued
+
+        recipients = UserRepository.list_release_recipients(db)
         if not recipients:
             logger.warning("RELEASE_EMAIL_SKIPPED: no active users with an address")
             return queued

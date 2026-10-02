@@ -17,7 +17,7 @@ Fields were added to the first; nothing was removed or renamed.
 """
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -27,9 +27,13 @@ from app.models.user import User
 from app.schemas.desktop_release import (
     DesktopReleaseCreate, DesktopReleaseListResponse, DesktopReleaseRead,
     DesktopReleaseUpdate, FleetVersionsResponse, LatestVersionResponse,
-    PublicReleaseIndexResponse, PublicReleaseResponse,
+    PublicReleaseIndexResponse, PublicReleaseResponse, PublishVersionResponse,
+    ReleaseProblemRead, ReleaseReadinessResponse,
 )
-from app.services.desktop_release import DesktopReleaseService, parse_client_version
+from app.services.desktop_release import (
+    DesktopReleaseService, ReleaseConflict, ReleasePolicyViolation,
+    parse_client_version,
+)
 
 router = APIRouter(prefix="/desktop", tags=["Desktop releases"])
 
@@ -38,6 +42,43 @@ router = APIRouter(prefix="/desktop", tags=["Desktop releases"])
 #: channel: whoever can publish a release decides what every installed client
 #: downloads and runs.
 require_release_manager = require_permission("manage_desktop_releases")
+
+
+def require_release_publisher(
+    current_user: User = Depends(require_release_manager),
+) -> User:
+    """A person who may decide what clients are offered -- not a pipeline key.
+
+    Registering a build is the pipeline's job; deciding it is good enough to
+    reach every staff machine is a human's. The release credential holds
+    `manage_desktop_releases` so it can register drafts, and this is what stops
+    that same key from also publishing, withdrawing or announcing one. A leaked
+    CI secret then costs a stray draft, never a release.
+    """
+    if getattr(current_user, "is_service_principal", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Release credentials may register builds but cannot publish or "
+                "withdraw them. A signed-in administrator must do that."
+            ),
+        )
+    return current_user
+
+
+#: The same shape the version appears in everywhere else (`major.minor.patch`).
+_VERSION_PATH = Path(..., pattern=r"^\d+\.\d+\.\d+$", max_length=32)
+
+
+def _violation(exc: ReleasePolicyViolation) -> HTTPException:
+    """422 carrying every problem found, in a shape a person or a script can read."""
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail={
+            "message": str(exc),
+            "problems": [problem.as_dict() for problem in exc.problems],
+        },
+    )
 
 
 # ── The desktop client's update check ──────────────────────────────────────
@@ -219,7 +260,9 @@ def create_release(
     """
     try:
         release = DesktopReleaseService.create_release(db, payload)
-    except ValueError as exc:
+    except ReleasePolicyViolation as exc:
+        raise _violation(exc)
+    except ReleaseConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     return DesktopReleaseRead.model_validate(release)
 
@@ -233,10 +276,20 @@ def update_release(
     release_id: int,
     payload: DesktopReleaseUpdate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_release_manager),
 ):
-    """Amend a release's notes, its update policy, or its status."""
+    """Amend a release's notes, its update policy, or its status.
+
+    Changing the *status* publishes or withdraws a build, which is a person's
+    decision: it is refused for a release credential (see
+    `require_release_publisher`).
+    """
+    if payload.status is not None:
+        require_release_publisher(current_user)
     try:
         release = DesktopReleaseService.update_release(db, release_id, payload)
+    except ReleasePolicyViolation as exc:
+        raise _violation(exc)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail=str(exc))
@@ -246,16 +299,66 @@ def update_release(
     return DesktopReleaseRead.model_validate(release)
 
 
+@router.get(
+    "/releases/versions/{version}/readiness",
+    response_model=ReleaseReadinessResponse,
+    dependencies=[Depends(require_release_manager)],
+)
+def get_version_readiness(version: str = _VERSION_PATH, db: Session = Depends(get_db)):
+    """Is this version complete and valid enough to publish, and if not, why?
+
+    Read-only. Lists every missing or invalid artifact at once, so a release can
+    be fixed in one pass instead of one refusal at a time.
+    """
+    report = DesktopReleaseService.readiness(db, version)
+    return ReleaseReadinessResponse(
+        version=report.version,
+        ready=report.ready,
+        present=report.present,
+        problems=[ReleaseProblemRead(**problem.as_dict()) for problem in report.problems],
+    )
+
+
+@router.post(
+    "/releases/versions/{version}/publish",
+    response_model=PublishVersionResponse,
+    dependencies=[Depends(require_release_publisher)],
+)
+def publish_version(version: str = _VERSION_PATH, db: Session = Depends(get_db)):
+    """Publish every required artifact of a version together, or none of them.
+
+    The release announcement is queued by this call once the set is complete
+    (and only if `RELEASE_EMAIL_ENABLED`). Prefer this to publishing rows one at
+    a time: Windows and both Macs go live together.
+    """
+    try:
+        published, queued = DesktopReleaseService.publish_version(db, version)
+    except ReleasePolicyViolation as exc:
+        raise _violation(exc)
+    return PublishVersionResponse(
+        version=version,
+        published=[DesktopReleaseRead.model_validate(r) for r in published],
+        announcement_queued=queued,
+    )
+
+
 @router.post(
     "/releases/{release_id}/publish",
     response_model=DesktopReleaseRead,
-    dependencies=[Depends(require_release_manager)],
+    dependencies=[Depends(require_release_publisher)],
 )
 def publish_release(release_id: int, db: Session = Depends(get_db)):
-    """Make a draft live. From this moment clients are offered it."""
+    """Make a draft live. From this moment clients are offered it.
+
+    Refused unless the whole version -- Windows and both macOS architectures --
+    is registered and valid, so one platform is never live without the others.
+    """
     from app.models.desktop_release import ReleaseStatus
 
-    release = DesktopReleaseService.set_status(db, release_id, ReleaseStatus.PUBLISHED)
+    try:
+        release = DesktopReleaseService.set_status(db, release_id, ReleaseStatus.PUBLISHED)
+    except ReleasePolicyViolation as exc:
+        raise _violation(exc)
     if release is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Release not found.")
@@ -265,7 +368,7 @@ def publish_release(release_id: int, db: Session = Depends(get_db)):
 @router.post(
     "/releases/{release_id}/rollback",
     response_model=DesktopReleaseRead,
-    dependencies=[Depends(require_release_manager)],
+    dependencies=[Depends(require_release_publisher)],
 )
 def rollback_release(release_id: int, db: Session = Depends(get_db)):
     """Withdraw a bad release.

@@ -35,6 +35,7 @@ import logging
 import re
 from collections import Counter
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -49,6 +50,7 @@ from app.schemas.desktop_release import (
     FleetVersionsResponse, LatestVersionResponse, PublicReleaseIndexResponse,
     PublicReleaseResponse,
 )
+from app.services import desktop_release_policy as policy
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,20 @@ logger = logging.getLogger(__name__)
 _USER_AGENT_RE = re.compile(r"^Monitra/(\d+\.\d+\.\d+)(?:\s|$)")
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+class ReleaseConflict(ValueError):
+    """The request conflicts with what is already registered (HTTP 409)."""
+
+
+class ReleasePolicyViolation(ValueError):
+    """The release breaks a rule that must hold before a client may be offered it
+    (HTTP 422). Carries every problem found, so one call reports them all.
+    """
+
+    def __init__(self, problems: List[policy.Problem], message: Optional[str] = None) -> None:
+        self.problems = list(problems)
+        super().__init__(message or "; ".join(p.message for p in self.problems))
 
 
 def parse_client_version(user_agent: Optional[str]) -> Optional[str]:
@@ -255,6 +271,19 @@ class DesktopReleaseService:
             # update exists and stop there rather than downloading anything.
             return DesktopReleaseService._configured_answer(client_version)
 
+        url_problem = policy.check_download_url(release.download_url)
+        if url_problem:
+            # A published row this deployment would no longer accept -- written
+            # before the hosting policy existed, or by hand. It is not served:
+            # the client would fetch and run whatever is at that address, so the
+            # honest answer is "nothing to offer", loudly in the log.
+            logger.error(
+                "DESKTOP_RELEASE_URL_REFUSED: published %s %s/%s is not served: %s",
+                release.version, release.platform, release.architecture or "any",
+                url_problem,
+            )
+            return LatestVersionResponse(client_version=client_version)
+
         latest = release.version
         available = DesktopReleaseService.is_update_available(client_version, latest)
 
@@ -288,9 +317,15 @@ class DesktopReleaseService:
     def _configured_answer(client_version: Optional[str]) -> LatestVersionResponse:
         """The pre-release-table answer, for a deployment with no rows yet."""
         latest = DesktopReleaseService.configured_latest_version()
+        configured_url = (settings.DESKTOP_DOWNLOAD_URL or None) if latest else None
+        if configured_url and policy.check_download_url(configured_url):
+            # Same host policy as a registered row: the client opens this link in
+            # a browser, and an unapproved address is not something to hand out.
+            logger.warning("DESKTOP_DOWNLOAD_URL is not an approved release location; not served")
+            configured_url = None
         return LatestVersionResponse(
             latest_version=latest,
-            download_url=(settings.DESKTOP_DOWNLOAD_URL or None) if latest else None,
+            download_url=configured_url,
             release_notes_url=(settings.DESKTOP_RELEASE_NOTES_URL or None) if latest else None,
             update_available=DesktopReleaseService.is_update_available(
                 client_version, latest
@@ -408,10 +443,26 @@ class DesktopReleaseService:
             architecture=arch_token,
         )
         if existing is not None:
-            raise ValueError(
+            raise ReleaseConflict(
                 f"{payload.version} for {platform_token}"
                 f"/{arch_token or 'any'} is already registered."
             )
+
+        # Registration refuses a URL this deployment would never serve, and a
+        # file name that is not the artifact this row claims to be. Signing and
+        # file size are judged at publish time instead: an unsigned or unsized
+        # build may legitimately be registered as a draft for a pilot.
+        candidate = SimpleNamespace(
+            version=payload.version, platform=platform_token, architecture=arch_token,
+            download_url=payload.download_url, sha256=payload.sha256,
+            file_size=payload.file_size or 1, signed=True, status="draft",
+        )
+        problems = [
+            p for p in policy.check_row(candidate, require_signed=False)
+            if p.code in ("url", "filename", "sha256")
+        ]
+        if problems:
+            raise ReleasePolicyViolation(problems)
 
         major, minor, patch = version_tuple(payload.version)  # type: ignore[misc]
         release = DesktopRelease(
@@ -429,6 +480,8 @@ class DesktopReleaseService:
             status=ReleaseStatus.DRAFT,
             force_update=bool(payload.force_update),
             min_supported_version=payload.min_supported_version,
+            signed=bool(payload.signed),
+            signer=payload.signer,
         )
         DesktopReleaseRepository.add(db, release)
         db.commit()
@@ -451,6 +504,9 @@ class DesktopReleaseService:
         was_published = release.status == ReleaseStatus.PUBLISHED
 
         if payload.status is not None:
+            DesktopReleaseService._validate_status(payload.status)
+            if payload.status == ReleaseStatus.PUBLISHED and not was_published:
+                DesktopReleaseService._gate_publication(db, release)
             DesktopReleaseService._apply_status(release, payload.status)
         if payload.release_notes is not None:
             release.release_notes = payload.release_notes
@@ -475,11 +531,107 @@ class DesktopReleaseService:
         if release is None:
             return None
         was_published = release.status == ReleaseStatus.PUBLISHED
+        DesktopReleaseService._validate_status(status)
+        if status == ReleaseStatus.PUBLISHED and not was_published:
+            DesktopReleaseService._gate_publication(db, release)
         DesktopReleaseService._apply_status(release, status)
         db.commit()
         db.refresh(release)
         DesktopReleaseService._announce_if_newly_published(db, release, was_published)
         return release
+
+    # ── Readiness and publishing a whole version ──────────────────────────
+
+    @staticmethod
+    def readiness(db: Session, version: str) -> policy.Readiness:
+        """Whether ``version`` has a complete, valid set of artifacts.
+
+        Read-only. The same judgement publishing applies, available beforehand
+        so an administrator can see what is missing rather than find out from a
+        refusal.
+        """
+        rows = DesktopReleaseRepository.list_for_version(db, version)
+        return policy.readiness(version, rows)
+
+    @staticmethod
+    def _gate_publication(db: Session, release: DesktopRelease) -> None:
+        """Refuse to publish a row unless its whole version is publishable.
+
+        Judged as though this row were already live -- publishing is the act
+        being decided, so the row's current ``draft`` (or ``rolled_back``) state
+        must not count against it -- and including the row itself even when its
+        platform is outside the required set.
+        """
+        rows = DesktopReleaseRepository.list_for_version(db, release.version)
+        view = [
+            SimpleNamespace(
+                version=r.version, platform=r.platform, architecture=r.architecture,
+                download_url=r.download_url, sha256=r.sha256, file_size=r.file_size,
+                signed=r.signed,
+                status="draft" if r.id == release.id else r.status,
+            )
+            for r in rows
+        ]
+        report = policy.readiness(release.version, view)
+        problems = list(report.problems)
+        seen = {(p.code, p.artifact) for p in problems}
+        own = next(
+            v for v in view
+            if v.platform == release.platform and v.architecture == release.architecture
+        )
+        for extra in policy.check_row(own):
+            if (extra.code, extra.artifact) not in seen:
+                problems.append(extra)
+        if problems:
+            logger.warning(
+                "DESKTOP_RELEASE_PUBLISH_REFUSED: %s %s/%s: %s",
+                release.version, release.platform, release.architecture or "any",
+                "; ".join(f"{p.code}({p.artifact})" for p in problems),
+            )
+            raise ReleasePolicyViolation(
+                problems,
+                f"Version {release.version} cannot be published yet: "
+                + "; ".join(p.message for p in problems),
+            )
+
+    @staticmethod
+    def publish_version(db: Session, version: str) -> Tuple[List[DesktopRelease], bool]:
+        """Publish every required artifact of ``version`` in one step.
+
+        All or nothing: the version is judged first, and only if the whole set
+        is publishable is any row moved. One commit, then at most one
+        announcement -- so Windows and both Macs go live together and the
+        announcement is queued once the set is complete. Returns the rows now
+        published and whether an announcement was queued.
+        """
+        rows = DesktopReleaseRepository.list_for_version(db, version)
+        report = policy.readiness(version, rows)
+        if not report.ready:
+            raise ReleasePolicyViolation(
+                report.problems,
+                f"Version {version} cannot be published yet: "
+                + "; ".join(p.message for p in report.problems),
+            )
+
+        required = set(policy.required_artifacts())
+        changed: List[DesktopRelease] = []
+        for row in rows:
+            if (row.platform, row.architecture) not in required:
+                continue
+            if row.status == ReleaseStatus.DRAFT:
+                DesktopReleaseService._apply_status(row, ReleaseStatus.PUBLISHED)
+                changed.append(row)
+        db.commit()
+        for row in changed:
+            db.refresh(row)
+
+        queued = False
+        if changed:
+            queued = DesktopReleaseService._announce_if_newly_published(
+                db, changed[-1], was_published=False
+            )
+        published = [r for r in rows if r.status == ReleaseStatus.PUBLISHED]
+        return published, queued
 
     @staticmethod
     def _announce_if_newly_published(
@@ -503,21 +655,41 @@ class DesktopReleaseService:
         announcements` does not raise, so publishing cannot fail over email.
         """
         if was_published or release.status != ReleaseStatus.PUBLISHED:
-            return
+            return False
+
+        # Only a COMPLETE release is announced. The email says "a new version is
+        # available" and links to the download page; sent when the first
+        # artifact goes live, it reaches Mac users before there is anything for
+        # them to download. So the announcement waits until every required
+        # artifact of the version is published and valid -- whichever publish
+        # completes the set is the one that sends it, and the per-version
+        # dedupe key makes any later publish a no-op.
+        rows = DesktopReleaseRepository.list_for_version(db, release.version)
+        if not policy.is_complete_and_published(release.version, rows):
+            logger.info(
+                "RELEASE_EMAIL_DEFERRED: %s is not fully published yet; the "
+                "announcement waits for the remaining artifacts", release.version,
+            )
+            return False
+
         # Imported here rather than at module scope: the email package imports
         # the user repository, and a top-level import would tie this module's
         # import order to it for something only this one path needs.
         from app.services.email import queue_release_announcements
 
-        queue_release_announcements(db, release)
+        return bool(queue_release_announcements(db, release))
 
     @staticmethod
-    def _apply_status(release: DesktopRelease, status: str) -> None:
+    def _validate_status(status: str) -> None:
         if status not in ReleaseStatus.ALL:
             raise ValueError(
                 f"Unknown release status {status!r}. "
                 f"Expected one of: {', '.join(ReleaseStatus.ALL)}."
             )
+
+    @staticmethod
+    def _apply_status(release: DesktopRelease, status: str) -> None:
+        DesktopReleaseService._validate_status(status)
         previous = release.status
         release.status = status
         if status == ReleaseStatus.PUBLISHED and release.published_at is None:

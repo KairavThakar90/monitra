@@ -683,10 +683,16 @@ def build_feedback_status_email(
 
 def release_subject(payload: dict[str, Any]) -> str:
     version = str(payload.get("version") or "").strip()
-    return clean_subject(
+    subject = (
         f"Monitra {version} is available — what's new" if version
         else "A new version of Monitra is available"
     )
+    # A rehearsal (RELEASE_EMAIL_TEST_RECIPIENTS) says so in the subject. The
+    # subject is rebuilt from the payload at delivery, so the marker has to
+    # live here and not only on the queued row.
+    if payload.get("test"):
+        subject = f"[TEST] {subject}"
+    return clean_subject(subject)
 
 
 def download_page_url() -> Optional[str]:
