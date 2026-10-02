@@ -429,6 +429,64 @@ class ServingTests(unittest.TestCase):
                 self.assertTrue(answer.update_available)
 
 
+class AutoUpdateFloorTests(unittest.TestCase):
+    """Clients whose own updater cannot be trusted with an install are told an
+    update exists, and given the link -- and nothing that would let them try."""
+
+    def user(self):
+        user = MagicMock()
+        user.id = 7
+        user.organization_id = 1
+        return user
+
+    def check(self, client_version, release=None, floor="1.3.2"):
+        release = release or row(status="published", force_update=False)
+        with patch(f"{SVC}.DesktopReleaseRepository") as repo,                 patch(f"{SVC}.DesktopClientVersionRepository"),                 patch.object(settings, "DESKTOP_AUTO_UPDATE_MIN_CLIENT_VERSION", floor):
+            repo.latest_published.return_value = release
+            return DesktopReleaseService.latest_version(
+                MagicMock(), self.user(), client_version, "win32", "AMD64")
+
+    def test_the_default_floor_is_the_first_release_with_the_fixed_updater(self):
+        self.assertEqual(Settings.model_fields["DESKTOP_AUTO_UPDATE_MIN_CLIENT_VERSION"].default, "1.3.2")
+
+    def test_an_older_client_is_told_about_the_update_and_given_the_link(self):
+        answer = self.check("1.3.1")
+        self.assertTrue(answer.update_available)
+        self.assertEqual(answer.latest_version, "1.3.2")
+        self.assertTrue(answer.download_url.startswith("https://github.com/"))
+
+    def test_an_older_client_is_not_given_what_its_updater_needs_to_install(self):
+        answer = self.check("1.3.1")
+        # No checksum: its updater announces and stops, exactly as for any
+        # deployment that never published one.
+        self.assertIsNone(answer.sha256)
+        self.assertIsNone(answer.file_size)
+
+    def test_an_older_client_is_never_forced(self):
+        # A mandatory update a client cannot take would lock the user out.
+        answer = self.check("1.3.1", release=row(status="published", force_update=True))
+        self.assertTrue(answer.update_available)
+        self.assertFalse(answer.force_update)
+
+    def test_a_client_at_or_above_the_floor_gets_the_full_installable_answer(self):
+        release = row(version="1.3.3", status="published",
+                      download_url=f"{GH}/v1.3.3/Monitra-Setup-1.3.3.exe", force_update=True)
+        answer = self.check("1.3.2", release=release)
+        self.assertEqual(answer.sha256, "a" * 64)
+        self.assertEqual(answer.file_size, 31_000_000)
+        self.assertTrue(answer.force_update)
+
+    def test_the_floor_can_be_switched_off(self):
+        self.assertEqual(self.check("1.0.0", floor="").sha256, "a" * 64)
+
+    def test_an_unidentified_client_is_not_second_guessed(self):
+        # No version means no "update available" at all; nothing to withhold.
+        self.assertFalse(self.check(None).update_available)
+
+    def test_a_client_that_is_not_behind_is_told_nothing_regardless_of_the_floor(self):
+        self.assertFalse(self.check("1.3.2").update_available)
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # The announcement
 # ─────────────────────────────────────────────────────────────────────────

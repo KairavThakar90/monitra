@@ -77,6 +77,19 @@ class Settings(BaseSettings):
     # signature before it runs anything. Set to false only for a pilot ring.
     DESKTOP_REQUIRE_SIGNED_RELEASES: bool = True
 
+    # The oldest desktop client that is offered an update it can INSTALL itself.
+    # A client below this is told an update exists and given the link, and
+    # nothing else (no checksum, so its updater announces and stops) -- the
+    # manual path every older deployment already took.
+    #
+    # Why: 1.3.1 and earlier ship an updater whose Windows helper waits on the
+    # old process with `tasklist | find` under DETACHED_PROCESS. With no console
+    # that wait never completes: Monitra quits, the installer never runs and the
+    # application is never relaunched. A fleet on that updater must not be sent
+    # through it. Fixed in the first release that carries the hardened updater;
+    # set this to that version. Empty disables the floor.
+    DESKTOP_AUTO_UPDATE_MIN_CLIENT_VERSION: str = "1.3.2"
+
     # ── Desktop → web single sign-on handoff ──────────────────────────────
     # How long the desktop's "Profile" handoff token stays valid. It only has
     # to survive the trip from minting it to the browser opening the web

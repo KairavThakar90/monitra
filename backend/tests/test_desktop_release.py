@@ -251,7 +251,20 @@ class MinimumVersionTests(unittest.TestCase):
 
 
 class ReleaseTableTests(unittest.TestCase):
-    """The table-driven answer: what a client is actually offered."""
+    """The table-driven answer: what a client is actually offered.
+
+    These describe the release table's own policy, independent of the
+    "oldest client that may install itself" floor (which has its own tests in
+    test_desktop_release_safety.py), so the floor is switched off here. The
+    clients in these tests are 1.0.x and would otherwise be below it.
+    """
+
+    def setUp(self):
+        from app.core.config import settings as real_settings
+
+        floor = patch.object(real_settings, "DESKTOP_AUTO_UPDATE_MIN_CLIENT_VERSION", "")
+        floor.start()
+        self.addCleanup(floor.stop)
 
     def _user(self):
         user = MagicMock()

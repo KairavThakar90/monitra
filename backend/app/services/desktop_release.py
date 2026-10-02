@@ -298,20 +298,41 @@ class DesktopReleaseService:
             )
         )
 
+        sha256, file_size = release.sha256, release.file_size
+        if available and DesktopReleaseService._cannot_self_update(client_version):
+            # This client's own updater is not one to send an install through
+            # (see DESKTOP_AUTO_UPDATE_MIN_CLIENT_VERSION). It is still told an
+            # update exists and where to get it; without a checksum its updater
+            # announces and stops, and the user installs by hand. It is also not
+            # *forced*: a mandatory update a client cannot take would lock the
+            # user out of the application with no way forward.
+            sha256, file_size, forced = None, None, False
+
         return LatestVersionResponse(
             latest_version=latest,
             download_url=release.download_url,
             release_notes_url=release.release_notes_url,
             update_available=available,
             client_version=client_version,
-            sha256=release.sha256,
-            file_size=release.file_size,
+            sha256=sha256,
+            file_size=file_size,
             release_notes=release.release_notes,
             force_update=forced,
             min_supported_version=release.min_supported_version,
             platform=release.platform,
             architecture=release.architecture,
         )
+
+    @staticmethod
+    def _cannot_self_update(client_version: Optional[str]) -> bool:
+        """True for a client older than `DESKTOP_AUTO_UPDATE_MIN_CLIENT_VERSION`.
+
+        Fails open, like every comparison here: an unset floor, or a client that
+        did not identify itself, is not grounds to withhold anything.
+        """
+        floor = settings.DESKTOP_AUTO_UPDATE_MIN_CLIENT_VERSION
+        floor = floor.strip() if isinstance(floor, str) else ""
+        return bool(floor) and DesktopReleaseService.is_below_minimum(client_version, floor)
 
     @staticmethod
     def _configured_answer(client_version: Optional[str]) -> LatestVersionResponse:

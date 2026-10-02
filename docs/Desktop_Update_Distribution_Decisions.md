@@ -100,6 +100,34 @@ real users: obtain the Windows certificate and the Apple Developer membership
 macOS secrets the pipeline is already wired for. Until then, registering
 releases as drafts and piloting them is safe; publishing one is not.
 
+### Hardening (2026-10-02) — the signing prerequisite is now enforced, not just recorded
+
+The paragraph above said an updater that runs an unsigned installer is a worse
+posture than the manual path, and recorded signing as the prerequisite. It was a
+note; it is now a rule the code enforces:
+
+- **A production build refuses an unsigned installer.** `WinVerifyTrust` is run
+  on the downloaded file (on the task pool) and an unsigned, tampered or
+  untrusted file is deleted and never handed to anything that executes it. The
+  dialog offers a manual download instead. A development/staging build can opt
+  out with `MONITRA_UPDATE_ALLOW_UNSIGNED=1` so the path can be exercised before
+  a certificate exists; a production build ignores that variable. **Consequence:
+  until a certificate is obtained, no Windows auto-update can complete.**
+- **The publisher can be pinned** (`policy.WINDOWS_SIGNER_PINS`,
+  `MACOS_TEAM_ID_PINS`) — empty until the certificate's subject is known.
+- **Where an artifact may come from** is decided by the client, not the backend:
+  https, an approved host, redirects judged hop by hop.
+- **The backend will not publish a partial, unsigned or off-host version**, and
+  will not email anyone about one. Publishing is refused for the CI credential.
+- Two defects in the shipped design were found by running it rather than reading
+  it, and fixed: the Windows helper would have hung for ever (no console), and a
+  user profile with a non-ASCII name would have crashed the handoff. See
+  `desktop/DO_NOT_DO.md` ("Updater and release").
+
+Still true, and still the owner's: obtaining the certificates, a first real
+update on a signed build on real hardware, and the macOS path on a real Mac. See
+[Desktop_Artifact_Hosting.md](Desktop_Artifact_Hosting.md) §7.
+
 ## 3. Fleet version-visibility logging — **approved**
 
 The backend should be able to report which version of the Monitra desktop client each
