@@ -1145,9 +1145,14 @@ if errorlevel 1 goto ready
 
 **What it caused:** found by running the real helper against stand-in
 executables, before any user hit it. With no console at all, `tasklist` prints
-nothing and the pipe into `find` never completes, so the helper waited for ever:
-the installer never ran **and the application was never relaunched** — a user who
-pressed Update Now would have been left with Monitra closed. A bare `find` can
+nothing and the pipe into `find` never completes. Measured from a windowless
+parent (`pythonw`), the way the frozen app really starts it: when the old process
+was still alive at the helper's first check, the installer had not started 27 s
+after that process exited and Monitra was not relaunched — a user who pressed
+Update Now could be left with Monitra closed. It does *not* always fail: when the
+application had already exited by that first check, the same helper installed and
+relaunched correctly (observed end to end), so the failure depends on timing and
+is easy to miss. A bare `find` can
 also resolve to a different program entirely (GNU `find` on a machine with a Unix
 toolkit on `PATH`), which made the wait return at once and the installer start
 while Monitra was still shutting down.

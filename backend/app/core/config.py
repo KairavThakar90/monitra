@@ -111,9 +111,10 @@ class Settings(BaseSettings):
     #
     # Why: 1.3.1 and earlier ship an updater whose Windows helper waits on the
     # old process with `tasklist | find` under DETACHED_PROCESS. With no console
-    # that wait never completes: Monitra quits, the installer never runs and the
-    # application is never relaunched. A fleet on that updater must not be sent
-    # through it. Fixed in the first release that carries the hardened updater;
+    # that wait does not reliably complete: measured from a windowless parent, a
+    # process still alive at the helper's first check left the installer unstarted
+    # long after it exited (it works only if the app has already gone by then).
+    # A fleet on that updater must not be sent through it. Fixed in the first release that carries the hardened updater;
     # set this to that version. Empty disables the floor.
     DESKTOP_AUTO_UPDATE_MIN_CLIENT_VERSION: str = "1.3.2"
 
