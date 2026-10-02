@@ -95,11 +95,19 @@ def get_engine():
         try:
             db_url = get_database_url()
             _engine = create_engine(
-                db_url, 
+                db_url,
                 pool_pre_ping=True,
-                pool_recycle=3600,  # Recycle connections every hour in serverless
-                pool_size=5,  # Smaller pool for serverless
-                max_overflow=10
+                pool_recycle=3600,  # Recycle connections hourly so a Cloud SQL-side close is never surfaced to a request.
+                # This backend is a persistent systemd service (2 uvicorn workers), each with its
+                # own engine and pool -- not the many small serverless invocations this pool was
+                # originally sized for (pool_size=5, max_overflow=10, "smaller pool for serverless").
+                # That left only 15 connections per worker; a concurrency spike exhausted it on
+                # 2026-10-02 and every request hung for the full 30s checkout timeout until the
+                # worker was killed. Cloud SQL allows up to 800 connections and ordinarily runs
+                # under 50, so 40/worker (80 total) adds headroom without being anywhere close to
+                # that ceiling.
+                pool_size=20,
+                max_overflow=20,
             )
             from app.core.config import settings
             logger.info(f"Database engine created for environment: {settings.ENV}")
