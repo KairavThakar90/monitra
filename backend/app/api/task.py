@@ -14,7 +14,7 @@ def create_task(
     project_id: int,
     task_in: TaskCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return TaskService.create_task(db, project_id, task_in, current_user)
 
@@ -22,7 +22,7 @@ def create_task(
 def list_tasks(
     project_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return TaskService.list_tasks(db, project_id, current_user)
 
@@ -31,7 +31,7 @@ def get_task(
     project_id: int,
     task_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return TaskService.get_task(db, project_id, task_id, current_user)
 
@@ -41,7 +41,7 @@ def update_task(
     task_id: int,
     task_in: TaskUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return TaskService.update_task(db, project_id, task_id, task_in, current_user)
 
@@ -50,7 +50,7 @@ def archive_task(
     project_id: int,
     task_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     from fastapi import HTTPException
     task = TaskService.get_task(db, project_id, task_id, current_user)

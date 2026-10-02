@@ -20,12 +20,12 @@ router = APIRouter(prefix="/api/v1/screenshot", tags=["Screenshot Privacy"])
 # --- Admin APIs ---
 
 @router.get("/applications", response_model=List[ScreenshotApplicationResponse])
-def list_applications(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def list_applications(db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     # TODO: Add admin role check if needed
     return db.query(ScreenshotApplication).all()
 
 @router.post("/applications", response_model=ScreenshotApplicationResponse)
-def create_application(req: ScreenshotApplicationCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def create_application(req: ScreenshotApplicationCreate, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     app = ScreenshotApplication(**req.dict())
     db.add(app)
     db.commit()
@@ -33,7 +33,7 @@ def create_application(req: ScreenshotApplicationCreate, db: Session = Depends(g
     return app
 
 @router.put("/applications/{app_id}", response_model=ScreenshotApplicationResponse)
-def update_application(app_id: int, req: ScreenshotApplicationUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def update_application(app_id: int, req: ScreenshotApplicationUpdate, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     app = db.query(ScreenshotApplication).filter(ScreenshotApplication.id == app_id).first()
     if not app:
         raise HTTPException(status_code=404, detail="Application not found")
@@ -44,7 +44,7 @@ def update_application(app_id: int, req: ScreenshotApplicationUpdate, db: Sessio
     return app
 
 @router.delete("/applications/{app_id}")
-def delete_application(app_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def delete_application(app_id: int, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     app = db.query(ScreenshotApplication).filter(ScreenshotApplication.id == app_id).first()
     if not app:
         raise HTTPException(status_code=404, detail="Application not found")
@@ -53,11 +53,11 @@ def delete_application(app_id: int, db: Session = Depends(get_db), current_user:
     return {"ok": True}
 
 @router.get("/urls", response_model=List[ScreenshotUrlResponse])
-def list_urls(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def list_urls(db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     return db.query(ScreenshotUrl).all()
 
 @router.post("/urls", response_model=ScreenshotUrlResponse)
-def create_url(req: ScreenshotUrlCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def create_url(req: ScreenshotUrlCreate, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     url = ScreenshotUrl(**req.dict())
     db.add(url)
     db.commit()
@@ -65,7 +65,7 @@ def create_url(req: ScreenshotUrlCreate, db: Session = Depends(get_db), current_
     return url
 
 @router.put("/urls/{url_id}", response_model=ScreenshotUrlResponse)
-def update_url(url_id: int, req: ScreenshotUrlUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def update_url(url_id: int, req: ScreenshotUrlUpdate, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     url = db.query(ScreenshotUrl).filter(ScreenshotUrl.id == url_id).first()
     if not url:
         raise HTTPException(status_code=404, detail="URL not found")
@@ -76,7 +76,7 @@ def update_url(url_id: int, req: ScreenshotUrlUpdate, db: Session = Depends(get_
     return url
 
 @router.delete("/urls/{url_id}")
-def delete_url(url_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def delete_url(url_id: int, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     url = db.query(ScreenshotUrl).filter(ScreenshotUrl.id == url_id).first()
     if not url:
         raise HTTPException(status_code=404, detail="URL not found")
@@ -87,11 +87,11 @@ def delete_url(url_id: int, db: Session = Depends(get_db), current_user: User = 
 # --- User exclusions ---
 
 @router.get("/users/{user_id}/screenshot-exclusions", response_model=List[ScreenshotExclusionResponse])
-def list_user_exclusions(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def list_user_exclusions(user_id: int, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     return db.query(ScreenshotExclusion).filter(ScreenshotExclusion.user_id == user_id).all()
 
 @router.post("/users/{user_id}/screenshot-exclusions", response_model=ScreenshotExclusionResponse)
-def create_exclusion(user_id: int, req: ScreenshotExclusionCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def create_exclusion(user_id: int, req: ScreenshotExclusionCreate, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     if req.user_id != user_id:
         raise HTTPException(status_code=400, detail="User ID mismatch")
     
@@ -119,7 +119,7 @@ def create_exclusion(user_id: int, req: ScreenshotExclusionCreate, db: Session =
     return excl
 
 @router.put("/users/{user_id}/screenshot-exclusions/{exclusion_id}", response_model=ScreenshotExclusionResponse)
-def update_exclusion(user_id: int, exclusion_id: int, req: ScreenshotExclusionUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def update_exclusion(user_id: int, exclusion_id: int, req: ScreenshotExclusionUpdate, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     excl = db.query(ScreenshotExclusion).filter(ScreenshotExclusion.id == exclusion_id, ScreenshotExclusion.user_id == user_id).first()
     if not excl:
         raise HTTPException(status_code=404, detail="Exclusion not found")
@@ -129,7 +129,7 @@ def update_exclusion(user_id: int, exclusion_id: int, req: ScreenshotExclusionUp
     return excl
 
 @router.delete("/users/{user_id}/screenshot-exclusions/{exclusion_id}")
-def delete_exclusion(user_id: int, exclusion_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def delete_exclusion(user_id: int, exclusion_id: int, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     excl = db.query(ScreenshotExclusion).filter(ScreenshotExclusion.id == exclusion_id, ScreenshotExclusion.user_id == user_id).first()
     if not excl:
         raise HTTPException(status_code=404, detail="Exclusion not found")
@@ -140,7 +140,7 @@ def delete_exclusion(user_id: int, exclusion_id: int, db: Session = Depends(get_
 # --- Desktop Config ---
 
 @router.get("/privacy-config", response_model=PrivacyConfigResponse)
-def get_privacy_config(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_privacy_config(db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     # Load all active apps and urls
     apps = db.query(ScreenshotApplication).filter(ScreenshotApplication.is_active == True).all()
     urls = db.query(ScreenshotUrl).filter(ScreenshotUrl.is_active == True).all()

@@ -22,7 +22,7 @@ def record_app_usage(
     time_entry_id: int,
     payload: AppUsageCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return TimeEntryAppUsageService.record_usage(
         db=db,
@@ -39,7 +39,7 @@ def batch_record_app_usage(
     time_entry_id: int,
     payload: AppUsageBatchCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     count, records = TimeEntryAppUsageService.batch_record_usage(
         db=db,
@@ -65,7 +65,7 @@ def get_app_usage(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=10000),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     items, total = TimeEntryAppUsageService.list_usage(
         db=db,
@@ -86,7 +86,7 @@ def get_app_usage(
 def get_app_usage_summary(
     time_entry_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     total, apps = TimeEntryAppUsageService.get_summary(
         db=db,
@@ -112,7 +112,7 @@ def get_app_usage_global(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=10000),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     items, total = TimeEntryAppUsageService.list_usage_global(
         db=db,
@@ -148,7 +148,7 @@ def get_app_usage_summary_global(
         ),
     ),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     total, apps = TimeEntryAppUsageService.get_summary_global(
         db=db,

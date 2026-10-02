@@ -99,7 +99,7 @@ def get_latest_version(
         ),
     ),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """The latest published desktop release, and whether the caller is behind it.
 
@@ -135,7 +135,7 @@ def get_latest_version(
 )
 def get_fleet_client_versions(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Which desktop version each user in the organization was last seen on.
 
@@ -160,7 +160,7 @@ def get_public_latest_release(
         default=None, max_length=32,
         description="CPU architecture: x86_64 or arm64. Required for macOS.",
     ),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """The newest published artifact for one platform.
 
@@ -173,7 +173,7 @@ def get_public_latest_release(
 
 
 @router.get("/releases/downloads", response_model=PublicReleaseIndexResponse)
-def get_public_download_index(db: Session = Depends(get_db)):
+def get_public_download_index(db: Session = Depends(get_db, scope="function")):
     """Every platform's current download, for the website's download page.
 
     This is what makes the download button always current: the page asks for
@@ -187,7 +187,7 @@ def get_public_download_index(db: Session = Depends(get_db)):
 def download_latest_release(
     platform: str = Query(..., max_length=32),
     arch: Optional[str] = Query(default=None, max_length=32),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Redirect straight to the newest published artifact for a platform.
 
@@ -227,7 +227,7 @@ def list_releases(
     platform: Optional[str] = Query(default=None, max_length=32),
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Every release, drafts included. Administrators only."""
     try:
@@ -250,7 +250,7 @@ def list_releases(
 )
 def create_release(
     payload: DesktopReleaseCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Register a built artifact. Created as a draft, never published here.
 
@@ -275,7 +275,7 @@ def create_release(
 def update_release(
     release_id: int,
     payload: DesktopReleaseUpdate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
     current_user: User = Depends(require_release_manager),
 ):
     """Amend a release's notes, its update policy, or its status.
@@ -304,7 +304,7 @@ def update_release(
     response_model=ReleaseReadinessResponse,
     dependencies=[Depends(require_release_manager)],
 )
-def get_version_readiness(version: str = _VERSION_PATH, db: Session = Depends(get_db)):
+def get_version_readiness(version: str = _VERSION_PATH, db: Session = Depends(get_db, scope="function")):
     """Is this version complete and valid enough to publish, and if not, why?
 
     Read-only. Lists every missing or invalid artifact at once, so a release can
@@ -324,7 +324,7 @@ def get_version_readiness(version: str = _VERSION_PATH, db: Session = Depends(ge
     response_model=PublishVersionResponse,
     dependencies=[Depends(require_release_publisher)],
 )
-def publish_version(version: str = _VERSION_PATH, db: Session = Depends(get_db)):
+def publish_version(version: str = _VERSION_PATH, db: Session = Depends(get_db, scope="function")):
     """Publish every required artifact of a version together, or none of them.
 
     The release announcement is queued by this call once the set is complete
@@ -347,7 +347,7 @@ def publish_version(version: str = _VERSION_PATH, db: Session = Depends(get_db))
     response_model=DesktopReleaseRead,
     dependencies=[Depends(require_release_publisher)],
 )
-def publish_release(release_id: int, db: Session = Depends(get_db)):
+def publish_release(release_id: int, db: Session = Depends(get_db, scope="function")):
     """Make a draft live. From this moment clients are offered it.
 
     Refused unless the whole version -- Windows and both macOS architectures --
@@ -370,7 +370,7 @@ def publish_release(release_id: int, db: Session = Depends(get_db)):
     response_model=DesktopReleaseRead,
     dependencies=[Depends(require_release_publisher)],
 )
-def rollback_release(release_id: int, db: Session = Depends(get_db)):
+def rollback_release(release_id: int, db: Session = Depends(get_db, scope="function")):
     """Withdraw a bad release.
 
     The row is kept — deleting it would destroy the rollback inventory and make

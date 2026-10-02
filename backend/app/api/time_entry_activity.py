@@ -42,7 +42,7 @@ router = APIRouter(tags=["Time Entry Activity"])
 def create_activity(
     payload: TimeEntryActivityCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     record = TimeEntryActivityService.record_activity(
         db=db,
@@ -64,7 +64,7 @@ def batch_record_activity(
     time_entry_id: int,
     payload: ActivityBatchCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Batch-upload keyboard/mouse activity windows captured by the desktop
     client. Idempotent per sample via client_event_id."""
@@ -90,7 +90,7 @@ def batch_record_activity(
 def batch_create_activity(
     payload: TimeEntryActivityBatchCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     accepted, failed = TimeEntryActivityService.batch_record_activity(
         db=db,
@@ -119,7 +119,7 @@ def get_today_activity(
                     "only to keep a card correct across a local midnight.",
     ),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Powers the desktop dashboard's TODAY'S ACTIVITY card.
 
@@ -146,7 +146,7 @@ def get_activity_overview(
     start_date: Optional[datetime] = Query(None, description="Start date/time"),
     end_date: Optional[datetime] = Query(None, description="End date/time"),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     data = TimeEntryActivityService.get_overview(
         db=db,
@@ -173,7 +173,7 @@ def get_activity_timeline(
     start_date: Optional[datetime] = Query(None, description="Start date/time"),
     end_date: Optional[datetime] = Query(None, description="End date/time"),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     timeline = TimeEntryActivityService.get_timeline(
         db=db,
@@ -199,7 +199,7 @@ def get_activity_hourly(
     time_entry_id: Optional[int] = Query(None, description="Filter by time entry ID"),
     target_date: Optional[date] = Query(None, alias="date", description="Target date YYYY-MM-DD"),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     hourly_data = TimeEntryActivityService.get_hourly(
         db=db,
@@ -228,7 +228,7 @@ def list_activities(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=10000),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     items, total = TimeEntryActivityService.list_activities(
         db=db,
@@ -260,7 +260,7 @@ def list_activities(
 def get_activity_by_id(
     activity_id: int = Path(..., gt=0),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     record = TimeEntryActivityService.get_activity_by_id(
         db=db,
@@ -283,7 +283,7 @@ def update_activity(
     payload: TimeEntryActivityUpdate,
     activity_id: int = Path(..., gt=0),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     record = TimeEntryActivityService.update_activity(
         db=db,
@@ -306,7 +306,7 @@ def update_activity(
 def delete_activity(
     activity_id: int = Path(..., gt=0),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     TimeEntryActivityService.delete_activity(
         db=db,
@@ -328,7 +328,7 @@ def record_unwanted_activity(
     time_entry_id: int,
     payload: UnwantedActivityCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Record one unwanted-activity detection event (a desktop rule's
     threshold being crossed once). Identity/context fields are derived
@@ -350,7 +350,7 @@ def record_adjustment(
     time_entry_id: int,
     payload: AdjustmentCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """Record a deduction against a time entry's reportable time. The
     original time_entries row is never modified; reports apply

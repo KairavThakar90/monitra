@@ -7,6 +7,28 @@ logger = logging.getLogger(__name__)
 class Settings(BaseSettings):
     DATABASE_URL_DEV: str = ""
     DATABASE_URL: str = ""
+
+    # Connection pool, per process. Every Uvicorn worker builds its own engine, so the
+    # most connections one deployment can open is
+    #     workers x (DB_POOL_SIZE + DB_MAX_OVERFLOW).
+    # The scheduled jobs (deploy/backend/scheduled-jobs) are HTTP calls into the same
+    # workers, so they add nothing to that sum. The defaults give 15 per worker -- the
+    # same ceiling as before -- but wait 10s, not 30s, for a free connection: a busy
+    # server should answer 503 quickly rather than hold a request until nginx gives up.
+    # A serverless deployment multiplies this by its instance count, so it should set
+    # smaller values in its own environment.
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 5
+    DB_POOL_TIMEOUT_SECONDS: float = 10.0
+    DB_POOL_RECYCLE_SECONDS: int = 1800
+    # A connection checked out longer than this is logged when it is returned, with the
+    # request path that held it. 0 turns the log off. Normal requests hold one for
+    # milliseconds; the seconds-long holds are exactly the leaks being hunted.
+    DB_CHECKOUT_WARN_SECONDS: float = 5.0
+    # PostgreSQL's own backstop for a session that opens a transaction and goes quiet:
+    # the server ends the session after this many milliseconds. 0 leaves it off. It is
+    # a safety net, not the fix -- see docs/DB_CONNECTION_LIFECYCLE.md before enabling.
+    DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: int = 0
     EXTERNAL_AUTH_BASE_URL: str = "https://nothing.peakworkos.com"
     EXTERNAL_AUTH_LOGIN_PATH: str = "/wp-json/st-performance/v1/auth/hubstaff/login"
     # Single sign-on: the provider signs its own JWT for the browser handoff, so the

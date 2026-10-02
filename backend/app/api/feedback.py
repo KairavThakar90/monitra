@@ -40,7 +40,7 @@ def submit_feedback(
     feedback_in: FeedbackCreate,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return FeedbackService.submit_feedback(
         db, feedback_in, current_user, background_tasks=background_tasks
@@ -66,7 +66,7 @@ def list_my_feedback(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return FeedbackService.list_my_feedback(db, current_user, page, limit)
 
@@ -85,7 +85,7 @@ def list_my_feedback(
 def get_my_feedback(
     feedback_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return FeedbackService.get_my_feedback(db, current_user, feedback_id)
 
@@ -107,7 +107,7 @@ def list_all_feedback(
     limit: int = Query(20, ge=1, le=100),
     category: Optional[FeedbackCategory] = Query(None),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return FeedbackService.list_all_feedback(
         db, current_user, page, limit, category.value if category else None
@@ -130,7 +130,7 @@ def list_all_feedback(
 def get_feedback(
     feedback_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return FeedbackService.get_feedback(db, current_user, feedback_id)
 
@@ -171,7 +171,7 @@ def update_feedback_status(
     update: FeedbackStatusUpdate,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return FeedbackService.update_status(
         db, current_user, feedback_id, update.status, background_tasks=background_tasks

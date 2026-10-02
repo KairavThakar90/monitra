@@ -58,7 +58,7 @@ def run_daily_rollup(
     user_id: Optional[int] = Query(None, ge=1, description="Restrict the run to one user."),
     dry_run: bool = Query(False, description="Compute and report without writing."),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return _run(day, days, user_id, dry_run, db)
 
@@ -75,7 +75,7 @@ def run_daily_rollup_get(
     user_id: Optional[int] = Query(None, ge=1),
     dry_run: bool = Query(False),
     _: None = Depends(require_dispatch_token),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """GET alias for schedulers that can only issue a GET (Vercel Cron)."""
     return _run(day, days, user_id, dry_run, db)
@@ -96,7 +96,7 @@ def list_daily_summaries(
     end_date: date = Query(..., description="Last day, inclusive."),
     user_id: Optional[int] = Query(None, ge=1, description="Defaults to the caller."),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     rows = DailyActivitySummaryService.list_summaries(
         db, current_user, user_id=user_id, start=start_date, end=end_date,

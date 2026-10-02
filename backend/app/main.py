@@ -1,4 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from app.api.auth import router as auth_router
 from app.api.project import router as project_router
 from app.api.task import router as task_router
@@ -262,6 +264,15 @@ def health_check():
         logger.warning("Could not report WFPM integration in /health", exc_info=True)
         payload["wfpm_timer_sync"] = {"configured": False, "reason": "unavailable"}
 
+    # Pool utilisation of the process that answered. Each worker has its own pool,
+    # so the figure is per worker; sustained `checked_out` near `max_connections`
+    # is the early warning for exhaustion.
+    from app.core.database import pool_snapshot
+
+    pool = pool_snapshot()
+    if pool is not None:
+        payload["database_pool"] = pool
+
     return payload
 
 
@@ -291,3 +302,26 @@ app.add_middleware(
 # of one request so the activity trail can record it without every service
 # taking a Request. See app/core/request_context.py.
 app.middleware("http")(request_context_middleware)
+
+
+@app.exception_handler(SQLAlchemyTimeoutError)
+async def database_pool_exhausted_handler(request: Request, exc: SQLAlchemyTimeoutError):
+    """The pool had no free connection within `DB_POOL_TIMEOUT_SECONDS`.
+
+    Answered 503 with `Retry-After` instead of an unexplained 500, and logged
+    with the pool's state: this is the "QueuePool limit ... reached" failure,
+    and the log line is how it is counted. The desktop queues and retries on
+    any 5xx; a 503 says honestly that the server is busy rather than broken.
+    """
+    from app.core.database import get_engine
+
+    try:
+        state = get_engine().pool.status()
+    except Exception:  # noqa: BLE001
+        state = "unavailable"
+    logger.error("DB_POOL_EXHAUSTED: path=%s pool=%s", request.url.path, state)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "The service is busy; please retry shortly."},
+        headers={"Retry-After": "2"},
+    )

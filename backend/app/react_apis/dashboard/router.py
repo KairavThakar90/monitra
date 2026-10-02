@@ -69,7 +69,7 @@ def common_filters(
                     "Omit for all members.",
     ),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     """The dashboard's filter set -- identical to the Reports page's, resolved
     by the same service. Filters are composable and propagate to every
@@ -114,7 +114,7 @@ def dashboard(
         DEFAULT_TOP_N, ge=1, le=50,
         description="How many rows each of the three top-lists returns.",
     ),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return DashboardService.dashboard(db, filters, top_n)
 
@@ -132,7 +132,7 @@ def top_projects(
     filters=Depends(common_filters),
     paging=_paging,
     sort_by: ListSortField = Query(ListSortField.total_hours),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     page, limit, sort_order, search = paging
     return DashboardService.top_projects(db, filters, search, sort_by.value, sort_order, page, limit)
@@ -151,7 +151,7 @@ def top_members(
     filters=Depends(common_filters),
     paging=_paging,
     sort_by: ListSortField = Query(ListSortField.total_hours),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     page, limit, sort_order, search = paging
     return DashboardService.top_members(db, filters, search, sort_by.value, sort_order, page, limit)
@@ -171,7 +171,7 @@ def top_apps(
     filters=Depends(common_filters),
     paging=_paging,
     sort_by: AppSortField = Query(AppSortField.total_hours),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     page, limit, sort_order, search = paging
     return DashboardService.top_apps(db, filters, search, sort_by.value, sort_order, page, limit)

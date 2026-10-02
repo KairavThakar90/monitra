@@ -24,7 +24,7 @@ router = APIRouter(tags=["URL Usage"])
 def create_url_usage(
     payload: URLUsageCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     record = URLUsageService.record_usage(
         db=db,
@@ -46,7 +46,7 @@ def create_url_usage(
 def batch_url_usage(
     payload: URLUsageBatchCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     accepted, failed = URLUsageService.batch_record_usage(
         db=db,
@@ -76,7 +76,7 @@ def get_time_entry_url_usage(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=10000),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     items, total = URLUsageService.list_usage_for_entry(
         db=db,
@@ -107,7 +107,7 @@ def get_time_entry_url_usage(
 def get_time_entry_url_usage_summary(
     time_entry_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     summary_data = URLUsageService.get_summary_for_entry(
         db=db,
@@ -133,7 +133,7 @@ def get_url_usage_summary_global(
         None, description="Exclusive upper bound on recorded_at"
     ),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     """
     The complete per-page total for a window, aggregated in the database.
@@ -173,7 +173,7 @@ def get_url_usage_global(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=10000),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     items, total = URLUsageService.list_usage_global(
         db=db,

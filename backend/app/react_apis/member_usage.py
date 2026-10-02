@@ -32,6 +32,6 @@ def member_details(
     start_date: Optional[date] = Query(None, description="Start of a date range (inclusive). Must be paired with end_date."),
     end_date: Optional[date] = Query(None, description="End of a date range (inclusive), max 31 days after start_date. Must be paired with start_date."),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db, scope="function"),
 ):
     return MemberUsageService.build_details(db, current_user, member_id, single_date, start_date, end_date)

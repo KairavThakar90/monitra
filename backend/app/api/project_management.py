@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api/v1", tags=["Project Management"])
 
 
 @router.get("/sync/revision", response_model=SyncRevisionRead, summary="Fingerprint of the caller's visible projects, tasks and time entries")
-def sync_revision(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_revision(user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     """What a client polls instead of the lists themselves.
 
     A handful of aggregate queries, no rows. The desktop asks every half
@@ -35,7 +35,7 @@ def sync_revision(user: User = Depends(get_current_user), db: Session = Depends(
 
 
 @router.get("/project-management/metadata", response_model=ProjectManagementMetadata, dependencies=[Depends(get_current_user)], summary="Get project management metadata")
-def project_management_metadata(db: Session = Depends(get_db)):
+def project_management_metadata(db: Session = Depends(get_db, scope="function")):
     roles = [
         RoleRead(id=1, role_type="Administrator", value="administrator"),
         RoleRead(id=2, role_type="Leader", value="leader"),
@@ -50,53 +50,53 @@ def project_management_metadata(db: Session = Depends(get_db)):
 
 
 @router.get("/project-statuses", response_model=list[StatusRead], summary="List project statuses")
-def project_statuses(db: Session = Depends(get_db)):
+def project_statuses(db: Session = Depends(get_db, scope="function")):
     return list(StatusCatalog.project_statuses(db).values())
 
 
 @router.get("/task-statuses", response_model=list[StatusRead], summary="List task statuses")
-def task_statuses(db: Session = Depends(get_db)):
+def task_statuses(db: Session = Depends(get_db, scope="function")):
     return list(StatusCatalog.task_statuses(db).values())
 
 
 @router.post("/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_permission("projects:create"))], summary="Create a project")
-def create_project(payload: ProjectCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_project(payload: ProjectCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectManagementService.create(db, user, payload)
 
 
 @router.get("/projects", response_model=ProjectListResponse, dependencies=[Depends(require_permission("projects:view"))], summary="List projects")
-def list_projects(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), search: Optional[str] = Query(None, max_length=100), status_id: Optional[int] = Query(None, gt=0), leader_id: Optional[int] = Query(None, gt=0), billing_type: Optional[BillingType] = None, include_tasks: bool = Query(True, description="Embed each project's tasks. Pass false when only the project itself is rendered; `task_count` stays correct and `tasks` comes back null."), employee_ids: Optional[list[int]] = Query(None, description="Only projects staffed with at least one of these members."), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_projects(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), search: Optional[str] = Query(None, max_length=100), status_id: Optional[int] = Query(None, gt=0), leader_id: Optional[int] = Query(None, gt=0), billing_type: Optional[BillingType] = None, include_tasks: bool = Query(True, description="Embed each project's tasks. Pass false when only the project itself is rendered; `task_count` stays correct and `tasks` comes back null."), employee_ids: Optional[list[int]] = Query(None, description="Only projects staffed with at least one of these members."), user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectManagementService.list(db, user, page, limit, search, status_id, leader_id, billing_type, include_tasks, employee_ids)
 
 
 @router.get("/projects/hours-summary", response_model=ProjectHoursSummaryResponse, dependencies=[Depends(require_permission("projects:view"))], summary="All-time tracked hours per project")
-def project_hours_summary(project_id: Optional[list[int]] = Query(None, description="Restrict to these project ids. Omit for every project this caller may see."), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def project_hours_summary(project_id: Optional[list[int]] = Query(None, description="Restrict to these project ids. Omit for every project this caller may see."), user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return {"items": ProjectManagementService.hours_summary(db, user, project_id)}
 
 
 @router.post("/projects/{project_id}/members", response_model=ProjectMembersAddResponse, status_code=status.HTTP_200_OK, tags=["Add New Member"], summary="Add members to an existing project")
-def add_project_members(project_id: int, payload: ProjectMembersAddRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def add_project_members(project_id: int, payload: ProjectMembersAddRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectMemberService.add_members(db, project_id, payload.member_ids, user)
 
 @router.get("/projects/{project_id}/members", response_model=ProjectMembersListResponse, tags=["Add New Member"])
-def list_project_members_filtered(project_id: int, page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), member_id: Optional[int] = Query(None, gt=0), search: Optional[str] = Query(None, max_length=100), is_active: Optional[bool] = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_project_members_filtered(project_id: int, page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), member_id: Optional[int] = Query(None, gt=0), search: Optional[str] = Query(None, max_length=100), is_active: Optional[bool] = None, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectMemberService.list_members_filtered(db, project_id, user, page, limit, member_id, search, is_active)
 
 @router.get("/projects/{project_id}/members/{member_id}", response_model=ProjectMemberRead, tags=["Add New Member"])
-def get_project_member(project_id: int, member_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_project_member(project_id: int, member_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectMemberService.get_member(db, project_id, member_id, user)
 
 @router.put("/projects/{project_id}/members/{member_id}", response_model=ProjectMemberRead, tags=["Add New Member"])
-def update_project_member(project_id: int, member_id: int, payload: ProjectMemberUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_project_member(project_id: int, member_id: int, payload: ProjectMemberUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectMemberService.update_member(db, project_id, member_id, payload.user_id, user)
 
 @router.delete("/projects/{project_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Add New Member"])
-def delete_project_member(project_id: int, member_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_project_member(project_id: int, member_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     ProjectMemberService.remove_member(db, project_id, member_id, user)
 
 
 @router.get("/projects/assignable-leaders", summary="List assignable project leaders")
-def assignable_leaders(search: Optional[str] = Query(None, max_length=100), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def assignable_leaders(search: Optional[str] = Query(None, max_length=100), user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     # A leader leads their own projects and cannot assign one to a peer, so the
     # only leader they may pick is themselves -- the picker says exactly what
     # `ProjectManagementService.create` will do rather than offering a choice
@@ -112,7 +112,7 @@ def assignable_leaders(search: Optional[str] = Query(None, max_length=100), user
 
 
 @router.get("/projects/assignable-owners", dependencies=[Depends(require_permission("projects:update"))], summary="List members eligible to own a project")
-def assignable_owners(search: Optional[str] = Query(None, max_length=100), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def assignable_owners(search: Optional[str] = Query(None, max_length=100), user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     # The Owner picker. Who appears here is decided by the same condition
     # `ProjectManagementService` validates `owner_id` against, so the list is
     # a convenience for the form, never the authorization boundary.
@@ -120,7 +120,7 @@ def assignable_owners(search: Optional[str] = Query(None, max_length=100), user:
 
 
 @router.get("/projects/assignable-employees", summary="List assignable project members")
-def assignable_employees(search: Optional[str] = Query(None, max_length=100), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def assignable_employees(search: Optional[str] = Query(None, max_length=100), user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     # Every active member of the organization, whatever their role -- not just
     # `employee`. `ProjectMemberService.add_members` accepts any active user in
     # the organization and checks no role, so filtering to one role here made
@@ -141,40 +141,40 @@ def assignable_employees(search: Optional[str] = Query(None, max_length=100), us
 
 
 @router.get("/projects/{project_id}", response_model=ProjectRead, dependencies=[Depends(require_permission("projects:view"))], summary="Get a project")
-def get_project(project_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_project(project_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectManagementService.get(db, user, project_id)
 
 
 @router.patch("/projects/{project_id}", response_model=ProjectRead, dependencies=[Depends(require_permission("projects:update"))], summary="Update a project")
-def update_project(project_id: int, payload: ProjectUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_project(project_id: int, payload: ProjectUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectManagementService.update(db, user, project_id, payload)
 
 
 @router.delete("/projects/{project_id}", summary="Archive a project", dependencies=[Depends(require_permission("projects:delete"))])
-def delete_project(project_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_project(project_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectManagementService.delete(db, user, project_id)
 
 
 @router.post("/projects/{project_id}/tasks", response_model=TaskRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_permission("tasks:create"))], summary="Create a project task")
-def create_task(project_id: int, payload: TaskCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_task(project_id: int, payload: TaskCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectManagementService.create_task(db, user, project_id, payload)
 
 
 @router.get("/projects/{project_id}/tasks", response_model=list[TaskRead], dependencies=[Depends(require_permission("tasks:view"))], summary="List project tasks")
-def list_tasks(project_id: int, status_id: Optional[int] = Query(None, gt=0), assignee_id: Optional[int] = Query(None, gt=0), search: Optional[str] = Query(None, max_length=100), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_tasks(project_id: int, status_id: Optional[int] = Query(None, gt=0), assignee_id: Optional[int] = Query(None, gt=0), search: Optional[str] = Query(None, max_length=100), user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectManagementService.tasks(db, user, project_id, status_id, assignee_id, search)
 
 
 @router.patch("/projects/{project_id}/tasks/{task_id}", response_model=TaskRead, dependencies=[Depends(require_permission("tasks:update"))], summary="Update a project task")
-def update_task(project_id: int, task_id: int, payload: TaskUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_task(project_id: int, task_id: int, payload: TaskUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectManagementService.update_task(db, user, project_id, task_id, payload)
 
 
 @router.put("/projects/{project_id}/tasks/{task_id}/assignees", response_model=TaskRead, dependencies=[Depends(require_permission("task_assignees:manage"))], summary="Set the members assigned to a task (replaces the whole set)")
-def set_task_assignees(project_id: int, task_id: int, payload: TaskAssigneesSet, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def set_task_assignees(project_id: int, task_id: int, payload: TaskAssigneesSet, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectManagementService.set_task_assignees(db, user, project_id, task_id, payload)
 
 
 @router.delete("/projects/{project_id}/tasks/{task_id}", summary="Archive a project task", dependencies=[Depends(require_permission("tasks:delete"))])
-def delete_task(project_id: int, task_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_task(project_id: int, task_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectManagementService.delete_task(db, user, project_id, task_id)

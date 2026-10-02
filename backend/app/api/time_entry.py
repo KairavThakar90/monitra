@@ -40,7 +40,7 @@ def start_timer(
     response: Response,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     entry, created = TimeEntryService.start_timer(
         db=db,
@@ -77,7 +77,7 @@ def stop_timer(
     request: Request,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     entry, finalized_now = TimeEntryService.stop_timer(
         db=db,
@@ -109,7 +109,7 @@ def list_time_entries(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=10000),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     entries, _ = TimeEntryService.list_time_entries(
         db=db,
@@ -129,7 +129,7 @@ def list_time_entries(
 @router.get("/active", response_model=ActiveTimeEntryRead)
 def get_active_time_entry(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     """The caller's own running entry, with the server clock.
 
@@ -147,7 +147,7 @@ def get_active_time_entry(
 def get_time_entry(
     id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     return _one(db, TimeEntryService.get_time_entry(db, id, current_user))
 
@@ -165,7 +165,7 @@ def transfer_time_entry(
     id: int,
     payload: TimeEntryTransferRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     """Move an already-recorded entry to a different project/task.
 
@@ -188,7 +188,7 @@ def transfer_time_entry(
 def list_time_entry_transfers(
     id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db, scope="function")
 ):
     """The audit trail of every project/task reassignment this entry has had."""
     return TimeEntryService.list_transfers(db, id, current_user)
