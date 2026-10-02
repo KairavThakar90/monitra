@@ -59,8 +59,10 @@ from typing import Optional, Tuple
 
 DESKTOP_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(DESKTOP_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import version  # noqa: E402  - after the path is set up
+from _attestation import load_attestation  # noqa: E402
 
 #: How a built filename maps onto a platform and architecture. Ordered, and
 #: matched against the *filename* the build scripts produce -- the names are
@@ -78,6 +80,12 @@ ARTIFACT_PATTERNS = (
 #: would advertise an update path that does not exist.
 IGNORED_PATTERNS = (re.compile(r"^Monitra-Portable-.*\.zip$", re.I),)
 
+#: The artifacts a version needs before the backend will publish any of it. The
+#: same set as the backend's DESKTOP_REQUIRED_ARTIFACTS default; this script
+#: only *warns* about a gap (the backend is what refuses to publish across it,
+#: and `verify_release_artifacts.py` is what stops the release job earlier).
+REQUIRED_ARTIFACTS = (("win32", None), ("darwin", "arm64"), ("darwin", "x86_64"))
+
 CHUNK = 1024 * 1024
 
 
@@ -90,6 +98,20 @@ def classify(name: str) -> Optional[Tuple[str, Optional[str]]]:
         if pattern.match(name):
             return platform, arch
     return None
+
+
+def signing_of(path: Path):
+    """(signed, signer) as attested for this exact file, else (False, None).
+
+    Read from the `.signature.json` sidecar `attest_signature.py` wrote after
+    verifying the finished artifact. No sidecar, an unreadable one, or one made
+    for a different file all mean "not known to be signed" -- never "signed".
+    """
+    record = load_attestation(path)
+    if record and record.get("signed") is True:
+        signer = record.get("signer")
+        return True, signer if isinstance(signer, str) and signer else None
+    return False, None
 
 
 def sha256_of(path: Path) -> str:
@@ -280,6 +302,7 @@ def main() -> int:
     notes = release_notes(expected)
     failures = 0
     registered = 0
+    seen = set()
 
     for raw in args.artifacts:
         path = Path(raw)
@@ -290,8 +313,11 @@ def main() -> int:
             print(f"{path.name}: not a registrable artifact, skipping")
             continue
         platform, architecture = classification
+        seen.add((platform, architecture))
+        signed, signer = signing_of(path)
 
-        print(f"{path.name} -> {platform}/{architecture or 'any'}")
+        print(f"{path.name} -> {platform}/{architecture or 'any'}"
+              f" ({'signed' if signed else 'NOT signed'})")
         payload = {
             "version": expected,
             "platform": platform,
@@ -302,11 +328,26 @@ def main() -> int:
             "release_notes": notes,
             "force_update": bool(args.force_update),
             "min_supported_version": args.min_supported_version,
+            # What the pipeline verified about the finished file. A process gate
+            # for the backend; the desktop verifies the real signature itself.
+            "signed": signed,
+            "signer": signer,
         }
         if post_release(base_url, token, payload):
             registered += 1
         else:
             failures += 1
+
+    missing = [key for key in REQUIRED_ARTIFACTS if key not in seen]
+    if missing:
+        names = ", ".join(f"{p}/{a}" if a else p for p, a in missing)
+        print(f"\nMISSING required artifact(s): {names}", file=sys.stderr)
+        annotate(
+            "error",
+            f"This release is INCOMPLETE: no artifact was given for {names}. The "
+            "backend will refuse to publish this version until every platform is "
+            "registered, and nobody should be told it is available.",
+        )
 
     print(f"\n{registered} artifact(s) registered as drafts, {failures} failed.")
     if not registered:

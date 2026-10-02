@@ -88,33 +88,51 @@ jobs:
       - name: Build application
         run: .\scripts\build_windows.ps1
 
-      # Inno Setup is preinstalled on windows-latest runners; installing it
-      # explicitly keeps the workflow working if that ever stops being true.
-      - name: Install Inno Setup
+      # Whether a signing certificate is configured is decided ONCE, here, into a
+      # step output, and every later step asks that output.
+      #
+      # It used to be asked as `if: ${{ env.WINDOWS_CERTIFICATE != '' }}` on a
+      # step whose own `env:` defined the variable. A step's `if` is evaluated
+      # before that step's `env` exists -- only workflow- and job-level `env` is
+      # visible to it -- so the condition read an empty string and the signing
+      # step was skipped for good, however many secrets were added. The build
+      # stayed green and unsigned. A secret cannot be used in `if` either, which
+      # is why the value is bound to the environment of a step that *runs*, and
+      # the answer is carried forward as an output.
+      - name: Detect the signing configuration
+        id: signing
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
         run: |
-          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
-            choco install innosetup --no-progress -y
+          if ($env:WINDOWS_CERTIFICATE) {
+            "available=true" >> $env:GITHUB_OUTPUT
+            Write-Host "Windows code signing is configured."
+          } else {
+            "available=false" >> $env:GITHUB_OUTPUT
+            Write-Host "::warning::No Windows signing certificate is configured: this build will be UNSIGNED, and the desktop updater will refuse to install it."
           }
-
-      - name: Build installer
-        run: .\scripts\build_installer.ps1
 
       # Signing is driven entirely by repository secrets, exactly as the macOS
       # job is. With the certificate absent -- the current state -- the build
       # produces an unsigned installer and says so, rather than failing or
-      # pretending. Both the application .exe and the installer that wraps it
-      # are signed: signing only the installer leaves SmartScreen warning about
-      # the program it installs.
+      # pretending.
       #
-      # This runs after build_installer.ps1 and before the checksums, because a
-      # signature changes the file and therefore its SHA-256. Signing after
-      # hashing would publish a digest that matches nothing anyone downloads,
-      # and the desktop updater refuses an artifact whose hash disagrees.
-      - name: Sign the application and installer
+      # The application is signed BEFORE the installer is built. Inno Setup
+      # copies dist\Monitra\ into the installer as it compiles; signing Monitra.exe
+      # afterwards (as this job once did) signed a copy the installer had already
+      # been built without, so the signed installer wrapped an unsigned program
+      # and SmartScreen still warned about the thing it installs. The installer
+      # itself is signed after it is built, below.
+      #
+      # Both come before the checksums, because a signature changes the file and
+      # therefore its SHA-256. Signing after hashing would publish a digest that
+      # matches nothing anyone downloads, and the desktop updater refuses an
+      # artifact whose hash disagrees.
+      - name: Sign the application
+        if: steps.signing.outputs.available == 'true'
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        if: ${{ env.WINDOWS_CERTIFICATE != '' }}
         run: |
           $pfx = Join-Path $env:RUNNER_TEMP 'monitra-signing.pfx'
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
@@ -127,22 +145,68 @@ jobs:
             # RFC 3161 timestamping: without it every signature stops
             # validating the day the certificate expires, including on builds
             # already installed on staff machines.
-            foreach ($target in @(
-              'dist\Monitra\Monitra.exe',
-              'dist\installer\Monitra-Setup-*.exe'
-            )) {
-              Get-ChildItem $target | ForEach-Object {
-                & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD `
-                  /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
-                  /d "Monitra" $_.FullName
-                if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($_.Name)" }
-              }
-            }
-            & $signtool.FullName verify /pa /v 'dist\installer\Monitra-Setup-*.exe'
-            if ($LASTEXITCODE -ne 0) { throw "signature verification failed" }
+            & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD `
+              /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+              /d "Monitra" 'dist\Monitra\Monitra.exe'
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed for Monitra.exe" }
+            & $signtool.FullName verify /pa /v 'dist\Monitra\Monitra.exe'
+            if ($LASTEXITCODE -ne 0) { throw "Monitra.exe is not validly signed after signing" }
           }
           finally {
             Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+          }
+
+      # Inno Setup is preinstalled on windows-latest runners; installing it
+      # explicitly keeps the workflow working if that ever stops being true.
+      - name: Install Inno Setup
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build installer
+        run: .\scripts\build_installer.ps1
+
+      - name: Sign the installer
+        if: steps.signing.outputs.available == 'true'
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'monitra-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          try {
+            $signtool = Get-ChildItem `
+              "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+              Sort-Object FullName | Select-Object -Last 1
+            if (-not $signtool) { throw "signtool.exe not found on this runner." }
+            Get-ChildItem 'dist\installer\Monitra-Setup-*.exe' | ForEach-Object {
+              & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD `
+                /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+                /d "Monitra" $_.FullName
+              if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($_.Name)" }
+            }
+          }
+          finally {
+            Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+          }
+
+      # Read the signature back from the FINISHED installer and record what was
+      # found next to it (`Monitra-Setup-<v>.exe.signature.json`). Uses the same
+      # verifier the desktop updater runs on a staff machine, so a file this step
+      # accepts is a file the updater will accept -- including the publisher pin,
+      # when one is configured. With signing configured, "not signed" can only
+      # mean the signing step failed, so it fails the build; without it, the
+      # sidecar honestly says `signed: false`.
+      - name: Verify the installer's signature and record it
+        env:
+          SIGNING_AVAILABLE: ${{ steps.signing.outputs.available }}
+        run: |
+          Get-ChildItem 'dist\installer\Monitra-Setup-*.exe' | ForEach-Object {
+            $attestArgs = @('tools/attest_signature.py', '--platform', 'win32', '--artifact', $_.FullName)
+            if ($env:SIGNING_AVAILABLE -eq 'true') { $attestArgs += '--require-signed' }
+            python @attestArgs
+            if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $($_.Name)" }
           }
 
       - name: Build portable package
@@ -177,6 +241,7 @@ jobs:
           path: |
             desktop/dist/installer/Monitra-Setup-*.exe
             desktop/dist/installer/Monitra-Setup-*.exe.sha256
+            desktop/dist/installer/Monitra-Setup-*.exe.signature.json
             desktop/dist/Monitra-Portable-*.zip
             desktop/dist/Monitra-Portable-*.zip.sha256
           if-no-files-found: error
@@ -259,14 +324,41 @@ jobs:
       # they are absent -- which is the current state -- the build produces an
       # unsigned .app and .dmg and says so, rather than failing or pretending.
       # See BUILD.md "Signing and notarization" for the exact secrets to add.
-      # The `secrets` context cannot be used in a step-level `if`, so the value
-      # is bound to an env var first and the presence check is made on that.
+      #
+      # The `secrets` context cannot be used in a step-level `if`, and neither can
+      # the step's *own* `env:` (a step's `if` is evaluated before its `env`
+      # exists -- the earlier `if: env.X != ''` conditions here read an empty
+      # string and never ran). So the secrets are bound to the environment of a
+      # step that RUNS, which decides once and publishes the answer as outputs
+      # the later steps' conditions read.
+      - name: Detect the signing configuration
+        id: signing
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+        run: |
+          if [ -n "$MACOS_CERTIFICATE" ]; then
+            echo "certificate=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "certificate=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No macOS signing certificate is configured: this build will be UNSIGNED and un-notarized."
+          fi
+          if [ -n "$MACOS_CERTIFICATE" ] && [ -n "$MACOS_NOTARY_APPLE_ID" ] && [ -n "$MACOS_NOTARY_TEAM_ID" ] \
+               && [ -n "$MACOS_NOTARY_PASSWORD" ] && [ -n "$MACOS_CODESIGN_IDENTITY" ]; then
+            echo "notarize=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "notarize=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Import signing certificate
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
-        if: ${{ env.MACOS_CERTIFICATE != '' }}
+        if: steps.signing.outputs.certificate == 'true'
         run: |
           echo "$MACOS_CERTIFICATE" | base64 --decode > /tmp/certificate.p12
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
@@ -304,7 +396,7 @@ jobs:
           MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
           MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
           MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
-        if: ${{ env.MACOS_NOTARY_APPLE_ID != '' && env.MACOS_NOTARY_TEAM_ID != '' && env.MACOS_NOTARY_PASSWORD != '' && env.MACOS_CODESIGN_IDENTITY != '' }}
+        if: steps.signing.outputs.notarize == 'true'
         run: |
           xcrun notarytool store-credentials "monitra-notary" \
             --apple-id "$MACOS_NOTARY_APPLE_ID" \
@@ -354,6 +446,22 @@ jobs:
           chmod +x scripts/smoke_test_package.sh
           ./scripts/smoke_test_package.sh
 
+      # Read the signature, Gatekeeper verdict and notarization staple back from the
+      # FINISHED dmg and record what was found beside it. With notarization
+      # configured, anything but "signed" means the build or notarization step
+      # failed, so it fails the run; without it, the sidecar honestly says
+      # `signed: false`. Never executed on a real Mac by this project's tests --
+      # see docs/Desktop_Release_Runbook.md.
+      - name: Verify the dmg's signature and record it
+        env:
+          NOTARIZED: ${{ steps.signing.outputs.notarize }}
+        run: |
+          flag=""
+          if [ "$NOTARIZED" = "true" ]; then flag="--require-signed"; fi
+          for dmg in dist/Monitra-macOS-*.dmg; do
+            python tools/attest_signature.py --platform darwin --artifact "$dmg" $flag
+          done
+
       - name: Checksums
         run: |
           for dmg in dist/Monitra-macOS-*.dmg; do
@@ -368,6 +476,7 @@ jobs:
           path: |
             desktop/dist/Monitra-macOS-*.dmg
             desktop/dist/Monitra-macOS-*.dmg.sha256
+            desktop/dist/Monitra-macOS-*.dmg.signature.json
           if-no-files-found: error
           retention-days: 30
 
@@ -415,6 +524,25 @@ jobs:
         with:
           path: artifacts
 
+      # Judge the whole set BEFORE anything is published or registered: all three
+      # installers present once, named for this version, each matching its
+      # checksum, the tag agreeing with version.py, and -- when the repository
+      # variable REQUIRE_SIGNED_RELEASE is "true" -- every one validly signed.
+      # Without this a macOS runner that failed still produced a release, a wrong
+      # tag left a draft GitHub release with no backend rows, and "signed" was
+      # whatever the signing step claimed. The backend repeats the completeness and
+      # signing checks at publish time, so this is the early, loud half of a gate
+      # that does not depend on CI having run it. Set REQUIRE_SIGNED_RELEASE once
+      # the certificates are in place.
+      - name: Verify the artifact set
+        working-directory: desktop
+        env:
+          REQUIRE_SIGNED: ${{ vars.REQUIRE_SIGNED_RELEASE }}
+        run: |
+          flag=""
+          if [ "$REQUIRE_SIGNED" = "true" ]; then flag="--require-signed"; fi
+          python tools/verify_release_artifacts.py --artifacts ../artifacts --tag "${RELEASE_TAG}" $flag
+
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
@@ -456,7 +584,9 @@ jobs:
             Python is not required — everything the application needs is inside
             the package.
 
-            Each artifact has a `.sha256` sidecar. To verify a download:
+            Each artifact has a `.sha256` sidecar, and a `.signature.json` recording
+            whether its code signature was verified when it was built. To verify a
+            download:
             `Get-FileHash <file> -Algorithm SHA256` on Windows,
             `shasum -a 256 <file>` on macOS.
 
