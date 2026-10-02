@@ -1,5 +1,6 @@
 import React, { useCallback, useLayoutEffect, useEffect, useRef, useState } from "react";
 import { AppIcon } from "../../../components/AppIcon";
+import { formatHoursAsHMS } from "../../../utils/duration";
 import { brand } from "./theme";
 
 /** Measures a block element so SVG charts can use real pixel coordinates. */
@@ -438,66 +439,208 @@ export interface DonutSlice {
   color: string;
 }
 
-export const Donut: React.FC<{ slices: DonutSlice[]; size?: number; centerLabel: string; centerValue: string }> = ({
+/** A zero-width rectangle at the pointer, in the shape `FloatingCard` anchors to. */
+const pointRect = (x: number, y: number): DOMRect =>
+  ({
+    left: x,
+    right: x,
+    top: y - 8,
+    bottom: y + 8,
+    width: 0,
+    height: 16,
+    x,
+    y: y - 8,
+    toJSON: () => ({}),
+  }) as DOMRect;
+
+const formatShare = (share: number) => `${(share * 100).toFixed(1)}%`;
+
+/**
+ * The card a donut arc and its list row both show on hover, so the two read
+ * identically. `share` is the fraction (0..1) of the chart's whole; `note` is
+ * for a row that is only part of an arc.
+ */
+export const SliceTooltip: React.FC<{
+  label: string;
+  color: string;
+  value: string;
+  share: number | null;
+  note?: string;
+}> = ({ label, color, value, share, note }) => (
+  <div role="tooltip" className="min-w-[160px] max-w-[260px] rounded-xl border border-[#E2E8F0] bg-white px-3 py-2 shadow-lg">
+    <div className="flex items-center gap-2">
+      <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: color }} />
+      <span className="truncate text-[12px] font-semibold text-[#0F172A]">{label}</span>
+    </div>
+    <div className="mt-1 flex items-baseline gap-2">
+      <span className="font-mono text-[12px] font-bold text-[#0F172A]">{value}</span>
+      {share !== null && <span className="text-[11px] text-[#64748B]">{formatShare(share)} of total</span>}
+    </div>
+    {note && <div className="mt-1 text-[11px] text-[#94A3B8]">{note}</div>}
+  </div>
+);
+
+/**
+ * One list row that stands for a donut arc.
+ *
+ * Hovering it reports the arc's label through `onActiveChange` (the donut
+ * highlights that arc) and opens `tooltip`; the row itself is highlighted
+ * whenever its arc is the active one, including when the pointer is on the
+ * arc rather than on the row. A row that has no arc of its own passes
+ * `sliceLabel={null}` and still gets its tooltip.
+ */
+export const SliceRow: React.FC<{
+  sliceLabel: string | null;
+  activeLabel: string | null;
+  onActiveChange: (label: string | null) => void;
+  tooltip: React.ReactNode;
+  className?: string;
+  as?: "div" | "li";
+  children: React.ReactNode;
+}> = ({ sliceLabel, activeLabel, onActiveChange, tooltip, className = "", as: Tag = "div", children }) => {
+  const { rect, bind } = useHoverAnchor();
+  const active = sliceLabel !== null && activeLabel === sliceLabel;
+  return (
+    <Tag
+      className={`rounded-md transition-colors ${active ? "bg-slate-100" : ""} ${className}`}
+      onMouseEnter={(event: React.MouseEvent<HTMLElement>) => {
+        bind.onMouseEnter(event);
+        onActiveChange(sliceLabel);
+      }}
+      onMouseLeave={() => {
+        bind.onMouseLeave();
+        onActiveChange(null);
+      }}
+    >
+      {children}
+      <FloatingCard rect={rect}>{tooltip}</FloatingCard>
+    </Tag>
+  );
+};
+
+export const Donut: React.FC<{
+  slices: DonutSlice[];
+  size?: number;
+  centerLabel: string;
+  centerValue: string;
+  /** Renders a slice's value in its tooltip. Slices are in hours. */
+  formatValue?: (value: number) => string;
+  /** The arc to highlight from outside, e.g. while a list row is hovered. */
+  activeLabel?: string | null;
+  /** Called with the hovered arc's label, or null when the pointer leaves it. */
+  onActiveChange?: (label: string | null) => void;
+}> = ({
   slices,
   size = 168,
   centerLabel,
   centerValue,
+  formatValue = formatHoursAsHMS,
+  activeLabel = null,
+  onActiveChange,
 }) => {
   const { ref: viewRef, inView } = useInView({ threshold: 0.1, triggerOnce: false });
+  const [hover, setHover] = useState<{ label: string; rect: DOMRect } | null>(null);
   const total = slices.reduce((sum, s) => sum + s.value, 0) || 1;
   const stroke = 18;
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
   const gap = 3; // surface gap in px of circumference
   const centerValueFontSize = centerValue.length > 8 ? 16 : centerValue.length > 6 ? 20 : 24;
+  const active = hover?.label ?? activeLabel;
+  const hovered = hover ? slices.find((s) => s.label === hover.label) : undefined;
+  const isHovering = hover !== null;
+
+  const clear = useCallback(() => {
+    setHover(null);
+    onActiveChange?.(null);
+  }, [onActiveChange]);
+
+  // The card is anchored to a point on screen, so it is stale once anything scrolls.
+  useEffect(() => {
+    if (!isHovering) return;
+    window.addEventListener("scroll", clear, true);
+    return () => window.removeEventListener("scroll", clear, true);
+  }, [isHovering, clear]);
+
+  const point = (label: string) => (event: React.MouseEvent) => {
+    setHover({ label, rect: pointRect(event.clientX, event.clientY) });
+    onActiveChange?.(label);
+  };
 
   let offset = 0;
 
   return (
-    <svg ref={viewRef} width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={centerLabel}>
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#F1F5F9" strokeWidth={stroke} />
-      <g transform={`rotate(-90 ${size / 2} ${size / 2})`}>
-        {slices.map((s, index) => {
-          const len = (s.value / total) * c;
-          const dash = `${Math.max(len - gap, 0)} ${c - Math.max(len - gap, 0)}`;
-          const initialDash = `0 ${c}`;
-          const el = (
-            <circle
-              key={s.label}
-              cx={size / 2}
-              cy={size / 2}
-              r={r}
-              fill="none"
-              stroke={s.color}
-              strokeWidth={stroke}
-              strokeDasharray={inView ? dash : initialDash}
-              strokeDashoffset={-offset}
-              strokeLinecap="butt"
-              className="transition-all duration-1000 ease-out"
-              style={{ transitionDelay: `${index * 100}ms` }}
-            />
-          );
-          offset += len;
-          return el;
-        })}
-      </g>
-      <text
-        x={size / 2}
-        y={size / 2 - 2}
-        textAnchor="middle"
-        fontSize={centerValueFontSize}
-        fontWeight="800"
-        fill={brand.ink}
-        textLength={Math.min(size - stroke - 8, centerValue.length * centerValueFontSize * 0.65)}
-        lengthAdjust="spacingAndGlyphs"
+    <>
+      <svg
+        ref={viewRef}
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        role="img"
+        aria-label={centerLabel}
+        className="overflow-visible"
       >
-        {centerValue}
-      </text>
-      <text x={size / 2} y={size / 2 + 18} textAnchor="middle" fontSize="11" fill={brand.subtle}>
-        {centerLabel}
-      </text>
-    </svg>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#F1F5F9" strokeWidth={stroke} pointerEvents="none" />
+        <g transform={`rotate(-90 ${size / 2} ${size / 2})`}>
+          {slices.map((s, index) => {
+            const len = (s.value / total) * c;
+            const dash = `${Math.max(len - gap, 0)} ${c - Math.max(len - gap, 0)}`;
+            const initialDash = `0 ${c}`;
+            const isActive = active === s.label;
+            const el = (
+              <circle
+                key={s.label}
+                cx={size / 2}
+                cy={size / 2}
+                r={r}
+                fill="none"
+                stroke={s.color}
+                strokeWidth={isActive ? stroke + 4 : stroke}
+                strokeDasharray={inView ? dash : initialDash}
+                strokeDashoffset={-offset}
+                strokeLinecap="butt"
+                opacity={active && !isActive ? 0.35 : 1}
+                // The arc draws in over a second; hover feedback must not wait for that.
+                style={{
+                  transition: `stroke-dasharray 1000ms ease-out ${index * 100}ms, stroke-width 150ms ease-out, opacity 150ms ease-out`,
+                }}
+                onMouseEnter={point(s.label)}
+                onMouseMove={point(s.label)}
+                onMouseLeave={clear}
+              />
+            );
+            offset += len;
+            return el;
+          })}
+        </g>
+        <text
+          x={size / 2}
+          y={size / 2 - 2}
+          textAnchor="middle"
+          fontSize={centerValueFontSize}
+          fontWeight="800"
+          fill={brand.ink}
+          textLength={Math.min(size - stroke - 8, centerValue.length * centerValueFontSize * 0.65)}
+          lengthAdjust="spacingAndGlyphs"
+          pointerEvents="none"
+        >
+          {centerValue}
+        </text>
+        <text x={size / 2} y={size / 2 + 18} textAnchor="middle" fontSize="11" fill={brand.subtle} pointerEvents="none">
+          {centerLabel}
+        </text>
+      </svg>
+      {hover && hovered && (
+        <FloatingCard rect={hover.rect}>
+          <SliceTooltip
+            label={hovered.label}
+            color={hovered.color}
+            value={formatValue(hovered.value)}
+            share={hovered.value / total}
+          />
+        </FloatingCard>
+      )}
+    </>
   );
 };
 
@@ -512,16 +655,56 @@ export const Donut: React.FC<{ slices: DonutSlice[]; size?: number; centerLabel:
  * what maps a legend row back to its arc in the donut.
  */
 export const Legend: React.FC<{
-  items: { label: string; color: string; value?: string; icon?: React.ReactNode }[];
-}> = ({ items }) => (
-  <ul className="flex flex-wrap items-center gap-x-5 gap-y-2">
-    {items.map((i) => (
-      <li key={i.label} className="flex items-center gap-2">
-        <span className="h-2.5 w-2.5 rounded-sm" style={{ background: i.color }} />
-        {i.icon}
-        <span className="text-[12px] text-[#64748B]">{i.label}</span>
-        {i.value && <span className="text-[12px] font-bold text-[#0F172A]">{i.value}</span>}
-      </li>
-    ))}
-  </ul>
-);
+  /** `rawValue` is the slice's value in the donut's own scale; it gives the tooltip its share. */
+  items: { label: string; color: string; value?: string; icon?: React.ReactNode; rawValue?: number }[];
+  /**
+   * Pass both to link the legend to a donut: hovering a row highlights its arc
+   * and opens the same tooltip the arc shows, and hovering the arc highlights
+   * the row. Without them the legend is static.
+   */
+  activeLabel?: string | null;
+  onActiveChange?: (label: string | null) => void;
+}> = ({ items, activeLabel = null, onActiveChange }) => {
+  const total = items.reduce((sum, i) => sum + (i.rawValue ?? 0), 0);
+  return (
+    <ul className="flex flex-wrap items-center gap-x-5 gap-y-2">
+      {items.map((i) => {
+        const content = (
+          <>
+            <span className="h-2.5 w-2.5 rounded-sm" style={{ background: i.color }} />
+            {i.icon}
+            <span className="text-[12px] text-[#64748B]">{i.label}</span>
+            {i.value && <span className="text-[12px] font-bold text-[#0F172A]">{i.value}</span>}
+          </>
+        );
+        if (!onActiveChange) {
+          return (
+            <li key={i.label} className="flex items-center gap-2">
+              {content}
+            </li>
+          );
+        }
+        return (
+          <SliceRow
+            key={i.label}
+            as="li"
+            sliceLabel={i.label}
+            activeLabel={activeLabel}
+            onActiveChange={onActiveChange}
+            className="-mx-1.5 flex items-center gap-2 px-1.5 py-0.5"
+            tooltip={
+              <SliceTooltip
+                label={i.label}
+                color={i.color}
+                value={i.value ?? ""}
+                share={i.rawValue !== undefined && total > 0 ? i.rawValue / total : null}
+              />
+            }
+          >
+            {content}
+          </SliceRow>
+        );
+      })}
+    </ul>
+  );
+};

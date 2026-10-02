@@ -89,6 +89,8 @@ export const MemberReports: React.FC = () => {
 
   const [range, setRange] = useState<DateRange>(initialRange);
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
+  // The Distribution arc currently highlighted, from the arc or from its legend row.
+  const [activeSlice, setActiveSlice] = useState<string | null>(null);
 
   const config = REPORTS[reportId as ReportId];
 
@@ -373,12 +375,17 @@ export const MemberReports: React.FC = () => {
                   // The slices' own total, not the session total: a ring whose
                   // centre disagrees with its arcs is the bug this page had.
                   centerValue={formatHMS(distributionSeconds)}
+                  activeLabel={activeSlice}
+                  onActiveChange={setActiveSlice}
                 />
                 <Legend
+                  activeLabel={activeSlice}
+                  onActiveChange={setActiveSlice}
                   items={donutSlices.map((slice) => ({
                     label: slice.label,
                     color: slice.color,
                     value: formatHoursAsHMS(slice.value),
+                    rawValue: slice.value,
                     // The remainder arc aggregates several apps; no one mark
                     // stands for it.
                     icon:

@@ -155,6 +155,8 @@ export const DashboardV2: React.FC = () => {
   const navigate = useNavigate();
   const [range, setRange] = useState<DateRange>(DEFAULT_RANGE);
   const [projectTab, setProjectTab] = useState<ProjectFilterTab>("top");
+  // The Top Apps arc currently highlighted, from the arc or from its legend row.
+  const [activeApp, setActiveApp] = useState<string | null>(null);
   /** Empty means every project -- the convention every other filter uses. */
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
   const { data: allProjects } = useGetAllProjectsQuery();
@@ -531,14 +533,19 @@ export const DashboardV2: React.FC = () => {
                       slices={appSlices}
                       centerLabel="Total App Time"
                       centerValue={formatHoursAsHMS(totalAppHours)}
+                      activeLabel={activeApp}
+                      onActiveChange={setActiveApp}
                     />
                     {/* Without this the donut was four unlabelled arcs — the
                         app names were nowhere on the card. */}
                     <Legend
+                      activeLabel={activeApp}
+                      onActiveChange={setActiveApp}
                       items={appSlices.map((slice) => ({
                         label: slice.label,
                         color: slice.color,
                         value: formatHoursAsHMS(slice.value),
+                        rawValue: slice.value,
                         icon: <AppIcon name={slice.label} size={16} />,
                       }))}
                     />

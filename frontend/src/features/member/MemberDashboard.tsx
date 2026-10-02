@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { MemberShell } from "./MemberShell";
 import { Card, EmptyState, ErrorNote } from "./MemberUi";
-import { Sparkline, TrendAreaChart, RankedBars, Donut, Legend } from "../dashboard/v2/charts";
+import { Sparkline, TrendAreaChart, RankedBars, Donut, Legend, SliceRow, SliceTooltip } from "../dashboard/v2/charts";
 import { AppIcon } from "../../components/AppIcon";
 import { DateRangeFilter, DEFAULT_RANGE } from "../dashboard/v2/filters";
 import type { DateRange } from "../dashboard/v2/filters";
@@ -35,6 +35,9 @@ const isoOf = (d: Date) =>
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TOP_N = 10;
+/** Apps beyond this many are folded into one grey arc, named by `OTHER_APPS_LABEL`. */
+const DONUT_NAMED_APPS = 5;
+const OTHER_APPS_LABEL = "Other apps";
 
 /** The equally long span immediately before the selected one, for the deltas. */
 const previousRange = (range: DateRange): { start_date: string; end_date: string } => {
@@ -52,6 +55,8 @@ const longDate = (iso: string) =>
 export const MemberDashboard: React.FC = () => {
   const navigate = useNavigate();
   const [range, setRange] = useState<DateRange>(DEFAULT_RANGE);
+  // The donut arc currently highlighted, from the arc or from its list row.
+  const [activeApp, setActiveApp] = useState<string | null>(null);
 
   const { data, isFetching, isError } = useGetReactDashboardQuery({
     start_date: range.from,
@@ -152,7 +157,7 @@ export const MemberDashboard: React.FC = () => {
   /** Five named arcs plus the rest, so the donut is honest part-to-whole. */
   const appSlices = useMemo(() => {
     const named: { label: string; value: number; color: string }[] = topApps
-      .slice(0, 5)
+      .slice(0, DONUT_NAMED_APPS)
       .map((app, i) => ({
         label: app.app_name,
         value: app.total_hours,
@@ -160,7 +165,7 @@ export const MemberDashboard: React.FC = () => {
       }));
     const rest = totalAppHours - named.reduce((sum, slice) => sum + slice.value, 0);
     if (rest > 0.01) {
-      named.push({ label: "Other apps", value: Math.round(rest * 100) / 100, color: brand.subtle });
+      named.push({ label: OTHER_APPS_LABEL, value: Math.round(rest * 100) / 100, color: brand.subtle });
     }
     return named;
   }, [topApps, totalAppHours]);
@@ -372,21 +377,46 @@ export const MemberDashboard: React.FC = () => {
                     slices={appSlices}
                     centerLabel="Total App Time"
                     centerValue={formatHoursAsHMS(totalAppHours)}
+                    activeLabel={activeApp}
+                    onActiveChange={setActiveApp}
                   />
-                  <div className="w-full max-w-md space-y-2">
-                    {topApps.slice(0, 8).map((app, i) => (
-                      <div key={app.app_id} className="flex items-center gap-3 text-[13px]">
-                        <span
-                          className="h-2.5 w-2.5 shrink-0 rounded-full"
-                          style={{ backgroundColor: series[i % series.length] }}
-                        />
-                        <AppIcon name={app.app_name} size={20} />
-                        <span className="min-w-0 flex-1 truncate font-semibold text-[#0F172A]">{app.app_name}</span>
-                        <span className="shrink-0 font-mono text-[#64748B]">
-                          {formatHoursAsHMS(app.total_hours)}
-                        </span>
-                      </div>
-                    ))}
+                  <div className="w-full max-w-md space-y-1">
+                    {topApps.slice(0, 8).map((app, i) => {
+                      // Rows past the donut's named arcs are drawn inside the grey
+                      // "Other apps" arc, so they take its colour and highlight it.
+                      const inOther = i >= DONUT_NAMED_APPS;
+                      const arcLabel = inOther
+                        ? appSlices.some((slice) => slice.label === OTHER_APPS_LABEL)
+                          ? OTHER_APPS_LABEL
+                          : null
+                        : app.app_name;
+                      const color = inOther ? brand.subtle : series[i % series.length];
+                      return (
+                        <SliceRow
+                          key={app.app_id}
+                          sliceLabel={arcLabel}
+                          activeLabel={activeApp}
+                          onActiveChange={setActiveApp}
+                          className="flex items-center gap-3 px-2 py-0.5 text-[13px]"
+                          tooltip={
+                            <SliceTooltip
+                              label={app.app_name}
+                              color={color}
+                              value={formatHoursAsHMS(app.total_hours)}
+                              share={totalAppHours > 0 ? app.total_hours / totalAppHours : null}
+                              note={arcLabel === OTHER_APPS_LABEL ? `Counted in "${OTHER_APPS_LABEL}" on the chart` : undefined}
+                            />
+                          }
+                        >
+                          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+                          <AppIcon name={app.app_name} size={20} />
+                          <span className="min-w-0 flex-1 truncate font-semibold text-[#0F172A]">{app.app_name}</span>
+                          <span className="shrink-0 font-mono text-[#64748B]">
+                            {formatHoursAsHMS(app.total_hours)}
+                          </span>
+                        </SliceRow>
+                      );
+                    })}
                   </div>
                 </div>
               )}
