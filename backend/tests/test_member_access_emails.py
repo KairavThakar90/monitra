@@ -130,6 +130,12 @@ class ContentTests(unittest.TestCase):
         self.assertIn("allowed your account to add tasks", email.text)
         self.assertIn("resolved", email.text)
 
+    def test_allowed_add_task_has_no_button(self):
+        email = self.build("add_tasks", True)
+        self.assertNotIn("Open Monitra", email.html)
+        self.assertNotIn("Open Monitra", email.text)
+        self.assertNotIn("/login", email.html)
+
     def test_the_sign_in_button_only_exists_when_allowed_and_the_url_is_https(self):
         self.assertIn("https://staff.example.com/login", self.build("login", True).html)
         self.assertIn("https://staff.example.com/login", self.build("login", True).text)

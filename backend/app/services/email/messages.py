@@ -2436,7 +2436,7 @@ MEMBER_ACCESS_PRESENTATION: dict[tuple[str, bool], dict[str, str]] = {
             "before. If adding a task still does not work, please contact your "
             "administrator or HR."
         ),
-        "cta": "Open Monitra",
+        "cta": "",
     },
 }
 
