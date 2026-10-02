@@ -74,6 +74,9 @@ class UpdateDialog(QDialog):
     update_requested = Signal()
     #: The user chose Later. Only ever emitted for an optional update.
     postponed = Signal()
+    #: The user asked to fetch the update by hand, after the automatic path
+    #: failed or was refused. The window opens the link; the dialog never does.
+    manual_download_requested = Signal()
 
     DIALOG_WIDTH = 460
 
@@ -190,6 +193,16 @@ class UpdateDialog(QDialog):
         buttons.setSpacing(10)
         buttons.addStretch(1)
 
+        # Offered only after a failure (`show_error`), never up front: the
+        # automatic path is the normal one, and a manual link beside it from the
+        # start would invite people to skip a verified install.
+        self._manual_button = QPushButton("Download manually", self.card)
+        self._manual_button.setObjectName("UpdateManual")
+        self._manual_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._manual_button.clicked.connect(self.manual_download_requested.emit)
+        self._manual_button.hide()
+        buttons.addWidget(self._manual_button)
+
         self._later_button: Optional[QPushButton] = None
         if not self._mandatory:
             # Absent entirely for a mandatory update, rather than present and
@@ -283,6 +296,15 @@ class UpdateDialog(QDialog):
                 padding: 8px 18px;
             }}
             QPushButton#UpdateLater:hover {{ background: #F4F6FB; }}
+            QPushButton#UpdateManual {{
+                background: #FFFFFF;
+                border: 1px solid {BORDER_MID};
+                border-radius: 8px;
+                color: {PRIMARY};
+                font-size: 13px;
+                padding: 8px 18px;
+            }}
+            QPushButton#UpdateManual:hover {{ background: #F4F6FB; }}
             QPushButton#UpdateNow {{
                 background: {BUTTON_GRADIENT};
                 border: none;
@@ -314,6 +336,7 @@ class UpdateDialog(QDialog):
             # which is not a thing this dialog offers.
             self._later_button.hide()
         self._status.hide()
+        self._manual_button.hide()
         self._progress.setValue(0)
         self._progress.setFormat("Preparing…")
         self._progress.show()
@@ -354,17 +377,20 @@ class UpdateDialog(QDialog):
         self._progress.setRange(0, 0)
         self._progress.setFormat("Verifying…")
 
-    def show_error(self, message: str) -> None:
+    def show_error(self, message: str, can_download_manually: bool = False) -> None:
         """Report a failed attempt and offer to try again.
 
         The dialog stays open: the user asked for an update and is entitled to
         know it did not happen. For a mandatory update it must stay open, since
-        there is nowhere else for them to go.
+        there is nowhere else for them to go -- which is exactly why a manual
+        download is offered here when there is a safe link to one: an update
+        that cannot install itself must not be a dead end.
         """
         self._working = False
         self._progress.hide()
         self._status.setText(message)
         self._status.show()
+        self._manual_button.setVisible(bool(can_download_manually))
         self._update_button.setEnabled(True)
         self._update_button.setText("Try Again")
         if self._later_button is not None:

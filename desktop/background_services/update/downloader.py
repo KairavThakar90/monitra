@@ -33,12 +33,14 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
 from core.logging_setup import get_logger
 from core.paths import data_dir
+
+from . import policy
 
 log = get_logger("updates.download")
 
@@ -173,14 +175,17 @@ def download_and_verify(
     :raises DownloadError: on any failure. The installed application is
         untouched in every case, and no partial file survives.
     """
-    if not url.lower().startswith("https://"):
+    problem = policy.check_url(url)
+    if problem:
         # The digest already protects the *contents*, but plain HTTP also
         # exposes which build each machine is fetching and lets an active
-        # attacker waste a user's bandwidth on a body that will be rejected.
-        # An update channel is the one thing that must not be downgradeable.
+        # attacker waste a user's bandwidth on a body that will be rejected --
+        # and a host outside the approved list is somewhere this build was never
+        # told to fetch an executable from, whatever the backend says. An
+        # update channel is the one thing that must not be downgradeable.
         raise DownloadError(
             "The update could not be downloaded securely.",
-            detail=f"refusing a non-HTTPS update URL: {url!r}",
+            detail=f"refusing the update URL: {problem}",
         )
 
     if not has_free_space(expected_size):
@@ -215,27 +220,53 @@ def download_and_verify(
         # request to release storage, not to the backend, and it must carry
         # no Authorization header. A session token has no business being sent
         # to a CDN.
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-            with client.stream("GET", url) as response:
-                response.raise_for_status()
-                total = _declared_size(response, expected_size)
-                for chunk in response.iter_bytes(CHUNK_BYTES):
-                    if should_stop is not None and should_stop():
-                        raise DownloadError(
-                            "The update download was cancelled.",
-                            detail="stop requested during download",
-                        )
-                    handle.write(chunk)
-                    digest.update(chunk)
-                    written += len(chunk)
-                    if written > MAX_ARTIFACT_BYTES:
-                        raise DownloadError(
-                            "The update download was unexpectedly large and "
-                            "has been stopped.",
-                            detail=f"exceeded {MAX_ARTIFACT_BYTES} bytes",
-                        )
-                    if on_progress is not None:
-                        on_progress(written, total)
+        #
+        # Redirects are followed by hand, one hop at a time, so every hop can be
+        # judged. GitHub answers a release download with a 302 to its own CDN,
+        # so redirects are expected -- but a redirect is also how a download is
+        # sent somewhere its URL never named, and httpx's own following would
+        # accept an https->http hop or an unrelated host without asking.
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            current = url
+            for hop in range(policy.MAX_REDIRECTS + 1):
+                with client.stream("GET", current) as response:
+                    if response.status_code in policy.REDIRECT_STATUSES:
+                        next_url = _redirect_target(current, response)
+                        problem = policy.check_redirect(next_url)
+                        if problem:
+                            raise DownloadError(
+                                "The update could not be downloaded securely.",
+                                detail=f"refusing a redirect: {problem}",
+                            )
+                        log.info("update download redirected (hop %d)", hop + 1)
+                        current = next_url
+                        continue
+
+                    response.raise_for_status()
+                    total = _declared_size(response, expected_size)
+                    for chunk in response.iter_bytes(CHUNK_BYTES):
+                        if should_stop is not None and should_stop():
+                            raise DownloadError(
+                                "The update download was cancelled.",
+                                detail="stop requested during download",
+                            )
+                        handle.write(chunk)
+                        digest.update(chunk)
+                        written += len(chunk)
+                        if written > MAX_ARTIFACT_BYTES:
+                            raise DownloadError(
+                                "The update download was unexpectedly large and "
+                                "has been stopped.",
+                                detail=f"exceeded {MAX_ARTIFACT_BYTES} bytes",
+                            )
+                        if on_progress is not None:
+                            on_progress(written, total)
+                    break
+            else:
+                raise DownloadError(
+                    "The update could not be downloaded securely.",
+                    detail=f"more than {policy.MAX_REDIRECTS} redirects",
+                )
         handle.close()
         handle = None
 
@@ -308,6 +339,17 @@ def download_and_verify(
                 partial.unlink(missing_ok=True)
             except OSError:
                 log.warning("could not remove the partial update file")
+
+
+def _redirect_target(current: str, response) -> Optional[str]:
+    """Where a redirect response says to go, resolved against the URL it came
+    from, or None if it did not say. Header lookup is case-insensitive for the
+    real httpx headers and tolerant of a plain dict, which tests use."""
+    headers = response.headers
+    location = headers.get("location") or headers.get("Location")
+    if not location:
+        return None
+    return urljoin(current, location)
 
 
 def _declared_size(response: httpx.Response, expected: Optional[int]) -> Optional[int]:

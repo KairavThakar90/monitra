@@ -20,6 +20,30 @@ re-grant a permission.
 
 ## [Unreleased]
 
+### Changed
+
+- **Updating Monitra is safer.** An update is only downloaded from an
+  approved address over a secure connection, is checked against its published
+  checksum, and — on Windows — is only installed if it carries a valid digital
+  signature. If any of that fails, nothing is installed, your current version
+  carries on working, and the update window offers **Download manually**.
+- **Monitra tells you how an update went.** After it restarts you are told
+  whether the update was installed, and if it was not (the installer failed, or
+  did not finish) you are told that you are still on your previous version
+  rather than being left to find out.
+- **Your timer survives an update**, as before — it is not stopped, and
+  Monitra picks it up again after it restarts.
+
+### Fixed
+
+- **A username with an accent, a space or a symbol** (for example
+  `C:\Users\José`) no longer breaks the update handoff.
+- **An update that was started but never finished installing** no longer leaves
+  Monitra closed: the updater now reliably waits for Monitra to exit, runs the
+  installer, and starts Monitra again.
+- **A malformed answer from the update service** can no longer leave the
+  "Check for updates" menu entry saying it is already checking.
+
 ## [1.3.1]
 
 The installer and the macOS bundles are still unsigned: Windows SmartScreen

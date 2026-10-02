@@ -4,7 +4,7 @@ The Phase 0 update notice.
 The behaviours pinned here are the ones that would otherwise reappear as the
 failures DO_NOT_DO.md already records:
 
-* the announcement is **edge-triggered** — the backend keeps answering "1.1.0
+* the announcement is **edge-triggered** — the backend keeps answering "8.1.0
   is available" on every poll, and a level-triggered notification would be a
   toast every six hours (and, with `check_now()`, potentially far more often);
 * an "unknown" answer is never rendered as an update;
@@ -69,8 +69,11 @@ def make_service(payload=None, error=None, *, signed_in=True,
     return service, api, notifications
 
 
+# The announced versions are deliberately far ahead of the installed build: the
+# client now checks that an "update" is strictly newer than what is running, so
+# a payload naming a version at or below it is (correctly) not an update.
 AVAILABLE = {
-    "latest_version": "1.1.0",
+    "latest_version": "8.1.0",
     "download_url": "https://example.invalid/releases",
     "release_notes_url": None,
     "update_available": True,
@@ -106,8 +109,8 @@ def test_announces_a_newer_release_once():
     # level-triggered storm this service exists to avoid.
     assert len(notifications.messages) == 1
     message, key, link = notifications.messages[0]
-    assert "1.1.0" in message
-    assert key == "update-available:1.1.0"
+    assert "8.1.0" in message
+    assert key == "update-available:8.1.0"
     # The download URL travels as a *link*, not as text in the body: a
     # platform toast renders plain text, so a URL written into the message is
     # not clickable and vanishes when the user clicks the toast.
@@ -131,11 +134,11 @@ def test_announces_again_when_a_further_release_appears():
     service, api, notifications = make_service(AVAILABLE)
     service.tick()
 
-    api.payload = dict(AVAILABLE, latest_version="1.2.0")
+    api.payload = dict(AVAILABLE, latest_version="8.2.0")
     service.tick()
 
     assert [key for _, key, _link in notifications.messages] == [
-        "update-available:1.1.0", "update-available:1.2.0",
+        "update-available:8.1.0", "update-available:8.2.0",
     ]
 
 

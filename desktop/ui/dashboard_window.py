@@ -944,6 +944,7 @@ class DashboardWindow(QWidget):
         # downloads by being clicked twice, because the refusal lives in the
         # service's state machine rather than in this transient window.
         dialog.update_requested.connect(self.api.start_update)
+        dialog.manual_download_requested.connect(self._open_manual_update_download)
         dialog.finished.connect(lambda _result: self._forget_update_dialog())
         dialog.show()
 
@@ -959,9 +960,23 @@ class DashboardWindow(QWidget):
         appear is a failure the user never learns about.
         """
         if self._update_dialog is not None:
-            self._update_dialog.show_error(message)
+            self._update_dialog.show_error(
+                message,
+                can_download_manually=self.api.update_manual_download_url() is not None,
+            )
             return
         self.api.notify(message, NotificationLevel.WARNING, key="update-failed")
+
+    def _open_manual_update_download(self) -> None:
+        """Open the new version's download link in the browser.
+
+        The link comes from `BackgroundApi.update_manual_download_url`, which
+        only ever returns a plain https URL; nothing else is handed to the
+        operating system to open.
+        """
+        url = self.api.update_manual_download_url()
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
 
     def _on_install_started(self, version_name: str) -> None:
         """The installer is running and is waiting for this process to exit.

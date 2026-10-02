@@ -471,6 +471,15 @@ class BackgroundApi:
         """Where to download the newest announced release, or None."""
         return self._runtime.updates.download_url()
 
+    def update_manual_download_url(self) -> Optional[str]:
+        """A plain-https link to fetch the new version by hand, or None.
+
+        What the update dialog offers when an automatic update cannot or did not
+        install: unsupported install type, an unverifiable signature, a failed
+        installer. None means there is no safe link to offer.
+        """
+        return self._runtime.updates.manual_download_url()
+
     def pending_update_release(self):
         """The installable release on offer, or None.
 

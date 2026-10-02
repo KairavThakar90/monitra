@@ -1128,3 +1128,96 @@ capture after the first, by the same silent mechanism.
 `count_unattributed_screenshots()` exists so this class of stall is visible:
 these rows count as `pending`, which reads as "about to upload", and only an
 adoption can ever release one.
+
+---
+
+## Updater and release
+
+### ❌ Do not start the update helper with `DETACHED_PROCESS` and wait on `tasklist | find`
+
+```python
+creationflags = 0x00000008 | 0x00000200        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+```
+```bat
+tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul
+if errorlevel 1 goto ready
+```
+
+**What it caused:** found by running the real helper against stand-in
+executables, before any user hit it. With no console at all, `tasklist` prints
+nothing and the pipe into `find` never completes, so the helper waited for ever:
+the installer never ran **and the application was never relaunched** — a user who
+pressed Update Now would have been left with Monitra closed. A bare `find` can
+also resolve to a different program entirely (GNU `find` on a machine with a Unix
+toolkit on `PATH`), which made the wait return at once and the installer start
+while Monitra was still shutting down.
+
+**Instead:** `CREATE_NO_WINDOW` (a hidden console of its own), read the process
+list through `for /f` rather than a pipe, and use absolute `System32` paths.
+`tests/test_update_hardening.py::TestWindowsHelper` runs the real `cmd.exe`
+helper and fails on both.
+
+### ❌ Do not write a path into a generated script
+
+```python
+script.write_text(f'start "" /wait "{artifact}" /SILENT ...', encoding="ascii")
+```
+
+**What it caused:** `UnicodeEncodeError` for a user profile such as `C:\Users\José`
+— raised *after* the download, so the state machine was left stranded at
+READY_TO_INSTALL — and a script that mis-parses `&` or `%` in a directory name.
+
+**Instead:** pass every path through the environment (`MONITRA_UPDATE_*`) and keep
+the script pure ASCII with no path in it.
+
+### ❌ Do not trust the backend's "update available"
+
+The client used to offer whatever the server said was an update, including a
+version equal to or older than the one running, and an artifact for another
+platform. **Instead:** the server compares, and the client compares again —
+strictly newer, this platform, this architecture — and treats a payload that is
+not a JSON object with a boolean `update_available` as a failed check that
+changes nothing and does not count as a success.
+
+### ❌ Do not let an HTTP client follow download redirects for you
+
+`follow_redirects=True` accepts an https→http hop and any host the redirect
+names. **Instead:** follow by hand, one hop at a time, and judge each against
+`policy.check_redirect` — https only, approved host or the GitHub CDN, no
+credentials, bounded hops — *before* requesting it.
+
+### ❌ Do not leave the updater in CHECKING when a handler raises
+
+A failed or malformed check left the state at CHECKING, which reads as busy: the
+next manual check was dropped as "already in progress" and Update Now refused.
+The check's state change is made in a `finally`.
+
+### ❌ Do not report a relaunch as a success
+
+After the installer the helper relaunches *whatever is installed*, which after a
+failed installer is the old version. That is the right thing to do for the user
+and the wrong thing to say. **Instead:** the helper records the installer's exit
+code, and the next launch compares the recorded target with the version actually
+running before telling the user anything.
+
+### ❌ Do not use a step's own `env:` in that step's `if:` (GitHub Actions)
+
+```yaml
+- name: Sign the installer
+  env:
+    WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+  if: ${{ env.WINDOWS_CERTIFICATE != '' }}
+```
+
+An `if` is evaluated before the step's `env` exists, so the condition read an
+empty string and the signing step was skipped however many secrets were added —
+the build stayed green and unsigned. **Instead:** a step that *runs* decides once
+and publishes `steps.<id>.outputs.*`, and later conditions read the output.
+`tests/test_release_pipeline.py` fails on the pattern.
+
+### ❌ Do not sign the application after the installer has been built
+
+Inno Setup copies `dist\Monitra\` into the installer as it compiles. Signing
+`Monitra.exe` afterwards signs a copy the installer was built without: the signed
+installer wraps an unsigned program. Sign the application, build the installer,
+sign the installer, verify, and only then hash.
