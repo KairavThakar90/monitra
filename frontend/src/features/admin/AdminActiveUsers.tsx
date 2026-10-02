@@ -2,7 +2,7 @@ import React from "react";
 import { V2Shell } from "../dashboard/v2/V2Shell";
 import { Avatar, Card, EmptyState, ErrorNote, Spinner } from "../member/MemberUi";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
-import { useGetActiveTimeTrackingQuery } from "../../store/api/timeTrackingApi";
+import { useGetActiveTimeTrackingQuery, type ActiveTimeTrackingItem } from "../../store/api/timeTrackingApi";
 import { formatISTDate, formatISTTime12 } from "../../utils/duration";
 
 /**
@@ -30,6 +30,37 @@ const startedLabel = (startIso: string, serverIso: string | undefined) => {
   return startDay && startDay !== formatISTDate(serverIso) ? `${startDay}, ${time}` : time;
 };
 
+type SortOrder = "asc" | "desc";
+
+/**
+ * Orders rows by the instant their timer started. `start_time` is compared as a
+ * parsed instant, not as text, so differing ISO spellings of the same moment
+ * ("Z" vs "+00:00") cannot reorder rows. Ties fall back to the entry id, in the
+ * same direction, which is also the order the backend itself uses.
+ */
+const sortByStarted = (items: ActiveTimeTrackingItem[], order: SortOrder) => {
+  const direction = order === "asc" ? 1 : -1;
+  return [...items].sort(
+    (a, b) =>
+      direction * (Date.parse(a.start_time) - Date.parse(b.start_time) || a.time_entry_id - b.time_entry_id),
+  );
+};
+
+const SortArrow: React.FC<{ order: SortOrder }> = ({ order }) => (
+  <svg
+    aria-hidden="true"
+    viewBox="0 0 12 12"
+    className="h-3 w-3 shrink-0 text-[#0F172A]"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    {order === "asc" ? <path d="M6 10V2M2.5 5.5 6 2l3.5 3.5" /> : <path d="M6 2v8M2.5 6.5 6 10l3.5-3.5" />}
+  </svg>
+);
+
 export const AdminActiveUsers: React.FC = () => {
   const { data, isLoading, isFetching, isError } = useGetActiveTimeTrackingQuery(undefined, {
     pollingInterval: ACTIVE_USERS_POLL_MS,
@@ -37,7 +68,10 @@ export const AdminActiveUsers: React.FC = () => {
     skipPollingIfUnfocused: true,
   });
 
-  const items = data?.items ?? [];
+  // Oldest timer first is how the backend already returns the list, so that is
+  // the order the page opens in; the header flips it.
+  const [startedOrder, setStartedOrder] = React.useState<SortOrder>("asc");
+  const items = React.useMemo(() => sortByStarted(data?.items ?? [], startedOrder), [data?.items, startedOrder]);
 
   return (
     <V2Shell title="Active Users" subtitle="Members with a timer running right now">
@@ -83,7 +117,21 @@ export const AdminActiveUsers: React.FC = () => {
                       <th className="px-3 py-2.5">Member</th>
                       <th className="px-3 py-2.5">Task</th>
                       <th className="px-3 py-2.5">Project</th>
-                      <th className="px-3 py-2.5">Started</th>
+                      <th
+                        className="px-3 py-2.5"
+                        aria-sort={startedOrder === "asc" ? "ascending" : "descending"}
+                      >
+                        <button
+                          type="button"
+                          data-testid="sort-started"
+                          onClick={() => setStartedOrder((order) => (order === "asc" ? "desc" : "asc"))}
+                          title={startedOrder === "asc" ? "Oldest first. Click for newest first" : "Newest first. Click for oldest first"}
+                          className="inline-flex items-center gap-1 rounded uppercase tracking-wider hover:text-[#0F172A] focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                        >
+                          Started
+                          <SortArrow order={startedOrder} />
+                        </button>
+                      </th>
                       <th className="px-3 py-2.5 text-right">Running for</th>
                     </tr>
                   </thead>

@@ -113,19 +113,84 @@ describe('AdminActiveUsers', () => {
     await mount();
 
     expect(rows()).toHaveLength(2);
-    const first = rows()[0].textContent!;
+    // Found by member, not position: the page orders rows by start time.
+    const rowOf = (name: string) => rows().find((row) => row.textContent!.includes(name))!.textContent!;
+    const first = rowOf('Asha Patel');
     expect(first).toContain('Asha Patel');
     expect(first).toContain('Developer');
     expect(first).toContain('Build login screen');
     expect(first).toContain('Alpha Portal');
     expect(first).toContain('10:00 am');
     expect(first).toContain('01:02:05');
-    const second = rows()[1].textContent!;
+    const second = rowOf('Ravi Shah');
     expect(second).toContain('Ravi Shah');
     expect(second).toContain('Fix crash on launch');
     expect(second).toContain('Beta Mobile');
     expect(second).toContain('02:32:10');
     expect(container.querySelector('[data-testid="active-users-count"]')!.textContent).toContain('2 members active');
+  });
+
+  describe('Started column sorting', () => {
+    // Deliberately not in start order, and one spelling uses "+00:00" instead of "Z".
+    const threeRunning = () =>
+      json({
+        items: [
+          item({ time_entry_id: 1, name: 'Middle Mia', start_time: '2026-10-01T04:00:00Z' }),
+          item({ time_entry_id: 2, name: 'Latest Leo', start_time: '2026-10-01T04:45:00+00:00' }),
+          item({ time_entry_id: 3, name: 'Earliest Eve', start_time: '2026-10-01T03:15:00Z' }),
+        ],
+        total: 3,
+        server_time: '2026-10-01T05:00:00Z',
+      });
+    const names = () => rows().map((row) => ['Earliest Eve', 'Middle Mia', 'Latest Leo'].find((n) => row.textContent!.includes(n)));
+    const sortButton = () => container.querySelector<HTMLButtonElement>('[data-testid="sort-started"]')!;
+    const sortHeader = () => sortButton().closest('th')!;
+    const click = async () => {
+      await act(async () => { sortButton().dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    };
+
+    it('opens oldest first, as the backend returns it', async () => {
+      respond = threeRunning;
+      await mount();
+      expect(names()).toEqual(['Earliest Eve', 'Middle Mia', 'Latest Leo']);
+      expect(sortHeader().getAttribute('aria-sort')).toBe('ascending');
+    });
+
+    it('flips to newest first and back on each click', async () => {
+      respond = threeRunning;
+      await mount();
+
+      await click();
+      expect(names()).toEqual(['Latest Leo', 'Middle Mia', 'Earliest Eve']);
+      expect(sortHeader().getAttribute('aria-sort')).toBe('descending');
+
+      await click();
+      expect(names()).toEqual(['Earliest Eve', 'Middle Mia', 'Latest Leo']);
+      expect(sortHeader().getAttribute('aria-sort')).toBe('ascending');
+    });
+
+    it('breaks a tie on the entry id, in the chosen direction', async () => {
+      respond = () =>
+        json({
+          items: [
+            item({ time_entry_id: 8, name: 'Latest Leo', start_time: '2026-10-01T04:00:00Z' }),
+            item({ time_entry_id: 7, name: 'Middle Mia', start_time: '2026-10-01T04:00:00Z' }),
+          ],
+          total: 2,
+          server_time: '2026-10-01T05:00:00Z',
+        });
+      await mount();
+      expect(names()).toEqual(['Middle Mia', 'Latest Leo']);
+      await click();
+      expect(names()).toEqual(['Latest Leo', 'Middle Mia']);
+    });
+
+    it('does not ask the backend again just to reorder', async () => {
+      respond = threeRunning;
+      await mount();
+      await click();
+      expect(requests).toHaveLength(1);
+    });
   });
 
   it('says "1 member" in the singular', async () => {
