@@ -8,7 +8,9 @@ from app.core.permissions import with_role_aliases
 from app.models.user import User
 from app.repositories.project_member import ProjectMemberRepository
 from app.repositories.user import UserRepository
+from app.services.activity_log import ActivityLogService
 from app.services.project import ProjectService
+from app.services.project_activity import ProjectActivity
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
 class ProjectMemberService:
@@ -52,7 +54,12 @@ class ProjectMemberService:
         target = db.scalar(select(User).where(User.id == new_user_id, User.organization_id == user.organization_id, User.is_active.is_(True)))
         if not target: raise HTTPException(status.HTTP_404_NOT_FOUND, "Active member not found")
         if db.scalar(select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == new_user_id, ProjectMember.id != item.id)): raise HTTPException(status.HTTP_409_CONFLICT, "Member is already assigned")
-        item.user_id = new_user_id; db.commit(); db.refresh(item); return item
+        item.user_id = new_user_id; db.commit(); db.refresh(item)
+        # One member swapped for another: the first leaves the team, the second joins it.
+        ActivityLogService.capture_many(db, lambda: ProjectActivity.project_team_rows(
+            db, user, project_id, db.get(Project, project_id).project_name, added_ids=[new_user_id], removed_ids=[member_id],
+        ))
+        return item
 
     @staticmethod
     def add_members(db: Session, project_id: int, member_ids: List[int], current_user: User) -> dict:
@@ -105,6 +112,9 @@ class ProjectMemberService:
             except Exception:
                 db.rollback()
                 raise
+            ActivityLogService.capture_many(db, lambda: ProjectActivity.project_team_rows(
+                db, current_user, project.id, project.project_name, added_ids=added_ids,
+            ))
 
         return {
             "message": "Members added successfully",
@@ -134,13 +144,17 @@ class ProjectMemberService:
             return existing
 
         # 4. Add member
-        return ProjectMemberRepository.add(
+        member = ProjectMemberRepository.add(
             db=db,
             project_id=project_id,
             organization_id=current_user.organization_id,
             user_id=user_id,
             created_by_user_id=current_user.id
         )
+        ActivityLogService.capture_many(db, lambda: ProjectActivity.project_team_rows(
+            db, current_user, project.id, project.project_name, added_ids=[user_id],
+        ))
+        return member
 
     @staticmethod
     def list_members(db: Session, project_id: int, current_user: User) -> List[ProjectMember]:
@@ -151,8 +165,8 @@ class ProjectMemberService:
     @staticmethod
     def remove_member(db: Session, project_id: int, user_id: int, current_user: User) -> bool:
         # Verify project exists in org
-        ProjectService.get_project(db, project_id, current_user)
-        
+        project = ProjectService.get_project(db, project_id, current_user)
+
         # Verify target user belongs to the same organization
         target_user = UserRepository.get_by_id(db, user_id)
         if not target_user or target_user.organization_id != current_user.organization_id:
@@ -160,11 +174,14 @@ class ProjectMemberService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="User not found in this organization"
             )
-            
+
         success = ProjectMemberRepository.remove(db, project_id, user_id)
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Member not found in project"
             )
+        ActivityLogService.capture_many(db, lambda: ProjectActivity.project_team_rows(
+            db, current_user, project.id, project.project_name, removed_ids=[user_id],
+        ))
         return True

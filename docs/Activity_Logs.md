@@ -22,7 +22,12 @@ caller's address when the request had a valid one.
 | `timer` | `entry_transferred` | A recorded entry is moved to another project/task. | `TimeEntryService.transfer_entry` |
 | `manual_time` | `manual_time_requested` / `_approved` / `_rejected` / `_withdrawn` | A manual time request and the decision on it. | `ManualTimeEntryService` |
 | `project` | `project_created` / `_updated` / `_archived` | Project management. | `ProjectManagementService` |
+| `project` | `project_status_changed` / `_leader_changed` / `_owner_changed` | A project's status, leader or owner moves. The row says from what to what: *Changed the status of the project "Apollo" from Active to Paused*. | `ProjectManagementService.update` via `ProjectActivity` |
+| `project` | `project_member_assigned` / `_member_removed` | People put on, or taken off, a project — by name — from the project edit, at creation, or the add / remove-member routes. | `ProjectManagementService`, `ProjectMemberService` via `ProjectActivity` |
 | `task` | `task_created` / `_updated` / `_archived` | Tasks, from the web or the desktop. A replayed create records nothing. | `ProjectManagementService` |
+| `task` | `task_status_changed` / `_assigned` / `_unassigned` | A task's status moves; people are given a task, or taken off it (Assign Tasks, the task edit, the task-assignee routes, unassigning). Also written when a new task is created already held by someone else. | `ProjectManagementService`, `TaskAssigneeService` via `ProjectActivity` |
+| `client` | `client_invited` / `client_invitation_resent` / `client_access_changed` / `client_deactivated` | An administrator invites a client, resends the invitation, changes which projects and what they may see, or deactivates them. A resend is its own row, not also an invite. | `ClientInvitationService` |
+| `screenshot` | `screenshot_deleted` | An administrator or HR permanently deletes a screenshot. Names whose screenshot and when it was taken. A deletion that failed is not recorded. | `TimeEntryScreenshotService.delete_screenshot` |
 | `member` | `member_created` / `_updated` / `_deleted` (and `_deactivated`, written before Delete became permanent), `login_excluded` / `login_allowed`, `add_tasks_excluded` / `add_tasks_allowed` | The member directory. A switch is recorded only when it actually moved. | `MemberService` |
 | `feedback` | `feedback_status_changed` | An administrator marks feedback Working or Resolved. | `FeedbackService.update_status` |
 | `screenshot` | `screenshot_notice_sent` | A reviewer emails a notice about an employee's screenshot. | `TimeEntryScreenshotService.send_notice` |
@@ -30,6 +35,17 @@ caller's address when the request had a valid one.
 
 The row belongs to the **actor**. "Grace excluded Alice from signing in" is
 Grace's row; Alice is named in the description.
+
+### Real changes only
+
+A project or task edit is compared with what it was (`ProjectActivity`, in
+`backend/app/services/project_activity.py`): the old values are read *before*
+the edit is saved (`ActivityLogService.snapshot`) and the rows are built from
+the difference afterwards. So a form that re-sends every field does not claim
+to have changed them, an edit that changed nothing records nothing, and one
+edit that moves the status *and* the team is two rows (`capture_many`), each
+filterable by its action. If the old values cannot be read the edit still
+saves and records the plain *Updated the project "X"* row instead.
 
 ## The rules the writer keeps
 
@@ -54,18 +70,25 @@ Everything is written through `ActivityLogService.capture` (or `record`) in
 
 ## Reading: `GET /api/v1/activity-logs`
 
-Requires `view_employees` — Admin, HR, Leader. A leader is answered with their
-own team (`member_scope.visible_member_ids`); an employee gets 403.
+Requires `view_employees` — Admin, HR, Leader; an employee gets 403.
+
+| Who | What they read |
+|---|---|
+| Admin, HR | The whole organization. HR is read-only here, like everywhere else in the directory. |
+| Leader | Their own team (`member_scope.visible_member_ids`) **plus** the project and task rows about a project they lead, **whoever made the change** (`member_scope.led_project_ids`) — an administrator moving their project to On hold or assigning a member shows up, grouped under the administrator. Nothing else the administrator did does: not their sign-ins, timer, member-directory or client actions, nor changes to projects the leader does not lead. |
 
 Query: `start`, `end` (IST days; default the last seven), `member_id`,
 `module`, `search`. The response groups rows by employee, newest first, with
 project and task names joined in and the client split out of the description.
 At most 5,000 rows are returned; `truncated` says when the window held more.
+(`module` is still accepted by the API; the page no longer offers a category
+picker, so it does not send it.)
 
 The page is **Logs** in the sidebar (`/admin/logs`,
 `frontend/src/features/admin/AdminActivityLogs.tsx`): one collapsed accordion
-per employee, opening onto their actions split by IST day, with search,
-category, date and employee filters and a CSV export.
+per employee, opening onto their actions split by IST day, with search, date
+and employee filters, an Expand All / Collapse All button styled like the one
+on Assign Tasks, and a CSV export.
 
 ## The desktop's own events: `POST /api/v1/activity-logs/client-events`
 
@@ -80,6 +103,10 @@ for it only briefly.
 
 - `backend/tests/test_activity_log_trail.py` — writing, never failing, the
   hooks, scoping, the HTTP routes.
+- `backend/tests/test_activity_log_changes.py` — what a project or task change
+  says (from → to, people by name), the assignment routes, clients,
+  screenshot deletion, and a leader reading what anyone changed on their
+  project and nothing more.
 - `frontend/src/features/admin/__tests__/activityLogs.test.tsx` — the page and
   its wording.
 - `desktop/tests/test_client_events.py` — queuing, the exit wait, attribution,

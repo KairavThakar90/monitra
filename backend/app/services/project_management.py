@@ -27,6 +27,7 @@ from app.models.user import User
 from app.repositories.reports import ReportsRepository
 from app.repositories.status_catalog import StatusCatalog
 from app.services.activity_log import ActivityLogService
+from app.services.project_activity import ProjectActivity
 from app.schemas.project_management import (
     BillingType, ProjectCreate, ProjectUpdate, TaskAssigneesSet, TaskCreate, TaskUpdate,
 )
@@ -42,17 +43,13 @@ from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
 logger = logging.getLogger("uvicorn.error")
 
-# What an edit touched, in the words the activity trail shows. Keyed on the
-# payload's field names; a field absent from the request is absent from the row.
-_PROJECT_FIELD_LABELS = {
-    "project_name": "name", "description": "description", "status_id": "status",
-    "owner_id": "owner", "leader_id": "leader", "employee_ids": "team",
-    "deadline": "deadline", "billing_type": "billing", "fixed_hours": "hour budget",
-}
-_TASK_FIELD_LABELS = {
-    "name": "name", "description": "description", "status_id": "status",
-    "assignee_id": "assignee", "estimated_hours": "estimated hours",
-}
+# The words the activity trail uses for a field now live with the code that
+# compares a project or task with what it was (`ProjectActivity`). They stay
+# importable from here under their old names: the tests pin the wording.
+from app.services.project_activity import (  # noqa: E402,F401
+    PROJECT_FIELD_LABELS as _PROJECT_FIELD_LABELS,
+    TASK_FIELD_LABELS as _TASK_FIELD_LABELS,
+)
 
 # Stand-in bounds for "every entry there has ever been" -- the same sentinel
 # span `DashboardRepository.billing_progress` measures a fixed-hour budget
@@ -419,6 +416,11 @@ class ProjectManagementService:
             "description": f'Created the project "{project.project_name}"',
             "project_id": project.id, "entity_id": project.id,
         })
+        # Putting people on the project at creation is an assignment like any
+        # other, so it reads the same as one made later.
+        ActivityLogService.capture_many(db, lambda: ProjectActivity.project_team_rows(
+            db, user, project.id, project.project_name, added_ids=[employee.id for employee in employees],
+        ))
         return ProjectManagementService._detail_payload(db, project, user)
 
     @staticmethod
@@ -546,6 +548,8 @@ class ProjectManagementService:
     @staticmethod
     def update(db: Session, user: User, project_id: int, payload: ProjectUpdate):
         project = ProjectManagementService._project(db, project_id, user)
+        # What the edit is about to overwrite, so the trail can say "from X to Y".
+        before = ProjectActivity.project_before(db, project)
         values = payload.model_dump(exclude_unset=True)
         status_id = values.get("status_id", project.status_id or 2)
         leader_id = values.get("leader_id", project.leader_id)
@@ -599,13 +603,9 @@ class ProjectManagementService:
                 ProjectBudgetAlertService.run(db, project_ids=[project.id], deliver_now=False, source="budget_change")
             except Exception:  # noqa: BLE001 - the edit succeeded; reconciliation retries
                 logger.warning("PROJECT_BUDGET_ALERT_BASELINE_FAILED: project=%s", project.id, exc_info=True)
-        changed = ", ".join(_PROJECT_FIELD_LABELS[key] for key in _PROJECT_FIELD_LABELS if key in values)
-        ActivityLogService.capture(db, lambda: {
-            "actor": user,
-            "module": ActivityLogModule.PROJECT, "action": ActivityLogAction.PROJECT_UPDATED,
-            "description": f'Updated the project "{project.project_name}"' + (f" ({changed})" if changed else ""),
-            "project_id": project.id, "entity_id": project.id,
-        })
+        # One row per thing that actually changed -- not per field the form
+        # happened to send -- and none at all for an edit that changed nothing.
+        ActivityLogService.capture_many(db, lambda: ProjectActivity.project_update_rows(db, user, project, before))
         return ProjectManagementService._detail_payload(db, project, user)
 
     @staticmethod
@@ -748,6 +748,11 @@ class ProjectManagementService:
             "description": f'Added the task "{task.task_name}" to {project.project_name}',
             "project_id": project.id, "task_id": task.id, "entity_id": task.id,
         })
+        # Giving a new task to somebody else is an assignment worth its own row.
+        # An employee's task that is simply their own is not: nobody was given it.
+        given = [holder.id for holder in (holders or ([assignee] if assignee else [])) if holder.id != user.id]
+        if given:
+            ActivityLogService.capture_many(db, lambda: ProjectActivity.task_holder_rows(db, user, task, added_ids=given))
         return ProjectManagementService._task_payload(task, task_status, assignee, ProjectManagementService._assignees_for(db, [task]).get(task.id))
 
     @staticmethod
@@ -770,6 +775,7 @@ class ProjectManagementService:
     def update_task(db: Session, user: User, project_id: int, task_id: int, payload: TaskUpdate):
         ProjectManagementService._project(db, project_id, user)
         task = ProjectManagementService._task(db, user, project_id, task_id)
+        before = ProjectActivity.task_before(db, task)
         values = payload.model_dump(exclude_unset=True)
         assignee = db.get(User, task.assignee_id) if task.assignee_id else None
         task_status = StatusCatalog.task_status(db, task.status_id)
@@ -789,13 +795,7 @@ class ProjectManagementService:
         if "estimated_hours" in values: task.estimated_hours = values["estimated_hours"]
         db.commit()
         db.refresh(task)
-        changed = ", ".join(_TASK_FIELD_LABELS[key] for key in _TASK_FIELD_LABELS if key in values)
-        ActivityLogService.capture(db, lambda: {
-            "actor": user,
-            "module": ActivityLogModule.TASK, "action": ActivityLogAction.TASK_UPDATED,
-            "description": f'Updated the task "{task.task_name}"' + (f" ({changed})" if changed else ""),
-            "project_id": project_id, "task_id": task.id, "entity_id": task.id,
-        })
+        ActivityLogService.capture_many(db, lambda: ProjectActivity.task_update_rows(db, user, task, before))
         return ProjectManagementService._task_payload(task, task_status, assignee, ProjectManagementService._assignees_for(db, [task]).get(task.id))
 
     @staticmethod
@@ -830,6 +830,7 @@ class ProjectManagementService:
         """
         ProjectManagementService._project(db, project_id, user)
         task = ProjectManagementService._task(db, user, project_id, task_id)
+        before = ProjectActivity.task_before(db, task)
         wanted = payload.user_ids
         wanted_set = set(wanted)
         task_status = StatusCatalog.task_status(db, task.status_id)
@@ -884,17 +885,13 @@ class ProjectManagementService:
         db.refresh(task)
         holders = ProjectManagementService._assignees_for(db, [task])[task.id]
         primary = db.get(User, task.assignee_id) if task.assignee_id else None
-        names = ", ".join(person["name"] for person in holders) or "nobody"
         if ordered and previous_primary == task.assignee_id and previous_holders == [person["id"] for person in holders] and payload.status_id is None:
             # A repeat of the list the task already has: nothing changed, so
             # there is nothing to put in the trail.
             return ProjectManagementService._task_payload(task, task_status, primary, holders)
-        ActivityLogService.capture(db, lambda: {
-            "actor": user,
-            "module": ActivityLogModule.TASK, "action": ActivityLogAction.TASK_UPDATED,
-            "description": f'Assigned the task "{task.task_name}" to {names}',
-            "project_id": project_id, "task_id": task.id, "entity_id": task.id,
-        })
+        # Who was given the task, who was taken off it and, when the same save
+        # moved it, its new status -- each from what it actually was.
+        ActivityLogService.capture_many(db, lambda: ProjectActivity.task_update_rows(db, user, task, before))
         return ProjectManagementService._task_payload(task, task_status, primary, holders)
 
     @staticmethod
@@ -915,10 +912,14 @@ class ProjectManagementService:
         """
         ProjectManagementService._project(db, project_id, user)
         task = ProjectManagementService._task(db, user, project_id, task_id)
+        before = ProjectActivity.task_before(db, task)
         db.execute(delete(TaskAssignee).where(TaskAssignee.task_id == task.id))
         task.assignee_id = None
         db.commit()
         db.refresh(task)
+        # Idempotent: unassigning an unassigned task changes nothing and so
+        # records nothing.
+        ActivityLogService.capture_many(db, lambda: ProjectActivity.task_update_rows(db, user, task, before))
         return ProjectManagementService._task_payload(task, StatusCatalog.task_status(db, task.status_id), None, [])
 
     @staticmethod

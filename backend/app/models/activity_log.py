@@ -45,11 +45,19 @@ class ActivityLogModule:
     FEEDBACK = "feedback"
     #: Events the desktop application reports about itself.
     DESKTOP = "desktop"
-    #: A notice about somebody's screenshot.
+    #: A notice about somebody's screenshot, and a screenshot being deleted.
     SCREENSHOT = "screenshot"
+    #: Inviting a client and deciding what they may see.
+    CLIENT = "client"
 
     #: Every module a reader may filter on, in display order.
-    ALL = (AUTH, DESKTOP, TIMER, MANUAL_TIME, PROJECT, TASK, MEMBER, FEEDBACK, SCREENSHOT, SYSTEM)
+    ALL = (AUTH, DESKTOP, TIMER, MANUAL_TIME, PROJECT, TASK, MEMBER, CLIENT, FEEDBACK, SCREENSHOT, SYSTEM)
+
+    #: The modules whose rows are about a *project*, whoever made the change.
+    #: A leader reads these for the projects they lead even when an administrator
+    #: acted (see ``ActivityLogService.list_grouped``); every other module is
+    #: read by who did it.
+    PROJECT_SCOPED = (PROJECT, TASK)
 
 
 class ActivityLogAction:
@@ -62,10 +70,18 @@ class ActivityLogAction:
     PROJECT_CREATED = "project_created"
     PROJECT_UPDATED = "project_updated"
     PROJECT_ARCHIVED = "project_archived"
+    PROJECT_STATUS_CHANGED = "project_status_changed"
+    PROJECT_LEADER_CHANGED = "project_leader_changed"
+    PROJECT_OWNER_CHANGED = "project_owner_changed"
+    PROJECT_MEMBER_ASSIGNED = "project_member_assigned"
+    PROJECT_MEMBER_REMOVED = "project_member_removed"
 
     TASK_CREATED = "task_created"
     TASK_UPDATED = "task_updated"
     TASK_ARCHIVED = "task_archived"
+    TASK_STATUS_CHANGED = "task_status_changed"
+    TASK_ASSIGNED = "task_assigned"
+    TASK_UNASSIGNED = "task_unassigned"
 
     TIMER_STARTED = "timer_started"
     TIMER_STOPPED = "timer_stopped"
@@ -88,6 +104,12 @@ class ActivityLogAction:
     FEEDBACK_STATUS_CHANGED = "feedback_status_changed"
 
     SCREENSHOT_NOTICE_SENT = "screenshot_notice_sent"
+    SCREENSHOT_DELETED = "screenshot_deleted"
+
+    CLIENT_INVITED = "client_invited"
+    CLIENT_INVITATION_RESENT = "client_invitation_resent"
+    CLIENT_ACCESS_CHANGED = "client_access_changed"
+    CLIENT_DEACTIVATED = "client_deactivated"
 
     DESKTOP_NOTIFICATION_CREATED = "desktop_notification_created"
     DESKTOP_NOTIFICATION_UPDATED = "desktop_notification_updated"

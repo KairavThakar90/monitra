@@ -3,18 +3,22 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import hash_token
 from app.core.validation import validate_email
+from app.models.activity_log import ActivityLogAction, ActivityLogModule
 from app.models.client import Client
+from app.models.project import Project
 from app.models.user import User
 from app.repositories.client import ClientRepository
 from app.repositories.client_invitation import ClientInvitationRepository
 from app.repositories.client_project import ClientProjectRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.user import UserRepository
+from app.services.activity_log import ActivityLogService
 from app.services.auth import AuthService
 from app.services.email.workflows import queue_client_invitation_email
 
@@ -28,6 +32,23 @@ DEFAULT_CLIENT_PERMISSIONS = {
     "share_timing": True,
     "share_billing": False,
 }
+
+#: Each sharing switch as the activity trail says it.
+_PERMISSION_LABELS = {
+    "share_member_details": "member details",
+    "share_screenshots": "screenshots",
+    "share_tasks": "tasks",
+    "share_timing": "working hours",
+    "share_billing": "billing",
+}
+
+
+def _project_names(db: Session, project_ids) -> list[str]:
+    """Project names for an activity row, alphabetical; an id with no row is skipped."""
+    ids = list(project_ids)
+    if not ids:
+        return []
+    return sorted(db.scalars(select(Project.project_name).where(Project.id.in_(ids))).all())
 
 
 class ClientInvitationService:
@@ -54,7 +75,10 @@ class ClientInvitationService:
         project_ids: list[int],
         permissions: Optional[dict] = None,
         background_tasks=None,
+        record: bool = True,
     ) -> Client:
+        """``record=False`` is for a caller that records the act itself -- a
+        resend is issued through here but is its own entry in the trail."""
         email = validate_email(email, field_label="Client email")
         organization_id = admin_user.organization_id
         ClientInvitationService._validate_project_ids(db, organization_id, project_ids)
@@ -131,6 +155,13 @@ class ClientInvitationService:
             background_tasks=background_tasks,
         )
 
+        if record:
+            ActivityLogService.capture(db, lambda: {
+                "actor": admin_user, "module": ActivityLogModule.CLIENT, "action": ActivityLogAction.CLIENT_INVITED,
+                "description": f"Invited the client {client.email} to "
+                               + ActivityLogService.join_names(sorted(project.project_name for project in projects)),
+                "entity_id": client.id,
+            })
         return client
 
     @staticmethod
@@ -150,10 +181,15 @@ class ClientInvitationService:
             "share_timing": client.share_timing,
             "share_billing": client.share_billing,
         }
-        return ClientInvitationService.create_invitation(
+        resent = ClientInvitationService.create_invitation(
             db, admin_user, client.email, project_ids, permissions=current_permissions,
-            background_tasks=background_tasks,
+            background_tasks=background_tasks, record=False,
         )
+        ActivityLogService.capture(db, lambda: {
+            "actor": admin_user, "module": ActivityLogModule.CLIENT, "action": ActivityLogAction.CLIENT_INVITATION_RESENT,
+            "description": f"Resent the invitation to the client {resent.email}", "entity_id": resent.id,
+        })
+        return resent
 
     @staticmethod
     def deactivate_client(db: Session, admin_user: User, client_id: int) -> Client:
@@ -184,6 +220,10 @@ class ClientInvitationService:
                 user.is_active = False
                 db.commit()
 
+        ActivityLogService.capture(db, lambda: {
+            "actor": admin_user, "module": ActivityLogModule.CLIENT, "action": ActivityLogAction.CLIENT_DEACTIVATED,
+            "description": f"Deactivated the client {client.email}", "entity_id": client.id,
+        })
         return client
 
     @staticmethod
@@ -197,8 +237,38 @@ class ClientInvitationService:
         if client is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Client not found.")
         ClientInvitationService._validate_project_ids(db, admin_user.organization_id, project_ids)
+        # What this edit is about to overwrite, so the trail can say what moved.
+        before = ActivityLogService.snapshot(db, lambda: {
+            "project_ids": set(ClientProjectRepository.list_project_ids_for_client(db, client.id)),
+            "permissions": {key: getattr(client, key) for key in _PERMISSION_LABELS},
+        })
         ClientProjectRepository.replace_for_client(db, client.id, project_ids)
         ClientRepository.update_permissions(db, client, **permissions)
+
+        def changes() -> list[dict]:
+            if before is None:
+                return [{"actor": admin_user, "module": ActivityLogModule.CLIENT, "entity_id": client.id,
+                         "action": ActivityLogAction.CLIENT_ACCESS_CHANGED,
+                         "description": f"Changed the access of the client {client.email}"}]
+            parts: list[str] = []
+            now = set(project_ids)
+            added, removed = now - before["project_ids"], before["project_ids"] - now
+            if added:
+                parts.append("added " + ActivityLogService.join_names(_project_names(db, added)))
+            if removed:
+                parts.append("removed " + ActivityLogService.join_names(_project_names(db, removed)))
+            parts += [
+                f"{label} {'shared' if getattr(client, key) else 'hidden'}"
+                for key, label in _PERMISSION_LABELS.items()
+                if bool(getattr(client, key)) != bool(before["permissions"][key])
+            ]
+            if not parts:
+                return []
+            return [{"actor": admin_user, "module": ActivityLogModule.CLIENT, "entity_id": client.id,
+                     "action": ActivityLogAction.CLIENT_ACCESS_CHANGED,
+                     "description": f"Changed the access of the client {client.email} ({'; '.join(parts)})"}]
+
+        ActivityLogService.capture_many(db, changes)
         return client
 
     @staticmethod

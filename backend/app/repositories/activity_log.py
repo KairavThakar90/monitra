@@ -6,11 +6,11 @@ the trail and how far, live in ``app.services.activity_log``.
 from datetime import datetime
 from typing import Iterable, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.validation.sanitizer import LIKE_ESCAPE_CHARACTER, like_pattern
-from app.models.activity_log import ActivityLog
+from app.models.activity_log import ActivityLog, ActivityLogModule
 
 
 class ActivityLogRepository:
@@ -43,6 +43,7 @@ class ActivityLogRepository:
         start: datetime,
         end: datetime,
         user_ids: Optional[Iterable[int]] = None,
+        led_project_ids: Optional[Iterable[int]] = None,
         user_id: Optional[int] = None,
         module: Optional[str] = None,
         search: Optional[str] = None,
@@ -53,6 +54,13 @@ class ActivityLogRepository:
         ``user_ids`` is the caller's visibility (None = the whole organization);
         ``user_id`` is a filter the caller chose. Both are ANDed, so a filter
         can only ever narrow what the caller may see.
+
+        ``led_project_ids`` widens a narrowed ``user_ids`` in exactly one way:
+        a project or task row about one of these projects is visible whoever
+        made it. A leader reads what an administrator changed on a project they
+        lead -- its status, its team -- without that making the administrator's
+        sign-ins, timer or anything else visible. Ignored when ``user_ids`` is
+        None, because everything is already visible.
         """
         stmt = select(ActivityLog).where(
             ActivityLog.organization_id == organization_id,
@@ -61,9 +69,17 @@ class ActivityLogRepository:
         )
         if user_ids is not None:
             ids = list(user_ids)
-            if not ids:
+            led = list(led_project_ids) if led_project_ids is not None else []
+            if not ids and not led:
                 return []
-            stmt = stmt.where(ActivityLog.user_id.in_(ids))
+            visible = ActivityLog.user_id.in_(ids) if ids else None
+            if led:
+                about_led_project = and_(
+                    ActivityLog.module.in_(ActivityLogModule.PROJECT_SCOPED),
+                    ActivityLog.project_id.in_(led),
+                )
+                visible = about_led_project if visible is None else or_(visible, about_led_project)
+            stmt = stmt.where(visible)
         if user_id is not None:
             stmt = stmt.where(ActivityLog.user_id == user_id)
         if module:

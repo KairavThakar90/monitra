@@ -77,6 +77,26 @@ def visible_member_ids(db: Optional[Session], user: User) -> Optional[set[int]]:
     return member_ids
 
 
+def led_project_ids(db: Optional[Session], user: User) -> set[int]:
+    """The projects a team-scoped caller leads; empty for everyone else.
+
+    Used by the activity trail, where a leader reads what *anyone* changed on a
+    project they lead (an administrator moving it to On hold, assigning a
+    member) as well as what their own team did. Everyone else is not narrowed
+    in the first place, so there is nothing for this to add.
+    """
+    if db is None or not is_team_scoped(user):
+        return set()
+    return set(
+        db.scalars(
+            select(Project.id).where(
+                Project.leader_id == user.id,
+                Project.organization_id == user.organization_id,
+            )
+        ).all()
+    )
+
+
 def may_view_member(db: Optional[Session], user: User, member_id: int) -> bool:
     """Whether ``user`` may read the person with id ``member_id``."""
     allowed = visible_member_ids(db, user)

@@ -743,6 +743,11 @@ class TimeEntryScreenshotService:
 
         :return: the id that was deleted.
         """
+        # Local, like the notice hook above: the trail imports this module's
+        # neighbours at load time.
+        from app.models.activity_log import ActivityLogAction, ActivityLogModule
+        from app.services.activity_log import ActivityLogService
+
         record, entry = TimeEntryScreenshotRepository.get_with_entry(db, screenshot_id)
         if not record or not TimeEntryScreenshotService._may_view(
             db, record, current_user, entry=entry
@@ -758,6 +763,15 @@ class TimeEntryScreenshotService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Screenshot not found",
             )
+
+        # Whose screenshot it was and when it was taken, read now: the row is
+        # gone by the time the deletion is recorded.
+        deleted = ActivityLogService.snapshot(db, lambda: {
+            "owner_id": entry.user_id if entry else None,
+            "project_id": entry.project_id if entry else None,
+            "task_id": entry.task_id if entry else None,
+            "captured_at": record.captured_at,
+        })
 
         file_id = record.google_drive_file_id
         drive_status = "skipped: no stored file"
@@ -835,6 +849,22 @@ class TimeEntryScreenshotService:
             "screenshot %s deleted by user %s (role %s): Drive %s, database deleted",
             screenshot_id, current_user.id, current_user.role_name, drive_status,
         )
+
+        def describe() -> dict:
+            owner = db.get(User, deleted["owner_id"]) if deleted and deleted["owner_id"] else None
+            taken = to_ist(deleted["captured_at"]) if deleted and deleted["captured_at"] else None
+            return {
+                "actor": current_user,
+                "module": ActivityLogModule.SCREENSHOT, "action": ActivityLogAction.SCREENSHOT_DELETED,
+                "description": "Deleted a screenshot"
+                               + (f" of {owner.name}" if owner else "")
+                               + (f" taken on {taken:%d %b %Y, %I:%M %p} IST" if taken else ""),
+                "project_id": deleted["project_id"] if deleted else None,
+                "task_id": deleted["task_id"] if deleted else None,
+                "entity_id": screenshot_id,
+            }
+
+        ActivityLogService.capture(db, describe)
         return screenshot_id
 
     # ── Timeline ──────────────────────────────────────────────────────────────

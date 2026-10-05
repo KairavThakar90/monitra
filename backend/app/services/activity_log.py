@@ -23,7 +23,10 @@ the trail trustworthy:
 
 Reads are scoped exactly as every other people-reading surface: a leader sees
 their own team, everyone else with ``view_employees`` sees the organization
-(``member_scope.visible_member_ids``).
+(``member_scope.visible_member_ids``). One deliberate addition for a leader:
+what anyone changed on a project they lead -- an administrator moving it to On
+hold, assigning a member -- is theirs to read too, whoever made the change
+(``member_scope.led_project_ids``); nothing else an administrator does is.
 """
 from __future__ import annotations
 
@@ -42,7 +45,7 @@ from app.models.project import Project
 from app.models.task import Task
 from app.models.user import User
 from app.repositories.activity_log import ActivityLogRepository
-from app.services.member_scope import visible_member_ids
+from app.services.member_scope import led_project_ids, visible_member_ids
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +109,66 @@ class ActivityLogService:
         except Exception:  # noqa: BLE001 - the action stands; only its record is lost
             logger.exception("ACTIVITY_LOG_WRITE_FAILED")
             return None
+
+    @staticmethod
+    def capture_many(db: Session, build: Callable[[], Optional[List[Dict[str, Any]]]]) -> List[int]:
+        """Record every row ``build`` describes for one action. Never raises.
+
+        One edit can be several things at once -- a project moved to On hold
+        *and* given a new member -- and each is its own row so the trail can be
+        read, searched and filtered by what happened. ``build`` returns the
+        field dicts ``capture`` takes (an empty list or None when nothing
+        changed), and is called inside the protection for the same reason
+        ``capture``'s is. Each row is written, and can fail, on its own: one
+        that cannot be written does not cost the others.
+
+        :return: the ids of the rows that were recorded.
+        """
+        if not isinstance(db, Session):
+            return []
+        try:
+            batch = build() or []
+        except Exception:  # noqa: BLE001 - the action stands; only its record is lost
+            logger.exception("ACTIVITY_LOG_WRITE_FAILED")
+            return []
+        recorded: List[int] = []
+        for fields in batch:
+            row_id = ActivityLogService.capture(db, lambda fields=fields: fields)
+            if row_id is not None:
+                recorded.append(row_id)
+        return recorded
+
+    @staticmethod
+    def snapshot(db: Session, read: Callable[[], Any]) -> Optional[Any]:
+        """What a change is about to overwrite, read *before* it is. Never raises.
+
+        A trail that says "status changed" without saying from what to what is
+        of little use, and the old value is gone once the change is saved. This
+        runs ``read`` while it can still be read. It returns None when nothing
+        will be recorded anyway (no real session) or the read failed -- the
+        caller then falls back to the plain, unspecific row, so a snapshot can
+        never fail the action it is describing. Like ``capture``, it asks
+        nothing of a caller holding anything but a real session, so code that
+        runs against a stand-in database is not made to answer extra queries.
+        """
+        if not isinstance(db, Session):
+            return None
+        try:
+            return read()
+        except Exception:  # noqa: BLE001 - the change stands; only its detail is lost
+            logger.exception("ACTIVITY_LOG_SNAPSHOT_FAILED")
+            return None
+
+    @staticmethod
+    def join_names(names: Iterable[str], limit: int = 5) -> str:
+        """``Alice``, ``Alice and Bob``, ``Alice, Bob and 3 more``."""
+        names = [name for name in names if name]
+        if len(names) <= 1:
+            return names[0] if names else "nobody"
+        shown, rest = names[:limit], len(names) - limit
+        if rest > 0:
+            return f"{', '.join(shown)} and {rest} more"
+        return f"{', '.join(shown[:-1])} and {shown[-1]}"
 
     @staticmethod
     def record(
@@ -276,7 +339,10 @@ class ActivityLogService:
             raise HTTPException(422, f"Unknown module '{module}'.")
 
         scope = visible_member_ids(db, current_user)
-        if member_id is not None and scope is not None and member_id not in scope:
+        # A leader also reads project and task changes on the projects they
+        # lead, whoever made them. Empty (and so no widening) for everyone else.
+        led = led_project_ids(db, current_user) if scope is not None else set()
+        if member_id is not None and scope is not None and member_id not in scope and not led:
             # Outside the caller's team: answered as an empty trail, the same
             # way the member directory answers with 404 -- nothing is learned.
             return ActivityLogService._payload(start_day, end_day, [], {}, {}, {}, truncated=False)
@@ -287,6 +353,7 @@ class ActivityLogService:
             start=ist_day_start_utc(start_day),
             end=ist_day_start_utc(end_day + timedelta(days=1)),
             user_ids=scope,
+            led_project_ids=led,
             user_id=member_id,
             module=module,
             search=search,

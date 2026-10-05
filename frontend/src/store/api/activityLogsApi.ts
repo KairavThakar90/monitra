@@ -25,7 +25,9 @@ export type ActivityLogModule =
   | 'project'
   | 'task'
   | 'member'
+  | 'client'
   | 'feedback'
+  | 'screenshot'
   | 'system';
 
 export interface ActivityLogEntry {

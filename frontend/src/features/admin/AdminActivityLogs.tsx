@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { V2Shell } from "../dashboard/v2/V2Shell";
 import { Card, EmptyState, ErrorNote, Spinner, initialsOf } from "../member/MemberUi";
 import { SearchInput } from "../feedback/feedbackFilters";
@@ -20,7 +20,6 @@ import { formatISTDate, formatISTTime12 } from "../../utils/duration";
 import { validateSearchTerm } from "../../validation";
 import {
   LOG_CSV_HEADERS,
-  MODULE_STYLES,
   entryActionLabel,
   contextLabel,
   countEntries,
@@ -38,14 +37,15 @@ import {
  * last active -- that opens onto their actions for the chosen dates, newest
  * first and split by day: signing in and out, opening and closing the desktop
  * application, starting and stopping the timer, manual time requests and the
- * decisions on them, project and task changes, and the directory and feedback
- * decisions an administrator makes.
+ * decisions on them, project and task changes (a status moving from one value
+ * to another, who was assigned), and the directory, client, screenshot and
+ * feedback decisions an administrator makes.
  *
  * The page reads and never writes. `GET /activity-logs` decides who is on it:
- * the whole organization for Admin and HR, a leader's own team for a leader.
- * The date range, the category and the search are sent to the server, because
- * the trail is too dense to load whole; the employee picker narrows what came
- * back. None of them can widen it.
+ * the whole organization for Admin and HR; for a leader their own team, plus
+ * whatever anyone changed on a project they lead. The date range and the
+ * search are sent to the server, because the trail is too dense to load whole;
+ * the employee picker narrows what came back. None of them can widen it.
  *
  * Times are IST, the calendar every other screen reports against. An empty
  * result is shown as empty -- nothing here is ever filled in.
@@ -55,95 +55,6 @@ import {
 const ROWS_PER_STEP = 100;
 
 const AVATAR_COLORS = ["bg-blue-500", "bg-rose-500", "bg-emerald-500", "bg-amber-500", "bg-purple-500", "bg-cyan-500"];
-
-/** Closes a popover when the pointer goes down anywhere outside it. */
-const useClickOutside = (onOutside: () => void, active: boolean) => {
-  const ref = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!active) return;
-    const handler = (event: MouseEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) onOutside();
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [active, onOutside]);
-  return ref;
-};
-
-/** The category picker: every kind of action the backend records, or all. */
-const ModuleSelect: React.FC<{
-  modules: string[];
-  value: string | null;
-  onChange: (value: string | null) => void;
-}> = ({ modules, value, onChange }) => {
-  const [open, setOpen] = useState(false);
-  const ref = useClickOutside(() => setOpen(false), open);
-  const choose = (next: string | null) => {
-    onChange(next);
-    setOpen(false);
-  };
-  const option = (active: boolean) =>
-    "flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] font-semibold transition " +
-    (active ? "bg-[#F1F5F9] text-[#0F172A]" : "text-[#475569] hover:bg-[#F8FAFC]");
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label="Filter by category"
-        className={
-          "flex min-w-[180px] items-center justify-between gap-3 rounded-lg border bg-white px-3.5 py-2 text-[13px] font-semibold text-[#0F172A] transition " +
-          (open ? "border-[#38BDF8] ring-2 ring-[#38BDF8]/20" : "border-[#E2E8F0] hover:border-[#CBD5E1]")
-        }
-      >
-        <span className="flex items-center gap-2">
-          <span
-            className="h-2.5 w-2.5 shrink-0 rounded-[3px]"
-            style={{ background: value ? moduleStyle(value).dot : "#CBD5E1" }}
-          />
-          {value ? moduleStyle(value).label : "All categories"}
-        </span>
-        <svg
-          className={`h-4 w-4 shrink-0 text-[#94A3B8] transition-transform ${open ? "rotate-180" : ""}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-
-      {open && (
-        <div
-          role="listbox"
-          className="absolute left-0 z-30 mt-2 w-[220px] overflow-hidden rounded-xl border border-[#E2E8F0] bg-white py-1 shadow-lg"
-        >
-          <button type="button" role="option" aria-selected={value === null} onClick={() => choose(null)} className={option(value === null)}>
-            <span className="h-2.5 w-2.5 rounded-[3px] bg-[#CBD5E1]" />
-            All categories
-          </button>
-          <div className="my-1 border-t border-[#F1F5F9]" />
-          {modules.map((module) => (
-            <button
-              key={module}
-              type="button"
-              role="option"
-              aria-selected={value === module}
-              onClick={() => choose(module)}
-              className={option(value === module)}
-            >
-              <span className="h-2.5 w-2.5 rounded-[3px]" style={{ background: moduleStyle(module).dot }} />
-              {moduleStyle(module).label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
 
 /** One recorded action. */
 const LogRow: React.FC<{ entry: ActivityLogEntry }> = ({ entry }) => {
@@ -286,7 +197,6 @@ export const AdminActivityLogs: React.FC = () => {
   const teamScoped = isTeamScoped(currentUser);
 
   const [range, setRange] = useState<DateRange>(DEFAULT_RANGE);
-  const [module, setModule] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
 
@@ -306,7 +216,7 @@ export const AdminActivityLogs: React.FC = () => {
   const searchTerm = checkedSearch.ok ? checkedSearch.value : "";
 
   const { data, isLoading, isFetching, isError } = useGetActivityLogsQuery(
-    { start: range.from, end: range.to, module, search: searchTerm },
+    { start: range.from, end: range.to, search: searchTerm },
     // A trail is only useful if it is current: cached rows paint at once and
     // are always re-read behind, rather than trusted for the default minute.
     { refetchOnMountOrArgChange: true },
@@ -335,12 +245,11 @@ export const AdminActivityLogs: React.FC = () => {
   const allOpen = visible.length > 0 && visible.every((member) => isOpen(member.user_id));
 
   const isDirty =
-    search !== "" || module !== null || selectedMembers.length > 0 ||
+    search !== "" || selectedMembers.length > 0 ||
     range.from !== DEFAULT_RANGE.from || range.to !== DEFAULT_RANGE.to;
 
   const resetFilters = () => {
     setSearch("");
-    setModule(null);
     setSelectedMembers([]);
     setRange(DEFAULT_RANGE);
   };
@@ -353,21 +262,18 @@ export const AdminActivityLogs: React.FC = () => {
       [
         ["Activity logs"],
         ["Dates (IST)", `${range.from} to ${range.to}`],
-        ["Category", module ? moduleStyle(module).label : "All categories"],
         ...(searchTerm ? [["Search", searchTerm]] : []),
         [],
       ],
     );
-
-  const modules = data?.modules?.length ? data.modules : Object.keys(MODULE_STYLES);
 
   return (
     <V2Shell
       title="Logs"
       subtitle={
         teamScoped
-          ? "Everything your team did in Monitra — sign-ins, the desktop app, the timer, requests and changes — employee by employee."
-          : "Everything people did in Monitra — sign-ins, the desktop app, the timer, requests and changes — employee by employee."
+          ? "Everything your team did in Monitra, and every change made to the projects you lead — sign-ins, the desktop app, the timer, requests, assignments and status changes — employee by employee."
+          : "Everything people did in Monitra — sign-ins, the desktop app, the timer, requests, projects, assignments, clients and screenshots — employee by employee."
       }
       actions={
         <>
@@ -390,7 +296,6 @@ export const AdminActivityLogs: React.FC = () => {
         <div className="rounded-xl border border-[#E2E8F0] bg-white p-4 shadow-sm">
           <div className="flex flex-wrap items-center gap-3">
             <SearchInput value={search} onChange={setSearch} subject="logs" />
-            <ModuleSelect modules={modules} value={module} onChange={setModule} />
             <DateRangeFilter value={range} onChange={setRange} />
             <MemberMultiSelect members={members ?? []} selected={selectedMembers} onChange={setSelectedMembers} />
             {isDirty && (
@@ -402,6 +307,16 @@ export const AdminActivityLogs: React.FC = () => {
                 Reset
               </button>
             )}
+            {/* The same button, in the same place, as on Assign Tasks. */}
+            {visible.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setAll(!allOpen)}
+                className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-bold text-slate-500 transition hover:bg-slate-50 hover:text-slate-700"
+              >
+                {allOpen ? "Collapse All" : "Expand All"}
+              </button>
+            )}
           </div>
         </div>
 
@@ -410,7 +325,7 @@ export const AdminActivityLogs: React.FC = () => {
         {data?.truncated && (
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-[13px] font-semibold text-amber-800">
             These dates hold more than {data.total.toLocaleString()} actions, so only the most recent{" "}
-            {data.total.toLocaleString()} are shown. Choose a shorter range, a category or a search to see the rest.
+            {data.total.toLocaleString()} are shown. Choose a shorter range, an employee or a search to see the rest.
           </div>
         )}
 
@@ -423,15 +338,6 @@ export const AdminActivityLogs: React.FC = () => {
                 {shownActions.toLocaleString()} action{shownActions === 1 ? "" : "s"} by {visible.length}{" "}
                 {visible.length === 1 ? "employee" : "employees"}
               </p>
-              {visible.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => setAll(!allOpen)}
-                  className="rounded-lg px-3 py-1.5 text-[12px] font-bold text-[#2563EB] transition hover:bg-[#EFF6FF]"
-                >
-                  {allOpen ? "Collapse all" : "Expand all"}
-                </button>
-              )}
             </div>
 
             {visible.length === 0 ? (
@@ -441,7 +347,7 @@ export const AdminActivityLogs: React.FC = () => {
                     message={isDirty ? "No logs match these filters." : "No activity recorded in the last 7 days."}
                     hint={
                       isDirty
-                        ? "Try a wider date range, a different category, or clear the search."
+                        ? "Try a wider date range, a different employee, or clear the search."
                         : "Actions appear here as people sign in, track time and make changes."
                     }
                   />

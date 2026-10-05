@@ -7,9 +7,11 @@
  *
  * - the trail is shown employee-wise, one collapsed accordion per person,
  *   opening onto that person's actions split by IST day;
- * - the dates, the category and the search are sent to the server (the trail
- *   is too dense to filter in the browser) and an empty answer is shown as
- *   empty -- never filled in;
+ * - the dates and the search are sent to the server (the trail is too dense
+ *   to filter in the browser) and an empty answer is shown as empty -- never
+ *   filled in; there is no category filter;
+ * - Expand All / Collapse All sits in the filter bar, styled as it is on the
+ *   Assign Tasks page;
  * - a cut answer says it was cut.
  *
  * The pure helpers are tested directly: what each action is called, which IST
@@ -119,8 +121,26 @@ describe('activity log wording', () => {
   it('shows an action it has never heard of in its own words, not hidden', () => {
     // A newer backend may start writing an action before this build ships a
     // label for it. The row must still say what happened.
-    expect(actionLabel('screenshot_deleted')).toBe('Screenshot deleted');
+    expect(actionLabel('invoice_archived')).toBe('Invoice archived');
     expect(moduleLabel('screenshot')).toBe('Screenshot');
+    expect(moduleLabel('billing_run')).toBe('Billing run');
+  });
+
+  it('names the project, task, client and screenshot actions the way a person would', () => {
+    expect(actionLabel('project_status_changed')).toBe('Changed project status');
+    expect(actionLabel('project_leader_changed')).toBe('Changed project leader');
+    expect(actionLabel('project_owner_changed')).toBe('Changed project owner');
+    expect(actionLabel('project_member_assigned')).toBe('Assigned to project');
+    expect(actionLabel('project_member_removed')).toBe('Removed from project');
+    expect(actionLabel('task_status_changed')).toBe('Changed task status');
+    expect(actionLabel('task_assigned')).toBe('Assigned task');
+    expect(actionLabel('task_unassigned')).toBe('Removed from task');
+    expect(actionLabel('screenshot_deleted')).toBe('Deleted screenshot');
+    expect(actionLabel('client_invited')).toBe('Invited client');
+    expect(actionLabel('client_invitation_resent')).toBe('Resent client invitation');
+    expect(actionLabel('client_access_changed')).toBe('Changed client access');
+    expect(actionLabel('client_deactivated')).toBe('Deactivated client');
+    expect(moduleLabel('client')).toBe('Client');
   });
 
   it('says which client acted, and nothing when none was recorded', () => {
@@ -288,10 +308,41 @@ describe('AdminActivityLogs', () => {
 
   it('expands and collapses everyone at once', async () => {
     await render();
-    await click(buttonNamed('Expand all')!);
+    await click(buttonNamed('Expand All')!);
     expect(accordions().every((button) => button.getAttribute('aria-expanded') === 'true')).toBe(true);
-    await click(buttonNamed('Collapse all')!);
+    await click(buttonNamed('Collapse All')!);
     expect(accordions().every((button) => button.getAttribute('aria-expanded') === 'false')).toBe(true);
+  });
+
+  it('puts Expand All in the filter bar, styled like the one on Assign Tasks', async () => {
+    await render();
+    const button = buttonNamed('Expand All')!;
+    // The Assign Tasks page's button, class for class.
+    expect(button.className).toBe(
+      'rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-bold text-slate-500 transition hover:bg-slate-50 hover:text-slate-700',
+    );
+    // It lives with the filters, not in the "N actions by M employees" line.
+    const summary = Array.from(container.querySelectorAll('p')).find((p) => p.textContent?.includes('actions by'))!;
+    expect(summary.parentElement!.contains(button)).toBe(false);
+    expect(container.querySelector('input[type="search"], input[type="text"]')!.closest('.flex-wrap')!.contains(button)).toBe(true);
+    // The old text-only link, in lower case, is gone.
+    expect(buttonNamed('Expand all')).toBeUndefined();
+  });
+
+  it('offers Expand All for a lone employee too, as Assign Tasks does', async () => {
+    reply = { status: 200, body: payload([BOB]) };
+    await render();
+    expect(buttonNamed('Collapse All')).toBeDefined();   // the lone employee opened by itself
+    await click(buttonNamed('Collapse All')!);
+    expect(accordions()[0].getAttribute('aria-expanded')).toBe('false');
+    expect(buttonNamed('Expand All')).toBeDefined();
+  });
+
+  it('has no Expand All when there is nothing to expand', async () => {
+    reply = { status: 200, body: payload([]) };
+    await render();
+    expect(buttonNamed('Expand All')).toBeUndefined();
+    expect(buttonNamed('Collapse All')).toBeUndefined();
   });
 
   it('opens a lone employee without being asked', async () => {
@@ -301,17 +352,45 @@ describe('AdminActivityLogs', () => {
     expect(accordions()[0].getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('asks the server for the last seven days, and for a category when one is chosen', async () => {
+  it('asks the server for the last seven days, and never for a category', async () => {
     await render();
     const first = requests.find((url) => url.includes('/activity-logs'))!;
     expect(first).toMatch(/start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}/);
-    expect(first).not.toContain('module=');
+    expect(requests.filter((url) => url.includes('/activity-logs')).every((url) => !url.includes('module='))).toBe(true);
+  });
 
-    await click(container.querySelector('button[aria-label="Filter by category"]')!);
-    const timerOption = Array.from(container.querySelectorAll('[role="option"]'))
-      .find((option) => option.textContent?.trim() === 'Timer')!;
-    await click(timerOption);
-    expect(requests.some((url) => url.includes('/activity-logs') && url.includes('module=timer'))).toBe(true);
+  it('has no category filter: no "All categories" picker, and nothing to open', async () => {
+    await render();
+    expect(container.textContent).not.toContain('All categories');
+    expect(container.querySelector('button[aria-label="Filter by category"]')).toBeNull();
+    expect(container.querySelector('[role="listbox"]')).toBeNull();
+    // The rest of the filter bar is intact: search, dates and employees.
+    expect(container.querySelector('input[placeholder*="earch"]')).not.toBeNull();
+    expect(container.textContent).toContain('All members');
+  });
+
+  it('shows what each row is about, in its own category tag', async () => {
+    const adminGroup: ActivityLogMemberGroup = {
+      user_id: 1, name: 'Grace Admin', email: 'grace@example.invalid', designation: null, role_name: 'administrator',
+      entry_count: 2, last_activity_at: '2026-09-30T06:30:00Z',
+      entries: [
+        entry({ id: 21, module: 'project', action: 'project_status_changed', source: 'web', client_version: null,
+                description: 'Changed the status of the project "Apollo" from Active to Paused',
+                project_id: 40, project_name: 'Apollo', created_at: '2026-09-30T06:30:00Z' }),
+        entry({ id: 20, module: 'project', action: 'project_member_assigned', source: 'web', client_version: null,
+                description: 'Assigned Alice and Bob to the project "Apollo"',
+                project_id: 40, project_name: 'Apollo', created_at: '2026-09-30T06:00:00Z' }),
+      ],
+    };
+    reply = { status: 200, body: payload([adminGroup]) };
+    await render();
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('Changed project status');
+    expect(text).toContain('Changed the status of the project "Apollo" from Active to Paused');
+    expect(text).toContain('Assigned to project');
+    expect(text).toContain('Assigned Alice and Bob to the project "Apollo"');
+    expect(text).toContain('Web');
   });
 
   it('shows an honest empty state when nothing was recorded', async () => {
@@ -335,9 +414,25 @@ describe('AdminActivityLogs', () => {
     expect(container.textContent).not.toContain('No activity recorded');
   });
 
-  it('tells a leader the page is their team', async () => {
+  it('tells a leader the page is their team and the projects they lead', async () => {
     currentUser = { id: 3, role_name: 'leader', name: 'Linus' };
     await render();
-    expect(container.querySelector('[data-testid="subtitle"]')!.textContent).toContain('your team');
+    const subtitle = container.querySelector('[data-testid="subtitle"]')!.textContent!;
+    expect(subtitle).toContain('your team');
+    expect(subtitle).toContain('projects you lead');
+  });
+
+  it('suggests a different employee, not a category, when a filter matches nothing', async () => {
+    reply = { status: 200, body: payload([]) };
+    await render();
+    const search = container.querySelector('input[placeholder*="earch"]') as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'zzz');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await settle();
+    expect(container.textContent).toContain('No logs match these filters.');
+    expect(container.textContent).toContain('a different employee');
+    expect(container.textContent).not.toContain('category');
   });
 });
