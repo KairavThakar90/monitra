@@ -412,6 +412,7 @@ Project (routes 1–3):
   "employees": [ { "id": 101, "name": "…", "email": "…", "role": "employee" } ],
   "deadline": "2026-12-31",
   "billing_type": "free",
+  "category": null,
   "fixed_hours": null,
   "organization_id": 1,
   "created_at": "2026-09-30T10:00:00Z",
@@ -419,6 +420,10 @@ Project (routes 1–3):
   "tasks": [ /* task objects, each with its own wfpm_task_id (null if not linked) */ ]
 }
 ```
+
+`category` is `"kyle"`, `"st"` or `null`. It is set by an administrator in Monitra
+(Project Management); this API neither accepts nor changes it, so a project created
+through it is `null` until someone categorises it there.
 
 Task (routes 6–11 and 13):
 

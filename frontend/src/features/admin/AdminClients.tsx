@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { V2Shell } from '../dashboard/v2/V2Shell';
 import { Card, EmptyState, ErrorNote, Spinner } from '../member/MemberUi';
 import { useGetAllProjectsQuery } from '../../store/api/projectsApi';
+import { SEARCH_MAX_LENGTH } from '../../validation';
 import {
   DEFAULT_CLIENT_PERMISSIONS,
   useCreateClientInvitationMutation,
@@ -26,34 +27,95 @@ const StatusBadge: React.FC<{ status: ClientListItem['status'] }> = ({ status })
   </span>
 );
 
-/** The project checkbox list, shared by the Add Client and Edit Access modals. */
+/**
+ * The project checkbox list, shared by the Add Client and Edit Access modals.
+ *
+ * A search box narrows the list by project name, "Select all" ticks (or
+ * unticks) every project the search currently shows, and the count beside it
+ * is how many projects are selected in total -- including any the search is
+ * hiding, since those are still part of what gets saved.
+ */
 const ProjectChecklist: React.FC<{
   selectedIds: Set<number>;
   onToggle: (id: number) => void;
-}> = ({ selectedIds, onToggle }) => {
+  onSetMany: (ids: number[], selected: boolean) => void;
+}> = ({ selectedIds, onToggle, onSetMany }) => {
   const { data: projects, isLoading } = useGetAllProjectsQuery();
+  const [search, setSearch] = useState('');
+  const selectAllRef = useRef<HTMLInputElement>(null);
+
+  const allProjects = projects ?? [];
+  const term = search.trim().toLowerCase();
+  const visibleProjects = term
+    ? allProjects.filter((project) => project.project_name.toLowerCase().includes(term))
+    : allProjects;
+  const selectedCount = allProjects.filter((project) => selectedIds.has(project.id)).length;
+  const visibleSelectedCount = visibleProjects.filter((project) => selectedIds.has(project.id)).length;
+  const allVisibleSelected = visibleProjects.length > 0 && visibleSelectedCount === visibleProjects.length;
+  const someVisibleSelected = visibleSelectedCount > 0 && !allVisibleSelected;
+
+  // `indeterminate` is a DOM property with no React attribute.
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someVisibleSelected;
+  }, [someVisibleSelected]);
 
   if (isLoading) return <Spinner label="Loading projects…" />;
 
   return (
-    <div className="max-h-56 overflow-y-auto rounded-lg border border-[#E2E8F0] divide-y divide-[#F1F5F9]">
-      {(projects ?? []).map((project) => (
-        <label
-          key={project.id}
-          className="flex items-center gap-3 px-3 py-2.5 text-sm text-[#0F172A] cursor-pointer hover:bg-[#F8FAFC]"
-        >
-          <input
-            type="checkbox"
-            checked={selectedIds.has(project.id)}
-            onChange={() => onToggle(project.id)}
-            className="h-4 w-4 rounded border-[#CBD5E1] text-[#2563EB] focus:ring-[#2563EB]"
-          />
-          {project.project_name}
-        </label>
-      ))}
-      {(projects ?? []).length === 0 && (
-        <p className="px-3 py-4 text-sm text-[#94A3B8]">No projects available yet.</p>
-      )}
+    <div className="space-y-2">
+      <input
+        type="text"
+        value={search}
+        maxLength={SEARCH_MAX_LENGTH}
+        onChange={(e) => setSearch(e.target.value)}
+        // Enter in the search box must not submit the surrounding form.
+        onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
+        placeholder="Search projects…"
+        aria-label="Search projects"
+        className="w-full rounded-lg border border-[#E2E8F0] px-3 py-2 text-sm text-[#0F172A] shadow-sm outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/15"
+      />
+
+      <div className="rounded-lg border border-[#E2E8F0]">
+        <div className="flex items-center justify-between gap-3 border-b border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2">
+          <label className="flex items-center gap-3 text-sm font-semibold text-[#0F172A] cursor-pointer">
+            <input
+              ref={selectAllRef}
+              type="checkbox"
+              checked={allVisibleSelected}
+              disabled={visibleProjects.length === 0}
+              onChange={() => onSetMany(visibleProjects.map((project) => project.id), !allVisibleSelected)}
+              className="h-4 w-4 rounded border-[#CBD5E1] text-[#2563EB] focus:ring-[#2563EB]"
+            />
+            {term ? 'Select all results' : 'Select all'}
+          </label>
+          <span className="text-xs font-semibold text-[#64748B]" aria-live="polite">
+            {selectedCount} of {allProjects.length} selected
+          </span>
+        </div>
+
+        <div className="max-h-56 overflow-y-auto divide-y divide-[#F1F5F9]">
+          {visibleProjects.map((project) => (
+            <label
+              key={project.id}
+              className="flex items-center gap-3 px-3 py-2.5 text-sm text-[#0F172A] cursor-pointer hover:bg-[#F8FAFC]"
+            >
+              <input
+                type="checkbox"
+                checked={selectedIds.has(project.id)}
+                onChange={() => onToggle(project.id)}
+                className="h-4 w-4 rounded border-[#CBD5E1] text-[#2563EB] focus:ring-[#2563EB]"
+              />
+              {project.project_name}
+            </label>
+          ))}
+          {allProjects.length === 0 && (
+            <p className="px-3 py-4 text-sm text-[#94A3B8]">No projects available yet.</p>
+          )}
+          {allProjects.length > 0 && visibleProjects.length === 0 && (
+            <p className="px-3 py-4 text-sm text-[#94A3B8]">No projects match your search.</p>
+          )}
+        </div>
+      </div>
     </div>
   );
 };
@@ -103,12 +165,23 @@ const useToggleSet = (initial: number[]) => {
       return next;
     });
   };
-  return { selectedIds, toggle };
+  /** Selects (or deselects) every id in `ids`, leaving the rest of the set alone. */
+  const setMany = (ids: number[], selected: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      for (const id of ids) {
+        if (selected) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  };
+  return { selectedIds, toggle, setMany };
 };
 
 const AddClientModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [createInvitation, { isLoading: isSending }] = useCreateClientInvitationMutation();
-  const { selectedIds, toggle } = useToggleSet([]);
+  const { selectedIds, toggle, setMany } = useToggleSet([]);
   const [permissions, setPermissions] = useState<ClientPermissions>(DEFAULT_CLIENT_PERMISSIONS);
 
   const [email, setEmail] = useState('');
@@ -168,7 +241,7 @@ const AddClientModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             <label className="block text-xs font-semibold text-[#94A3B8] tracking-wider uppercase mb-2">
               Select Projects
             </label>
-            <ProjectChecklist selectedIds={selectedIds} onToggle={toggle} />
+            <ProjectChecklist selectedIds={selectedIds} onToggle={toggle} onSetMany={setMany} />
           </div>
 
           <div>
@@ -202,7 +275,7 @@ const AddClientModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
 const EditAccessModal: React.FC<{ client: ClientListItem; onClose: () => void }> = ({ client, onClose }) => {
   const [updateAccess, { isLoading: isSaving }] = useUpdateClientAccessMutation();
-  const { selectedIds, toggle } = useToggleSet(client.projects.map((p) => p.id));
+  const { selectedIds, toggle, setMany } = useToggleSet(client.projects.map((p) => p.id));
   const [permissions, setPermissions] = useState<ClientPermissions>(client.permissions);
   const [error, setError] = useState<string | null>(null);
 
@@ -242,7 +315,7 @@ const EditAccessModal: React.FC<{ client: ClientListItem; onClose: () => void }>
             <label className="block text-xs font-semibold text-[#94A3B8] tracking-wider uppercase mb-2">
               Shared Projects
             </label>
-            <ProjectChecklist selectedIds={selectedIds} onToggle={toggle} />
+            <ProjectChecklist selectedIds={selectedIds} onToggle={toggle} onSetMany={setMany} />
           </div>
 
           <div>

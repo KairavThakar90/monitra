@@ -1,6 +1,7 @@
 import { baseApi } from './baseApi';
 import { patchEveryCachedQuery } from './optimistic';
 import { ENDPOINTS } from '../../api/endpoints';
+import type { ProjectCategory } from '../../utils/projectCategory';
 
 /**
  * A role the server recognises for a member. `value` is what the API stores
@@ -63,6 +64,11 @@ export interface Project {
   employees: ProjectUser[];
   deadline: string | null;
   billing_type: string;
+  /**
+   * 'kyle' | 'st', or `null` for an uncategorised project. Optional so a
+   * cached row from before the field existed still reads.
+   */
+  category?: ProjectCategory | null;
   fixed_hours: string | null;
   organization_id: number;
   created_at: string;
@@ -120,6 +126,11 @@ export interface CreateProjectPayload {
   deadline: string | null;
   billing_type: string;
   fixed_hours: number | null;
+  /**
+   * Optional. On a create, omitted or `null` means uncategorised. On an edit,
+   * omitted leaves the category alone and `null` clears it.
+   */
+  category?: ProjectCategory | null;
 }
 
 export type GetProjectsArgs = {
@@ -129,6 +140,8 @@ export type GetProjectsArgs = {
   status_id?: number | null;
   leader_id?: number | null;
   billing_type?: string | null;
+  /** Only projects tagged with this category. */
+  category?: ProjectCategory | null;
   /** Only projects staffed with at least one of these members. */
   employee_ids?: number[];
 };
@@ -215,6 +228,7 @@ export const projectsApi = baseApi.injectEndpoints({
         if (params.status_id) url += `&status_id=${params.status_id}`;
         if (params.leader_id) url += `&leader_id=${params.leader_id}`;
         if (params.billing_type) url += `&billing_type=${params.billing_type}`;
+        if (params.category) url += `&category=${params.category}`;
         for (const id of params.employee_ids || []) url += `&employee_ids=${id}`;
         return url;
       },
@@ -363,6 +377,7 @@ export const projectsApi = baseApi.injectEndpoints({
           if (body.description !== undefined) project.description = body.description;
           if (body.deadline !== undefined) project.deadline = body.deadline;
           if (body.billing_type !== undefined) project.billing_type = body.billing_type;
+          if (body.category !== undefined) project.category = body.category;
           if (body.fixed_hours !== undefined) {
             project.fixed_hours = body.fixed_hours === null ? null : String(body.fixed_hours);
           }

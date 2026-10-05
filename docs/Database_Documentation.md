@@ -104,6 +104,7 @@ Indexes: `(organization_id, role_name)`, `(organization_id, status)`.
 | completed_at | timestamptz | |
 | is_billable | boolean | default true |
 | billing_type | varchar(20) | default `'free'` |
+| category | varchar(20) | Optional tag: `'kyle'` or `'st'` (nullable; NULL = uncategorised). Allowed values are enforced by `ProjectCategory` in `app/schemas/project_management.py`, not by a DB constraint |
 | fixed_hours | numeric(8,2) | |
 | time_tracked_seconds | integer | default 0 — denormalized rollup, kept in sync by the time-entry write path, not computed on read |
 | leader_id | bigint | FK → users (nullable) |

@@ -22,6 +22,10 @@ class Project(Base):
     owner_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     deadline: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     billing_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'free'"))
+    #: An optional grouping the creator may tag a project with: 'kyle' or 'st'
+    #: (see `ProjectCategory`). NULL means uncategorised, which is every project
+    #: that predates it and any project created without choosing one.
+    category: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     fixed_hours: Mapped[Optional[float]] = mapped_column(Numeric(8, 2), nullable=True)
     start_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)

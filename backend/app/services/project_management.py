@@ -29,7 +29,7 @@ from app.repositories.status_catalog import StatusCatalog
 from app.services.activity_log import ActivityLogService
 from app.services.project_activity import ProjectActivity
 from app.schemas.project_management import (
-    BillingType, ProjectCreate, ProjectUpdate, TaskAssigneesSet, TaskCreate, TaskUpdate,
+    BillingType, ProjectCategory, ProjectCreate, ProjectUpdate, TaskAssigneesSet, TaskCreate, TaskUpdate,
 )
 from app.services.member_scope import is_team_scoped
 from app.services.project_ownership import resolve_owner
@@ -278,7 +278,7 @@ class ProjectManagementService:
         assignee_by_id = {item.id: item for item in assignees}
         task_statuses = StatusCatalog.task_statuses(db) if tasks else {}
         holders = ProjectManagementService._assignees_for(db, tasks)
-        return {"id": project.id, "project_name": project.project_name, "description": project.description, "status": project_status, "owner": ProjectManagementService._person(owner), "leader": ProjectManagementService._person(leader), "employees": [ProjectManagementService._person(employee_by_id[item_id]) for item_id in employee_ids if item_id in employee_by_id], "deadline": project.deadline, "billing_type": project.billing_type, "fixed_hours": project.fixed_hours, "organization_id": project.organization_id, "created_at": project.created_at, "updated_at": project.updated_at, "tasks": [ProjectManagementService._task_payload(task, task_statuses.get(task.status_id), assignee_by_id.get(task.assignee_id), holders.get(task.id)) for task in tasks]}
+        return {"id": project.id, "project_name": project.project_name, "description": project.description, "status": project_status, "owner": ProjectManagementService._person(owner), "leader": ProjectManagementService._person(leader), "employees": [ProjectManagementService._person(employee_by_id[item_id]) for item_id in employee_ids if item_id in employee_by_id], "deadline": project.deadline, "billing_type": project.billing_type, "category": project.category, "fixed_hours": project.fixed_hours, "organization_id": project.organization_id, "created_at": project.created_at, "updated_at": project.updated_at, "tasks": [ProjectManagementService._task_payload(task, task_statuses.get(task.status_id), assignee_by_id.get(task.assignee_id), holders.get(task.id)) for task in tasks]}
 
     @staticmethod
     def _task_counts(db: Session, project_ids: list[int], user: User) -> dict[int, int]:
@@ -337,7 +337,7 @@ class ProjectManagementService:
         payloads = []
         for project in projects:
             employees = [ProjectManagementService._person(users_by_id[user_id]) for user_id in memberships_by_project.get(project.id, []) if user_id in users_by_id]
-            payloads.append({"id": project.id, "project_name": project.project_name, "description": project.description, "status": project_statuses.get(project.status_id), "owner": ProjectManagementService._person(users_by_id.get(project.owner_id)), "leader": ProjectManagementService._person(users_by_id.get(project.leader_id)), "employees": employees, "deadline": project.deadline, "billing_type": project.billing_type, "fixed_hours": project.fixed_hours, "organization_id": project.organization_id, "created_at": project.created_at, "updated_at": project.updated_at,
+            payloads.append({"id": project.id, "project_name": project.project_name, "description": project.description, "status": project_statuses.get(project.status_id), "owner": ProjectManagementService._person(users_by_id.get(project.owner_id)), "leader": ProjectManagementService._person(users_by_id.get(project.leader_id)), "employees": employees, "deadline": project.deadline, "billing_type": project.billing_type, "category": project.category, "fixed_hours": project.fixed_hours, "organization_id": project.organization_id, "created_at": project.created_at, "updated_at": project.updated_at,
                              # `None` rather than `[]` when the caller opted out:
                              # an empty array is a real answer ("this project has
                              # no tasks") and must not be how "you did not ask"
@@ -377,7 +377,7 @@ class ProjectManagementService:
         leader_id = user.id if is_team_scoped(user) else payload.leader_id
         project_status, leader, employees = ProjectManagementService._validate_project_fields(db, user, payload.status_id, leader_id, payload.employee_ids, payload.deadline, payload.billing_type, payload.fixed_hours)
         try:
-            project = Project(organization_id=user.organization_id, project_name=payload.project_name, description=payload.description, status=ProjectManagementService._legacy_status(project_status, PROJECT_STATUS_NAMES, "project"), status_id=project_status.id, owner_id=owner.id if owner else None, leader_id=leader.id, deadline=payload.deadline, billing_type=payload.billing_type.value, fixed_hours=payload.fixed_hours, is_billable=payload.billing_type == BillingType.fixed, created_by=user.id, wfpm_project_id=wfpm_project_id)
+            project = Project(organization_id=user.organization_id, project_name=payload.project_name, description=payload.description, status=ProjectManagementService._legacy_status(project_status, PROJECT_STATUS_NAMES, "project"), status_id=project_status.id, owner_id=owner.id if owner else None, leader_id=leader.id, deadline=payload.deadline, billing_type=payload.billing_type.value, category=payload.category.value if payload.category else None, fixed_hours=payload.fixed_hours, is_billable=payload.billing_type == BillingType.fixed, created_by=user.id, wfpm_project_id=wfpm_project_id)
             db.add(project)
             db.flush()
             # The project may already have members by the time the flush returns.
@@ -424,7 +424,7 @@ class ProjectManagementService:
         return ProjectManagementService._detail_payload(db, project, user)
 
     @staticmethod
-    def list(db: Session, user: User, page: int, limit: int, search: Optional[str], status_id: Optional[int], leader_id: Optional[int], billing_type: Optional[BillingType], include_tasks: bool = True, employee_ids: Optional[list[int]] = None):
+    def list(db: Session, user: User, page: int, limit: int, search: Optional[str], status_id: Optional[int], leader_id: Optional[int], billing_type: Optional[BillingType], include_tasks: bool = True, employee_ids: Optional[list[int]] = None, category: Optional[ProjectCategory] = None):
         """A page of projects.
 
         `include_tasks=False` is for the callers that only ever render a
@@ -465,6 +465,8 @@ class ProjectManagementService:
             )
         if billing_type:
             filters.append(Project.billing_type == billing_type.value)
+        if category:
+            filters.append(Project.category == category.value)
         # The page and its total in one statement. Each round trip to a managed
         # Postgres costs ~85ms whatever it asks for, so a separate COUNT(*) was
         # a measurable fraction of this endpoint for a number the same WHERE
@@ -584,6 +586,8 @@ class ProjectManagementService:
         project.leader_id = leader.id
         if owner is not None: project.owner_id = owner.id
         if "deadline" in values: project.deadline = values["deadline"]
+        # An explicit null clears the category; an omitted key leaves it alone.
+        if "category" in values: project.category = values["category"].value if values["category"] else None
         project.billing_type = billing_type.value
         project.fixed_hours = fixed_hours
         project.is_billable = billing_type == BillingType.fixed

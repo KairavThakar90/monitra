@@ -26,6 +26,7 @@ import { useGetAllMembersQuery } from '../../store/api/membersApi';
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
 import { formatApiError } from '../../api/utils';
 import type { BillingType } from '../../utils/billing';
+import { PROJECT_CATEGORY_OPTIONS, projectCategoryLabel, type ProjectCategory } from '../../utils/projectCategory';
 
 const GRADIENT_CYAN_PURPLE = 'bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[#8b5cf6]';
 
@@ -455,9 +456,10 @@ const StatusPillDropdown = ({
   );
 };
 
-type ColumnKey = 'project' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'started' | 'manage';
+type ColumnKey = 'project' | 'category' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'started' | 'manage';
 const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'project', label: 'Project' },
+  { key: 'category', label: 'Category' },
   { key: 'status', label: 'Status' },
   { key: 'owner', label: 'Owner' },
   { key: 'leader', label: 'Leader' },
@@ -501,6 +503,8 @@ export const AdminProjectManagement: React.FC = () => {
   const [filterStatusId, setFilterStatusId] = useState<number | null>(null);
   /** '' means every project; otherwise the `billing_type` the API filters on. */
   const [filterBilling, setFilterBilling] = useState<'' | BillingType>('');
+  /** '' means every project; otherwise the `category` the API filters on. */
+  const [filterCategory, setFilterCategory] = useState<'' | ProjectCategory>('');
   /** Empty means every member — the same convention every other filter uses. */
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   const { data: allMembers = [] } = useGetAllMembersQuery();
@@ -512,7 +516,7 @@ export const AdminProjectManagement: React.FC = () => {
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>({
     // Tasks starts hidden: the count is rarely what this table is opened
     // for, and the Columns dropdown turns it on when it is.
-    project: true, status: true, owner: true, leader: true, team: true, tasks: false, billing: true,
+    project: true, category: true, status: true, owner: true, leader: true, team: true, tasks: false, billing: true,
     usedHours: true, internalHours: true, remainingHours: true, started: true, manage: true
   });
   const [showColumnDropdown, setShowColumnDropdown] = useState(false);
@@ -539,6 +543,7 @@ export const AdminProjectManagement: React.FC = () => {
     search: projectSearchCheck.ok ? projectSearchCheck.value : '',
     status_id: filterStatusId,
     billing_type: filterBilling || null,
+    category: filterCategory || null,
     employee_ids: selectedMemberIds,
   });
 
@@ -566,6 +571,8 @@ export const AdminProjectManagement: React.FC = () => {
   /** Billing (Fixed Hours or Flexible Time) as opposed to Non Billing. */
   const isBilling = formBillingType !== 'non_billing';
   const [formBillingHours, setFormBillingHours] = useState('');
+  /** Optional: '' is "no category", which is sent as null. */
+  const [formCategory, setFormCategory] = useState<'' | ProjectCategory>('');
 
   // Dropdown states
   const [isEmpDropdownOpen, setIsEmpDropdownOpen] = useState(false);
@@ -629,6 +636,7 @@ export const AdminProjectManagement: React.FC = () => {
     setFormEmployees([]);
     setFormBillingType('fixed');
     setFormBillingHours('');
+    setFormCategory('');
     setIsEmpDropdownOpen(false);
     projectForm.clear();
   };
@@ -652,7 +660,8 @@ export const AdminProjectManagement: React.FC = () => {
     setFormEmployees((proj.employees || []).map(e => e.id));
     setFormBillingType((proj.billing_type as BillingType) || 'fixed');
     setFormBillingHours(proj.fixed_hours ? String(proj.fixed_hours) : '');
-    
+    setFormCategory(proj.category || '');
+
     setDrawerMode('edit');
     setEditingId(proj.id);
     projectForm.clear();
@@ -714,6 +723,9 @@ export const AdminProjectManagement: React.FC = () => {
         formBillingType === 'fixed' && check.values.billingHours !== null
           ? (check.values.billingHours as number)
           : null,
+      // Always sent: on an edit the drawer shows the current category, so
+      // "No category" has to be able to clear it.
+      category: formCategory === '' ? null : formCategory,
     };
 
     try {
@@ -949,6 +961,29 @@ export const AdminProjectManagement: React.FC = () => {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
               </svg>
             </div>
+            <div className="relative">
+              <select
+                aria-label="Filter by category"
+                value={filterCategory}
+                onChange={(e) => { setFilterCategory(e.target.value as '' | ProjectCategory); setPage(1); }}
+                className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
+              >
+                <option value="">All Categories</option>
+                {PROJECT_CATEGORY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <svg
+                className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                aria-hidden="true"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+              </svg>
+            </div>
             <MemberMultiSelect
               members={allMembers}
               selected={selectedMembers}
@@ -968,6 +1003,7 @@ export const AdminProjectManagement: React.FC = () => {
               <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
                 <tr>
                   {visibleColumns.project && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Project</th>}
+                  {visibleColumns.category && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Category</th>}
                   {visibleColumns.status && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Status</th>}
                   {visibleColumns.owner && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Owner</th>}
                   {visibleColumns.leader && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Leader</th>}
@@ -987,6 +1023,15 @@ export const AdminProjectManagement: React.FC = () => {
                     {visibleColumns.project && <td className="px-6 py-4">
                       <div className="font-bold text-slate-800">{proj.project_name}</div>
                       {/* {proj.description && <div className="text-xs text-slate-500 truncate max-w-[200px]">{proj.description}</div>} */}
+                    </td>}
+                    {visibleColumns.category && <td className="px-6 py-4">
+                      {proj.category ? (
+                        <span className="inline-flex items-center rounded-md bg-white px-2.5 py-1 text-[11px] font-bold tracking-wider text-[#3B82F6] border border-[#3B82F6]">
+                          {projectCategoryLabel(proj.category)}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
                     </td>}
                     {visibleColumns.status && <td className="px-6 py-4 overflow-visible">
                       <StatusPillDropdown
@@ -1108,6 +1153,10 @@ export const AdminProjectManagement: React.FC = () => {
             </div>
             <div className="max-h-[calc(90vh-86px)] overflow-y-auto p-6">
               <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+                <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Category</div>
+                  <div className="mt-2 text-sm font-bold text-slate-800">{viewingProject.category ? projectCategoryLabel(viewingProject.category) : 'Not categorised'}</div>
+                </div>
                 <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Owner</div>
                   <div className="mt-2 text-sm font-bold text-slate-800">{viewingProject.owner?.name || 'Unassigned'}</div>
@@ -1295,6 +1344,22 @@ export const AdminProjectManagement: React.FC = () => {
                         onChange={(val) => setFormStatusId(val)}
                         fullWidth={true}
                       />
+                    </div>
+                    <div>
+                      <label htmlFor="project-category" className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">
+                        Category <span className="font-semibold normal-case tracking-normal text-slate-400">(optional)</span>
+                      </label>
+                      <select
+                        id="project-category"
+                        value={formCategory}
+                        onChange={e => setFormCategory(e.target.value as '' | ProjectCategory)}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
+                      >
+                        <option value="">No category</option>
+                        {PROJECT_CATEGORY_OPTIONS.map(option => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
                     </div>
                   </div>
                 </div>

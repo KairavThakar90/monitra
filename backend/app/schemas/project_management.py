@@ -19,6 +19,17 @@ class BillingType(str, Enum):
     non_billing = "non_billing"
 
 
+class ProjectCategory(str, Enum):
+    """The optional grouping a project can be tagged with at creation.
+
+    Stored in `projects.category`; NULL is "uncategorised" and is not a member
+    of this enum. Mirrored by `ProjectCategory` in
+    `frontend/src/utils/projectCategory.ts`.
+    """
+    kyle = "kyle"
+    st = "st"
+
+
 class StatusRead(BaseModel):
     id: int
     name: str
@@ -73,6 +84,8 @@ class ProjectCreate(BaseModel):
     deadline: Optional[date] = None
     billing_type: BillingType
     fixed_hours: Optional[Decimal] = Field(None, gt=0, le=100000)
+    #: Optional: a project need not belong to either category.
+    category: Optional[ProjectCategory] = None
 
     @field_validator("project_name")
     @classmethod
@@ -121,6 +134,9 @@ class ProjectUpdate(BaseModel):
     deadline: Optional[date] = None
     billing_type: Optional[BillingType] = None
     fixed_hours: Optional[Decimal] = Field(None, gt=0, le=100000)
+    #: Omitted leaves the category alone; sent as null, it clears it (the
+    #: service applies `exclude_unset`).
+    category: Optional[ProjectCategory] = None
 
     @field_validator("project_name")
     @classmethod
@@ -278,6 +294,8 @@ class ProjectRead(BaseModel):
     employees: list[PersonRead]
     deadline: Optional[date]
     billing_type: Optional[str] = None
+    #: 'kyle' | 'st', or `None` for an uncategorised project.
+    category: Optional[str] = None
     fixed_hours: Optional[Decimal]
     organization_id: int
     created_at: datetime

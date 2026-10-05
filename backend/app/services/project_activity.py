@@ -37,6 +37,7 @@ PROJECT_FIELD_LABELS = {
     "project_name": "name", "description": "description", "status_id": "status",
     "owner_id": "owner", "leader_id": "leader", "employee_ids": "team",
     "deadline": "deadline", "billing_type": "billing", "fixed_hours": "hour budget",
+    "category": "category",
 }
 TASK_FIELD_LABELS = {
     "name": "name", "description": "description", "status_id": "status",
@@ -45,6 +46,9 @@ TASK_FIELD_LABELS = {
 
 #: How `projects.billing_type` is said on screen.
 _BILLING = {"free": "free time", "fixed": "fixed hours", "non_billing": "non-billing"}
+
+#: How `projects.category` is said on screen; NULL is said as "none" by `_show`.
+_CATEGORY = {"kyle": "Kyle project", "st": "ST project"}
 
 
 def _people(db: Session, ids: Iterable[Optional[int]]) -> Dict[int, str]:
@@ -105,6 +109,7 @@ class ProjectActivity:
             "owner_id": project.owner_id,
             "deadline": project.deadline,
             "billing_type": project.billing_type,
+            "category": project.category,
             "fixed_hours": project.fixed_hours,
             "member_ids": set(db.scalars(select(ProjectMember.user_id).where(ProjectMember.project_id == project.id)).all()),
         })
@@ -154,6 +159,11 @@ class ProjectActivity:
             changes.append(
                 f"{labels['billing_type']}: {_BILLING.get(before['billing_type'], before['billing_type'])} "
                 f"→ {_BILLING.get(project.billing_type, project.billing_type)}"
+            )
+        if project.category != before["category"]:
+            changes.append(
+                f"{labels['category']}: {_CATEGORY.get(before['category'], _show(before['category']))} "
+                f"→ {_CATEGORY.get(project.category, _show(project.category))}"
             )
         if project.fixed_hours != before["fixed_hours"]:
             changes.append(f"{labels['fixed_hours']}: {_show(before['fixed_hours'])} → {_show(project.fixed_hours)}")

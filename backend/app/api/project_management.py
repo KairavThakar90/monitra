@@ -9,7 +9,7 @@ from app.core.security import get_current_user, require_permission
 from app.core.permissions import LEADER_ROLE_NAMES
 from app.models.user import User
 from app.repositories.status_catalog import StatusCatalog
-from app.schemas.project_management import BillingType, ProjectCreate, ProjectHoursSummaryResponse, ProjectListResponse, ProjectManagementMetadata, ProjectMetadataStatusRead, ProjectRead, ProjectUpdate, RoleRead, StatusRead, SyncRevisionRead, TaskAssigneesSet, TaskCreate, TaskMetadataStatusRead, TaskRead, TaskUpdate
+from app.schemas.project_management import BillingType, ProjectCategory, ProjectCreate, ProjectHoursSummaryResponse, ProjectListResponse, ProjectManagementMetadata, ProjectMetadataStatusRead, ProjectRead, ProjectUpdate, RoleRead, StatusRead, SyncRevisionRead, TaskAssigneesSet, TaskCreate, TaskMetadataStatusRead, TaskRead, TaskUpdate
 from app.schemas.project_member import ProjectMembersAddRequest, ProjectMembersAddResponse, ProjectMemberRead, ProjectMemberUpdate, ProjectMembersListResponse
 from app.services.member_scope import is_team_scoped
 from app.services import project_ownership
@@ -65,8 +65,8 @@ def create_project(payload: ProjectCreate, user: User = Depends(get_current_user
 
 
 @router.get("/projects", response_model=ProjectListResponse, dependencies=[Depends(require_permission("projects:view"))], summary="List projects")
-def list_projects(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), search: Optional[str] = Query(None, max_length=100), status_id: Optional[int] = Query(None, gt=0), leader_id: Optional[int] = Query(None, gt=0), billing_type: Optional[BillingType] = None, include_tasks: bool = Query(True, description="Embed each project's tasks. Pass false when only the project itself is rendered; `task_count` stays correct and `tasks` comes back null."), employee_ids: Optional[list[int]] = Query(None, description="Only projects staffed with at least one of these members."), user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
-    return ProjectManagementService.list(db, user, page, limit, search, status_id, leader_id, billing_type, include_tasks, employee_ids)
+def list_projects(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), search: Optional[str] = Query(None, max_length=100), status_id: Optional[int] = Query(None, gt=0), leader_id: Optional[int] = Query(None, gt=0), billing_type: Optional[BillingType] = None, include_tasks: bool = Query(True, description="Embed each project's tasks. Pass false when only the project itself is rendered; `task_count` stays correct and `tasks` comes back null."), employee_ids: Optional[list[int]] = Query(None, description="Only projects staffed with at least one of these members."), category: Optional[ProjectCategory] = Query(None, description="Only projects tagged with this category."), user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
+    return ProjectManagementService.list(db, user, page, limit, search, status_id, leader_id, billing_type, include_tasks, employee_ids, category)
 
 
 @router.get("/projects/hours-summary", response_model=ProjectHoursSummaryResponse, dependencies=[Depends(require_permission("projects:view"))], summary="All-time tracked hours per project")
