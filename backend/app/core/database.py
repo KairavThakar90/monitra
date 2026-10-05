@@ -255,7 +255,15 @@ def get_db():
     try:
         yield db
     except Exception as e:
-        logger.error(f"Database error: {str(e)}")
+        # A refused request (an HTTPException, or a body that failed validation)
+        # is not a database error. Logging it as one was wrong, and for a
+        # validation failure it was worse: its text carries the values the
+        # caller submitted, so a malformed request body reached the log verbatim.
+        from fastapi import HTTPException
+        from fastapi.exceptions import RequestValidationError
+
+        if not isinstance(e, (HTTPException, RequestValidationError)):
+            logger.error(f"Database error: {str(e)}")
         db.rollback()
         raise
     finally:
