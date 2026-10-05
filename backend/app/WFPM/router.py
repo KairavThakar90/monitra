@@ -48,6 +48,7 @@ from app.schemas.project_management import (
 )
 from app.schemas.project_member import ProjectMembersAddRequest, ProjectMembersAddResponse
 from app.services.project_management import ProjectManagementService
+from app.WFPM.audit import WfpmRoute
 from app.WFPM.schemas import (
     WfpmId, WfpmProjectCreate, WfpmProjectRead, WfpmProjectSyncCreate, WfpmProjectSyncUpdate,
     WfpmTaskAssign, WfpmTaskAssigneesAdd, WfpmTaskAssigneesSet, WfpmTaskCreate, WfpmTaskRead,
@@ -56,7 +57,7 @@ from app.WFPM.schemas import (
 from app.WFPM.service import WfpmSyncService, _validated
 from app.WFPM.timer_sync import WfpmTimerSync
 
-router = APIRouter(prefix="/WFPM", tags=["WFPM Tools"])
+router = APIRouter(prefix="/WFPM", tags=["WFPM Tools"], route_class=WfpmRoute)
 
 #: Registered beside `router` in app/main.py. Separate because its path is not
 #: under /WFPM: every scheduled job lives under /internal and is referenced by
@@ -175,6 +176,12 @@ def sync_remove_project_member(wfpm_project_id: WfpmId, member_id: Identifier, u
     "/sync/projects/{wfpm_project_id}/tasks", response_model=WfpmTaskRead, status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_permission("tasks:create"))],
     summary="Create a task in Monitra for a WFPM task",
+    description=(
+        "Idempotent on `wfpm_task_id`. Assignees who are not yet on the project are added to it when "
+        "the caller may add members (`add_missing_members`: omitted = add when permitted, `true` = add or "
+        "403, `false` = never). If `wfpm_project_id` is not linked yet, send `project` with the task and "
+        "Monitra links the project first; without it an unlinked project is a 404."
+    ),
     responses={**_REPLAY, **_NOT_LINKED, **_CONFLICT},
 )
 def sync_create_task(wfpm_project_id: WfpmId, payload: WfpmTaskSyncCreate, response: Response, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):

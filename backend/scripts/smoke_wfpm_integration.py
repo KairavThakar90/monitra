@@ -401,8 +401,13 @@ def main() -> int:
         r = client.delete(f"/WFPM/sync/tasks/{WFPM_TASK}/assignee", headers=admin["headers"])
         unassigned = row(engine, "SELECT assignee_id, (SELECT count(*) FROM task_assignees WHERE task_id = :i) AS n FROM tasks WHERE id = :i", i=task_id)
         check(r.status_code == 200 and r.json()["assignee_id"] is None and unassigned == {"assignee_id": None, "n": 0}, "remove assignee clears tasks.assignee_id and task_assignees", f"{r.text} {unassigned}")
-        r = client.put(f"/WFPM/sync/tasks/{WFPM_TASK}/assignee", json={"assignee_id": emp2["id"]}, headers=admin["headers"])
-        check(r.status_code == 400, "assigning someone who is not a project member -> 400", r.text)
+        # (Compared before and after rather than against zero: some databases carry
+        # a trigger that makes a project's creator a member -- see `create` in
+        # ProjectManagementService -- so the administrator may already be one.)
+        members_before = row(engine, "SELECT count(*) AS n FROM project_members WHERE project_id = :p", p=project_id)["n"]
+        r = client.put(f"/WFPM/sync/tasks/{WFPM_TASK}/assignee", json={"assignee_id": admin["id"]}, headers=admin["headers"])
+        members_after = row(engine, "SELECT count(*) AS n FROM project_members WHERE project_id = :p", p=project_id)["n"]
+        check(r.status_code == 400 and members_after == members_before, "assigning someone who could never hold a task (not an employee) -> 400, and the project's members are unchanged", f"{r.text} members {members_before}->{members_after}")
         r = client.put(f"/WFPM/sync/tasks/{WFPM_TASK}/assignee", json={"assignee_id": emp1["id"]}, headers=admin["headers"])
         assigned = row(engine, "SELECT assignee_id, (SELECT count(*) FROM task_assignees WHERE task_id = :i AND user_id = :u) AS n FROM tasks WHERE id = :i", i=task_id, u=emp1["id"])
         check(r.status_code == 200 and assigned == {"assignee_id": emp1["id"], "n": 1}, "assign writes both representations", f"{r.text} {assigned}")
@@ -563,8 +568,8 @@ def main() -> int:
         r = client.put(f"/WFPM/sync/tasks/{WFPM_TASK}/assignee", json={"assignee_id": emp1["id"]}, headers=a_headers)
         check(r.status_code == 200 and held() == (emp1["id"], [emp1["id"]]), "start from one assignee (the single route)", f"{r.status_code} {held()}")
 
-        r = client.put(a_path, json={"assignee_ids": [emp1["id"], emp2["id"]]}, headers=a_headers)
-        check(r.status_code == 400 and str(emp2["id"]) in r.text and str(emp1["id"]) not in r.json().get("detail", ""), "a non-member in the list -> 400 naming only the offender", r.text)
+        r = client.put(a_path, json={"assignee_ids": [emp1["id"], emp2["id"]], "add_missing_members": False}, headers=a_headers)
+        check(r.status_code == 400 and str(emp2["id"]) in r.text and str(emp1["id"]) not in r.json().get("detail", ""), "add_missing_members=false: a non-member in the list -> 400 naming only the offender", r.text)
         check(held() == (emp1["id"], [emp1["id"]]), "and nothing changed -- not even the valid id was added", str(held()))
         r = client.put(a_path, json={"assignee_ids": [emp1["id"], 0]}, headers=a_headers)
         check(r.status_code == 422, "a malformed list -> 422", r.text)
@@ -573,7 +578,7 @@ def main() -> int:
         r = client.put(a_path, json={"assignee_ids": "101"}, headers=a_headers)
         check(r.status_code == 422, "a list that is not a list -> 422", r.text[:120])
         r = client.put(a_path, json={"assignee_ids": [emp1["id"], emp2["id"]]}, headers=emp1["headers"])
-        check(r.status_code == 400, "an employee may call it (tasks:update) but the same validation applies -> 400", r.text)
+        check(r.status_code == 400, "an employee may call it (tasks:update) but may not add members, so a non-member is still a 400", r.text)
 
         r = client.put(a_path, json={"assignee_ids": [emp1["id"], emp2["id"]], "add_missing_members": True}, headers=a_headers)
         body = r.json() if r.status_code == 200 else {}
@@ -652,6 +657,57 @@ def main() -> int:
 
         r = client.get(f"/WFPM/sync/tasks/{WFPM_TASK}", headers=a_headers)
         check(r.status_code == 200 and "assignees" in r.json() and r.json()["assignee_id"] == emp2["id"], "assignee_id / assignee / assignees all present for existing callers", r.text[:160])
+
+        print("\n[11] a person assigned in WFPM reaches Monitra without a separate members call")
+        r = client.put(a_path, json={"assignee_ids": []}, headers=a_headers)
+        r = client.delete(f"/WFPM/sync/projects/{WFPM_PROJECT}/members/{emp2['id']}", headers=a_headers)
+        check(r.status_code == 204, "start from a non-member: emp2 is taken off the project", r.text)
+        r = client.put(a_path, json={"assignee_ids": [emp2["id"]]}, headers=a_headers)
+        member = row(engine, "SELECT count(*) AS n FROM project_members WHERE project_id = :p AND user_id = :u", p=project_id, u=emp2["id"])["n"]
+        check(r.status_code == 200 and listed(r) == [emp2["id"]] and member == 1, "add_missing_members omitted: the non-member is added to the project and assigned", f"{r.text[:160]} member={member}")
+        r = client.get(f"/api/v1/projects/{project_id}/tasks", headers=emp2["headers"])
+        check(r.status_code == 200 and task_id in [t["id"] for t in r.json()], "and the task is in that person's own task list", r.text[:200])
+        r = client.put(a_path, json={"assignee_ids": []}, headers=a_headers)
+        client.delete(f"/WFPM/sync/projects/{WFPM_PROJECT}/members/{emp2['id']}", headers=a_headers)
+        r = client.put(a_path, json={"assignee_ids": [emp2["id"]]}, headers=emp1["headers"])
+        member = row(engine, "SELECT count(*) AS n FROM project_members WHERE project_id = :p AND user_id = :u", p=project_id, u=emp2["id"])["n"]
+        check(r.status_code == 400 and member == 0, "an employee caller may not add members, so nobody is added on their behalf", f"{r.status_code} member={member}")
+        r = client.put(a_path, json={"assignee_ids": [emp2["id"]]}, headers=a_headers)
+        check(r.status_code == 200, "an administrator can then put them back the same way", r.text[:160])
+
+        print("\n[12] a task for a project Monitra has never heard of")
+        lazy_project, lazy_task = f"{WFPM_PROJECT}-lazy", f"{WFPM_TASK}-lazy"
+        lazy_body = {"wfpm_task_id": lazy_task, "name": f"[WFPM-E2E] lazy {STAMP}", "assignee_id": emp1["id"]}
+        r = client.post(f"/WFPM/sync/projects/{lazy_project}/tasks", json=lazy_body, headers=a_headers)
+        check(r.status_code == 404, "without the project block the unknown project is still a 404", r.text[:160])
+        lazy_body["project"] = {"project_name": f"[WFPM-E2E] lazy {STAMP}", "employee_ids": [emp2["id"]], "billing_type": "free"}
+        r = client.post(f"/WFPM/sync/projects/{lazy_project}/tasks", json=lazy_body, headers=a_headers)
+        lazy = r.json() if r.status_code == 201 else {}
+        linked = row(engine, "SELECT id, project_name FROM projects WHERE wfpm_project_id = :w", w=lazy_project)
+        check(r.status_code == 201 and linked and lazy.get("project_id") == linked["id"] and lazy.get("wfpm_task_id") == lazy_task, "with the project block the project is created and linked, and the task lands in it", f"{r.status_code} {r.text[:200]} {linked}")
+        members = sorted(m["user_id"] for m in rows(engine, "SELECT user_id FROM project_members WHERE project_id = :p", p=(linked or {}).get("id")))
+        check({emp1["id"], emp2["id"]} <= set(members), "the listed member and the assignee are both on the new project", str(members))
+        r = client.get(f"/api/v1/projects/{(linked or {}).get('id')}/tasks", headers=emp1["headers"])
+        check(r.status_code == 200 and lazy.get("id") in [t["id"] for t in r.json()], "the assignee's own task list shows it", r.text[:200])
+        r = client.get("/api/v1/projects?page=1&limit=100&include_tasks=false", headers=emp1["headers"])
+        check(r.status_code == 200 and (linked or {}).get("id") in [p_["id"] for p_ in r.json().get("items", [])], "and so does their project list", r.text[:200])
+        r = client.post(f"/WFPM/sync/projects/{lazy_project}/tasks", json=lazy_body, headers=a_headers)
+        count = row(engine, "SELECT count(*) AS n FROM projects WHERE wfpm_project_id = :w", w=lazy_project)["n"]
+        check(r.status_code == 200 and r.json().get("id") == lazy.get("id") and count == 1, "a repeated request is a replay: one project, one task", f"{r.status_code} count={count}")
+
+        print("\n[13] a refused request leaves a WFPM_ line saying why")
+        r = client.post(f"/WFPM/sync/projects/{WFPM_PROJECT}/tasks", json={"wfpm_task_id": "x", "name": 5, "estimated_hours": "SECRET-VALUE"}, headers=a_headers)
+        r2 = client.post(f"/WFPM/sync/projects/{WFPM_PROJECT}/tasks", json={"wfpm_task_id": "x", "name": "y"})
+        r3 = client.post(f"/WFPM/sync/projects/{lazy_project}-nope/tasks", json={"wfpm_task_id": "y", "name": "y"}, headers=a_headers)
+        log_file.flush()
+        with open(log_path, encoding="utf-8") as handle:
+            server_log = handle.read()
+        check(r.status_code == 422 and r2.status_code == 401 and r3.status_code == 404, "a bad body is 422, no token is 401, an unknown project is 404", f"{r.status_code} {r2.status_code} {r3.status_code}")
+        check(f"WFPM_REQUEST_REFUSED: POST /WFPM/sync/projects/{WFPM_PROJECT}/tasks status=422 user={admin['id']}" in server_log, "the 422 is logged with the caller and the path")
+        check("WFPM_REQUEST_REFUSED: POST /WFPM/sync/projects/" + WFPM_PROJECT + "/tasks status=401 user=-" in server_log, "the 401 is logged")
+        check(f"-nope/tasks status=404 user={admin['id']}" in server_log, "the 404 is logged")
+        check("WFPM_SYNC_PROJECT_LINKED_FROM_TASK" in server_log, "the project linked from a task is logged")
+        check("SECRET-VALUE" not in server_log, "no request value reaches the log")
 
         running = row(engine, "SELECT count(*) AS n FROM time_entries WHERE user_id = ANY(:u) AND end_time IS NULL", u=[emp1["id"], emp2["id"]])["n"]
         check(running == 0, "no timer left running", str(running))

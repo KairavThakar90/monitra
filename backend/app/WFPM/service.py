@@ -27,11 +27,13 @@ from typing import Any, Optional
 
 from fastapi import HTTPException, status
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.security import has_permission
 from app.models.project import Project
+from app.models.project_member import ProjectMember
 from app.models.task import Task
 from app.models.user import User
 from app.repositories.status_catalog import StatusCatalog
@@ -262,6 +264,12 @@ class WfpmSyncService:
         if existing is not None:
             return WfpmSyncService._replayed_project(db, user, existing, wfpm_project_id), False
 
+        if user.role_name == "employee" and user.id not in payload.employee_ids:
+            # An employee opens a project only as one of its members, so one who
+            # creates a project they are not on would be told 201 and then 404 on
+            # every later call about it -- the project, and every task WFPM sends
+            # for it, unreachable from the moment it was made.
+            payload = payload.model_copy(update={"employee_ids": [*payload.employee_ids, user.id]})
         full_payload = WfpmSyncService._full_project_payload(db, payload)
         try:
             created = ProjectManagementService.create(
@@ -364,10 +372,32 @@ class WfpmSyncService:
         return WfpmSyncService._task_read(db, task, wfpm_task_id)
 
     @staticmethod
+    def _project_for_task_create(db: Session, user: User, wfpm_project_id: str, payload: WfpmTaskSyncCreate) -> Project:
+        """The project a task is being created in -- linking it first if WFPM
+        sent its details and Monitra has never heard of it.
+
+        Only a WFPM id with no link at all is created here. One that is linked
+        to an archived or inaccessible project stays the 404 / 409 it always
+        was: a second project under the same id would be refused by the unique
+        index anyway, and a conflict should be reported, not worked around.
+        """
+        if payload.project is not None and WfpmLinkRepository.project_by_wfpm_id(db, user.organization_id, wfpm_project_id) is None:
+            if not has_permission(user, "wfpm:projects:create"):
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have permission to create a project through WFPM.")
+            WfpmSyncService.create_project(
+                db, user, WfpmProjectSyncCreate(wfpm_project_id=wfpm_project_id, **payload.project.model_dump()),
+            )
+            logger.info(
+                "WFPM_SYNC_PROJECT_LINKED_FROM_TASK: wfpm_project=%s wfpm_task=%s user=%s",
+                wfpm_project_id, payload.wfpm_task_id, user.id,
+            )
+        return WfpmSyncService._linked_project(db, user, wfpm_project_id)
+
+    @staticmethod
     def create_task(db: Session, user: User, wfpm_project_id: str, payload: WfpmTaskSyncCreate) -> tuple[dict, bool]:
         """`POST /WFPM/sync/projects/{wfpm_project_id}/tasks`. Returns
         `(task, created)`; `created` is False for an idempotent replay."""
-        project = WfpmSyncService._linked_project(db, user, wfpm_project_id)
+        project = WfpmSyncService._project_for_task_create(db, user, wfpm_project_id, payload)
         project_id = project.id
         wfpm_task_id = payload.wfpm_task_id
 
@@ -387,10 +417,15 @@ class WfpmSyncService:
         # hand it to others gets the same 403 here as in Monitra.
         several = payload.assignee_ids is not None
         wanted = list(payload.assignee_ids) if several else ([payload.assignee_id] if payload.assignee_id else [])
-        if payload.add_missing_members and wanted:
-            if several and not has_permission(user, "task_assignees:manage"):
-                raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have permission to assign tasks to members.")
-            WfpmSyncService._add_missing_members(db, user, project_id, wanted)
+        # Several people may be named only by someone who may assign work to
+        # others; a caller who may not is refused by the shared create below
+        # (or, when they asked for `add_missing_members` outright, here) before
+        # anyone is put on the project on their behalf.
+        may_name_several = not several or has_permission(user, "task_assignees:manage")
+        if payload.add_missing_members and wanted and not may_name_several:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have permission to assign tasks to members.")
+        if may_name_several:
+            WfpmSyncService._put_assignees_on_project(db, user, project_id, wanted, payload.add_missing_members)
         todo_status = ProjectManagementService.default_task_status(db)
         full_payload = _validated(
             TaskCreate,
@@ -442,6 +477,8 @@ class WfpmSyncService:
     def assign_task(db: Session, user: User, wfpm_task_id: str, assignee_id: int) -> dict:
         task = WfpmSyncService._linked_task(db, user, wfpm_task_id)
         project_id, task_id = task.project_id, task.id
+        # The same omitted-flag rule as every other way WFPM names an assignee.
+        WfpmSyncService._put_assignees_on_project(db, user, project_id, [assignee_id], None)
         updated = ProjectManagementService.update_task(
             db, user, project_id, task_id, _validated(TaskUpdate, assignee_id=assignee_id),
         )
@@ -462,6 +499,44 @@ class WfpmSyncService:
     # ------------------------------------------------------------------
     # Several assignees
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _may_add_members(db: Session, user: User, project_id: int) -> bool:
+        """Whether this caller may put people on this project: the permission
+        *and* the member rule (an administrator, or the project's own leader)."""
+        if not has_permission(user, "project_members:manage"):
+            return False
+        try:
+            ProjectMemberService._authorized_project(db, project_id, user)
+        except HTTPException:
+            return False
+        return True
+
+    @staticmethod
+    def _put_assignees_on_project(db: Session, user: User, project_id: int, ids: list[int], flag: Optional[bool]) -> None:
+        """Apply `add_missing_members` (see the note above `AssigneeIds` in
+        schemas.py) to people about to hold a task.
+
+        `False` does nothing -- the shared service then refuses a non-member.
+        `True` is the explicit request and is held to its full rules, a 403
+        included. Omitted is what WFPM normally sends: a person assigned in WFPM
+        has to be on the Monitra project or the task never reaches them, so they
+        are added when the caller may add members, and otherwise left for the
+        shared service's own 400. Only people not on the project yet are looked
+        at, so someone already on it is never re-judged.
+        """
+        if flag is False or not ids:
+            return
+        if flag is True:
+            WfpmSyncService._add_missing_members(db, user, project_id, ids)
+            return
+        on_project = set(db.scalars(select(ProjectMember.user_id).where(
+            ProjectMember.project_id == project_id, ProjectMember.organization_id == user.organization_id,
+            ProjectMember.user_id.in_(ids),
+        )).all())
+        missing = [item for item in dict.fromkeys(ids) if item not in on_project]
+        if missing and WfpmSyncService._may_add_members(db, user, project_id):
+            WfpmSyncService._add_missing_members(db, user, project_id, missing)
 
     @staticmethod
     def _add_missing_members(db: Session, user: User, project_id: int, ids: list[int]) -> None:
@@ -504,8 +579,7 @@ class WfpmSyncService:
         task = WfpmSyncService._linked_task(db, user, wfpm_task_id)
         project_id, task_id = task.project_id, task.id
         ids = list(payload.assignee_ids)
-        if payload.add_missing_members and ids:
-            WfpmSyncService._add_missing_members(db, user, project_id, ids)
+        WfpmSyncService._put_assignees_on_project(db, user, project_id, ids, payload.add_missing_members)
         updated = WfpmSyncService._replace_assignees(db, user, task, ids)
         logger.info(
             "WFPM_SYNC_TASK_ASSIGNEES_SET: wfpm_task=%s task=%s user=%s assignees=%s",
@@ -527,6 +601,9 @@ class WfpmSyncService:
         task_id = task.id
         current = WfpmSyncService._holder_ids(db, task)
         wanted = current + [item for item in payload.assignee_ids if item not in current]
+        # This route has no `add_missing_members` of its own: it adds people, so
+        # the omitted-flag rule applies -- they join the project if the caller may.
+        WfpmSyncService._put_assignees_on_project(db, user, task.project_id, wanted[len(current):], None)
         updated = WfpmSyncService._replace_assignees(db, user, task, wanted)
         logger.info(
             "WFPM_SYNC_TASK_ASSIGNEES_ADDED: wfpm_task=%s task=%s user=%s added=%s assignees=%s",

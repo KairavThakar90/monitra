@@ -324,10 +324,14 @@ class AddRemoveTests(_AssigneeDb):
         self.assign(EMPLOYEE)
         with self.assertRaises(HTTPException) as ctx:
             WfpmSyncService.add_task_assignees(
-                self.db, self.admin, "900", WfpmTaskAssigneesAdd(assignee_ids=[OTHER_EMPLOYEE, THIRD_EMPLOYEE]))
+                self.db, self.admin, "900", WfpmTaskAssigneesAdd(assignee_ids=[OTHER_EMPLOYEE, LEADER]))
         self.assertEqual(ctx.exception.status_code, 400)
-        self.assertIn(str(THIRD_EMPLOYEE), ctx.exception.detail)
+        self.assertIn(str(LEADER), ctx.exception.detail)
         self.assertEqual(self.holders(), (EMPLOYEE, [EMPLOYEE]))
+        # A person who is merely not on the project yet is a different case:
+        # POST puts them on it (AddMissingMembersByDefaultTests). Someone who
+        # could never hold a task at all (a leader) is refused, and not added.
+        self.assertNotIn(LEADER, self.members())
 
     def test_removing_one_leaves_the_rest_in_order(self):
         self.assign(EMPLOYEE, OTHER_EMPLOYEE)
@@ -476,7 +480,8 @@ class CreateWithAssigneesTests(_AssigneeDb):
     def test_an_invalid_assignee_creates_no_task(self):
         before = len(self._tasks())
         with self.assertRaises(HTTPException) as ctx:
-            self.create(assignee_ids=[EMPLOYEE, THIRD_EMPLOYEE])
+            # `false` is the strict mode: never add anyone to the project.
+            self.create(assignee_ids=[EMPLOYEE, THIRD_EMPLOYEE], add_missing_members=False)
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn(str(THIRD_EMPLOYEE), ctx.exception.detail)
         self.assertEqual(len(self._tasks()), before)
@@ -574,6 +579,92 @@ class AddMissingMembersTests(_AssigneeDb):
         )
         self.assertFalse(created)
         self.assertNotIn(THIRD_EMPLOYEE, self.members())
+
+
+# ── add_missing_members omitted: the case WFPM actually sends ───────────────
+
+class AddMissingMembersByDefaultTests(_AssigneeDb):
+    """A person assigned in WFPM must reach Monitra's project or the task never
+    reaches them. With the flag omitted, the caller who may add members does
+    that; everyone else keeps Monitra's own refusal."""
+
+    def create(self, caller=None, wfpm_task_id="910", **fields):
+        return WfpmSyncService.create_task(
+            self.db, caller or self.admin, "55",
+            WfpmTaskSyncCreate(wfpm_task_id=wfpm_task_id, name="Write the copy", **fields),
+        )
+
+    def visible_to(self, user_id):
+        """The names `GET /api/v1/projects/{id}/tasks` shows this person."""
+        project_id = self._tasks()[0].project_id
+        rows = ProjectManagementService.tasks(self.db, self.db.get(User, user_id), project_id, None, None, None)
+        return {row["name"] for row in rows}
+
+    def test_create_with_a_non_member_assignee_adds_them_and_the_task_reaches_them(self):
+        task, created = self.create(assignee_id=THIRD_EMPLOYEE)
+        self.assertTrue(created)
+        self.assertIn(THIRD_EMPLOYEE, self.members())
+        self.assertEqual(self.ids(task), [THIRD_EMPLOYEE])
+        self.assertIn("Write the copy", self.visible_to(THIRD_EMPLOYEE))
+
+    def test_create_with_several_non_member_assignees_adds_each(self):
+        task, _ = self.create(assignee_ids=[THIRD_EMPLOYEE, EMPLOYEE])
+        self.assertEqual(self.ids(task), [THIRD_EMPLOYEE, EMPLOYEE])
+        self.assertIn(THIRD_EMPLOYEE, self.members())
+
+    def test_put_and_post_add_the_missing_member_too(self):
+        task = WfpmSyncService.set_task_assignees(
+            self.db, self.admin, "900", WfpmTaskAssigneesSet(assignee_ids=[THIRD_EMPLOYEE]))
+        self.assertEqual(self.ids(task), [THIRD_EMPLOYEE])
+        self.assertIn(THIRD_EMPLOYEE, self.members())
+
+        fourth = 104
+        self._user(fourth, "employee")
+        self.db.commit()
+        task = WfpmSyncService.add_task_assignees(
+            self.db, self.admin, "900", WfpmTaskAssigneesAdd(assignee_ids=[fourth]))
+        self.assertEqual(self.ids(task), [THIRD_EMPLOYEE, fourth])
+        self.assertIn(fourth, self.members())
+
+    def test_false_still_means_never_add(self):
+        with self.assertRaises(HTTPException) as ctx:
+            self.create(assignee_id=THIRD_EMPLOYEE, add_missing_members=False)
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertNotIn(THIRD_EMPLOYEE, self.members())
+
+    def test_a_caller_who_may_not_add_members_gets_the_usual_400_and_adds_nobody(self):
+        self.admin.permissions = {
+            name: True for name in ROLE_PERMISSIONS["administrator"] if name != "project_members:manage"
+        }
+        with self.assertRaises(HTTPException) as ctx:
+            self.create(assignee_id=THIRD_EMPLOYEE)
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertNotIn(THIRD_EMPLOYEE, self.members())
+
+    def test_someone_who_could_never_hold_a_task_is_not_added_either(self):
+        before = self.members()
+        with self.assertRaises(HTTPException) as ctx:
+            self.create(assignee_ids=[THIRD_EMPLOYEE, LEADER])
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(self.members(), before)
+        self.assertEqual(len(self._tasks()), 1)
+
+    def test_an_employee_naming_several_people_is_refused_before_anyone_is_added(self):
+        employee = self.db.get(User, EMPLOYEE)
+        employee.permissions = {name: True for name in ROLE_PERMISSIONS["employee"]}
+        with self.assertRaises(HTTPException) as ctx:
+            self.create(caller=employee, assignee_ids=[EMPLOYEE, THIRD_EMPLOYEE])
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertNotIn(THIRD_EMPLOYEE, self.members())
+
+    def test_a_member_already_on_the_project_is_not_re_judged(self):
+        """Only people not on the project yet are checked. One who is on it keeps
+        the task even if their role has changed since."""
+        self.db.get(User, OTHER_EMPLOYEE).role_name = "manager"
+        self.db.commit()
+        task = WfpmSyncService.set_task_assignees(
+            self.db, self.admin, "900", WfpmTaskAssigneesSet(assignee_ids=[EMPLOYEE, THIRD_EMPLOYEE]))
+        self.assertEqual(self.ids(task), [EMPLOYEE, THIRD_EMPLOYEE])
 
 
 # ── the routes ──────────────────────────────────────────────────────────────

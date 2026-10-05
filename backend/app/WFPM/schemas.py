@@ -62,6 +62,17 @@ def _first_occurrence(ids: list[int]) -> list[int]:
     return list(dict.fromkeys(ids))
 
 
+# What `add_missing_members` means, in one place for the schemas, the routes
+# and the contract. A person WFPM puts on a task must be on the Monitra project
+# or they cannot see the task, so the flag is three-valued:
+#
+# * omitted -- add them **if the caller may add members** (an administrator, or
+#   the project's own leader); a caller who may not gets Monitra's usual 400
+#   for a non-member, so nobody is granted a power they lacked;
+# * `true`  -- add them, and refuse with 403 if the caller may not;
+# * `false` -- never add: a non-member is a 400.
+
+
 #: A list of Monitra user ids, in order, with repeats dropped.
 AssigneeIds = Annotated[
     list[Identifier], Field(max_length=MAX_ASSIGNEES), AfterValidator(_first_occurrence),
@@ -115,6 +126,23 @@ class WfpmProjectSyncUpdate(BaseModel):
     status: Optional[Literal["active", "paused", "completed"]] = None
 
 
+class WfpmTaskProject(BaseModel):
+    """The project a task belongs to, as WFPM describes it, sent *with* the task.
+
+    Used only when Monitra has never been told about the task's project -- a
+    WFPM project that predates the integration, or whose own create never
+    arrived. Without this the task create is a 404 and the task never reaches
+    Monitra at all. With it, Monitra creates and links the project first, by
+    exactly the rules of `POST /WFPM/sync/projects`, and then the task. Ignored
+    when the project is already linked: a change to a project is a PATCH.
+    """
+    project_name: str = Field(..., max_length=150)
+    description: Optional[str] = Field(None, max_length=5000)
+    employee_ids: list[int] = Field(default_factory=list)
+    deadline: Optional[date] = None
+    billing_type: BillingType = BillingType.free
+
+
 class WfpmTaskSyncCreate(BaseModel):
     #: The task's id in WFPM. The idempotency key of this create, and the id a
     #: timer started on this task reports back to WFPM.
@@ -127,9 +155,12 @@ class WfpmTaskSyncCreate(BaseModel):
     #: and `assignee_id` are sent, this wins (an empty list included -- it
     #: says "nobody").
     assignee_ids: Optional[AssigneeIds] = None
-    #: Also add any listed user who is not yet a member of the project.
-    #: Needs `project_members:manage`, like the members route.
-    add_missing_members: bool = False
+    #: Whether a listed user who is not yet a member of the project is added to
+    #: it. See the note above `AssigneeIds`. Omitted (the usual case) means "add
+    #: them when the caller is allowed to".
+    add_missing_members: Optional[bool] = None
+    #: Only used when the project is not linked yet. See `WfpmTaskProject`.
+    project: Optional[WfpmTaskProject] = None
     estimated_hours: Optional[float] = Field(None, ge=0, le=999.99)
 
 
@@ -155,9 +186,9 @@ class WfpmTaskAssigneesSet(BaseModel):
     #: the primary assignee. Each *newly added* id must be an active employee
     #: who is a member of the task's project.
     assignee_ids: AssigneeIds
-    #: Also add any listed user who is not yet a member of the project.
-    #: Needs `project_members:manage`, like the members route.
-    add_missing_members: bool = False
+    #: Whether a listed user who is not yet a member of the project is added to
+    #: it. See the note above `AssigneeIds`.
+    add_missing_members: Optional[bool] = None
 
 
 class WfpmTaskAssigneesAdd(BaseModel):
