@@ -32,7 +32,12 @@ Two rules it must keep, both of them paid for already:
 - **It never takes focus.** `WA_ShowWithoutActivating` plus the `Tool` window
   type means a toast appearing while somebody is typing does not steal the
   keystroke, and the popup never appears in the task switcher as a second
-  Monitra window.
+  Monitra window. That is enough on Windows. On macOS it is not -- `raise_()`
+  activates the application, and a `Tool` panel activates it again when it is
+  clicked -- so there the card is made a non-activating panel, is never
+  `raise_()`d, and is brought forward with `orderFrontRegardless` instead
+  (see `mac_window.py` for the reasons, each a way the card used to steal the
+  foreground from whatever the user was typing in).
 """
 from __future__ import annotations
 
@@ -44,6 +49,8 @@ from PySide6.QtWidgets import (
     QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QPushButton,
     QVBoxLayout, QWidget,
 )
+
+from . import mac_window
 
 #: Accent per level. These are the application's own status colours
 #: (`ui/styles.py`), repeated rather than imported: a background service
@@ -115,12 +122,17 @@ class ToastPopup(QWidget):
     _SHADOW_MARGINS = (32, 24, 32, 42)  # left, top, right, bottom
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(
-            parent,
+        flags = (
             Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint,
+            | Qt.WindowType.WindowStaysOnTopHint
         )
+        if mac_window.is_macos():
+            # Cocoa refuses key-window status to a window with this flag, so
+            # the card can never take the text cursor from the user's document.
+            # Windows is left exactly as it was.
+            flags |= Qt.WindowType.WindowDoesNotAcceptFocus
+        super().__init__(parent, flags)
         # Never steal focus or a keystroke from whatever the user is doing.
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -290,9 +302,36 @@ class ToastPopup(QWidget):
         if not self._move_to_corner(lift):
             return False
 
+        if mac_window.is_macos():
+            if not mac_window.make_passive(self):
+                # Qt may not have made the native window yet, which it does at
+                # first show. Showing is safe here -- `WA_ShowWithoutActivating`
+                # orders it front without making it key, and nothing has raised
+                # it -- so show it and configure it now.
+                self.show()
+                if not mac_window.make_passive(self):
+                    # A card that cannot be made passive would either steal
+                    # the foreground or, hidden on deactivate, never be seen.
+                    # The platform banner is the right surface then, and False
+                    # is how the caller is told to use it.
+                    self.hide()
+                    return False
         self.show()
-        self.raise_()
+        self.bring_to_front()
         return True
+
+    def bring_to_front(self) -> None:
+        """Put this card above the windows around it.
+
+        `raise_()` everywhere except macOS, where it would activate the
+        application (see `mac_window.py`); there the window is ordered front
+        without activating anything. Already shown, so a failure here leaves a
+        visible card, which is the right way for it to fail.
+        """
+        if mac_window.is_macos():
+            mac_window.order_front_without_activating(self)
+            return
+        self.raise_()
 
     def _text_widths(self) -> tuple[int, int]:
         """`(title, message)` widths in pixels, from the card's own geometry.

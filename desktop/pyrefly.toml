@@ -19,4 +19,4 @@ preset = "basic"
 #
 # `tests/test_pyrefly_platform_imports.py` fails if a macOS-only framework is
 # imported anywhere in the tree without being listed here.
-ignore-missing-imports = ["AppKit", "Quartz"]
+ignore-missing-imports = ["AppKit", "Quartz", "objc"]

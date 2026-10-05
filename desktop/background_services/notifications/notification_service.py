@@ -473,7 +473,10 @@ class NotificationService(BaseService):
             shown.card.place(lift)
             lift += shown.card.card_height() + self.CARD_GAP
         for shown in reversed(self._cards):
-            shown.card.raise_()
+            # Not `raise_()`: on macOS that activates the application, so every
+            # card appearing or closing would pull Monitra in front of
+            # whatever the user was typing in. See ToastPopup.bring_to_front.
+            shown.card.bring_to_front()
 
     def _entry_for(self, card: ToastPopup) -> Optional[_ShownCard]:
         return next((shown for shown in self._cards if shown.card is card), None)
