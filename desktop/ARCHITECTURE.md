@@ -873,6 +873,12 @@ tabs now show honest empty states.
   identifier, which is what the audit screenshots showed.
 - A missing tray is logged and degrades to log-only. It never silently disables
   application behaviour.
+- **A card never activates the application.** On macOS `raise_()` activates the
+  app and a `Tool` panel activates on click, so there the card is a
+  non-activating, focus-refusing panel brought forward with
+  `orderFrontRegardless` (`mac_window.py`); a card that cannot be configured
+  falls back to the platform banner. Only a click on the card body (never its ×)
+  restores the window.
 
 ---
 
@@ -881,7 +887,7 @@ tabs now show honest empty states.
 | Action | Behaviour |
 |---|---|
 | Close window | Prompt (unless remembered): quit, minimise to tray, or cancel |
-| Minimise to tray | Window hides; **all services keep running** |
+| Minimise to tray | Window hides (macOS: minimises to the Dock); **all services keep running** |
 | Restore | From tray icon, tray menu, or taskbar |
 | Explicit quit (dialog, remembered, tray) | **Stops the timer**, waits (bounded, non-blocking) for the stop to land, then a full controlled shutdown via `aboutToQuit` |
 | Update restart | Controlled shutdown; the session record stays and the relaunch recovers it |

@@ -36,6 +36,21 @@ re-grant a permission.
 
 ### Fixed
 
+- **macOS: screenshots are never wallpaper-only any more.** Without macOS
+  Screen Recording permission, macOS hands Monitra a picture of just the
+  desktop wallpaper (and Monitra's own window) instead of an error, and Monitra
+  used to upload that as your work. Now, if Screen Recording is off — or was
+  switched on but Monitra has not been reopened since — Monitra takes **no**
+  screenshot, tells you once when you press Start, and links to the System
+  Settings switch. Screenshots resume by themselves once it is in effect. Your
+  timer is not affected either way.
+- **macOS: a notification no longer pulls Monitra to the front.** A
+  notification appearing while you type in another app no longer moves your
+  cursor or activates Monitra, and closing it with its × only closes it.
+- **macOS: Minimize** now minimises Monitra to the Dock, so clicking the Dock
+  icon brings it back, and Cmd+Q still asks before quitting. Pressing Cmd+Q or
+  Cmd+W while the quit question is already showing no longer stacks a second
+  one.
 - **A username with an accent, a space or a symbol** (for example
   `C:\Users\José`) no longer breaks the update handoff.
 - **An update that was started but never finished installing** no longer leaves
