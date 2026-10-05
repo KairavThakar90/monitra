@@ -42,6 +42,28 @@ if sys.platform == "darwin":
     QWidget.setGraphicsEffect = _never_attach_effect
 
 
+@pytest.fixture(autouse=True)
+def _host_screen_recording_permission_is_not_under_test(monkeypatch):
+    """
+    Keep the host's macOS Screen Recording state out of every test.
+
+    `screenshot.screen_access` asks macOS whether this process may record the
+    screen, and refuses to capture when it may not. A developer's Mac, or a CI
+    runner, has whatever answer it has -- usually "no" -- and every test that
+    drives a capture would then be blocked by the machine it happens to run
+    on, not by the code under test. Treated as not-macOS here, the gate is a
+    no-op exactly as it is on Windows; `tests/test_screen_access.py` and
+    `tests/test_screenshot_screen_access.py` switch it back on explicitly, with
+    the CoreGraphics answers faked, and are what exercise it.
+    """
+    from background_services.screenshot import screen_access
+
+    screen_access.reset_for_tests()
+    monkeypatch.setattr(screen_access, "_is_macos", lambda: False)
+    yield
+    screen_access.reset_for_tests()
+
+
 @pytest.fixture(scope="session")
 def qapp():
     """A single QApplication for the whole session."""

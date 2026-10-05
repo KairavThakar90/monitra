@@ -240,10 +240,17 @@ if IS_MACOS:
     # Monitra requests exactly three, and no more:
     #
     #   Screen Recording (NSScreenCaptureUsageDescription)
-    #       CGWindowListCopyWindowInfo returns window *titles* only with this
-    #       granted (macOS 10.15+). Titles are what browser URL tracking
+    #       Two things need it. Screenshots (background_services/screenshot/):
+    #       without the permission macOS answers a capture with an image of
+    #       only the wallpaper and Monitra's own windows, which
+    #       screenshot/screen_access.py detects and refuses to record.
+    #       And CGWindowListCopyWindowInfo returns window *titles* only with
+    #       it granted (macOS 10.15+); titles are what browser URL tracking
     #       reads. Without it, app names still work and titles are empty --
     #       tracking/active_window.py documents this exact degradation.
+    #       The grant is keyed to the bundle identifier and code signature, so
+    #       a rebuild signed differently (or ad hoc) is a new app to macOS and
+    #       asks again -- see BUILD.md "Signing".
     #
     #   Input Monitoring / Accessibility (NSInputMonitoringUsageDescription,
     #   NSAppleEventsUsageDescription is deliberately NOT requested)
@@ -274,11 +281,12 @@ if IS_MACOS:
             # keep its Dock icon and its menu bar. LSUIElement stays false.
             "LSUIElement": False,
             "NSScreenCaptureUsageDescription": (
-                "Monitra reads the title of the window you are working in so it "
-                "can attribute your tracked time to the right application, and "
-                "read the page address from your browser's tab. macOS classes "
-                "reading window titles as screen recording. Monitra does not "
-                "record or transmit your screen."
+                "While a timer is running, Monitra takes periodic screenshots "
+                "of your screen and uploads them to your organisation's Monitra "
+                "account as proof of work, and reads the title of the window "
+                "you are working in so your tracked time is attributed to the "
+                "right application and browser page. Nothing is captured when "
+                "no timer is running."
             ),
             "NSInputMonitoringUsageDescription": (
                 "Monitra counts keyboard and mouse events to measure how active "

@@ -61,7 +61,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QTimer, Signal
 
-from background_services.screenshot import capture, config, image_processor, scheduler, store
+from background_services.notifications import NotificationLevel
+from background_services.screenshot import (
+    capture, config, image_processor, scheduler, screen_access, store,
+)
 from core.service import BaseService
 from tracking.active_window import get_active_window_details
 from tracking.browsers.manager import get_browser_manager
@@ -97,12 +100,24 @@ class ScreenshotService(BaseService):
     Signals:
         screenshot_captured(dict) — one capture queued for upload
         capture_unavailable(str)  — this machine cannot take screenshots
+        capture_blocked(str)      — the OS will not let the screen be read
+                                    (macOS Screen Recording); the argument is
+                                    a `screen_access.ScreenAccess` value. Fires
+                                    on the transition into a blocked state, not
+                                    on every retry.
     """
 
     name = "screenshot"
 
     screenshot_captured = Signal(dict)
     capture_unavailable = Signal(str)
+    capture_blocked = Signal(str)
+
+    #: How soon a capture that the OS refused (macOS Screen Recording not
+    #: granted) is attempted again. The refusal costs one cheap permission
+    #: read, no window budget and no screenshot, so this can be short enough
+    #: that granting the permission is noticed within the minute.
+    PERMISSION_RETRY_SECONDS = 30.0
 
     #: Longest the schedule may sleep, so `stop_tracker` is noticed promptly
     #: and a system clock jump cannot park it for a whole window.
@@ -174,6 +189,11 @@ class ScreenshotService(BaseService):
         self._planned_index: Optional[int] = None
         self._planned_times: List[float] = []
         self._unavailable_reported = False
+        #: The `ScreenAccess` value the OS last refused a capture with, or
+        #: None while captures are permitted. What makes the user-facing
+        #: notice edge-triggered: told once when the state is entered, not
+        #: on every retry.
+        self._access_blocked_state: Optional[str] = None
 
     # ── Tracker contract (driven by TimerService) ─────────────────────────────
 
@@ -193,6 +213,11 @@ class ScreenshotService(BaseService):
             "screenshot capture started for entry %s (%d per %ds window)",
             self._entry_id, config.screenshots_per_window(), self._window_seconds(),
         )
+        # Each tracking session is told afresh if the screen cannot be read,
+        # and is told at Start -- not minutes later, at a random instant in
+        # the first window, when the first capture happens to come due.
+        self._access_blocked_state = None
+        self._probe_screen_access()
         # Plan and arm immediately, so a session that begins mid-window still
         # gets whatever the window has left rather than waiting for the next.
         self._on_due()
@@ -605,7 +630,11 @@ class ScreenshotService(BaseService):
         """Publish a completed capture. Back on the GUI thread."""
         if not record:
             return
-        
+
+        if record.get("blocked"):
+            self._on_capture_blocked(record["blocked"], record.get("detail", ""))
+            return
+
         # If the capture was skipped because of privacy controls, we want to
         # resume instantly when they leave the excluded app. We do this by
         # scheduling a retry 2 seconds from now.
@@ -617,12 +646,95 @@ class ScreenshotService(BaseService):
                 self._planned_times.insert(0, retry_time)
             self._arm()
             return
-            
+
+        # A real capture went through, so any earlier refusal by the OS is over.
+        self._on_capture_unblocked()
         self.screenshot_captured.emit(record)
         # Upload promptly rather than on the sync loop's idle cadence.
         sync = getattr(self.runtime, "sync", None)
         if sync is not None:
             sync.wake()
+
+    # ── Screen access (macOS Screen Recording) ────────────────────────────────
+
+    def _probe_screen_access(self) -> None:
+        """Ask, on the pool, whether the screen can be read -- so a user who
+        has not granted macOS Screen Recording hears so as they press Start.
+        A no-op wherever the OS has no such gate."""
+        if not screen_access.required():
+            return
+        tasks = getattr(self.runtime, "tasks", None)
+        if tasks is None:
+            return
+        tasks.submit(
+            screen_access.check_screen_access,
+            on_success=self._on_access_probed,
+            on_error=lambda exc: self.log.warning("screen access probe failed: %s", exc),
+            key="screenshot-access-probe",
+            guard_generation=True,
+        )
+
+    def _on_access_probed(self, status: Optional[screen_access.AccessStatus]) -> None:
+        if status is None or status.allowed or not self._tracking:
+            return
+        self._on_capture_blocked(status.state.value, status.detail)
+
+    def _on_capture_blocked(self, state_value: str, detail: str) -> None:
+        """The OS will not let the screen be read. Back on the GUI thread.
+
+        Said once on entering the state; retried quietly until it clears."""
+        try:
+            state = screen_access.ScreenAccess(state_value)
+        except ValueError:
+            state = screen_access.ScreenAccess.DENIED
+        if self._access_blocked_state != state.value:
+            self._access_blocked_state = state.value
+            self.log.warning(
+                "SCREENSHOT_PERMISSION_BLOCKED state=%s detail=%s; no screenshot "
+                "will be recorded until macOS Screen Recording is in effect for "
+                "Monitra", state.value, detail,
+            )
+            if state is screen_access.ScreenAccess.DENIED:
+                # The supported way to put Monitra in the Screen Recording
+                # list and in front of the user. Grants nothing by itself.
+                screen_access.request_screen_access()
+            title, message = screen_access.guidance(state)
+            notifications = getattr(self.runtime, "notifications", None)
+            if notifications is not None:
+                notifications.notify(
+                    message, NotificationLevel.WARNING, title=title,
+                    key=f"screenshot-permission:{state.value}",
+                    link=(
+                        screen_access.SETTINGS_URL
+                        if state is screen_access.ScreenAccess.DENIED else None
+                    ),
+                )
+            self.capture_blocked.emit(state.value)
+        self._retry_capture_in(self.PERMISSION_RETRY_SECONDS)
+
+    def _on_capture_unblocked(self) -> None:
+        """A capture went through: any earlier refusal is over."""
+        if self._access_blocked_state is None:
+            return
+        self.log.info(
+            "SCREENSHOT_PERMISSION_RESTORED after %s; screenshots have resumed",
+            self._access_blocked_state,
+        )
+        self._access_blocked_state = None
+        notifications = getattr(self.runtime, "notifications", None)
+        if notifications is not None:
+            notifications.notify(
+                "Screen Recording is on, so screenshots have resumed.",
+                NotificationLevel.SUCCESS, title="Screenshots resumed",
+                key="screenshot-permission:restored",
+            )
+
+    def _retry_capture_in(self, seconds: float) -> None:
+        """Put one more capture instant `seconds` ahead of the plan."""
+        retry_time = time.time() + seconds
+        if not self._planned_times or self._planned_times[0] > retry_time:
+            self._planned_times.insert(0, retry_time)
+        self._arm()
 
     def _capture_available(self) -> bool:
         """Whether this machine can capture and process a screenshot at all."""
@@ -665,6 +777,20 @@ class ScreenshotService(BaseService):
             if reason and ("excluded by privacy config" in reason or reason == "privacy_config_pending"):
                 return {"excluded": True, "reason": reason}
             return None
+
+        # The OS's permission is checked immediately before the screen is read,
+        # because that is the only moment it can be trusted: macOS answers a
+        # capture without Screen Recording with a valid image of the wallpaper
+        # (and Monitra's own windows), not with an error, so an unchecked
+        # capture is uploaded as the user's work. Nothing is read, queued or
+        # counted against the window's budget when access is refused.
+        access = screen_access.check_screen_access()
+        if not access.allowed:
+            self.log.info(
+                "screenshot capture skipped: screen access %s (%s)",
+                access.state.value, access.detail,
+            )
+            return {"blocked": access.state.value, "detail": access.detail}
 
         # One capture event reads every attached display and produces exactly
         # one image. The display count is metadata on that single event — it
