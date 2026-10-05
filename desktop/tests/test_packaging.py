@@ -482,3 +482,14 @@ def test_no_environment_file_is_bundled_into_the_package():
     assert ".env" not in datas
     assert "environ" not in datas.lower()
     assert '"assets"' in datas
+
+
+def test_the_macos_bundle_names_every_native_module_the_app_imports_lazily():
+    """`objc`, AppKit and Quartz are imported inside functions, so PyInstaller's
+    static analysis is not guaranteed to follow them. `objc` in particular is
+    used only by the notification card's native window setup, whose failure is
+    soft (the platform banner is used instead) and therefore invisible."""
+    spec = (DESKTOP_ROOT / "packaging" / "monitra.spec").read_text(encoding="utf-8")
+    line = next(l for l in spec.splitlines() if "HIDDEN_IMPORTS +=" in l and "AppKit" in l)
+    for module in ("AppKit", "Foundation", "Quartz", "objc"):
+        assert f'"{module}"' in line, f"{module} is not a hidden import of the macOS bundle"

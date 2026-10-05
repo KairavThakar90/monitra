@@ -94,7 +94,13 @@ if IS_MACOS:
     # No pynput on macOS -- see requirements.txt. Its keyboard listener
     # SIGTRAPs the process on macOS 26, so it is not merely unused here, it is
     # deliberately not installed and must never be bundled.
-    HIDDEN_IMPORTS += ["AppKit", "Foundation", "Quartz"]
+    #
+    # `objc` is named explicitly although AppKit imports it: the notification
+    # card's native window configuration (notifications/mac_window.py) imports
+    # it lazily inside a function, and a bundle without it would not crash --
+    # it would quietly fall back to the platform banner and the card would
+    # never be used. An import that fails softly is the kind a build must pin.
+    HIDDEN_IMPORTS += ["AppKit", "Foundation", "Quartz", "objc"]
 elif IS_WINDOWS:
     HIDDEN_IMPORTS += [
         "pynput", "pynput.keyboard", "pynput.mouse",
