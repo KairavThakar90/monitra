@@ -1084,3 +1084,174 @@ def test_12_a_second_instance_is_refused_on_windows(monkeypatch):
     again = single_instance._acquire_windows()
     assert again is not None
     ctypes.WinDLL("kernel32").CloseHandle(again)
+
+
+# ── macOS window lifecycle: close, cancel, minimise, restore ─────────────────
+#
+# What the Dock-minimised window, the red button, Cmd+Q and Cancel must do to
+# the timer. Driven on the offscreen platform with the platform check faked --
+# these prove the *decisions* in MainWindow, not what AppKit does with them.
+
+def _scripted_dialog(monkeypatch, answer, on_exec=None):
+    """Replace the close-intent dialog; returns the list of dialogs built."""
+    import ui.quit_confirm_dialog as dialog_module
+
+    built = []
+
+    class Dialog:
+        def __init__(self, parent=None):
+            self.result_action = None
+            built.append(self)
+
+        def exec(self):
+            if on_exec is not None:
+                on_exec()
+            self.result_action = answer
+
+    monkeypatch.setattr(dialog_module, "QuitConfirmDialog", Dialog)
+    return built
+
+
+def test_macos_minimise_keeps_the_window_alive_and_the_timer_running(
+    qapp, window, live_runtime, monkeypatch
+):
+    import main as main_module
+
+    monkeypatch.setattr(main_module, "_is_macos", lambda: True)
+    runtime = live_runtime
+    _start_and_bind(qapp, runtime)
+    session_before = dict(runtime.timer.active_session())
+    window.show()
+    _scripted_dialog(monkeypatch, "minimize")
+
+    window.close()
+
+    assert window.isMinimized(), "macOS 'Minimize' must minimise to the Dock, not hide"
+    assert window.isVisible(), (
+        "a hidden window has no Dock restore and is skipped by Cmd+Q's close pass"
+    )
+    assert runtime.timer.is_running()
+    assert window.quits == [] and not window._exiting
+    assert dict(runtime.timer.active_session()) == session_before
+    runtime.timer.stop_tracking()
+
+
+def test_macos_restore_after_minimise_does_not_touch_the_session(
+    qapp, window, live_runtime, monkeypatch
+):
+    import main as main_module
+
+    monkeypatch.setattr(main_module, "_is_macos", lambda: True)
+    runtime = live_runtime
+    _start_and_bind(qapp, runtime)
+    session_before = dict(runtime.timer.active_session())
+    starts_before = len(getattr(runtime.backend, "started", []))
+    window.show()
+    _scripted_dialog(monkeypatch, "minimize")
+    window.close()
+    assert window.isMinimized()
+
+    window.restore_window()
+
+    assert not window.isMinimized()
+    assert runtime.timer.is_running()
+    assert dict(runtime.timer.active_session()) == session_before, "restore re-anchored the timer"
+    assert len(getattr(runtime.backend, "started", [])) == starts_before, (
+        "restoring the window started a second tracking session"
+    )
+    runtime.timer.stop_tracking()
+
+
+def test_off_macos_minimise_still_hides_to_the_tray(qapp, window, live_runtime, monkeypatch):
+    import main as main_module
+
+    monkeypatch.setattr(main_module, "_is_macos", lambda: False)
+    runtime = live_runtime
+    _start_and_bind(qapp, runtime)
+    window.show()
+    _scripted_dialog(monkeypatch, "minimize")
+
+    window.close()
+
+    assert not window.isVisible(), "the Windows behaviour (hide to tray) must not change"
+    assert not window.isMinimized()
+    assert runtime.timer.is_running()
+    runtime.timer.stop_tracking()
+
+
+def test_cancel_keeps_the_window_the_app_and_the_timer(qapp, window, live_runtime, monkeypatch):
+    runtime = live_runtime
+    _start_and_bind(qapp, runtime)
+    window.show()
+    _scripted_dialog(monkeypatch, "cancel")
+
+    window.close()
+
+    assert window.isVisible() and not window.isMinimized()
+    assert runtime.timer.is_running(), "Cancel must not stop the timer"
+    assert not runtime.backend.stopped
+    assert window.quits == [] and not window._exiting
+    runtime.timer.stop_tracking()
+
+
+def test_a_close_that_arrives_while_the_dialog_is_up_does_not_stack_a_second(
+    qapp, window, live_runtime, monkeypatch
+):
+    """Cmd+Q / Cmd+W while the question is on screen: the app menu stays live
+    under an application-modal dialog on macOS."""
+    runtime = live_runtime
+    _start_and_bind(qapp, runtime)
+    window.show()
+    held = []
+
+    def second_close_arrives():
+        from PySide6.QtGui import QCloseEvent
+
+        event = QCloseEvent()
+        window.closeEvent(event)
+        held.append(event.isAccepted())
+
+    built = _scripted_dialog(monkeypatch, "cancel", on_exec=second_close_arrives)
+
+    window.close()
+
+    assert len(built) == 1, "a second close built a second dialog"
+    assert held == [False], "the repeated close must be ignored, not acted on"
+    assert runtime.timer.is_running()
+    assert not window._close_prompt_open, "the prompt flag was left set"
+    runtime.timer.stop_tracking()
+
+
+def test_the_prompt_flag_is_cleared_even_if_the_dialog_raises(
+    qapp, window, live_runtime, monkeypatch
+):
+    import ui.quit_confirm_dialog as dialog_module
+
+    class Dialog:
+        def __init__(self, parent=None):
+            self.result_action = None
+
+        def exec(self):
+            raise RuntimeError("dialog failed")
+
+    monkeypatch.setattr(dialog_module, "QuitConfirmDialog", Dialog)
+    with pytest.raises(RuntimeError):
+        window._ask_close_intent()
+    assert not window._close_prompt_open, "a failed dialog would silence every later close"
+
+
+def test_quit_after_a_cancel_still_stops_the_timer(qapp, window, live_runtime, monkeypatch):
+    """Cancel, then Quit: the first answer must leave nothing behind."""
+    runtime = live_runtime
+    _start_and_bind(qapp, runtime)
+    window.show()
+    _scripted_dialog(monkeypatch, "cancel")
+    window.close()
+    assert runtime.timer.is_running()
+
+    _scripted_dialog(monkeypatch, "quit")
+    window.close()
+
+    assert not runtime.timer.is_running()
+    assert _pump(qapp, lambda: bool(window.quits))
+    assert runtime.backend.stopped and runtime.backend.stopped[0]["entry_id"] == 42

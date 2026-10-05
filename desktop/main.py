@@ -81,6 +81,11 @@ MINIMUM_WINDOW_WIDTH = 1024
 MINIMUM_WINDOW_HEIGHT = 680
 
 
+def _is_macos() -> bool:
+    """A function rather than an inline comparison so a test can stand in for it."""
+    return sys.platform == "darwin"
+
+
 def window_settings() -> QSettings:
     """The window's persisted preferences."""
     return QSettings(SETTINGS_ORGANISATION, SETTINGS_APPLICATION)
@@ -140,6 +145,11 @@ class MainWindow(QMainWindow):
         #: quit either: no dialog, no stop -- the session record stays for
         #: the next launch to recover.
         self._os_session_ending = False
+        #: The close-intent dialog is on screen. A second close that arrives
+        #: while it is -- Cmd+Q or Cmd+W on macOS, where the app menu stays
+        #: live under an application-modal dialog -- must not stack a second
+        #: dialog on the first.
+        self._close_prompt_open = False
         self._startup_guard: Optional[QTimer] = None
 
         # display_version(), not VERSION: an internal test build says so in
@@ -572,17 +582,17 @@ class MainWindow(QMainWindow):
             return
 
         if not self._force_quit:
+            if self._close_prompt_open:
+                # The question is already on screen; its answer decides what
+                # this close does. Neither a second dialog nor a second answer.
+                event.ignore()
+                return
             choice = self._ask_close_intent()
             if choice == "cancel":
                 event.ignore()
                 return
             if choice == "minimize":
-                self.hide()
-                self.api.notify(
-                    "Monitra is still running in the system tray. "
-                    "Time tracking continues in the background.",
-                    NotificationLevel.INFO, key="minimised-to-tray",
-                )
+                self._minimise_to_background()
                 event.ignore()
                 return
 
@@ -597,6 +607,34 @@ class MainWindow(QMainWindow):
         if stop_timer and self.api.is_timer_running():
             self._dashboard.note_exit_in_progress("Stopping your timer before Monitra exits…")
         self.api.request_exit(self._on_exit_ready, stop_timer=stop_timer)
+
+    def _minimise_to_background(self) -> None:
+        """Take the window out of the way and keep everything running.
+
+        On macOS the window is *minimised* to the Dock, not hidden. A hidden
+        window has no way back except the menu-bar icon: clicking the Dock
+        icon does nothing for it (the system only restores minimised windows),
+        and Cmd+Q or the Dock's Quit would skip the close prompt, because Qt
+        only offers a close to windows that are visible -- ending the process
+        with the timer still running, which is the interruption path, not a
+        quit. A minimised window is still a visible window to Qt and comes back
+        from the Dock the way every Mac application's does. Elsewhere the
+        window hides to the tray as it always has.
+
+        Nothing here touches the timer, the trackers or the sync queue: the
+        window is not what any of them run on.
+        """
+        if _is_macos():
+            self.showMinimized()
+            where = "in the Dock"
+        else:
+            self.hide()
+            where = "in the system tray"
+        self.api.notify(
+            f"Monitra is still running {where}. "
+            "Time tracking continues in the background.",
+            NotificationLevel.INFO, key="minimised-to-tray",
+        )
 
     def _on_exit_ready(self) -> None:
         """The runtime has done what it can for the exit; leave now."""
@@ -614,7 +652,11 @@ class MainWindow(QMainWindow):
             return remembered
 
         dialog = QuitConfirmDialog(self)
-        dialog.exec()
+        self._close_prompt_open = True
+        try:
+            dialog.exec()
+        finally:
+            self._close_prompt_open = False
         return dialog.result_action or "cancel"
 
 
