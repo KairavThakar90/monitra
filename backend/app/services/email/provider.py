@@ -29,7 +29,7 @@ import smtplib
 import ssl
 from dataclasses import dataclass, field
 from email.message import EmailMessage
-from email.utils import formataddr, make_msgid
+from email.utils import formataddr, formatdate, make_msgid
 from typing import Optional, Sequence
 
 from app.core.config import settings
@@ -205,6 +205,10 @@ def build_mime_message(message: OutgoingEmail) -> EmailMessage:
     if cc:
         mime["Cc"] = ", ".join(cc)
     mime["Subject"] = assert_header_safe(message.subject, field_label="Subject")
+    # RFC 5322 requires an origination date, and `EmailMessage` does not add one.
+    # A message without it is a textbook spam signal -- real mailers always send
+    # it -- and not every relay supplies the missing header on our behalf.
+    mime["Date"] = formatdate(usegmt=True)
     mime["Message-ID"] = make_msgid(domain=from_address.rsplit("@", 1)[-1])
     # Tells well-behaved autoresponders not to reply to an automated message,
     # which is what stops a vacation responder bouncing back into the mailbox
@@ -399,6 +403,39 @@ def credential_warnings() -> list[str]:
     return warnings
 
 
+#: Consumer mailbox providers. A message sent "From" one of these can only ever
+#: be authenticated as that provider's own domain -- never as ours -- so there
+#: is no DKIM or DMARC alignment to be had for it, whatever else is configured.
+_FREE_MAIL_DOMAINS = frozenset({
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
+    "yahoo.com", "ymail.com", "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com",
+    "zoho.com", "gmx.com", "mail.com",
+})
+
+
+def deliverability_warnings() -> list[str]:
+    """Things about the *sender identity* that get mail filed as spam.
+
+    Separate from `credential_warnings`, which is about whether the mail server
+    will accept the message at all: these are about whether the recipient's
+    server will trust it once it has. Like that function, warnings only -- the
+    sender address is somebody's decision, not something to rewrite.
+    """
+    warnings: list[str] = []
+    sender = (settings.EMAIL_FROM_ADDRESS or "").strip().lower()
+    domain = sender.rsplit("@", 1)[-1] if "@" in sender else ""
+    if domain in _FREE_MAIL_DOMAINS:
+        warnings.append(
+            f"EMAIL_FROM_ADDRESS is a free-mail address ({domain}). Mail sent as "
+            f"'{settings.EMAIL_FROM_NAME or 'Monitra'}' from a consumer mailbox cannot be authenticated "
+            f"for your own domain (no DKIM or DMARC alignment), and receiving filters score a brand "
+            f"name on a consumer address -- with links to a different domain -- as impersonation. "
+            f"Send from an address on a domain you control whose SPF, DKIM and DMARC records "
+            f"authorise your mail provider (docs/Email_Production_Runbook.md, 'Deliverability')."
+        )
+    return warnings
+
+
 def describe_configuration() -> dict:
     """What this deployment's email setup is, safe to log and to serve on /health."""
     return {
@@ -411,4 +448,5 @@ def describe_configuration() -> dict:
         # Count only: the warnings name settings, never values, but a count is
         # all /health needs and it keeps the payload uniform.
         "credential_warnings": len(credential_warnings()),
+        "deliverability_warnings": len(deliverability_warnings()),
     }
