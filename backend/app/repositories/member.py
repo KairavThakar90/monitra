@@ -34,7 +34,18 @@ class MemberRepository:
         return db.scalar(select(User).where(User.email == email))
 
     @staticmethod
-    def list_by_organization(db: Session, organization_id: int, search: Optional[str], role: Optional[str], status: Optional[str], page: int, limit: int, member_ids: Optional[set[int]] = None):
+    def list_by_organization(
+        db: Session, organization_id: int, search: Optional[str], role: Optional[str], status: Optional[str], page: int, limit: int,
+        member_ids: Optional[set[int]] = None, *, can_login: Optional[bool] = None, can_add_tasks: Optional[bool] = None,
+    ):
+        """One page of the directory.
+
+        `can_login` / `can_add_tasks` narrow it by the two access switches the
+        Login and Add Task columns show: True keeps whoever is allowed, False
+        whoever is excluded, None does not filter. Only an explicit False
+        excludes -- a row that predates the columns is allowed -- exactly as in
+        `access_counts` and in what the switches display.
+        """
         filters = [User.organization_id == organization_id]
         # None means "the whole organization"; a set means exactly these people
         # (a leader's own team). An empty set is a real answer -- a leader with
@@ -54,6 +65,9 @@ class MemberRepository:
             filters.extend([User.status == "active", User.is_active.is_(True)])
         elif status == "inactive":
             filters.append(or_(User.status == "inactive", User.is_active.is_(False)))
+        for column, wanted in ((User.can_login, can_login), (User.can_add_tasks, can_add_tasks)):
+            if wanted is not None:
+                filters.append(column.is_not(False) if wanted else column.is_(False))
 
         query = select(User).where(*filters).order_by(User.name.asc(), User.id.asc())
         total = db.scalar(select(func.count(User.id)).where(*filters)) or 0

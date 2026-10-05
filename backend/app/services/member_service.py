@@ -57,7 +57,7 @@ class MemberService:
         return created
 
     @staticmethod
-    def list(db: Session, current_user: User, search, role, member_status, page, limit):
+    def list(db: Session, current_user: User, search, role, member_status, page, limit, *, can_login=None, can_add_tasks=None):
         # A leader's directory is their own team plus the clients an
         # administrator shared their projects with -- not the organization;
         # every other role with `view_employees` gets None here and is
@@ -65,6 +65,7 @@ class MemberService:
         items, total = MemberRepository.list_by_organization(
             db, current_user.organization_id, search, role, member_status, page, limit,
             visible_directory_ids(db, current_user),
+            can_login=can_login, can_add_tasks=can_add_tasks,
         )
         return {"items": items, "page": page, "limit": limit, "total": total, "pages": math.ceil(total / limit) if total else 0}
 

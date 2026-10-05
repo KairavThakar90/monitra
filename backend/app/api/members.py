@@ -21,9 +21,14 @@ def create_member(payload: MemberCreate, current_user: User = Depends(get_curren
 def list_members(
     page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), search: Optional[str] = Query(None, max_length=100),
     role: Optional[MemberRoleFilter] = None, status: Optional[MemberStatus] = None,
+    can_login: Optional[bool] = Query(None, description="true: only members allowed to log in; false: only those excluded."),
+    can_add_tasks: Optional[bool] = Query(None, description="true: only members allowed to add tasks; false: only those not allowed."),
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function"),
 ):
-    return MemberService.list(db, current_user, search, role.value if role else None, status.value if status else None, page, limit)
+    return MemberService.list(
+        db, current_user, search, role.value if role else None, status.value if status else None, page, limit,
+        can_login=can_login, can_add_tasks=can_add_tasks,
+    )
 
 
 # Declared before `/{member_id}` so "access-summary" is never read as an id.

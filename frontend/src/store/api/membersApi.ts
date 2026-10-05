@@ -31,12 +31,21 @@ export interface GetMembersResponse {
   pages: number;
 }
 
+/**
+ * Narrows the directory by one of the two access switches: `allowed` keeps the
+ * members whose switch is on, `not_allowed` the ones who are excluded, `All`
+ * does not filter. Only an explicit `false` excludes, as everywhere else.
+ */
+export type AccessFilter = 'All' | 'allowed' | 'not_allowed';
+
 export type GetMembersArgs = {
   page?: number;
   limit?: number;
   role?: string;
   status?: string;
   search?: string;
+  can_login?: AccessFilter;
+  can_add_tasks?: AccessFilter;
 };
 
 export interface MemberAccessArgs {
@@ -64,20 +73,33 @@ export interface MemberAccessResult {
   failed: { id: number; detail: string }[];
 }
 
+/** True when a switch (`undefined` counts as on) is on the side `filter` asks for. */
+const matchesAccess = (switchValue: boolean | undefined, filter: AccessFilter | undefined) => {
+  if (!filter || filter === 'All') return true;
+  const allowed = switchValue !== false;
+  return filter === 'allowed' ? allowed : !allowed;
+};
+
 /** True when a member still belongs in a list fetched with `arg`'s filters. */
 const matchesFilters = (member: Member, arg: GetMembersArgs | undefined) => {
   const role = arg?.role;
   const status = arg?.status;
   if (role && role !== 'All' && (member.role || '').toLowerCase() !== role.toLowerCase()) return false;
   if (status && status !== 'All' && (member.status || '').toLowerCase() !== status.toLowerCase()) return false;
+  if (!matchesAccess(member.can_login, arg?.can_login)) return false;
+  if (!matchesAccess(member.can_add_tasks, arg?.can_add_tasks)) return false;
   return true;
 };
 
-/** Removes a row that no longer matches, otherwise leaves it updated in place. */
+/**
+ * Removes a row that no longer matches, otherwise leaves it updated in place.
+ * Returns true when it removed the row.
+ */
 const reconcileRow = (draft: GetMembersResponse, index: number, arg: GetMembersArgs | undefined) => {
-  if (matchesFilters(draft.items[index], arg)) return;
+  if (matchesFilters(draft.items[index], arg)) return false;
   draft.items.splice(index, 1);
   if (typeof draft.total === 'number') draft.total = Math.max(0, draft.total - 1);
+  return true;
 };
 
 
@@ -154,6 +176,10 @@ export const membersApi = baseApi.injectEndpoints({
         if (params.role && params.role !== 'All') queryParams.append('role', params.role.toLowerCase());
         if (params.status && params.status !== 'All') queryParams.append('status', params.status.toLowerCase());
         if (params.search) queryParams.append('search', params.search);
+        if (params.can_login === 'allowed') queryParams.append('can_login', 'true');
+        else if (params.can_login === 'not_allowed') queryParams.append('can_login', 'false');
+        if (params.can_add_tasks === 'allowed') queryParams.append('can_add_tasks', 'true');
+        else if (params.can_add_tasks === 'not_allowed') queryParams.append('can_add_tasks', 'false');
 
         return { url: `${ENDPOINTS.MEMBERS.GET_ALL}?${queryParams.toString()}` };
       },
@@ -242,10 +268,16 @@ export const membersApi = baseApi.injectEndpoints({
       invalidatesTags: [ACCESS_SUMMARY_TAG],
       async onQueryStarted({ member_ids, ...switches }, { dispatch, getState, queryFulfilled }) {
         const ids = new Set(member_ids);
-        const optimistic = patchEveryCachedQuery({ dispatch, getState }, 'getMembers', (draft) => {
-          draft.items?.forEach((m: Member) => {
-            if (ids.has(m.id)) Object.assign(m, switches);
-          });
+        // A list filtered by a switch (Login: Allowed) no longer holds a member
+        // whose switch just moved, so that row leaves it. Walked backwards so a
+        // removal does not shift the rows still to visit.
+        let leftAFilteredList = false;
+        const optimistic = patchEveryCachedQuery({ dispatch, getState }, 'getMembers', (draft, arg) => {
+          for (let index = (draft.items?.length ?? 0) - 1; index >= 0; index -= 1) {
+            if (!ids.has(draft.items[index].id)) continue;
+            Object.assign(draft.items[index], switches);
+            if (reconcileRow(draft, index, arg)) leftAFilteredList = true;
+          }
         });
 
         try {
@@ -253,12 +285,18 @@ export const membersApi = baseApi.injectEndpoints({
           const saved = new Map(data.updated.map((m) => [m.id, m]));
           // Refused rows go back to what the server holds; saved rows take its copy.
           optimistic.undo();
-          patchEveryCachedQuery({ dispatch, getState }, 'getMembers', (draft) => {
-            draft.items?.forEach((m: Member, index: number) => {
-              const fresh = saved.get(m.id);
-              if (fresh) draft.items[index] = fresh;
-            });
+          leftAFilteredList = false;
+          patchEveryCachedQuery({ dispatch, getState }, 'getMembers', (draft, arg) => {
+            for (let index = (draft.items?.length ?? 0) - 1; index >= 0; index -= 1) {
+              const fresh = saved.get(draft.items[index].id);
+              if (!fresh) continue;
+              draft.items[index] = fresh;
+              if (reconcileRow(draft, index, arg)) leftAFilteredList = true;
+            }
           });
+          // Rows that left a filtered list moved every later row up a place, so
+          // the other cached pages no longer line up with it: read them again.
+          if (leftAFilteredList) dispatch(baseApi.util.invalidateTags([{ type: 'Member', id: 'LIST' }]));
         } catch {
           optimistic.undo();
         }

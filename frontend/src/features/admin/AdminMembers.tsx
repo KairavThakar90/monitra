@@ -10,7 +10,7 @@ import {
   useDeleteMemberMutation,
   useGetMemberDetailsQuery,
 } from '../../store/api/membersApi';
-import type { Member } from '../../store/api/membersApi';
+import type { AccessFilter, Member } from '../../store/api/membersApi';
 import { useGetProjectMetadataQuery } from '../../store/api/projectsApi';
 import { isTeamScoped } from '../../utils/roles';
 import { MemberLogModal } from './MemberLogModal';
@@ -43,6 +43,42 @@ const HeaderCount: React.FC<{ value: number | undefined; meaning: string }> = ({
       ({value})
     </span>
   ) : null;
+
+/**
+ * "ADD TASK: All / Allowed / Not allowed" -- narrows the directory by one of
+ * the two access switches the columns of the same name show.
+ */
+const AccessFilterSelect: React.FC<{
+  label: string;
+  value: AccessFilter;
+  onChange: (value: AccessFilter) => void;
+}> = ({ label, value, onChange }) => (
+  <div className="flex items-center gap-3">
+    <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">{label}:</span>
+    <div className="relative">
+      <select
+        aria-label={`Filter by ${label} access`}
+        value={value}
+        onChange={(e) => onChange(e.target.value as AccessFilter)}
+        className="appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 outline-none shadow-sm transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15"
+      >
+        <option value="All">All</option>
+        <option value="allowed">Allowed</option>
+        <option value="not_allowed">Not allowed</option>
+      </select>
+      <svg
+        className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        aria-hidden="true"
+      >
+        <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+      </svg>
+    </div>
+  </div>
+);
 
 /**
  * Badge tone per role. A role with no entry falls back to slate rather than
@@ -438,6 +474,9 @@ export const AdminMembers: React.FC = () => {
   const [search, setSearch] = useState('');
   const [searchError, setSearchError] = useState<string | null>(null);
   const [filterRole, setFilterRole] = useState('All');
+  // Who is allowed to add tasks / to log in -- the two switches the columns show.
+  const [filterAddTask, setFilterAddTask] = useState<AccessFilter>('All');
+  const [filterLogin, setFilterLogin] = useState<AccessFilter>('All');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
@@ -464,6 +503,8 @@ export const AdminMembers: React.FC = () => {
     role: filterRole,
     status: 'All',
     search: searchTerm,
+    can_add_tasks: filterAddTask,
+    can_login: filterLogin,
   });
 
   // The headcounts beside Add Task and Login. Deliberately not derived from
@@ -672,8 +713,10 @@ export const AdminMembers: React.FC = () => {
   };
 
   // "Select all N": the header box only knows the rows on screen, so this walks
-  // the same filtered list (role + search) page by page -- the API caps a page
-  // at 100 -- and selects every id in it.
+  // the same filtered list (role, search, Add Task, Login) page by page -- the
+  // API caps a page at 100 -- and selects every id in it. It must carry every
+  // filter: with Login set to "Not allowed", selecting the whole directory and
+  // pressing Allow would otherwise change people the screen never showed.
   const [isSelectingAll, setIsSelectingAll] = useState(false);
   const selectEveryMember = async () => {
     setIsSelectingAll(true);
@@ -685,7 +728,10 @@ export const AdminMembers: React.FC = () => {
       do {
         // eslint-disable-next-line no-await-in-loop
         const result = await fetchMembersPage(
-          { page: pageNumber, limit: 100, role: filterRole, status: 'All', search: searchTerm },
+          {
+            page: pageNumber, limit: 100, role: filterRole, status: 'All', search: searchTerm,
+            can_add_tasks: filterAddTask, can_login: filterLogin,
+          },
           true,
         ).unwrap();
         result.items.forEach((m) => { ids.add(m.id); everyone.push(m); });
@@ -870,33 +916,45 @@ export const AdminMembers: React.FC = () => {
           
           <div className="h-8 w-px bg-slate-200 hidden lg:block"></div>
 
-          <div className="flex items-center gap-3 pr-2">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">ROLE:</span>
-            <div className="relative">
-              <select
-                value={filterRole}
-                onChange={(e) => { setFilterRole(e.target.value); setPage(1); }}
-                className="appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 outline-none shadow-sm transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15"
-              >
-                <option value="All">All Roles</option>
-                {roles.map(role => (
-                  <option key={role.id} value={role.value}>{role.role_type}</option>
-                ))}
-                {/* Clients are listed in the directory but are not a role the
-                    Add / Edit form offers, so the server's role list omits them. */}
-                {!roles.some(role => role.value === 'client') && <option value="client">Client</option>}
-              </select>
-              <svg
-                className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                aria-hidden="true"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
-              </svg>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3 pr-2">
+            <div className="flex items-center gap-3">
+              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">ROLE:</span>
+              <div className="relative">
+                <select
+                  value={filterRole}
+                  onChange={(e) => { setFilterRole(e.target.value); setPage(1); }}
+                  className="appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 outline-none shadow-sm transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15"
+                >
+                  <option value="All">All Roles</option>
+                  {roles.map(role => (
+                    <option key={role.id} value={role.value}>{role.role_type}</option>
+                  ))}
+                  {/* Clients are listed in the directory but are not a role the
+                      Add / Edit form offers, so the server's role list omits them. */}
+                  {!roles.some(role => role.value === 'client') && <option value="client">Client</option>}
+                </select>
+                <svg
+                  className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  aria-hidden="true"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+                </svg>
+              </div>
             </div>
+            <AccessFilterSelect
+              label="Add Task"
+              value={filterAddTask}
+              onChange={(value) => { setFilterAddTask(value); setPage(1); }}
+            />
+            <AccessFilterSelect
+              label="Login"
+              value={filterLogin}
+              onChange={(value) => { setFilterLogin(value); setPage(1); }}
+            />
           </div>
         </div>
 
