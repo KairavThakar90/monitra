@@ -247,13 +247,59 @@ class MemberService:
         logger.info("MEMBER_LOGIN_EXCLUDED: revoked %d session(s) for user %s", ended, member.id)
 
     @staticmethod
-    def delete(db: Session, current_user: User, member_id: int):
+    def delete(db: Session, current_user: User, member_id: int) -> None:
+        """Permanently delete a member -- not deactivate them.
+
+        Their tracked time, manual time and screenshots go with them; the
+        "Inactive" status (an edit, not a delete) is how a member is kept on
+        record without access. Because this cannot be undone, anything that
+        cannot be cleaned up automatically is refused with the reason, and
+        nothing is removed: your own account, a member whose timer is still
+        running, and a member who still owns or leads a project or invited a
+        client.
+        """
+        from app.repositories.time_entry import TimeEntryRepository
+        from app.services.time_entry import TimeEntryService
+
         member = MemberService.get(db, current_user, member_id)
         if member.id == current_user.id:
-            raise HTTPException(status.HTTP_409_CONFLICT, "Users cannot deactivate their own account")
-        saved = MemberRepository.save(db, member, {"status": "inactive"})
-        MemberService._record(
-            db, current_user, ActivityLogAction.MEMBER_DEACTIVATED,
-            lambda name: f"Deactivated the member {name}", saved,
+            raise HTTPException(status.HTTP_409_CONFLICT, "Users cannot delete their own account")
+        name = member.name
+        if TimeEntryRepository.get_active_for_user(db, member.id) is not None:
+            # A timer linked to WFPM is stopped there by an event that needs the
+            # member and the entry to still exist, so it cannot be left to a
+            # delete. Excluding the member from signing in stops it properly.
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"{name} has a timer running. Exclude them from logging in to stop it, then delete them.",
+            )
+        holds = MemberRepository.blocking_references(db, member.id, member.organization_id)
+        if holds["projects"]:
+            shown = ", ".join(holds["projects"][:3])
+            extra = len(holds["projects"]) - 3
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"{name} owns or leads {shown}{f' and {extra} more' if extra > 0 else ''}. Assign someone else before deleting them.",
+            )
+        if holds["invited_clients"]:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"{name} invited clients, and deleting them would delete those clients. Remove or re-invite the clients first.",
+            )
+
+        removed_id = member.id
+        try:
+            task_ids = MemberRepository.delete_with_dependents(db, member)
+            for task_id in task_ids:
+                TimeEntryService.refresh_task_rollup(db, task_id)
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            logger.exception("MEMBER_DELETE_REFUSED: member %s is still referenced", removed_id)
+            raise HTTPException(status.HTTP_409_CONFLICT, f"{name} is still referenced by other records and cannot be deleted.")
+        # The member row is gone, so the entry is described from what was read
+        # before the delete rather than from the member.
+        ActivityLogService.record(
+            db, current_user, module=ActivityLogModule.MEMBER, action=ActivityLogAction.MEMBER_DELETED,
+            description=f"Deleted the member {name}", entity_id=removed_id,
         )
-        return saved

@@ -528,9 +528,14 @@ TO CHANGE SOMEONE'S ROLE
          full effect in their app.
 
 TO REMOVE SOMEONE'S ACCESS
-         Admin -> Members -> Deactivate. The record is kept (so their historic
-         time is not lost) and marked inactive. An Admin cannot deactivate
-         their own account.
+         Keep their history: Admin -> Members -> Edit -> set Status to Inactive.
+         The record is kept (so their historic time is not lost).
+
+         Remove them completely: Admin -> Members -> Delete. This is permanent:
+         the member and their tracked time, manual time and screenshots are
+         deleted and cannot be recovered. Delete is refused, with the reason,
+         while the member has a timer running, owns or leads a project, or
+         invited a client. An Admin cannot delete their own account.
 
 *** THE ONE THING ADMINS MUST KNOW ABOUT ROLES ***
 

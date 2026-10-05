@@ -48,6 +48,6 @@ def update_member(member_id: int, payload: MemberUpdate, background_tasks: Backg
     return MemberService.update(db, current_user, member_id, payload, background_tasks=background_tasks)
 
 
-@router.delete("/{member_id}", response_model=MemberResponse, dependencies=[Depends(require_permission("manage_employees"))], summary="Deactivate a member")
+@router.delete("/{member_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_permission("manage_employees"))], summary="Delete a member")
 def delete_member(member_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
-    return MemberService.delete(db, current_user, member_id)
+    MemberService.delete(db, current_user, member_id)

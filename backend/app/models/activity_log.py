@@ -79,6 +79,7 @@ class ActivityLogAction:
     MEMBER_CREATED = "member_created"
     MEMBER_UPDATED = "member_updated"
     MEMBER_DEACTIVATED = "member_deactivated"
+    MEMBER_DELETED = "member_deleted"
     LOGIN_EXCLUDED = "login_excluded"
     LOGIN_ALLOWED = "login_allowed"
     ADD_TASKS_EXCLUDED = "add_tasks_excluded"

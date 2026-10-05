@@ -1,8 +1,16 @@
 from typing import Optional
 
-from sqlalchemy import case, false, func, or_, select, text
+from sqlalchemy import case, delete, false, func, or_, select, text, update
 from sqlalchemy.orm import Session
 
+from app.models.client import Client
+from app.models.client_invitation import ClientInvitation
+from app.models.manual_time_entry import ManualTimeEntry
+from app.models.project import Project
+from app.models.screenshot_exclusion import ScreenshotExclusion
+from app.models.task import Task
+from app.models.task_assignee import TaskAssignee
+from app.models.time_entry import TimeEntry
 from app.models.user import User
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
@@ -110,3 +118,61 @@ class MemberRepository:
         db.commit()
         db.refresh(member)
         return member
+
+    @staticmethod
+    def blocking_references(db: Session, member_id: int, organization_id: int) -> dict:
+        """What the member holds that deleting them would damage rather than clean up.
+
+        A project's owner / leader and the clients a person invited are not the
+        member's own data: removing the account would either be refused by the
+        database (projects) or silently delete someone else's records (the
+        database cascades a client row when its inviter goes). Those must be
+        handed over first, so they are reported instead of being touched.
+        """
+        projects = list(db.scalars(
+            select(Project.project_name)
+            .where(Project.organization_id == organization_id, or_(Project.leader_id == member_id, Project.owner_id == member_id))
+            .order_by(Project.project_name.asc())
+        ).all())
+        invited = db.scalar(select(func.count(Client.id)).where(Client.invited_by == member_id)) or 0
+        invited += db.scalar(select(func.count(ClientInvitation.id)).where(ClientInvitation.invited_by == member_id)) or 0
+        return {"projects": projects, "invited_clients": invited}
+
+    @staticmethod
+    def delete_with_dependents(db: Session, member: User) -> list[int]:
+        """Remove the member and the data that exists only because of them.
+
+        Flushes without committing -- the caller commits once its own follow-up
+        work (the task rollups) has succeeded, so the whole removal is one
+        transaction. Returns the ids of the tasks the member had tracked time
+        on, whose `time_tracked_seconds` rollup is now stale.
+
+        The rows are removed explicitly rather than left to the foreign keys:
+        `time_entries`, `manual_time_entries` and `task_assignees` carry no
+        foreign key to `users` in every deployed schema, so deleting only the
+        user would leave their time behind, unreachable, in the organization's
+        totals. Everything under a time entry (screenshots, app / URL usage,
+        idle periods, adjustments) goes with the entry through its own cascade.
+        Other people's records that merely mention the member (`created_by`,
+        `assigned_by`) and the activity trail, whose rows belong to the actor,
+        are history and are kept.
+        """
+        member_id = member.id
+        task_ids = [
+            task_id for task_id in db.scalars(
+                select(TimeEntry.task_id).where(TimeEntry.user_id == member_id, TimeEntry.task_id.is_not(None)).distinct()
+            ).all()
+        ]
+        # Tasks they were handed stay, unassigned -- `tasks.assignee_id` has no
+        # ON DELETE rule and would otherwise refuse the delete.
+        db.execute(update(Task).where(Task.assignee_id == member_id).values(assignee_id=None))
+        db.execute(delete(TaskAssignee).where(TaskAssignee.user_id == member_id))
+        db.execute(delete(ScreenshotExclusion).where(ScreenshotExclusion.user_id == member_id))
+        # Requests they approved stay approved; only the approver is cleared.
+        db.execute(update(ManualTimeEntry).where(ManualTimeEntry.approved_by == member_id).values(approved_by=None))
+        db.execute(delete(ManualTimeEntry).where(ManualTimeEntry.user_id == member_id))
+        db.execute(delete(TimeEntry).where(TimeEntry.user_id == member_id))
+        # The ORM delete also removes their refresh tokens (cascade on User).
+        db.delete(member)
+        db.flush()
+        return task_ids

@@ -483,7 +483,7 @@ export const AdminMembers: React.FC = () => {
   const isRevalidating = isFetching && !showFirstLoad;
   
   // Who may *change* the directory, as opposed to read it. The backend gates
-  // create/update/deactivate on `manage_employees` (app/api/members.py), and HR
+  // create/update/delete on `manage_employees` (app/api/members.py), and HR
   // deliberately holds `view_employees` without it: HR sees every member's
   // details and gets no write affordance, rather than a button that 403s.
   const { currentUser } = useAuth();
@@ -739,13 +739,26 @@ export const AdminMembers: React.FC = () => {
   };
 
   const handleDeleteMember = async (id: number) => {
-    if (await confirmAction('Delete member?', 'This member will be permanently removed from the directory.')) {
+    if (
+      await confirmAction(
+        'Delete member?',
+        'This member and everything recorded against them — tracked time, manual time and screenshots — will be permanently deleted. This cannot be undone. To keep their history, set them to Inactive instead.',
+      )
+    ) {
       try {
         await deleteMember(id).unwrap();
+        // A deleted member must not stay selected for a later bulk change.
+        setSelectedIds((current) => {
+          if (!current.has(id)) return current;
+          const next = new Set(current);
+          next.delete(id);
+          return next;
+        });
         showToast('Member deleted successfully.', 'success');
       } catch (err) {
         console.error('Failed to delete member', err);
-        showToast('Unable to delete member. Please try again.', 'error');
+        // The server says why when it refuses (they lead a project, a timer is running).
+        showToast(accessErrorMessage(err, 'Unable to delete member. Please try again.'), 'error');
       }
     }
   };
@@ -1079,7 +1092,9 @@ export const AdminMembers: React.FC = () => {
                             </button>
                             <button
                               onClick={() => handleDeleteMember(member.id)}
-                              className="rounded px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-rose-500 border border-rose-200 transition hover:bg-rose-50"
+                              disabled={member.id === currentUser?.id}
+                              title={member.id === currentUser?.id ? 'You cannot delete your own account' : undefined}
+                              className="rounded px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-rose-500 border border-rose-200 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
                             >
                               Delete
                             </button>

@@ -191,6 +191,9 @@ export const membersApi = baseApi.injectEndpoints({
 
         return { data: members };
       },
+      // So a member who was just created or deleted appears in, or leaves, every
+      // picker built from this list instead of lingering until the cache expires.
+      providesTags: [{ type: 'Member' as const, id: 'LIST' }],
     }),
 
     createMember: builder.mutation<Member, Partial<Member>>({
@@ -262,17 +265,20 @@ export const membersApi = baseApi.injectEndpoints({
       },
     }),
 
-    // NOTE: the backend deactivates rather than hard-deletes (it returns the
-    // member with status "inactive"), so that is what we reflect locally.
-    deleteMember: builder.mutation<Member, number>({
+    // The backend deletes the member outright (204, no body) -- "Inactive" is an
+    // edit, not a delete. The row leaves every cached list at once and comes
+    // back if the server refuses (a project they lead, a running timer, ...).
+    // The lists are then refetched: removing a row shifts every later row up a
+    // place, so the cached pages after this one no longer line up.
+    deleteMember: builder.mutation<void, number>({
       query: (id) => ({ url: ENDPOINTS.MEMBERS.DELETE(id), method: 'DELETE' }),
-      invalidatesTags: [{ type: 'Team', id: 'LIST' }, ACCESS_SUMMARY_TAG],
+      invalidatesTags: [{ type: 'Member', id: 'LIST' }, { type: 'Team', id: 'LIST' }, ACCESS_SUMMARY_TAG],
       async onQueryStarted(id, { dispatch, getState, queryFulfilled }) {
-        const optimistic = patchEveryCachedQuery({ dispatch, getState }, 'getMembers', (draft, arg) => {
+        const optimistic = patchEveryCachedQuery({ dispatch, getState }, 'getMembers', (draft) => {
           const index = draft.items?.findIndex((m: Member) => m.id === id) ?? -1;
           if (index < 0) return;
-          draft.items[index].status = 'inactive';
-          reconcileRow(draft, index, arg);
+          draft.items.splice(index, 1);
+          if (typeof draft.total === 'number') draft.total = Math.max(0, draft.total - 1);
         });
 
         try {

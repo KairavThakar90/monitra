@@ -59,6 +59,7 @@ const ACTION_LABELS: Record<string, string> = {
   member_created: 'Added member',
   member_updated: 'Updated member',
   member_deactivated: 'Deactivated member',
+  member_deleted: 'Deleted member',
   login_excluded: 'Excluded from signing in',
   login_allowed: 'Allowed to sign in',
   add_tasks_excluded: 'Excluded from adding tasks',
