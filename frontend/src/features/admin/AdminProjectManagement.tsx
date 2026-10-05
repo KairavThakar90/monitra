@@ -4,7 +4,6 @@ import { V2Shell } from '../dashboard/v2/V2Shell';
 import {
   useGetProjectMetadataQuery,
   useGetProjectsQuery,
-  useLazyGetProjectsQuery,
   useGetProjectHoursSummaryQuery,
   useGetAssignableLeadersQuery,
   useGetAssignableOwnersQuery,
@@ -22,7 +21,7 @@ import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { PaginationArrow } from '../../components/PaginationArrow';
 import { useAuth } from '../auth/authContext';
 import { isTeamScoped } from '../../utils/roles';
-import { exportToCsv, MemberMultiSelect } from '../dashboard/v2/filters';
+import { MemberMultiSelect } from '../dashboard/v2/filters';
 import { useGetAllMembersQuery } from '../../store/api/membersApi';
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
 import { formatApiError } from '../../api/utils';
@@ -472,19 +471,6 @@ const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'manage', label: 'Manage' },
 ];
 
-type ExportColumnKey = 'project' | 'description' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'deadline';
-const EXPORT_COLUMNS: { key: ExportColumnKey; label: string }[] = [
-  { key: 'project', label: 'Project' },
-  { key: 'description', label: 'Description' },
-  { key: 'status', label: 'Status' },
-  { key: 'owner', label: 'Owner' },
-  { key: 'leader', label: 'Leader' },
-  { key: 'team', label: 'Team Members' },
-  { key: 'tasks', label: 'Tasks' },
-  { key: 'billing', label: 'Billing' },
-  { key: 'deadline', label: 'Deadline' },
-];
-
 export const AdminProjectManagement: React.FC = () => {
   const { showToast, confirmAction } = useFeedback();
   const { currentUser } = useAuth();
@@ -530,10 +516,6 @@ export const AdminProjectManagement: React.FC = () => {
     usedHours: true, internalHours: true, remainingHours: true, started: true, manage: true
   });
   const [showColumnDropdown, setShowColumnDropdown] = useState(false);
-  const [showExportDialog, setShowExportDialog] = useState(false);
-  const [selectedExportColumns, setSelectedExportColumns] = useState<ExportColumnKey[]>(
-    EXPORT_COLUMNS.map((column) => column.key)
-  );
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -559,8 +541,7 @@ export const AdminProjectManagement: React.FC = () => {
     billing_type: filterBilling || null,
     employee_ids: selectedMemberIds,
   });
-  const [fetchProjectsForExport] = useLazyGetProjectsQuery();
-  
+
   const [createProject] = useCreateProjectMutation();
   const [updateProject, { isLoading: isUpdatingProject }] = useUpdateProjectMutation();
   const [deleteProject] = useDeleteProjectMutation();
@@ -828,81 +809,6 @@ export const AdminProjectManagement: React.FC = () => {
     }
   };
 
-  const [isExporting, setIsExporting] = useState(false);
-
-  const handleExport = async () => {
-    if (isExporting || selectedExportColumns.length === 0) return;
-    setIsExporting(true);
-    try {
-      const exportedProjects: Project[] = [];
-      let exportPage = 1;
-      let totalPages = 1;
-
-      do {
-        const response = await fetchProjectsForExport({
-          page: exportPage,
-          limit: 100,
-          search: debouncedSearch,
-          status_id: filterStatusId,
-          billing_type: filterBilling || null,
-          employee_ids: selectedMemberIds,
-        }).unwrap();
-        exportedProjects.push(...(response.items || []));
-        totalPages = response.pagination?.total_pages || 1;
-        exportPage += 1;
-      } while (exportPage <= totalPages);
-
-      if (!exportedProjects.length) {
-        showToast('No projects match the current filters.', 'error');
-        return;
-      }
-
-      const values: Record<ExportColumnKey, (project: Project) => string | number> = {
-        project: (project) => project.project_name,
-        description: (project) => project.description || '',
-        status: (project) => project.status?.name || '',
-        owner: (project) => project.owner?.name || 'Unassigned',
-        leader: (project) => project.leader?.name || 'Unassigned',
-        team: (project) => (project.employees || []).map((employee) => employee.name).join('; '),
-        tasks: (project) => project.task_count ?? (project.tasks || []).length,
-        billing: (project) =>
-          project.billing_type === 'fixed'
-            ? `${project.fixed_hours || 0} Hours`
-            : project.billing_type === 'non_billing' ? 'Non Billing' : 'Free Time',
-        deadline: (project) => project.deadline ? formatDate(project.deadline) : 'No Deadline',
-      };
-      const selectedColumns = EXPORT_COLUMNS.filter((column) => selectedExportColumns.includes(column.key));
-      const headers = selectedColumns.map((column) => column.label);
-      const rows = exportedProjects.map((project) => selectedColumns.map((column) => values[column.key](project)));
-
-      exportToCsv(
-        `projects_${new Date().toISOString().slice(0, 10)}.csv`,
-        headers,
-        rows,
-        [
-          ['Search', debouncedSearch || 'All projects'],
-          ['Status', metadata?.project_statuses?.find((status) => status.id === filterStatusId)?.project_status || 'All statuses'],
-          ['Billing', filterBilling === 'fixed' ? 'Billing' : filterBilling === 'free' ? 'Free' : filterBilling === 'non_billing' ? 'Non Billing' : 'All billing types'],
-          ['Members', selectedMemberIds.length
-            ? allMembers.filter((m) => selectedMemberIds.includes(m.id)).map((m) => m.name).join('; ')
-            : 'All members'],
-          ['Projects', exportedProjects.length],
-          [],
-        ]
-      );
-      setShowExportDialog(false);
-      showToast('Projects exported successfully.', 'success');
-    } catch (err) {
-      console.error('Failed to export projects:', err);
-      showToast(
-        formatApiError((err as { data?: unknown })?.data, 'Unable to export projects. Please try again.'),
-        'error',
-      );
-    } finally {
-      setIsExporting(false);
-    }
-  };
-
   const projects = projectsData?.items || [];
   const totalPages = projectsData?.pagination?.total_pages || 1;
 
@@ -1011,14 +917,6 @@ export const AdminProjectManagement: React.FC = () => {
               )}
             </div>
 
-            <button
-              type="button"
-              onClick={() => setShowExportDialog(true)}
-              disabled={isExporting}
-              className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-wait disabled:opacity-60"
-            >
-              {isExporting ? 'Exporting…' : 'Export CSV'}
-            </button>
             <StatusPillDropdown
                 value={filterStatusId || 0}
                 options={[
@@ -1190,79 +1088,6 @@ export const AdminProjectManagement: React.FC = () => {
 
         {totalPages > 1 && <Pagination page={page} totalPages={totalPages} totalItems={projectsData?.pagination?.total || 0} limit={pageSize} setPage={setPage} setLimit={setPageSize} />}
       </div>
-
-      {showExportDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
-            <div className="flex items-start justify-between border-b border-slate-100 px-6 py-5">
-              <div>
-                <h2 className="text-lg font-black text-slate-800">Export Projects</h2>
-                <p className="mt-1 text-sm font-semibold text-slate-500">Choose the columns for your CSV file.</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowExportDialog(false)}
-                disabled={isExporting}
-                className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50"
-                aria-label="Close export dialog"
-              >
-                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-            <div className="p-6">
-              <div className="mb-4 flex items-center justify-between">
-                <span className="text-xs font-black uppercase tracking-wider text-slate-400">Columns</span>
-                <button
-                  type="button"
-                  onClick={() => setSelectedExportColumns(
-                    selectedExportColumns.length === EXPORT_COLUMNS.length ? [] : EXPORT_COLUMNS.map((column) => column.key)
-                  )}
-                  className="text-xs font-bold text-blue-600 hover:text-blue-700"
-                >
-                  {selectedExportColumns.length === EXPORT_COLUMNS.length ? 'Clear all' : 'Select all'}
-                </button>
-              </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {EXPORT_COLUMNS.map((column) => (
-                  <label key={column.key} className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-200 px-3 py-2.5 transition hover:bg-slate-50">
-                    <input
-                      type="checkbox"
-                      checked={selectedExportColumns.includes(column.key)}
-                      onChange={() => setSelectedExportColumns((current) =>
-                        current.includes(column.key)
-                          ? current.filter((key) => key !== column.key)
-                          : [...current, column.key]
-                      )}
-                      className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                    />
-                    <span className="text-sm font-semibold text-slate-700">{column.label}</span>
-                  </label>
-                ))}
-              </div>
-              <div className="mt-6 flex justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setShowExportDialog(false)}
-                  disabled={isExporting}
-                  className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleExport}
-                  disabled={isExporting || selectedExportColumns.length === 0}
-                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {isExporting ? 'Exporting…' : 'Export selected'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {viewingProject && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4 backdrop-blur-sm">

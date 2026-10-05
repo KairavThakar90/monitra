@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 /**
- * The Project Management page's Billing filter: All Billing / Billing / Free.
+ * The Project Management page has no export.
  *
- * "Billing" is the fixed-hours kind and "Free" is free-time, which the API
- * already filters on as `billing_type=fixed|free`. The page must send exactly
- * that, and send nothing for "All Billing".
+ * The "Export CSV" button, and the "Export Projects" dialog it opened for
+ * choosing columns, were removed on purpose. Pinned so they do not come back
+ * by accident, and so removing them did not take the filters beside them
+ * with it: search, status, billing and member filters, and the Columns picker,
+ * are all still there.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -29,20 +31,22 @@ import { AdminProjectManagement } from '../AdminProjectManagement';
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
-describe('Project Management: Billing filter', () => {
+describe('Project Management: no export', () => {
   let container: HTMLDivElement;
   let root: Root;
-  let projectListUrls: string[];
+  let projectRequests: URL[];
 
   const flush = async () => {
     for (let i = 0; i < 5; i += 1) {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     }
   };
+  const buttons = () => Array.from(container.querySelectorAll('button'));
+  const buttonText = (text: string) => buttons().find((button) => button.textContent?.trim() === text);
 
   beforeEach(async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    projectListUrls = [];
+    projectRequests = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const request = input instanceof Request ? input : new Request(String(input));
       const url = new URL(request.url);
@@ -50,7 +54,7 @@ describe('Project Management: Billing filter', () => {
         return json({ roles: [], project_statuses: [], task_statuses: [] });
       }
       if (url.pathname.endsWith('/projects') && request.method === 'GET') {
-        projectListUrls.push(url.search);
+        projectRequests.push(url);
         return json({ items: [], pagination: { page: 1, limit: 20, total: 0, total_pages: 0 } });
       }
       if (url.pathname.endsWith('/members')) return json({ items: [], page: 1, limit: 100, total: 0, pages: 1 });
@@ -76,46 +80,27 @@ describe('Project Management: Billing filter', () => {
     vi.unstubAllGlobals();
   });
 
-  const select = () => container.querySelector<HTMLSelectElement>('select[aria-label="Filter by billing"]')!;
-  const choose = async (value: string) => {
-    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(select(), value);
-    await act(async () => { select().dispatchEvent(new Event('change', { bubbles: true })); });
-    await flush();
-  };
-  const lastQuery = () => new URLSearchParams(projectListUrls[projectListUrls.length - 1]);
-
-  it('offers Budget & Billing, Billing, Free and Non Billing, defaulting to all', () => {
-    expect(Array.from(select().options).map((o) => [o.value, o.textContent])).toEqual([
-      ['', 'Budget & Billing'],
-      ['fixed', 'Billing'],
-      ['free', 'Free'],
-      ['non_billing', 'Non Billing'],
-    ]);
-    expect(select().value).toBe('');
-    expect(lastQuery().has('billing_type')).toBe(false);
+  it('has no Export CSV button', () => {
+    expect(buttonText('Export CSV')).toBeUndefined();
+    expect(buttonText('Exporting…')).toBeUndefined();
+    expect(container.textContent).not.toMatch(/export/i);
   });
 
-  it('asks the API only for fixed-billing projects when Billing is chosen', async () => {
-    await choose('fixed');
-    expect(lastQuery().get('billing_type')).toBe('fixed');
-    expect(lastQuery().get('page')).toBe('1');
+  it('opens no export dialog, and there is nothing that would open one', () => {
+    expect(container.textContent).not.toContain('Export Projects');
+    expect(container.textContent).not.toContain('Choose the columns for your CSV file.');
+    expect(container.querySelector('[aria-label="Close export dialog"]')).toBeNull();
   });
 
-  it('asks only for non-billing projects when Non Billing is chosen', async () => {
-    await choose('non_billing');
-    expect(lastQuery().get('billing_type')).toBe('non_billing');
-    expect(lastQuery().get('page')).toBe('1');
+  it('asks the API for one page of projects only, never for an export-sized walk', () => {
+    expect(projectRequests.length).toBeGreaterThan(0);
+    expect(projectRequests.every((url) => url.searchParams.get('limit') !== '100')).toBe(true);
   });
 
-  it('asks only for free-time projects when Free is chosen, and drops the filter again for Budget & Billing', async () => {
-    await choose('free');
-    expect(lastQuery().get('billing_type')).toBe('free');
-
-    // Back to All reuses the cached unfiltered list, so no request is needed:
-    // the proof is that the filter is cleared and only the very first (unfiltered)
-    // request ever went out without it.
-    await choose('');
-    expect(select().value).toBe('');
-    expect(projectListUrls.filter((search) => !new URLSearchParams(search).has('billing_type'))).toHaveLength(1);
+  it('keeps the filters that sat beside the button', () => {
+    expect(container.querySelector('input[placeholder*="earch"]')).not.toBeNull();
+    expect(container.querySelector('select[aria-label="Filter by billing"]')).not.toBeNull();
+    expect(container.textContent).toContain('All Statuses');
+    expect(container.textContent).toContain('Columns');
   });
 });
