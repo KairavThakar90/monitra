@@ -11,6 +11,7 @@ from app.core.security import get_current_user, require_permission
 from app.models.user import User
 from app.schemas.time_entry_screenshot import (
     ScreenshotConfigResponse, ScreenshotDayResponse, ScreenshotDeleteResponse,
+    ScreenshotEventsRequest, ScreenshotEventsResponse,
     ScreenshotNoticeCreate, ScreenshotNoticeResponse,
     ScreenshotTimelineResponse, ScreenshotUploadResponse,
     TimeEntryScreenshotCreate, TimeEntryScreenshotRead,
@@ -45,6 +46,29 @@ def require_screenshot_delete(current_user: User = Depends(get_current_user)) ->
             detail="You do not have permission to delete screenshots.",
         )
     return current_user
+
+
+@router.post(
+    "/time-entry-screenshots/capture-events",
+    response_model=ScreenshotEventsResponse,
+    status_code=status.HTTP_200_OK,
+)
+def record_capture_events(
+    payload: ScreenshotEventsRequest,
+    db: Session = Depends(get_db, scope="function"),
+    current_user: User = Depends(get_current_user),
+):
+    """The desktop's account of captures that have no image.
+
+    The desktop reports a window it could not capture, one a privacy rule or the
+    OS held back, or a finished image stuck in its queue failing to upload.
+    Without this the grid can only say "No capture" for all of them. Idempotent
+    on `client_event_id`; a malformed event is rejected individually and the
+    rest of the batch is recorded. Always about the caller -- the user and
+    organisation come from the session, never the body.
+    """
+    result = TimeEntryScreenshotService.record_capture_events(db, current_user, payload.events)
+    return ScreenshotEventsResponse(**result)
 
 
 @router.get("/screenshots/config", response_model=ScreenshotConfigResponse)

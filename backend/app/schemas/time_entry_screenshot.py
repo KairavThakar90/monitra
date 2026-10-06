@@ -1,7 +1,8 @@
 from pydantic import BaseModel, ConfigDict, Field
 from datetime import date, datetime
-from typing import Annotated, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
+from app.core.validation import IdempotencyKey, OptionalIdempotencyKey, OptionalIdentifier, OptionalPlainText
 from app.core.validation.types import description_field
 
 
@@ -140,6 +141,20 @@ class ScreenshotTimelineWindow(BaseModel):
     tracked_seconds: int = 0
     screenshots: List[ScreenshotView]
     screenshot_count: int
+    #: What is known about this window's capture. `captured` -- it holds an
+    #: image; `pending` -- the desktop has it and is still trying to upload it;
+    #: `failed` -- the capture failed, or the server refused the upload;
+    #: `blocked` -- the OS (or the privacy settings not having loaded) held it
+    #: back; `excluded` -- a privacy rule excluded what was on screen;
+    #: `unavailable` -- that computer cannot capture at all; `none` -- nothing
+    #: reported, which is what an older desktop, or one that was off, looks like.
+    #: Only `none` is "No capture" with no explanation.
+    capture_state: str = "none"
+    #: A short machine code for the reason (`screen_unreadable`, `http_502`...),
+    #: when the desktop gave one. Rendered in words by the client.
+    capture_reason: Optional[str] = None
+    #: How many attempts the desktop spent before reporting.
+    capture_attempts: int = 0
 
 
 class ScreenshotTimelineResponse(BaseModel):
@@ -190,6 +205,53 @@ class ScreenshotDayResponse(BaseModel):
     success: bool = True
     window_minutes: int
     members: List[ScreenshotMemberDays]
+
+
+#: Most capture events one request may carry. The desktop sends at most fifty.
+SCREENSHOT_EVENTS_MAX_PER_REQUEST = 100
+
+
+class ScreenshotEventIn(BaseModel):
+    """One capture event as the desktop reports it.
+
+    Validated one at a time by the service rather than by the request model, so
+    that a single malformed event is *rejected and reported* instead of failing
+    the whole batch -- a batch that fails whole is retried whole, for ever, and
+    one bad row would hold every good one behind it. Unknown fields (an older or
+    newer desktop sending more) are ignored.
+    """
+
+    client_event_id: IdempotencyKey
+    state: Literal[
+        "failed", "blocked", "excluded", "unavailable", "upload_retrying", "upload_parked",
+    ]
+    window_start: datetime
+    occurred_at: datetime
+    reason: OptionalPlainText = None
+    attempts: int = Field(0, ge=0, le=1000)
+    time_entry_id: OptionalIdentifier = None
+    client_screenshot_id: OptionalIdempotencyKey = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ScreenshotEventsRequest(BaseModel):
+    events: List[Dict[str, Any]] = Field(max_length=SCREENSHOT_EVENTS_MAX_PER_REQUEST)
+
+
+class ScreenshotEventRejection(BaseModel):
+    client_event_id: Optional[str] = None
+    reason: str
+
+
+class ScreenshotEventsResponse(BaseModel):
+    success: bool = True
+    #: Newly recorded.
+    accepted: int
+    #: Already recorded (a retry after a lost response). Success, not an error.
+    duplicates: int
+    #: Refused as invalid. The client drops these: resending cannot fix them.
+    rejected: List[ScreenshotEventRejection] = []
 
 
 #: Longest notice that may be written about a screenshot. A notice is a few

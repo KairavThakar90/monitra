@@ -5,6 +5,7 @@ from typing import List, Optional, Tuple
 
 from app.models.time_entry_activity import TimeEntryActivity
 from app.models.time_entry_screenshot import TimeEntryScreenshot
+from app.models.time_entry_screenshot_event import TimeEntryScreenshotEvent
 
 
 class TimeEntryScreenshotRepository:
@@ -509,3 +510,75 @@ class TimeEntryScreenshotRepository:
                 TimeEntryScreenshot.organization_id == organization_id
             )
         ) or 0
+
+    # ── Capture events ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def existing_event_ids(
+        db: Session, organization_id: int, client_event_ids: List[str]
+    ) -> set:
+        """Which of these idempotency keys are already recorded."""
+        if not client_event_ids:
+            return set()
+        rows = db.query(TimeEntryScreenshotEvent.client_event_id).filter(
+            TimeEntryScreenshotEvent.organization_id == organization_id,
+            TimeEntryScreenshotEvent.client_event_id.in_(client_event_ids),
+        ).all()
+        return {row[0] for row in rows}
+
+    @staticmethod
+    def entries_owned_by(
+        db: Session, organization_id: int, user_id: int, time_entry_ids: set
+    ) -> set:
+        """The subset of these time entries that belong to this user."""
+        if not time_entry_ids:
+            return set()
+        from app.models.time_entry import TimeEntry
+
+        rows = db.query(TimeEntry.id).filter(
+            TimeEntry.organization_id == organization_id,
+            TimeEntry.user_id == user_id,
+            TimeEntry.id.in_(time_entry_ids),
+        ).all()
+        return {int(row[0]) for row in rows}
+
+    @staticmethod
+    def list_events(
+        db: Session,
+        organization_id: int,
+        user_id: int,
+        start: datetime,
+        end: datetime,
+    ) -> List[TimeEntryScreenshotEvent]:
+        """One member's capture events whose window starts in ``[start, end)``."""
+        return (
+            db.query(TimeEntryScreenshotEvent)
+            .filter(
+                TimeEntryScreenshotEvent.organization_id == organization_id,
+                TimeEntryScreenshotEvent.user_id == user_id,
+                TimeEntryScreenshotEvent.window_start >= start,
+                TimeEntryScreenshotEvent.window_start < end,
+            )
+            .order_by(TimeEntryScreenshotEvent.occurred_at.asc(), TimeEntryScreenshotEvent.id.asc())
+            .all()
+        )
+
+    @staticmethod
+    def list_events_by_user(
+        db: Session,
+        organization_id: int,
+        start: datetime,
+        end: datetime,
+        user_ids: Optional[set] = None,
+    ) -> List[TimeEntryScreenshotEvent]:
+        """Every visible member's capture events in a range (``None`` = whole org)."""
+        query = db.query(TimeEntryScreenshotEvent).filter(
+            TimeEntryScreenshotEvent.organization_id == organization_id,
+            TimeEntryScreenshotEvent.window_start >= start,
+            TimeEntryScreenshotEvent.window_start < end,
+        )
+        if user_ids is not None:
+            query = query.filter(TimeEntryScreenshotEvent.user_id.in_(user_ids))
+        return query.order_by(
+            TimeEntryScreenshotEvent.occurred_at.asc(), TimeEntryScreenshotEvent.id.asc()
+        ).all()
