@@ -147,6 +147,22 @@ _BODIES: dict[str, tuple[str, str]] = {
     # theme. Entirely `{color}`, so it takes the surrounding text colour and
     # sits in the account menu like every other action.
     #
+    # The paperclip on the Feedback dialog's Attach button, and a plain page
+    # with a folded corner for an attachment whose preview cannot be decoded.
+    "attach_file": (
+        "0 0 24 24",
+        '<path d="M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7'
+        'l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" fill="none" stroke="{color}"'
+        ' stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>'
+    ),
+    "file_glyph": (
+        "0 0 24 24",
+        '<g fill="none" stroke="{color}" stroke-width="1.7"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/>'
+        '<path d="M14 3v5h5"/>'
+        "</g>"
+    ),
 }
 
 #: Rasterisation oversampling factor. See pixmap().
