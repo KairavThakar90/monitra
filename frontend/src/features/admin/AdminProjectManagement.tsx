@@ -514,9 +514,10 @@ export const AdminProjectManagement: React.FC = () => {
   );
 
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>({
-    // Tasks starts hidden: the count is rarely what this table is opened
-    // for, and the Columns dropdown turns it on when it is.
-    project: true, category: true, status: true, owner: true, leader: true, team: true, tasks: false, billing: true,
+    // Tasks and Category start hidden: neither is what this table is usually
+    // opened for, and the Columns dropdown turns them on when it is. (The
+    // Category filter, the form's dropdown and the detail view are unaffected.)
+    project: true, category: false, status: true, owner: true, leader: true, team: true, tasks: false, billing: true,
     usedHours: true, internalHours: true, remainingHours: true, started: true, manage: true
   });
   const [showColumnDropdown, setShowColumnDropdown] = useState(false);

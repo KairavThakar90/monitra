@@ -279,21 +279,65 @@ describe('Project list: category', () => {
     expect(sent).toEqual([null, 'st', 'kyle']);
   });
 
-  it('shows each project’s category, and a dash for an uncategorised one', async () => {
-    listed = [
-      project({ id: 1, project_name: 'Kyle job', category: 'kyle' }),
-      project({ id: 2, project_name: 'ST job', category: 'st' }),
-      project({ id: 3, project_name: 'Plain job', category: null }),
-    ];
-    await renderPage();
+  describe('Category column', () => {
+    beforeEach(() => {
+      listed = [
+        project({ id: 1, project_name: 'Kyle job', category: 'kyle' }),
+        project({ id: 2, project_name: 'ST job', category: 'st' }),
+        project({ id: 3, project_name: 'Plain job', category: null }),
+      ];
+    });
+
     const cells = (name: string) =>
       Array.from(Array.from(container.querySelectorAll('tbody tr')).find((row) => row.textContent?.includes(name))!.querySelectorAll('td'))
         .map((cell) => cell.textContent?.trim());
-    expect(cells('Kyle job')).toContain('Kyle Project');
-    expect(cells('ST job')).toContain('ST Project');
-    expect(cells('Plain job')).not.toContain('Kyle Project');
-    expect(cells('Plain job')).not.toContain('ST Project');
-    expect(cells('Plain job')).toContain('—');
+    const headers = () => Array.from(container.querySelectorAll('thead th')).map((th) => th.textContent?.trim());
+    const columnToggle = () =>
+      Array.from(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
+        .find((box) => box.closest('label')?.textContent?.trim() === 'Category')!;
+    const openColumnsMenu = async () => { await click(byText('button', 'Columns')); };
+
+    it('is hidden by default: no header and no category in any row', async () => {
+      await renderPage();
+      expect(headers()).not.toContain('Category');
+      for (const name of ['Kyle job', 'ST job', 'Plain job']) {
+        expect(cells(name)).not.toContain('Kyle Project');
+        expect(cells(name)).not.toContain('ST Project');
+      }
+    });
+
+    it('is offered in the Columns menu, unticked', async () => {
+      await renderPage();
+      await openColumnsMenu();
+      expect(columnToggle()).toBeTruthy();
+      expect(columnToggle().checked).toBe(false);
+    });
+
+    it('shows each project’s category, and a dash for an uncategorised one, once turned on', async () => {
+      await renderPage();
+      await openColumnsMenu();
+      await click(columnToggle());
+
+      expect(headers()).toContain('Category');
+      expect(cells('Kyle job')).toContain('Kyle Project');
+      expect(cells('ST job')).toContain('ST Project');
+      expect(cells('Plain job')).not.toContain('Kyle Project');
+      expect(cells('Plain job')).not.toContain('ST Project');
+      expect(cells('Plain job')).toContain('—');
+    });
+
+    it('can be turned off again', async () => {
+      await renderPage();
+      await openColumnsMenu();
+      await click(columnToggle());
+      await click(columnToggle());
+      expect(headers()).not.toContain('Category');
+    });
+
+    it('hiding the column does not hide the category filter', async () => {
+      await renderPage();
+      expect(filterSelect()).toBeTruthy();
+    });
   });
 });
 
