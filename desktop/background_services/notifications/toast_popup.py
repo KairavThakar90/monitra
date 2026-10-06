@@ -303,7 +303,9 @@ class ToastPopup(QWidget):
             return False
 
         if mac_window.is_macos():
+            retried = False
             if not mac_window.make_passive(self):
+                retried = True
                 # Qt may not have made the native window yet, which it does at
                 # first show. Showing is safe here -- `WA_ShowWithoutActivating`
                 # orders it front without making it key, and nothing has raised
@@ -314,10 +316,13 @@ class ToastPopup(QWidget):
                     # the foreground or, hidden on deactivate, never be seen.
                     # The platform banner is the right surface then, and False
                     # is how the caller is told to use it.
+                    mac_window.log_card_state(self, "passive_failed", retried=True)
                     self.hide()
                     return False
+            mac_window.log_card_state(self, "passive_ok", retried=retried)
         self.show()
         self.bring_to_front()
+        mac_window.log_card_state(self, "after_show")
         return True
 
     def bring_to_front(self) -> None:
@@ -329,7 +334,8 @@ class ToastPopup(QWidget):
         visible card, which is the right way for it to fail.
         """
         if mac_window.is_macos():
-            mac_window.order_front_without_activating(self)
+            ordered = mac_window.order_front_without_activating(self)
+            mac_window.log_card_state(self, "ordered_front", ok=ordered)
             return
         self.raise_()
 

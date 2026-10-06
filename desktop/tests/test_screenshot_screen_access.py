@@ -224,6 +224,10 @@ class TestTheUserIsToldOnce:
 class TestCaptureResumesByItself:
     def test_a_retry_is_planned_ahead_of_everything_else(self, service, mac_status):
         service.start_tracker(SESSION)
+        # `start_tracker` plans the window's capture instants at random; one
+        # that happens to fall inside the next 30 seconds is rightly kept
+        # ahead of the retry, which made this test fail about one run in ten.
+        service._planned_times = []
         before = time.time()
         service._on_captured({"blocked": "denied"})
 

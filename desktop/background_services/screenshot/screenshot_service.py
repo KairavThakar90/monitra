@@ -63,7 +63,7 @@ from PySide6.QtCore import QTimer, Signal
 
 from background_services.notifications import NotificationLevel
 from background_services.screenshot import (
-    capture, config, image_processor, scheduler, screen_access, store,
+    capture, config, image_processor, mac_diagnostics, scheduler, screen_access, store,
 )
 from core.service import BaseService
 from tracking.active_window import get_active_window_details
@@ -785,6 +785,7 @@ class ScreenshotService(BaseService):
         # capture is uploaded as the user's work. Nothing is read, queued or
         # counted against the window's budget when access is refused.
         access = screen_access.check_screen_access()
+        mac_diagnostics.log_access(access)   # logging only; no-op off macOS
         if not access.allowed:
             self.log.info(
                 "screenshot capture skipped: screen access %s (%s)",
@@ -799,6 +800,7 @@ class ScreenshotService(BaseService):
         merged = capture.capture_all_displays()
         if merged is None:
             return None  # already logged; the window's budget is deliberately not spent
+        mac_diagnostics.log_capture(merged)  # logging only; no-op off macOS
 
         processed = image_processor.process_merged(merged)
         if processed is None or not processed.data:
