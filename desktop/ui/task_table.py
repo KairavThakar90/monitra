@@ -15,6 +15,7 @@ with the backend afterwards, so the UI is immediate without the widget having
 to guess at, or duplicate, the authoritative state.
 """
 import math
+import re
 import uuid
 from datetime import date, datetime, timezone
 from typing import Callable, Optional, List, Dict, Any, Tuple
@@ -43,6 +44,7 @@ from core.validation import (
 )
 from ui import icons
 from ui.dropdown import PickerComboBox, PickerDateEdit
+from ui.tick_checkbox import TickCheckBox
 from ui.styles import (
     PRIMARY, PRIMARY_HOVER, PRIMARY_LIGHT, SUCCESS_BG,
     ERROR, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED,
@@ -228,21 +230,66 @@ class ColumnResizeHandle(QFrame):
 
 # ─── Dialogs ─────────────────────────────────────────────────────────────────
 
+#: Appended to a task's name when "Non billable" is ticked in Add Task. The
+#: marker lives in the name on purpose: that is the one field every surface
+#: that lists a task (this app, the dashboard, reports, WFPM) already shows, so
+#: nothing else has to learn about it. Written "Non billable" -- two words, no
+#: hyphen -- as the product asked.
+NON_BILLABLE_SUFFIX = " - Non billable"
+
+#: Any spelling of the marker at the end of a name. Wider than what is written
+#: today so a task named with an earlier spelling (" - Non-billable") is still
+#: recognised as marked, and is kept exactly as it was created.
+_NON_BILLABLE_ENDING = re.compile(r"\s-\s*non[-\s]?billable\s*$", re.IGNORECASE)
+
+
+def split_non_billable(name: str):
+    """`(base, marker)` for a task name; `marker` is None when it has none.
+
+    `marker` is the text actually found, with its leading space and dash
+    (`" - Non billable"`), so a caller that must keep a task's marker as it
+    was created can put back exactly that.
+    """
+    name = (name or "").rstrip()
+    found = _NON_BILLABLE_ENDING.search(name)
+    if not found:
+        return name.strip(), None
+    return name[:found.start()].strip(), name[found.start():].rstrip()
+
+
+def with_non_billable_suffix(name: str) -> str:
+    """`name` with ` - Non billable` on the end, exactly once.
+
+    A name that already ends in the marker -- typed by the person, in any
+    spelling -- is brought to the one canonical form rather than given a
+    second, so ticking the box on ``Fix login - Non-billable`` gives
+    ``Fix login - Non billable``.
+    """
+    base, marker = split_non_billable(name)
+    if not base:
+        return ""
+    return f"{base}{NON_BILLABLE_SUFFIX}"
+
+
 class AddTaskDialog(QDialog):
-    """Add Task: a name and an optional description, nothing else.
+    """Add Task: a name, an optional description and an optional Non billable tick.
 
     There is deliberately no assignee field. An employee's task is assigned
     to them by the caller, and a task created by anyone else starts
     unassigned and is given an owner later through Edit Task, which already
     owns assignment. Putting the choice here as well was a second way to do
     one job.
+
+    Non billable is not a field the backend stores: ticking it puts
+    ``NON_BILLABLE_SUFFIX`` on the end of the name the dialog hands back, and
+    nothing else about the task changes.
     """
 
     def __init__(self, project_name: str, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Add Task")
         self.setModal(True)
-        self.setFixedSize(400, 260)
+        self.setFixedSize(400, 296)
         self._build_ui(project_name)
         self._apply_style()
 
@@ -273,9 +320,25 @@ class AddTaskDialog(QDialog):
         form.addRow("Task Name *", self.name_input)
 
         self.desc_input = QTextEdit(self)
+        # Plain text only. Pasting from a web page or a dark-themed editor
+        # carries its HTML -- background colours included -- and the box then
+        # showed the pasted text as white-on-black blocks.
+        self.desc_input.setAcceptRichText(False)
         self.desc_input.setPlaceholderText("Enter task description (optional)")
         self.desc_input.setFixedHeight(68)
         form.addRow("Description", self.desc_input)
+
+        # Optional, and off: leaving it alone changes nothing about the task.
+        # The name box's limit is deliberately not lowered when this is ticked:
+        # QLineEdit.setMaxLength cuts text already typed, which would quietly
+        # edit what the person wrote. `accept()` checks the final length and
+        # says so instead.
+        self.non_billable_check = TickCheckBox("Non billable", self)
+        self.non_billable_check.setChecked(False)
+        self.non_billable_check.setToolTip(
+            f'Adds "{NON_BILLABLE_SUFFIX.strip(" -")}" to the end of the task name.'
+        )
+        form.addRow("", self.non_billable_check)
 
         layout.addLayout(form)
         layout.addStretch()
@@ -324,6 +387,32 @@ class AddTaskDialog(QDialog):
             QLineEdit:focus, QTextEdit:focus {{
                 border-color: {PRIMARY};
             }}
+            QCheckBox {{
+                font-size: 13px;
+                color: #334155;
+                spacing: 8px;
+                background: transparent;
+            }}
+            QCheckBox:focus {{
+                color: #0F172A;
+            }}
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+                border: 1.5px solid #94A3B8;
+                border-radius: 4px;
+                background-color: #FFFFFF;
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {PRIMARY};
+            }}
+            QCheckBox::indicator:focus {{
+                border-color: {PRIMARY};
+            }}
+            QCheckBox::indicator:checked {{
+                border-color: {PRIMARY};
+                background-color: {PRIMARY};
+            }}
             QPushButton {{
                 border-radius: 6px;
                 font-size: 13px;
@@ -359,6 +448,19 @@ class AddTaskDialog(QDialog):
             QMessageBox.warning(self, "Validation Error", name.error)
             self.name_input.setFocus()
             return
+        # What will actually be stored. With Non billable ticked this is the
+        # name plus the suffix, and it has to fit the same limit as any name.
+        stored = validate_name(
+            self._final_name(name.value), field_label="Task name"
+        )
+        if not stored.ok:
+            QMessageBox.warning(
+                self, "Validation Error",
+                f"{stored.error} Non billable adds {len(NON_BILLABLE_SUFFIX)} "
+                f"characters to the name; please shorten it.",
+            )
+            self.name_input.setFocus()
+            return
         description = validate_description(
             self.desc_input.toPlainText(), field_label="Description"
         )
@@ -368,6 +470,9 @@ class AddTaskDialog(QDialog):
             return
         super().accept()
 
+    def _final_name(self, name: str) -> str:
+        return with_non_billable_suffix(name) if self.non_billable_check.isChecked() else name
+
     def get_data(self) -> dict:
         # The normalised values, not the raw widget text: that is what carries
         # the trimming and line-ending conversion the backend expects.
@@ -376,7 +481,7 @@ class AddTaskDialog(QDialog):
             self.desc_input.toPlainText(), field_label="Description"
         )
         return {
-            "task_name": name.value if name.ok else "",
+            "task_name": self._final_name(name.value) if name.ok else "",
             "description": description.value if description.ok else "",
             "estimated_hours": None
         }
@@ -404,13 +509,34 @@ class EditTaskDialog(QDialog):
 
         self.name_input = QLineEdit(self)
         task_name = task.get("name") or task.get("task_name") or ""
-        self.name_input.setText(task_name)
+        # A Non billable task keeps its marker for good: the box holds only the
+        # part of the name that may be changed, and the marker is shown beside
+        # it, as created, and put back on save. Changing a task's billing
+        # marker is not something Edit Task does.
+        base, self._locked_marker = split_non_billable(task_name)
+        self.name_input.setText(base if self._locked_marker else task_name)
         self.name_input.setPlaceholderText("Enter task name")
         self.name_input.setMaxLength(NAME_MAX_LENGTH)
         self.name_input.setFixedHeight(30)
-        form.addRow("Task Name*:", self.name_input)
+        if self._locked_marker:
+            name_row = QHBoxLayout()
+            name_row.setContentsMargins(0, 0, 0, 0)
+            name_row.setSpacing(8)
+            name_row.addWidget(self.name_input, 1)
+            self.marker_label = QLabel(self._locked_marker.lstrip(" -").strip() or "Non billable", self)
+            self.marker_label.setObjectName("NonBillableTag")
+            self.marker_label.setToolTip(
+                "This task is Non billable. The marker stays on the name and cannot be changed."
+            )
+            self.marker_label.setFixedHeight(26)
+            name_row.addWidget(self.marker_label)
+            form.addRow("Task Name*:", name_row)
+        else:
+            self.marker_label = None
+            form.addRow("Task Name*:", self.name_input)
 
         self.desc_input = QTextEdit(self)
+        self.desc_input.setAcceptRichText(False)
         orig_desc = task.get("description") or ""
         clean_desc = orig_desc.replace("[duplicate]", "").strip()
         self.desc_input.setPlainText(clean_desc)
@@ -474,6 +600,15 @@ class EditTaskDialog(QDialog):
             QLineEdit:focus, QTextEdit:focus, QComboBox:focus {{
                 border-color: {PRIMARY};
             }}
+            QLabel#NonBillableTag {{
+                background-color: #F1F5F9;
+                border: 1px solid #CBD5E1;
+                border-radius: 6px;
+                padding: 0 8px;
+                font-size: 12px;
+                font-weight: 600;
+                color: #475569;
+            }}
             QPushButton {{
                 border-radius: 6px;
                 font-size: 12px;
@@ -494,11 +629,29 @@ class EditTaskDialog(QDialog):
             }}
         """)
 
+    def _final_name(self, typed: str) -> str:
+        """The name to store: what was typed, with a Non billable task's marker
+        put back exactly as it was created."""
+        if not self._locked_marker:
+            return typed
+        # A marker typed into the box would otherwise be doubled by the real one.
+        base, _ = split_non_billable(typed)
+        return f"{base}{self._locked_marker}" if base else ""
+
     def accept(self) -> None:
         """Validate before closing — same reasoning as ``AddTaskDialog``."""
         name = validate_name(self.name_input.text(), field_label="Task name")
         if not name.ok:
             QMessageBox.warning(self, "Validation Error", name.error)
+            self.name_input.setFocus()
+            return
+        stored = validate_name(self._final_name(name.value), field_label="Task name")
+        if not stored.ok:
+            QMessageBox.warning(
+                self, "Validation Error",
+                f"{stored.error} The Non billable marker is part of the name; "
+                f"please shorten it.",
+            )
             self.name_input.setFocus()
             return
         description = validate_description(
@@ -517,7 +670,7 @@ class EditTaskDialog(QDialog):
             self.desc_input.toPlainText(), field_label="Description"
         )
         return {
-            "task_name": name.value if name.ok else "",
+            "task_name": self._final_name(name.value) if name.ok else "",
             "description": description.value if description.ok else "",
             "status_id": status_id,
             "estimated_hours": self.estimated_hours
@@ -808,6 +961,7 @@ class ManualTimeEntryDialog(QDialog):
         form.addRow("Reason *", self.reason_combo)
 
         self.desc_input = QTextEdit(self)
+        self.desc_input.setAcceptRichText(False)
         self.desc_input.setPlaceholderText("What did you work on?")
         self.desc_input.setFixedHeight(64)
         form.addRow("Description *", self.desc_input)
@@ -1181,7 +1335,17 @@ class TaskRow(QFrame):
             if clean_desc:
                 self._desc_label = QLabel(clean_desc[:60] + ("…" if len(clean_desc) > 60 else ""), self)
                 self._desc_label.setFont(QFont("Segoe UI", 10))
-                name_col.addWidget(self._desc_label)
+                # Starts where the task name starts, not under the leading
+                # glyph: the name sits after the glyph and the row's spacing,
+                # and the description is part of the name's block.
+                desc_row = QHBoxLayout()
+                desc_row.setContentsMargins(
+                    self._leading_icon.sizeHint().width() + name_row.spacing(), 0, 0, 0
+                )
+                desc_row.setSpacing(0)
+                desc_row.addWidget(self._desc_label)
+                desc_row.addStretch()
+                name_col.addLayout(desc_row)
 
         self._name_widget = QWidget(self)
         self._name_widget.setStyleSheet("background: transparent;")

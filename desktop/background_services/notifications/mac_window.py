@@ -99,21 +99,26 @@ def make_passive(widget) -> bool:
     """
     if not is_macos():
         return False
+    step = "find the native window"   # which call failed, for the log only
     try:
         window = _ns_window(widget)
         if window is None:
             log.warning("notification card has no native window to configure")
             return False
 
+        step = "import AppKit"
         from AppKit import NSPanel  # type: ignore
 
         if window.isKindOfClass_(NSPanel):
+            step = "style mask / panel flags"
             window.setStyleMask_(window.styleMask() | STYLE_MASK_NONACTIVATING_PANEL)
             window.setFloatingPanel_(True)
             window.setBecomesKeyOnlyIfNeeded_(True)
         # A Qt.Tool panel hides while its application is inactive, and a
         # notification is shown precisely while another application is.
+        step = "hidesOnDeactivate"
         window.setHidesOnDeactivate_(False)
+        step = "collection behavior"
         window.setCollectionBehavior_(
             window.collectionBehavior()
             | COLLECTION_CAN_JOIN_ALL_SPACES
@@ -121,7 +126,7 @@ def make_passive(widget) -> bool:
         )
         return True
     except Exception:  # noqa: BLE001 - pyobjc missing, or AppKit refusing a call
-        log.exception("could not make the notification card passive")
+        log.exception("could not make the notification card passive (failed at: %s)", step)
         return False
 
 
@@ -137,9 +142,65 @@ def order_front_without_activating(widget) -> bool:
     try:
         window = _ns_window(widget)
         if window is None:
+            log.warning("notification card has no native window to order front")
             return False
         window.orderFrontRegardless()
         return True
     except Exception:  # noqa: BLE001
         log.exception("could not order the notification card to the front")
         return False
+
+
+# ── Diagnostics (logging only) ────────────────────────────────────────────────
+
+def describe(widget) -> str:
+    """
+    One line describing the native window behind a card, and whether Monitra is
+    the active application -- the facts that say why a card is, or is not,
+    visible and whether showing it activated anything. No content.
+
+    Never raises: a failure is reported in the line itself.
+    """
+    if not is_macos():
+        return "not-macos"
+    try:
+        window = _ns_window(widget)
+        if window is None:
+            return "ns_window=None"
+        frame = window.frame()
+        facts = {
+            "class": str(window.className()),
+            "style_mask": int(window.styleMask()),
+            "level": int(window.level()),
+            "visible": bool(window.isVisible()),
+            "occlusion": int(window.occlusionState()),   # bit 2 = visible
+            "on_active_space": bool(window.isOnActiveSpace()),
+            "alpha": round(float(window.alphaValue()), 2),
+            "hides_on_deactivate": bool(window.hidesOnDeactivate()),
+            "can_become_key": bool(window.canBecomeKeyWindow()),
+            "is_key": bool(window.isKeyWindow()),
+            "collection": int(window.collectionBehavior()),
+            "frame": "{:.0f}x{:.0f}@{:.0f},{:.0f}".format(
+                frame.size.width, frame.size.height, frame.origin.x, frame.origin.y,
+            ),
+        }
+        try:
+            from AppKit import NSApplication  # type: ignore
+
+            facts["app_active"] = bool(NSApplication.sharedApplication().isActive())
+        except Exception as exc:  # noqa: BLE001
+            facts["app_active"] = f"unavailable:{type(exc).__name__}"
+        return " ".join(f"{key}={value}" for key, value in facts.items())
+    except Exception as exc:  # noqa: BLE001
+        return f"describe_failed:{type(exc).__name__}"
+
+
+def log_card_state(widget, stage: str, **extra) -> None:
+    """Log `describe(widget)` under a stage name. macOS only; never raises."""
+    if not is_macos():
+        return
+    try:
+        more = "".join(f" {key}={value}" for key, value in extra.items())
+        log.info("MACDIAG_CARD stage=%s%s %s", stage, more, describe(widget))
+    except Exception:  # noqa: BLE001
+        pass

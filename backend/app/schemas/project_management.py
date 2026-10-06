@@ -296,6 +296,11 @@ class ProjectRead(BaseModel):
     billing_type: Optional[str] = None
     #: 'kyle' | 'st', or `None` for an uncategorised project.
     category: Optional[str] = None
+    #: The id this project has in WFPM, or `None` for a project that did not
+    #: come from WFPM (or that WFPM has not linked). Opaque text owned by the
+    #: other system; shown on the Project Management page so a WFPM project can
+    #: be told apart, and never interpreted here.
+    wfpm_project_id: Optional[str] = None
     fixed_hours: Optional[Decimal]
     organization_id: int
     created_at: datetime

@@ -49,6 +49,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from core.service import BaseService
 
+from . import mac_window
 from .toast_popup import ToastPopup
 
 #: Stable identity for Windows toast attribution.
@@ -313,6 +314,11 @@ class NotificationService(BaseService):
 
         self._tray.show()
         self.log.info("system tray initialised")
+        if mac_window.is_macos():
+            self.log.info(
+                "MACDIAG_NOTIFY tray visible=%s supports_messages=%s",
+                self._tray.isVisible(), QSystemTrayIcon.supportsMessages(),
+            )
 
     def on_stop(self, timeout_ms: int) -> bool:
         self._retire_current()
@@ -487,6 +493,7 @@ class NotificationService(BaseService):
         shown = self._entry_for(card)
         if shown is None:
             return
+        mac_window.log_card_state(card, "body_clicked")
         link = shown.link
         self._retire_card(shown)
         self._arm_timer()
@@ -498,6 +505,7 @@ class NotificationService(BaseService):
         shown = self._entry_for(card)
         if shown is None:
             return
+        mac_window.log_card_state(card, "close_clicked")
         self._retire_card(shown)
         self._arm_timer()
 
@@ -630,11 +638,21 @@ class NotificationService(BaseService):
         # stays up for `DISPLAY_MS`. The platform toast is shown only if a
         # card could not be — never both, or one event would notify the user
         # twice.
-        if self._show_card(title, message, level, link, key or f"{level}:{message}"):
+        shown = self._show_card(title, message, level, link, key or f"{level}:{message}")
+        if mac_window.is_macos():
+            self.log.info(
+                "MACDIAG_NOTIFY delivered_as=%s level=%s key=%s popup_enabled=%s "
+                "tray_available=%s tray_present=%s cards_up=%d",
+                "card" if shown else "no-card", level, key, self._popup_enabled,
+                self._available, self._tray is not None, len(self._cards),
+            )
+        if shown:
             self._arm_timer()
             return True
 
         if not self._available or self._tray is None:
+            if mac_window.is_macos():
+                self.log.warning("MACDIAG_NOTIFY no card and no tray: notification not displayed")
             return False
         # Set before showing: on a fast click the platform can deliver
         # `messageClicked` the instant the toast appears.
@@ -642,6 +660,8 @@ class NotificationService(BaseService):
         try:
             # Use Monitra brand QIcon so Windows system toast displays Monitra logo
             tray_icon = self._icon if self._icon and not self._icon.isNull() else _LEVEL_ICONS.get(level, QSystemTrayIcon.MessageIcon.Information)
+            if mac_window.is_macos():
+                self.log.info("MACDIAG_NOTIFY falling back to the platform banner (showMessage)")
             self._tray.showMessage(
                 title, message, tray_icon,
                 self.DISPLAY_MS,

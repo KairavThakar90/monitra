@@ -69,6 +69,13 @@ export interface Project {
    * cached row from before the field existed still reads.
    */
   category?: ProjectCategory | null;
+  /**
+   * The id this project has in WFPM, or `null` for a project that did not come
+   * from WFPM. Opaque text owned by the other system; the Project Management
+   * page shows it so a WFPM project can be told apart. Optional so a cached row
+   * from before the field existed still reads.
+   */
+  wfpm_project_id?: string | null;
   fixed_hours: string | null;
   organization_id: number;
   created_at: string;
