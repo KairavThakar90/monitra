@@ -635,11 +635,12 @@ class GoogleDriveService:
             # Safe to let the library retry: a create that went through before
             # the response was lost is reconciled by the re-query below, which
             # keeps the oldest of any duplicates.
-            self._client().files().create(
+            created = self._client().files().create(
                 body={"name": name, "mimeType": FOLDER_MIME, "parents": [parent_id]},
                 fields="id",
                 supportsAllDrives=True,
             ).execute(num_retries=DRIVE_READ_RETRIES)
+            created_id = created.get("id") if isinstance(created, dict) else None
             logger.info("SCREENSHOT_FOLDER_CREATED name=%s parent=%s", name, parent_id)
         except Exception as exc:  # noqa: BLE001
             # Drive reports an unreachable parent as a plain 404 on the parent
@@ -659,6 +660,14 @@ class GoogleDriveService:
         # may have created the same folder in the same instant, and both must
         # settle on the same one. See the module docstring.
         canonical = self._find_folder(parent_id, name)
+        if not canonical and created_id:
+            # Drive's listing is eventually consistent: a folder created a
+            # moment ago can be absent from a query that follows it, which
+            # happens to be exactly the first time any new folder is made. The
+            # id the create call returned is authoritative, so use it rather
+            # than failing an upload over a lagging index. (A race that made a
+            # duplicate is then not converged this once; the next lookup does.)
+            canonical = created_id
         if not canonical:
             raise GoogleDriveError(f"could not create or locate the folder '{name}'")
         self._folder_cache[key] = canonical

@@ -715,6 +715,34 @@ class EmailTests(unittest.TestCase):
             self.assertEqual(captured["dedupe_key"], "feedback:5")      # still exactly-once per feedback
 
 
+class DriveFolderTests(unittest.TestCase):
+    """`ensure_folder` is shared with the screenshots; the new `Feedback` folder
+    is the first time in production that it creates a folder and must find it."""
+
+    def service(self, finds):
+        from app.services.google_drive_service import GoogleDriveService
+
+        drive = GoogleDriveService()
+        calls = iter(finds)
+        drive._find_folder = lambda parent, name: next(calls)
+        client = type("C", (), {})()
+        client.files = lambda: type("F", (), {
+            "create": lambda self_, **kw: type("R", (), {"execute": lambda s, **k: {"id": "created-id"}})(),
+        })()
+        drive._client = lambda: client
+        return drive
+
+    def test_a_just_created_folder_that_the_listing_has_not_caught_up_with_is_still_used(self):
+        # lookup (miss), then the post-create re-query (still a miss: index lag)
+        self.assertEqual(self.service([None, None]).ensure_folder("root", "Feedback"), "created-id")
+
+    def test_the_oldest_duplicate_still_wins_when_the_re_query_sees_one(self):
+        self.assertEqual(self.service([None, "oldest-id"]).ensure_folder("root", "Feedback"), "oldest-id")
+
+    def test_an_existing_folder_is_found_without_creating(self):
+        self.assertEqual(self.service(["existing"]).ensure_folder("root", "Feedback"), "existing")
+
+
 class SweepTests(unittest.TestCase):
     def test_only_old_unreferenced_objects_are_orphans(self):
         import importlib.util

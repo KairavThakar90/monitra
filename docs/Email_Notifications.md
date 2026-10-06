@@ -104,6 +104,15 @@ is correct: they are two distinct submissions. Idempotency is per *record*.
 (The desktop dialog also de-duplicates in flight, with a fixed task key, and
 disables the button — see `desktop/ui/feedback_dialog.py`.)
 
+A submission that carries attachments (`POST /feedback/with-attachments`, see
+[FEEDBACK_ATTACHMENTS.md](FEEDBACK_ATTACHMENTS.md)) goes through the same
+queue-after-commit path and the same `feedback:<id>` key. The only difference is
+the payload's `attachment_count`: when it is above zero the email gains an
+"Attachments" row ("1 attachment — open the feedback in Monitra to view") and
+the button reads "View feedback and attachments". **The files are never sent** —
+they are private, and the dashboard (behind sign-in) is where they are opened.
+With no attachments the payload and the email are byte-for-byte what they were.
+
 ### Feedback status — the outbound half of the same workflow
 
 Where the notification above tells Admin and HR that something arrived,
