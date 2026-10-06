@@ -22,6 +22,10 @@ re-grant a permission.
 
 ### Added
 
+- **Mark a task Non-billable when you create it.** Add Task has an optional
+  "Non-billable" tick under Description. Ticked, " - Non-billable" is added to
+  the end of the task name (once, even if you typed it yourself); unticked, the
+  task is created exactly as before.
 - **Attach a screenshot to your feedback.** The Feedback & Help form now has an
   optional **Attach file** button: add up to three images (PNG, JPG or WEBP, 10 MB
   in all) to show us what you are seeing. Each file is listed with a preview, its
@@ -46,6 +50,9 @@ re-grant a permission.
 
 ### Fixed
 
+- **A task's description lines up with its name.** In the task list the
+  description used to start under the small circle at the left of the row; it
+  now starts directly under the task name.
 - **macOS: screenshots are never wallpaper-only any more.** Without macOS
   Screen Recording permission, macOS hands Monitra a picture of just the
   desktop wallpaper (and Monitra's own window) instead of an error, and Monitra
