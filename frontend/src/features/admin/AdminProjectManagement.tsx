@@ -27,6 +27,7 @@ import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } 
 import { formatApiError } from '../../api/utils';
 import type { BillingType } from '../../utils/billing';
 import { PROJECT_CATEGORY_OPTIONS, projectCategoryLabel, type ProjectCategory } from '../../utils/projectCategory';
+import { ProjectExportDialog } from './ProjectExportDialog';
 
 const GRADIENT_CYAN_PURPLE = 'bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[#8b5cf6]';
 
@@ -459,7 +460,7 @@ const StatusPillDropdown = ({
 type ColumnKey = 'project' | 'category' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'started' | 'manage';
 const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'project', label: 'Project' },
-  { key: 'category', label: 'Category' },
+  { key: 'category', label: 'Organization' },
   { key: 'status', label: 'Status' },
   { key: 'owner', label: 'Owner' },
   { key: 'leader', label: 'Leader' },
@@ -514,9 +515,9 @@ export const AdminProjectManagement: React.FC = () => {
   );
 
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>({
-    // Tasks and Category start hidden: neither is what this table is usually
+    // Tasks and Organization start hidden: neither is what this table is usually
     // opened for, and the Columns dropdown turns them on when it is. (The
-    // Category filter, the form's dropdown and the detail view are unaffected.)
+    // Organization filter, the form's dropdown and the detail view are unaffected.)
     project: true, category: false, status: true, owner: true, leader: true, team: true, tasks: false, billing: true,
     usedHours: true, internalHours: true, remainingHours: true, started: true, manage: true
   });
@@ -525,6 +526,7 @@ export const AdminProjectManagement: React.FC = () => {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [viewingProject, setViewingProject] = useState<Project | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
 
   // RTK Query Hooks
   const { data: metadata } = useGetProjectMetadataQuery();
@@ -572,7 +574,7 @@ export const AdminProjectManagement: React.FC = () => {
   /** Billing (Fixed Hours or Flexible Time) as opposed to Non Billing. */
   const isBilling = formBillingType !== 'non_billing';
   const [formBillingHours, setFormBillingHours] = useState('');
-  /** Optional: '' is "no category", which is sent as null. */
+  /** Optional: '' is "No organization", which is sent as null. */
   const [formCategory, setFormCategory] = useState<'' | ProjectCategory>('');
 
   // Dropdown states
@@ -725,7 +727,7 @@ export const AdminProjectManagement: React.FC = () => {
           ? (check.values.billingHours as number)
           : null,
       // Always sent: on an edit the drawer shows the current category, so
-      // "No category" has to be able to clear it.
+      // "No organization" has to be able to clear it.
       category: formCategory === '' ? null : formCategory,
     };
 
@@ -851,6 +853,17 @@ export const AdminProjectManagement: React.FC = () => {
       actions={
           <div className="flex items-center gap-4">
             <InlineRefreshIndicator active={isRevalidating || isUpdatingProject} />
+            {/* Same button as the Reports page's "Export CSV". */}
+            <button
+              type="button"
+              onClick={() => setExportOpen(true)}
+              className="flex items-center gap-1.5 rounded-lg bg-[#0F172A] px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-[#1E293B]"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+              </svg>
+              Export CSV
+            </button>
             {canCreateProject && (
               <button
                 onClick={openCreateDrawer}
@@ -964,12 +977,12 @@ export const AdminProjectManagement: React.FC = () => {
             </div>
             <div className="relative">
               <select
-                aria-label="Filter by category"
+                aria-label="Filter by organization"
                 value={filterCategory}
                 onChange={(e) => { setFilterCategory(e.target.value as '' | ProjectCategory); setPage(1); }}
                 className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
               >
-                <option value="">All Categories</option>
+                <option value="">All Organizations</option>
                 {PROJECT_CATEGORY_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
@@ -1004,7 +1017,7 @@ export const AdminProjectManagement: React.FC = () => {
               <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
                 <tr>
                   {visibleColumns.project && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Project</th>}
-                  {visibleColumns.category && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Category</th>}
+                  {visibleColumns.category && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Organization</th>}
                   {visibleColumns.status && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Status</th>}
                   {visibleColumns.owner && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Owner</th>}
                   {visibleColumns.leader && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Leader</th>}
@@ -1155,8 +1168,8 @@ export const AdminProjectManagement: React.FC = () => {
             <div className="max-h-[calc(90vh-86px)] overflow-y-auto p-6">
               <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
                 <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Category</div>
-                  <div className="mt-2 text-sm font-bold text-slate-800">{viewingProject.category ? projectCategoryLabel(viewingProject.category) : 'Not categorised'}</div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Organization</div>
+                  <div className="mt-2 text-sm font-bold text-slate-800">{viewingProject.category ? projectCategoryLabel(viewingProject.category) : 'No organization'}</div>
                 </div>
                 <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Owner</div>
@@ -1348,7 +1361,7 @@ export const AdminProjectManagement: React.FC = () => {
                     </div>
                     <div>
                       <label htmlFor="project-category" className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">
-                        Category <span className="font-semibold normal-case tracking-normal text-slate-400">(optional)</span>
+                        Organization <span className="font-semibold normal-case tracking-normal text-slate-400">(optional)</span>
                       </label>
                       <select
                         id="project-category"
@@ -1356,7 +1369,7 @@ export const AdminProjectManagement: React.FC = () => {
                         onChange={e => setFormCategory(e.target.value as '' | ProjectCategory)}
                         className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
                       >
-                        <option value="">No category</option>
+                        <option value="">No organization</option>
                         {PROJECT_CATEGORY_OPTIONS.map(option => (
                           <option key={option.value} value={option.value}>{option.label}</option>
                         ))}
@@ -1511,6 +1524,19 @@ export const AdminProjectManagement: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Asks for the same filters the table is showing, then walks every page. */}
+      <ProjectExportDialog
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        filters={{
+          search: projectSearchCheck.ok ? projectSearchCheck.value : '',
+          status_id: filterStatusId,
+          billing_type: filterBilling || null,
+          category: filterCategory || null,
+          employee_ids: selectedMemberIds,
+        }}
+      />
     </V2Shell>
   );
 };

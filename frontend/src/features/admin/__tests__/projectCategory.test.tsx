@@ -1,15 +1,15 @@
 // @vitest-environment jsdom
 /**
- * The optional Category of a project: Kyle Project / ST Project / none.
+ * The optional Organization of a project (stored as `category`): Kyle Project / ST Project / none.
  *
  * Rendered against a real RTK Query store with only `fetch` stubbed, so what
  * these pin is what a browser would send:
  *
- * - the Create Project drawer has an optional Category dropdown that defaults
- *   to "No category", and a project saves without one (sent as null);
+ * - the Create Project drawer has an optional Organization dropdown that defaults
+ *   to "No organization", and a project saves without one (sent as null);
  * - choosing Kyle Project or ST Project sends 'kyle' / 'st';
  * - the list can be filtered by category, and sends nothing for all;
- * - editing preselects the project's category, and "No category" clears it.
+ * - editing preselects the project's category, and "No organization" clears it.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -128,7 +128,7 @@ const setValue = async (element: HTMLInputElement | HTMLSelectElement, value: st
 };
 
 const categorySelect = () => container.querySelector<HTMLSelectElement>('#project-category')!;
-const filterSelect = () => container.querySelector<HTMLSelectElement>('select[aria-label="Filter by category"]')!;
+const filterSelect = () => container.querySelector<HTMLSelectElement>('select[aria-label="Filter by organization"]')!;
 const optionPairs = (select: HTMLSelectElement) => Array.from(select.options).map((o) => [o.value, o.textContent]);
 
 const submit = async () => {
@@ -211,13 +211,13 @@ describe('project categories', () => {
   });
 });
 
-describe('Create Project: Category dropdown', () => {
-  it('is an optional dropdown that defaults to No category', async () => {
+describe('Create Project: Organization dropdown', () => {
+  it('is an optional dropdown that defaults to No organization', async () => {
     await renderPage();
     await openCreateDrawer();
     expect(categorySelect()).toBeTruthy();
     expect(categorySelect().required).toBe(false);
-    expect(optionPairs(categorySelect())).toEqual([['', 'No category'], ['kyle', 'Kyle Project'], ['st', 'ST Project']]);
+    expect(optionPairs(categorySelect())).toEqual([['', 'No organization'], ['kyle', 'Kyle Project'], ['st', 'ST Project']]);
     expect(categorySelect().value).toBe('');
     expect(container.querySelector('label[for="project-category"]')?.textContent).toContain('(optional)');
   });
@@ -254,15 +254,15 @@ describe('Create Project: Category dropdown', () => {
   });
 });
 
-describe('Project list: category', () => {
-  it('has a category filter defaulting to all, and sends nothing for all', async () => {
+describe('Project list: organization', () => {
+  it('has an organization filter defaulting to all, and sends nothing for all', async () => {
     await renderPage();
-    expect(optionPairs(filterSelect())).toEqual([['', 'All Categories'], ['kyle', 'Kyle Project'], ['st', 'ST Project']]);
+    expect(optionPairs(filterSelect())).toEqual([['', 'All Organizations'], ['kyle', 'Kyle Project'], ['st', 'ST Project']]);
     expect(filterSelect().value).toBe('');
     expect(lastListQuery().has('category')).toBe(false);
   });
 
-  it('sends the chosen category, and drops it again for All Categories', async () => {
+  it('sends the chosen organization, and drops it again for All Organizations', async () => {
     await renderPage();
     await setValue(filterSelect(), 'st');
     expect(lastListQuery().get('category')).toBe('st');
@@ -279,7 +279,7 @@ describe('Project list: category', () => {
     expect(sent).toEqual([null, 'st', 'kyle']);
   });
 
-  describe('Category column', () => {
+  describe('Organization column', () => {
     beforeEach(() => {
       listed = [
         project({ id: 1, project_name: 'Kyle job', category: 'kyle' }),
@@ -294,12 +294,12 @@ describe('Project list: category', () => {
     const headers = () => Array.from(container.querySelectorAll('thead th')).map((th) => th.textContent?.trim());
     const columnToggle = () =>
       Array.from(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
-        .find((box) => box.closest('label')?.textContent?.trim() === 'Category')!;
+        .find((box) => box.closest('label')?.textContent?.trim() === 'Organization')!;
     const openColumnsMenu = async () => { await click(byText('button', 'Columns')); };
 
     it('is hidden by default: no header and no category in any row', async () => {
       await renderPage();
-      expect(headers()).not.toContain('Category');
+      expect(headers()).not.toContain('Organization');
       for (const name of ['Kyle job', 'ST job', 'Plain job']) {
         expect(cells(name)).not.toContain('Kyle Project');
         expect(cells(name)).not.toContain('ST Project');
@@ -318,7 +318,7 @@ describe('Project list: category', () => {
       await openColumnsMenu();
       await click(columnToggle());
 
-      expect(headers()).toContain('Category');
+      expect(headers()).toContain('Organization');
       expect(cells('Kyle job')).toContain('Kyle Project');
       expect(cells('ST job')).toContain('ST Project');
       expect(cells('Plain job')).not.toContain('Kyle Project');
@@ -331,7 +331,7 @@ describe('Project list: category', () => {
       await openColumnsMenu();
       await click(columnToggle());
       await click(columnToggle());
-      expect(headers()).not.toContain('Category');
+      expect(headers()).not.toContain('Organization');
     });
 
     it('hiding the column does not hide the category filter', async () => {
@@ -341,7 +341,7 @@ describe('Project list: category', () => {
   });
 });
 
-describe('Edit Project: Category dropdown', () => {
+describe('Edit Project: Organization dropdown', () => {
   it('preselects the project’s category', async () => {
     listed = [project({ category: 'kyle' })];
     await renderPage();
@@ -349,7 +349,7 @@ describe('Edit Project: Category dropdown', () => {
     expect(categorySelect().value).toBe('kyle');
   });
 
-  it('shows No category for a project that has none', async () => {
+  it('shows No organization for a project that has none', async () => {
     await renderPage();
     await openEditDrawer('Existing project');
     expect(categorySelect().value).toBe('');
@@ -364,7 +364,7 @@ describe('Edit Project: Category dropdown', () => {
     expect(patches()[0].body.category).toBe('st');
   });
 
-  it('clears the category when No category is chosen', async () => {
+  it('clears the organization when No organization is chosen', async () => {
     listed = [project({ category: 'st' })];
     await renderPage();
     await openEditDrawer('Existing project');
