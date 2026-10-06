@@ -4,7 +4,7 @@ import platform
 import sys
 import uuid
 import threading
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from app.config import settings
 from app.api.exceptions import (
     ApiConnectionError, ApiError, ApiTimeoutError, ApiHttpError, SessionExpiredError,
@@ -397,7 +397,7 @@ class ApiClient:
     def post_multipart(
         self,
         path: str,
-        files: Dict[str, Any],
+        files: Union[Dict[str, Any], List[Tuple[str, Any]]],
         data: Optional[Dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> httpx.Response:
@@ -428,7 +428,7 @@ class ApiClient:
     def _execute_multipart(
         self,
         path: str,
-        files: Dict[str, Any],
+        files: Union[Dict[str, Any], List[Tuple[str, Any]]],
         data: Optional[Dict[str, Any]],
         timeout: Optional[float],
     ) -> httpx.Response:

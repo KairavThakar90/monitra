@@ -323,6 +323,14 @@ def build_feedback_email(payload: dict[str, Any], recipients: list[str]) -> Outg
     who = str(payload.get("user_name") or payload.get("username") or "a team member").strip()
     day, clock, submitted = _display_times(payload.get("submitted_at"))
     message = str(payload.get("message") or "")
+    # Only ever a count. The files are not sent: they are private, and the
+    # dashboard (behind sign-in) is where they are opened.
+    attachment_count = _attachment_count(payload)
+    attachment_summary = (
+        f"{attachment_count} attachment{'' if attachment_count == 1 else 's'}"
+        " — open the feedback in Monitra to view"
+        if attachment_count else None
+    )
 
     frame = _frame_context(
         subject=subject,
@@ -345,6 +353,7 @@ def build_feedback_email(payload: dict[str, Any], recipients: list[str]) -> Outg
         ("Category", label),
         ("Submitted time", clock),
         ("Submission date", day),
+        ("Attachments", attachment_summary),
     ])
 
     preview, truncated = preview_message(message)
@@ -363,7 +372,7 @@ def build_feedback_email(payload: dict[str, Any], recipients: list[str]) -> Outg
             **frame,
             "detail_rows": rows,
             "message_html": message_html,
-            "cta_block": _feedback_cta(truncated),
+            "cta_block": _feedback_cta(truncated, has_attachments=bool(attachment_count)),
         },
     )
 
@@ -379,6 +388,10 @@ def build_feedback_email(payload: dict[str, Any], recipients: list[str]) -> Outg
         f"  Category         {label}",
         f"  Submitted time   {clock}",
         f"  Submission date  {day}",
+    ]
+    if attachment_summary:
+        text_lines.append(f"  Attachments      {attachment_summary}")
+    text_lines += [
         "",
         "Message",
         "-" * 48,
@@ -388,7 +401,7 @@ def build_feedback_email(payload: dict[str, Any], recipients: list[str]) -> Outg
     if (dashboard_url := feedback_dashboard_url()):
         text_lines += [
             "",
-            f"{'Read the full feedback' if truncated else 'Open in Monitra'}: {dashboard_url}",
+            f"{_feedback_cta_label(truncated, bool(attachment_count))}: {dashboard_url}",
         ]
     text_lines += ["", "Automated notification — Monitra, Store Transform."]
 
@@ -401,6 +414,20 @@ def build_feedback_email(payload: dict[str, Any], recipients: list[str]) -> Outg
         reply_to=_reply_to(payload),
         inline_images=frame["_inline_images"],
     )
+
+
+def _attachment_count(payload: dict[str, Any]) -> int:
+    """How many files the submission carried; 0 for anything unreadable."""
+    try:
+        return max(0, int(payload.get("attachment_count") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _feedback_cta_label(truncated: bool, has_attachments: bool) -> str:
+    if has_attachments:
+        return "View feedback and attachments"
+    return "Read the full feedback" if truncated else "Open in Monitra"
 
 
 def feedback_dashboard_url() -> Optional[str]:
@@ -417,7 +444,7 @@ def feedback_dashboard_url() -> Optional[str]:
     return f"{base}{FEEDBACK_DASHBOARD_PATH}"
 
 
-def _feedback_cta(truncated: bool) -> Markup:
+def _feedback_cta(truncated: bool, has_attachments: bool = False) -> Markup:
     """The "Read full feedback" button, when there is somewhere to send people.
 
     Rendered whenever a dashboard URL is configured, not only when the message
@@ -428,7 +455,10 @@ def _feedback_cta(truncated: bool) -> Markup:
     url = feedback_dashboard_url()
     if url is None:
         return Markup("")
-    label = "Read full feedback" if truncated else "Open in Monitra"
+    label = (
+        "View feedback and attachments" if has_attachments
+        else "Read full feedback" if truncated else "Open in Monitra"
+    )
     return Markup(
         '<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
         'class="st-cta" style="margin:24px 0 0 0;">'

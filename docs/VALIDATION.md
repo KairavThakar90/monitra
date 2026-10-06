@@ -60,6 +60,14 @@ different language. What keeps them honest is a test:
 and asserts every shared limit and pattern matches. Change a limit on one side
 only and that test fails.
 
+### File uploads are not in the catalogue
+
+The three catalogues validate *text*. An uploaded file is judged by its bytes, not
+its name, and its limits (type allow-list, count, total size) live in one place per
+feature — for feedback attachments, `backend/app/services/feedback_attachments.py`
+— mirrored by the desktop for an up-front message. See
+[FEEDBACK_ATTACHMENTS.md](FEEDBACK_ATTACHMENTS.md).
+
 ### Two places the frontend legitimately differs
 
 Both are platform facts, not policy choices, and both are documented in

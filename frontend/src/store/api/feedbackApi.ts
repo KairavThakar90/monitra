@@ -37,6 +37,19 @@ export type FeedbackCategory =
  */
 export type FeedbackStatus = 'new' | 'reviewing' | 'in_progress' | 'resolved' | 'closed';
 
+/**
+ * One file attached to a feedback. Metadata only: the list never carries
+ * bytes, which are fetched on demand from `ENDPOINTS.FEEDBACK.ATTACHMENT(id)`.
+ */
+export interface FeedbackAttachment {
+  id: number;
+  original_filename: string;
+  content_type: string;
+  file_size: number;
+  created_at: string;
+  is_image: boolean;
+}
+
 export interface Feedback {
   id: number;
   employee_id: number;
@@ -46,6 +59,12 @@ export interface Feedback {
   status: FeedbackStatus;
   created_at: string;
   updated_at: string | null;
+  /**
+   * Both are absent on payloads from an older backend or an older persisted
+   * cache; treat absent as none.
+   */
+  attachment_count?: number;
+  attachments?: FeedbackAttachment[];
 }
 
 /** The status update's response: the refreshed row, plus what it caused. */

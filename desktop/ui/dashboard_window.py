@@ -1030,6 +1030,9 @@ class DashboardWindow(QWidget):
             # The runtime's own client, so the request carries the current
             # session's token and this window invents no second HTTP path.
             submitter=self.runtime.feedback_service.submit_feedback,
+            attachment_submitter=(
+                self.runtime.feedback_service.submit_feedback_with_attachments
+            ),
             parent=self.window(),
         )
         self._feedback_dialog = dialog

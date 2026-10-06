@@ -154,6 +154,19 @@ class Settings(BaseSettings):
     #: `WINDOW_DURATION_MINUTES`, which is what the capture schedule uses.
     SCREENSHOT_WINDOW_MINUTES: int = 10
 
+    # ── Feedback attachments ──────────────────────────────────────────────
+    # Optional files on a Feedback & Help submission. They are stored in the
+    # same private Google Drive the screenshots use, so there is no new
+    # credential to configure -- only these two limits, which have defaults.
+    # The desktop mirrors both numbers for its own up-front message; the backend
+    # is the authority and refuses anything over them.
+    #: Most files one submission may carry.
+    FEEDBACK_ATTACHMENT_MAX_COUNT: int = 3
+    #: Most bytes one submission may carry, summed over all its files (10 MiB).
+    #: Note that a serverless platform may cap a request body below this; a
+    #: refusal from the platform arrives before this code and reads as a 413.
+    FEEDBACK_ATTACHMENT_MAX_TOTAL_BYTES: int = 10 * 1024 * 1024
+
     @property
     def google_drive_configured(self) -> bool:
         """Whether screenshot storage can work at all."""

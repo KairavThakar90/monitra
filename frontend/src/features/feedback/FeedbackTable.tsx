@@ -14,6 +14,8 @@ import {
   successMessage,
   type FeedbackAction,
 } from "./feedbackActions";
+import { attachmentCountOf, attachmentsOf } from "./attachmentFiles";
+import { AttachmentChip, AttachmentsSection } from "./FeedbackAttachments";
 
 /**
  * The feedback list, shared by the member and the organization-wide page.
@@ -84,8 +86,16 @@ const CategoryPill: React.FC<{ category: Feedback["category"] }> = ({ category }
 };
 
 /** Keep the table preview short; the Action column opens the full message. */
-const DescriptionCell: React.FC<{ message: string }> = ({ message }) => {
-  return <div className="line-clamp-2 break-words">{message}</div>;
+const DescriptionCell: React.FC<{ message: string; attachmentCount?: number }> = ({
+  message,
+  attachmentCount = 0,
+}) => {
+  return (
+    <>
+      <div className="line-clamp-2 break-words">{message}</div>
+      {attachmentCount > 0 && <AttachmentChip count={attachmentCount} className="mt-1.5" />}
+    </>
+  );
 };
 
 /**
@@ -282,6 +292,7 @@ export const FeedbackTable: React.FC<{
                 <td className="px-5 py-3.5 align-top text-[13px] leading-5 text-[#334155]">
                   <DescriptionCell
                     message={item.message}
+                    attachmentCount={attachmentCountOf(item)}
                   />
                 </td>
                 <td className="whitespace-nowrap px-5 py-3.5 text-right align-top text-[12px] font-semibold text-[#64748B]">
@@ -321,6 +332,9 @@ export const FeedbackTable: React.FC<{
           {showActions ? (
             <>
               <p className="mt-3 line-clamp-2 break-words text-[13px] leading-5 text-[#334155]">{item.message}</p>
+              {attachmentCountOf(item) > 0 && (
+                <AttachmentChip count={attachmentCountOf(item)} className="mt-1.5" />
+              )}
               <div className="mt-2">
                 <RowActions
                   item={item}
@@ -330,7 +344,12 @@ export const FeedbackTable: React.FC<{
               </div>
             </>
           ) : (
-            <p className="mt-3 whitespace-pre-wrap break-words text-[13px] leading-5 text-[#334155]">{item.message}</p>
+            <>
+              <p className="mt-3 whitespace-pre-wrap break-words text-[13px] leading-5 text-[#334155]">{item.message}</p>
+              {attachmentCountOf(item) > 0 && (
+                <AttachmentChip count={attachmentCountOf(item)} className="mt-2" />
+              )}
+            </>
           )}
         </div>
       ))}
@@ -382,6 +401,13 @@ export const FeedbackTable: React.FC<{
               <p className="whitespace-pre-wrap break-words text-[13px] leading-6 text-[#334155]">
                 {selectedDescription.message}
               </p>
+              {attachmentsOf(selectedDescription).length > 0 && (
+                // Keyed on the row so one feedback's tiles never carry over to the next.
+                <AttachmentsSection
+                  key={selectedDescription.id}
+                  attachments={attachmentsOf(selectedDescription)}
+                />
+              )}
             </div>
             <div className="flex justify-end border-t border-[#E2E8F0] bg-[#F8FAFC] px-6 py-4">
               <button

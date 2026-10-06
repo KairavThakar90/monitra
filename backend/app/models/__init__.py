@@ -20,6 +20,7 @@ from app.models.time_entry_idle_period import TimeEntryIdlePeriod
 from app.models.desktop_client_version import DesktopClientVersion
 from app.models.desktop_release import DesktopRelease
 from app.models.feedback_request import FeedbackRequest
+from app.models.feedback_attachment import FeedbackAttachment
 from app.models.sso_handoff_token import SsoHandoffToken
 from app.models.service_credential import ServiceCredential
 from app.models.system_setting import SystemSetting
@@ -57,6 +58,7 @@ __all__ = [
     "TimeEntryIdlePeriod",
     "DesktopClientVersion",
     "FeedbackRequest",
+    "FeedbackAttachment",
     "SsoHandoffToken",
     "ServiceCredential",
     "SystemSetting",

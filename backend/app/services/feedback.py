@@ -10,6 +10,7 @@ from app.core.permissions import resolve_role_alias
 from app.models.feedback_request import FeedbackRequest
 from app.models.user import User
 from app.repositories.feedback import FeedbackRepository, FeedbackRow
+from app.repositories.feedback_attachment import FeedbackAttachmentRepository
 from app.schemas.feedback import FeedbackCreate, FeedbackStatus, FeedbackStatusAction
 from app.services.email import (
     deliver_in_background, queue_feedback_notification,
@@ -189,7 +190,17 @@ class FeedbackService:
         return FeedbackService._organization_id(current_user)
 
     @staticmethod
-    def _item(row: FeedbackRow) -> dict:
+    def _attachment_read(attachment) -> dict:
+        return {
+            "id": attachment.id,
+            "original_filename": attachment.original_filename,
+            "content_type": attachment.content_type,
+            "file_size": attachment.file_size,
+            "created_at": attachment.created_at,
+        }
+
+    @staticmethod
+    def _item(row: FeedbackRow, attachments=()) -> dict:
         feedback, employee_id, employee_name = row
         return {
             "id": feedback.id,
@@ -200,12 +211,21 @@ class FeedbackService:
             "status": feedback.status,
             "created_at": feedback.created_at,
             "updated_at": feedback.updated_at,
+            "attachment_count": len(attachments),
+            "attachments": [FeedbackService._attachment_read(a) for a in attachments],
         }
 
     @staticmethod
-    def _envelope(rows, total: int, page: int, limit: int) -> dict:
+    def _envelope(db: Session, rows, total: int, page: int, limit: int) -> dict:
+        # One query for the whole page's attachment metadata, never one per
+        # row. Metadata only: file bytes are not read until somebody opens one.
+        attachments = FeedbackAttachmentRepository.list_for_feedback_ids(
+            db, [row[0].id for row in rows]
+        )
         return {
-            "items": [FeedbackService._item(row) for row in rows],
+            "items": [
+                FeedbackService._item(row, attachments.get(row[0].id, ())) for row in rows
+            ],
             "page": page,
             "limit": limit,
             "total": total,
@@ -220,7 +240,7 @@ class FeedbackService:
         rows, total = FeedbackRepository.list_for_user(
             db, user_id=current_user.id, page=page, limit=limit
         )
-        return FeedbackService._envelope(rows, total, page, limit)
+        return FeedbackService._envelope(db, rows, total, page, limit)
 
     @staticmethod
     def get_my_feedback(db: Session, current_user: User, feedback_id: int) -> dict:
@@ -233,7 +253,13 @@ class FeedbackService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Feedback not found."
             )
-        return FeedbackService._item(row)
+        return FeedbackService._item(row, FeedbackService._attachments_of(db, row[0].id))
+
+    @staticmethod
+    def _attachments_of(db: Session, feedback_id: int):
+        return FeedbackAttachmentRepository.list_for_feedback_ids(db, [feedback_id]).get(
+            feedback_id, ()
+        )
 
     @staticmethod
     def list_all_feedback(
@@ -251,7 +277,7 @@ class FeedbackService:
             limit=limit,
             category=category,
         )
-        return FeedbackService._envelope(rows, total, page, limit)
+        return FeedbackService._envelope(db, rows, total, page, limit)
 
     @staticmethod
     def get_feedback(db: Session, current_user: User, feedback_id: int) -> dict:
@@ -263,7 +289,7 @@ class FeedbackService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Feedback not found."
             )
-        return FeedbackService._item(row)
+        return FeedbackService._item(row, FeedbackService._attachments_of(db, row[0].id))
 
     # ------------------------------------------------------------------
     # The Admin status workflow — the one write path on this resource.
@@ -325,7 +351,10 @@ class FeedbackService:
                 "FEEDBACK_STATUS_UNCHANGED: feedback=%s status=%s admin=%s",
                 feedback.id, target, current_user.id,
             )
-            return FeedbackService._response(feedback, submitter, notification_queued=False)
+            return FeedbackService._response(
+                feedback, submitter, notification_queued=False,
+                attachments=FeedbackService._attachments_of(db, feedback.id),
+            )
 
         if target not in ALLOWED_STATUS_TRANSITIONS.get(current_status, frozenset()):
             raise HTTPException(
@@ -376,15 +405,17 @@ class FeedbackService:
         })
 
         return FeedbackService._response(
-            feedback, submitter, notification_queued=notification_id is not None
+            feedback, submitter, notification_queued=notification_id is not None,
+            attachments=FeedbackService._attachments_of(db, feedback.id),
         )
 
     @staticmethod
     def _response(
-        feedback: FeedbackRequest, submitter: User, *, notification_queued: bool
+        feedback: FeedbackRequest, submitter: User, *, notification_queued: bool,
+        attachments=(),
     ) -> dict:
         """The updated row in the same shape the list returns, plus what happened."""
         return {
-            **FeedbackService._item((feedback, submitter.id, submitter.name)),
+            **FeedbackService._item((feedback, submitter.id, submitter.name), attachments),
             "notification_queued": notification_queued,
         }

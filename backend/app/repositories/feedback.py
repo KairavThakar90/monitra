@@ -4,6 +4,7 @@ from typing import List, Optional, Tuple
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.models.feedback_attachment import FeedbackAttachment
 from app.models.feedback_request import FeedbackRequest
 from app.models.user import User
 
@@ -38,6 +39,61 @@ class FeedbackRepository:
         db.commit()
         db.refresh(feedback)
         return feedback
+
+    @staticmethod
+    def get_by_client_op(
+        db: Session, *, user_id: int, client_op: str
+    ) -> Optional[FeedbackRequest]:
+        """The feedback this user already stored under this idempotency key."""
+        return db.scalar(
+            select(FeedbackRequest).where(
+                FeedbackRequest.user_id == user_id,
+                FeedbackRequest.client_op == client_op,
+            )
+        )
+
+    @staticmethod
+    def create_with_attachments(
+        db: Session,
+        *,
+        organization_id: int,
+        user_id: int,
+        category: str,
+        message: str,
+        status: str,
+        client_op: str,
+        attachments: List[dict],
+    ) -> Tuple[FeedbackRequest, List[FeedbackAttachment]]:
+        """Persist a feedback and every one of its attachment rows **atomically**.
+
+        One flush, one commit: either the feedback and all its attachment rows
+        exist, or none of them do. There is no state in which an attachment
+        row names a feedback that was not stored, and none in which a feedback
+        claims files it has no rows for. The unique `(user_id, client_op)`
+        index is what makes two concurrent attempts at the same submission
+        collide here (an `IntegrityError` the caller turns into "return the
+        winner") instead of both succeeding.
+        """
+        feedback = FeedbackRequest(
+            organization_id=organization_id,
+            user_id=user_id,
+            category=category,
+            message=message,
+            status=status,
+            client_op=client_op,
+        )
+        db.add(feedback)
+        db.flush()  # assigns feedback.id for the attachment rows below
+        rows = [
+            FeedbackAttachment(feedback_id=feedback.id, **attachment)
+            for attachment in attachments
+        ]
+        db.add_all(rows)
+        db.commit()
+        db.refresh(feedback)
+        for row in rows:
+            db.refresh(row)
+        return feedback, rows
 
     @staticmethod
     def get_by_id(db: Session, feedback_id: int) -> Optional[FeedbackRequest]:

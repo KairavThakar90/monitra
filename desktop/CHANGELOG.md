@@ -20,6 +20,16 @@ re-grant a permission.
 
 ## [Unreleased]
 
+### Added
+
+- **Attach a screenshot to your feedback.** The Feedback & Help form now has an
+  optional **Attach file** button: add up to three images (PNG, JPG or WEBP, 10 MB
+  in all) to show us what you are seeing. Each file is listed with a preview, its
+  size and a **Remove** button, and a file that is not a supported image is
+  refused with a clear message. Sending feedback without an attachment works
+  exactly as before, and if a send fails your message and files are kept so you
+  can try again without creating a duplicate.
+
 ### Changed
 
 - **Updating Monitra is safer.** An update is only downloaded from an
