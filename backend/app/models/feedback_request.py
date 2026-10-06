@@ -66,6 +66,14 @@ class FeedbackRequest(Base):
         BigInteger, nullable=True,
     )
 
+    #: The idempotency key of a submission that carried attachments (the
+    #: desktop's per-attempt `client_op`). NULL for every row written by the
+    #: plain JSON route, which has no such key — which is every row that
+    #: existed before attachments did. Unique per submitter when present, so a
+    #: retry after a lost reply is answered with this row instead of creating a
+    #: second feedback and uploading the files again.
+    client_op: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now(),
     )
@@ -91,4 +99,10 @@ class FeedbackRequest(Base):
         ),
         Index('idx_feedback_requests_org_status', 'organization_id', 'status'),
         Index('idx_feedback_requests_user_created_at', 'user_id', 'created_at'),
+        # Partial, so the many rows with no key never collide on NULL and the
+        # index stays as small as the number of attachment submissions.
+        Index(
+            'uq_feedback_requests_user_client_op', 'user_id', 'client_op',
+            unique=True, postgresql_where=text('client_op IS NOT NULL'),
+        ),
     )

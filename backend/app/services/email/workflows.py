@@ -273,7 +273,9 @@ def queue_welcome_email(db: Session, user) -> Optional[int]:
         return None
 
 
-def queue_feedback_notification(db: Session, feedback, user) -> Optional[int]:
+def queue_feedback_notification(
+    db: Session, feedback, user, attachment_count: int = 0
+) -> Optional[int]:
     """Queue the Admin/HR notification for one submitted feedback.
 
     The feedback row is already committed when this runs. Nothing below can
@@ -304,6 +306,11 @@ def queue_feedback_notification(db: Session, feedback, user) -> Optional[int]:
             "submitted_at": submitted_at.isoformat() if hasattr(submitted_at, "isoformat") else str(submitted_at),
             "source": "Monitra Desktop",
         }
+        if attachment_count:
+            # Only present when there is something to say, so a feedback
+            # without attachments produces the byte-identical payload it
+            # always did.
+            payload["attachment_count"] = int(attachment_count)
         row = EmailOutboxService.enqueue(
             db,
             notification_type=TYPE_FEEDBACK,

@@ -712,6 +712,66 @@ class GoogleDriveService:
         day_id = self.ensure_folder(user_id_folder, day)
         return day_id, f"{year}/{month}/{user}/{day}"
 
+    #: The top-level folder feedback attachments live under, beside the year
+    #: folders the screenshots use. A fixed name rather than a setting: it is
+    #: part of the layout operators browse and the orphan sweep walks.
+    FEEDBACK_FOLDER_NAME = "Feedback"
+
+    def ensure_feedback_folder(self, stored_on: date) -> Tuple[str, str]:
+        """Resolve (and create) ``<root>/Feedback/<YYYY-MM>``.
+
+        One folder per month, flat inside it: a feedback attachment is rare
+        next to a screenshot (a handful a day at most), so per-user and per-day
+        levels would be mostly one-file folders. The owner is in the object's
+        name (``u<user>_<client_op>_<n>.<ext>``), which is what an operator
+        browsing Drive needs.
+
+        :return: `(folder_id, logical_path)`.
+        """
+        root = self.root_folder_id
+        month = f"{stored_on.year:04d}-{stored_on.month:02d}"
+        feedback_id = self.ensure_folder(root, self.FEEDBACK_FOLDER_NAME)
+        month_id = self.ensure_folder(feedback_id, month)
+        return month_id, f"{self.FEEDBACK_FOLDER_NAME}/{month}"
+
+    def list_feedback_objects(self) -> list:
+        """Every file under ``<root>/Feedback/*``, for the orphan sweep.
+
+        Returns ``[{"id", "name", "createdTime", "folder"}]``. Read-only and
+        paged; it never creates the folder tree, so a deployment that has not
+        stored an attachment yet simply answers an empty list.
+        """
+        feedback_id = self._find_folder(self.root_folder_id, self.FEEDBACK_FOLDER_NAME)
+        if not feedback_id:
+            return []
+        found: list = []
+        months = self._client().files().list(
+            q=(
+                f"mimeType = '{FOLDER_MIME}' and '{feedback_id}' in parents "
+                f"and trashed = false"
+            ),
+            fields="files(id, name)", pageSize=200,
+            supportsAllDrives=True, includeItemsFromAllDrives=True,
+        ).execute(num_retries=DRIVE_READ_RETRIES).get("files", [])
+        for month in months:
+            page_token = None
+            while True:
+                response = self._client().files().list(
+                    q=(
+                        f"mimeType != '{FOLDER_MIME}' and '{month['id']}' in parents "
+                        f"and trashed = false"
+                    ),
+                    fields="nextPageToken, files(id, name, createdTime)", pageSize=200,
+                    pageToken=page_token,
+                    supportsAllDrives=True, includeItemsFromAllDrives=True,
+                ).execute(num_retries=DRIVE_READ_RETRIES)
+                for item in response.get("files", []):
+                    found.append({**item, "folder": month["name"]})
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    break
+        return found
+
     def _ensure_user_folder(self, parent_id: str, user_id: int, wanted_name: str) -> str:
         """Resolve the per-user folder, adopting a legacy ``User_<id>`` one."""
         key = (parent_id, wanted_name)

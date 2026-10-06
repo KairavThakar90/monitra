@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 #: Upper bound on a feedback message. Long enough for a detailed bug report,
 #: short enough that a single row cannot be used to store arbitrary payloads.
@@ -95,6 +95,41 @@ class FeedbackRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class FeedbackAttachmentRead(BaseModel):
+    """Safe metadata for one attachment — never a storage id, path or URL.
+
+    The file itself is fetched from `GET /feedback/attachments/{id}/content`,
+    which authorises the caller first. Nothing here lets a client reach the
+    object directly, and nothing here names where it is stored.
+    """
+
+    id: int
+    original_filename: str
+    content_type: str
+    file_size: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def is_image(self) -> bool:
+        return self.content_type.startswith("image/")
+
+
+class FeedbackSubmissionRead(FeedbackRead):
+    """The reply to a submission that may carry attachments.
+
+    `duplicate` is true when this submission's `client_op` had already been
+    stored — the desktop's retry after a lost reply. Nothing was created a
+    second time and this is the original record, which is what lets the client
+    treat it as success and stop retrying.
+    """
+
+    attachments: list[FeedbackAttachmentRead] = Field(default_factory=list)
+    duplicate: bool = False
+
+
 class FeedbackItem(BaseModel):
     """One row of the dashboard's feedback list.
 
@@ -121,6 +156,10 @@ class FeedbackItem(BaseModel):
     status: FeedbackStatus = FeedbackStatus.new
     created_at: datetime
     updated_at: Optional[datetime] = None
+    #: Attachment metadata only — a list page never carries file bytes, and a
+    #: feedback with none (every row that predates attachments) reads `0` / `[]`.
+    attachment_count: int = 0
+    attachments: list[FeedbackAttachmentRead] = Field(default_factory=list)
 
 
 class FeedbackStatusUpdate(BaseModel):
