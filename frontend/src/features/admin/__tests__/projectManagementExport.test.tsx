@@ -207,7 +207,7 @@ describe('Project Management: Export CSV', () => {
       expect(dialogCheckboxes().map((box) => box.closest('label')!.textContent!.trim())).toEqual(EXPORT_COLUMNS.map((c) => c.label));
       expect(EXPORT_COLUMNS.map((c) => c.label)).toContain('Organization');
       expect(dialogCheckboxes().every((box) => box.checked)).toBe(true);
-      expect(dialog()!.textContent).toContain('CSV · 10 columns');
+      expect(dialog()!.textContent).toContain('CSV · 11 columns');
     });
 
     it('closes on Cancel, on the close button and on Escape', async () => {
@@ -280,6 +280,7 @@ describe('Project Management: Export CSV', () => {
         'Team Members': 'Asha Patel; Ravi Shah',
         'Tasks': 7,
         'Billing': 'Free Time',
+        'Created': '2026-09-01',
         'Deadline': '2026-12-31',
       });
     });
@@ -314,8 +315,8 @@ describe('Project Management: Export CSV', () => {
       await click(columnBox('Description'));
       await click(columnBox('Billing'));
       await click(download());
-      expect(lastCall()[1]).toEqual(['Project', 'Organization', 'Status', 'Owner', 'Team Members', 'Tasks', 'Deadline']);
-      expect(lastCall()[2][0]).toHaveLength(7);
+      expect(lastCall()[1]).toEqual(['Project', 'Organization', 'Status', 'Owner', 'Team Members', 'Tasks', 'Created', 'Deadline']);
+      expect(lastCall()[2][0]).toHaveLength(8);
     });
 
     it('asks for the very filters the table is showing', async () => {
@@ -343,6 +344,25 @@ describe('Project Management: Export CSV', () => {
       await click(download());
 
       expect(exportRequests()[0].searchParams.has('billing_type')).toBe(false);
+    });
+
+    it('asks for the creation-date range the table is showing', async () => {
+      await click(buttonText('All Time')); // the date picker's trigger
+      await click(buttons().find((button) => button.textContent?.trim() === 'Last 7 days'));
+      await click(buttonText('Export CSV'));
+      await click(download());
+
+      // The clock is frozen at 15:30 IST on 6 Oct 2026.
+      expect(exportRequests()[0].searchParams.get('created_from')).toBe('2026-09-30');
+      expect(exportRequests()[0].searchParams.get('created_to')).toBe('2026-10-06');
+    });
+
+    it('asks for no date limit when the picker is left on All Time', async () => {
+      await click(buttonText('Export CSV'));
+      await click(download());
+
+      expect(exportRequests()[0].searchParams.has('created_from')).toBe(false);
+      expect(exportRequests()[0].searchParams.has('created_to')).toBe(false);
     });
 
     it('says so and writes nothing when no project matches', async () => {
@@ -410,7 +430,7 @@ describe('Project Management: Export CSV', () => {
 
       expect(lines[0]).toBe(EXPORT_COLUMNS.map((column) => column.label).join(','));
       expect(lines).toHaveLength(4); // header + 3 projects, no summary lines, no blank lines
-      expect(lines[1]).toBe('Project 1,Kyle Project,About project 1,Active,Owen Owner,Lena Leader,Asha Patel; Ravi Shah,7,100.00 Hours,2026-12-31');
+      expect(lines[1]).toBe('Project 1,Kyle Project,About project 1,Active,Owen Owner,Lena Leader,Asha Patel; Ravi Shah,7,100.00 Hours,2026-09-01,2026-12-31');
       expect(lines[2].startsWith('Project 2,,')).toBe(true);
       expect(lines[3].startsWith('Project 3,ST Project,')).toBe(true);
     });

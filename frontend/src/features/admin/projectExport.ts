@@ -1,4 +1,5 @@
 import type { Project } from '../../store/api/projectsApi';
+import { istDateISO } from '../../utils/duration';
 import { projectCategoryLabel } from '../../utils/projectCategory';
 
 /**
@@ -10,7 +11,7 @@ import { projectCategoryLabel } from '../../utils/projectCategory';
  */
 
 export type ExportColumnKey =
-  | 'project' | 'organization' | 'description' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'deadline';
+  | 'project' | 'organization' | 'description' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'created' | 'deadline';
 
 export const EXPORT_COLUMNS: { key: ExportColumnKey; label: string }[] = [
   { key: 'project', label: 'Project' },
@@ -22,6 +23,7 @@ export const EXPORT_COLUMNS: { key: ExportColumnKey; label: string }[] = [
   { key: 'team', label: 'Team Members' },
   { key: 'tasks', label: 'Tasks' },
   { key: 'billing', label: 'Billing' },
+  { key: 'created', label: 'Created' },
   { key: 'deadline', label: 'Deadline' },
 ];
 
@@ -52,6 +54,9 @@ export const PROJECT_EXPORT_VALUES: Record<ExportColumnKey, (project: Project) =
     project.billing_type === 'fixed'
       ? `${project.fixed_hours || 0} Hours`
       : project.billing_type === 'non_billing' ? 'Non Billing' : 'Free Time',
+  // The IST day it was created -- the one the table shows and the date filter
+  // compares -- as ISO. Blank, not a made-up day, if the API sent none.
+  created: (project) => istDateISO(project.created_at),
   // ISO, so a spreadsheet sorts and parses it; a deadline is a date, not an instant.
   deadline: (project) => (project.deadline ? project.deadline.split('T')[0] : 'No Deadline'),
 };

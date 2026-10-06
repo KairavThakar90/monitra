@@ -79,6 +79,21 @@ export function istTodayISO(now: Date = new Date()): string {
   }).format(now);
 }
 
+/**
+ * The IST calendar day a timestamp falls on, as `YYYY-MM-DD`; empty for a
+ * missing or unreadable one.
+ *
+ * What a "created on" column shows and a created-date filter compares against:
+ * the same Asia/Kolkata day the backend measures a date range on. Taking the
+ * date text off the ISO string instead would give the UTC day, which is the
+ * previous day for anything created between 00:00 and 05:30 IST.
+ */
+export function istDateISO(value: string | null | undefined): string {
+  if (!value) return '';
+  const instant = new Date(value);
+  return Number.isNaN(instant.getTime()) ? '' : istTodayISO(instant);
+}
+
 /** Render a UTC timestamp as IST clock time, e.g. "14:35". */
 export function formatISTTime(value: string | null | undefined): string {
   if (!value) return '-';

@@ -21,7 +21,8 @@ import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { PaginationArrow } from '../../components/PaginationArrow';
 import { useAuth } from '../auth/authContext';
 import { isTeamScoped } from '../../utils/roles';
-import { MemberMultiSelect } from '../dashboard/v2/filters';
+import { ALL_TIME_RANGE, DateRangeFilter, MemberMultiSelect, type DateRange } from '../dashboard/v2/filters';
+import { istDateISO } from '../../utils/duration';
 import { useGetAllMembersQuery } from '../../store/api/membersApi';
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
 import { formatApiError } from '../../api/utils';
@@ -486,7 +487,7 @@ const ToolbarSelect: React.FC<{
   </div>
 );
 
-type ColumnKey = 'project' | 'category' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'started' | 'manage';
+type ColumnKey = 'project' | 'category' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'created' | 'started' | 'manage';
 const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'project', label: 'Project' },
   { key: 'category', label: 'Organization' },
@@ -499,6 +500,7 @@ const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'usedHours', label: 'Used Hours' },
   { key: 'internalHours', label: 'Internal Hours' },
   { key: 'remainingHours', label: 'Remaining Hours' },
+  { key: 'created', label: 'Created' },
   { key: 'started', label: 'Started' },
   { key: 'manage', label: 'Manage' },
 ];
@@ -541,6 +543,11 @@ export const AdminProjectManagement: React.FC = () => {
   const [filterCategory, setFilterCategory] = useState<'' | ProjectCategory>('');
   /** Empty means every member — the same convention every other filter uses. */
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  // The day each project was created, as IST calendar days: the same picker the
+  // Assign Tasks page has. It opens on All Time, not a last-7-days window,
+  // because this table has always listed every project and must keep doing so
+  // until someone picks a range; a bounded default would hide most of them.
+  const [dateRange, setDateRange] = useState<DateRange>(ALL_TIME_RANGE);
   const { data: allMembers = [] } = useGetAllMembersQuery();
   const selectedMemberIds = useMemo(
     () => selectedMembers.map(Number),
@@ -548,11 +555,13 @@ export const AdminProjectManagement: React.FC = () => {
   );
 
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>({
-    // Tasks and Organization start hidden: neither is what this table is usually
-    // opened for, and the Columns dropdown turns them on when it is. (The
-    // Organization filter, the form's dropdown and the detail view are unaffected.)
+    // Tasks, Organization and Started start hidden: none is what this table is
+    // usually opened for, and the Columns dropdown turns them on when it is. Created
+    // is shown. (The Organization filter, the creation-date filter, the form's
+    // dropdown and the detail view are unaffected -- hiding a column never hides
+    // its filter.)
     project: true, category: false, status: true, owner: true, leader: true, team: true, tasks: false, billing: true,
-    usedHours: true, internalHours: true, remainingHours: true, started: true, manage: true
+    usedHours: true, internalHours: true, remainingHours: true, created: true, started: false, manage: true
   });
   const [showColumnDropdown, setShowColumnDropdown] = useState(false);
 
@@ -580,6 +589,8 @@ export const AdminProjectManagement: React.FC = () => {
     status_id: filterStatusId,
     billing_type: billingTypes ?? null,
     category: filterCategory || null,
+    created_from: dateRange.from || null,
+    created_to: dateRange.to || null,
     employee_ids: selectedMemberIds,
   });
 
@@ -1039,6 +1050,12 @@ export const AdminProjectManagement: React.FC = () => {
               selected={selectedMembers}
               onChange={(ids) => { setSelectedMembers(ids); setPage(1); }}
             />
+            {/* Creation date -- the same picker as Assign Tasks, with All Time on offer. */}
+            <DateRangeFilter
+              allowAll
+              value={dateRange}
+              onChange={(range) => { setDateRange(range); setPage(1); }}
+            />
           </div>
         </div>
 
@@ -1063,6 +1080,7 @@ export const AdminProjectManagement: React.FC = () => {
                   {visibleColumns.usedHours && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Used Hours</th>}
                   {visibleColumns.internalHours && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Internal Hours</th>}
                   {visibleColumns.remainingHours && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Remaining Hours</th>}
+                  {visibleColumns.created && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Created</th>}
                   {visibleColumns.started && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Started</th>}
                   {visibleColumns.manage && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Manage</th>}
                 </tr>
@@ -1142,6 +1160,11 @@ export const AdminProjectManagement: React.FC = () => {
                     </td>}
                     {visibleColumns.remainingHours && <td className="px-6 py-4">
                       <RemainingHoursCell project={proj} usedSeconds={hoursByProject.get(proj.id)?.total_used_seconds ?? 0} />
+                    </td>}
+                    {visibleColumns.created && <td className="px-6 py-4 font-medium text-slate-600 whitespace-nowrap" data-testid="created-cell">
+                      {istDateISO(proj.created_at)
+                        ? formatDate(istDateISO(proj.created_at))
+                        : <span className="text-slate-400">—</span>}
                     </td>}
                     {visibleColumns.started && <td className="px-6 py-4 font-medium text-slate-600">
                       {hoursByProject.get(proj.id)?.started_at
@@ -1570,6 +1593,8 @@ export const AdminProjectManagement: React.FC = () => {
           status_id: filterStatusId,
           billing_type: billingTypes ?? null,
           category: filterCategory || null,
+          created_from: dateRange.from || null,
+          created_to: dateRange.to || null,
           employee_ids: selectedMemberIds,
         }}
       />

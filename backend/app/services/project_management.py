@@ -424,7 +424,7 @@ class ProjectManagementService:
         return ProjectManagementService._detail_payload(db, project, user)
 
     @staticmethod
-    def list(db: Session, user: User, page: int, limit: int, search: Optional[str], status_id: Optional[int], leader_id: Optional[int], billing_type: Optional[list[BillingType]], include_tasks: bool = True, employee_ids: Optional[list[int]] = None, category: Optional[ProjectCategory] = None):
+    def list(db: Session, user: User, page: int, limit: int, search: Optional[str], status_id: Optional[int], leader_id: Optional[int], billing_type: Optional[list[BillingType]], include_tasks: bool = True, employee_ids: Optional[list[int]] = None, category: Optional[ProjectCategory] = None, created_from: Optional[date] = None, created_to: Optional[date] = None):
         """A page of projects.
 
         `include_tasks=False` is for the callers that only ever render a
@@ -467,6 +467,16 @@ class ProjectManagementService:
             filters.append(Project.billing_type.in_([kind.value for kind in billing_type]))
         if category:
             filters.append(Project.category == category.value)
+        # Creation date, as IST calendar days -- the day the table shows and the
+        # date picker offers -- not UTC ones. Both ends are inclusive days; the
+        # upper bound is the start of the next IST day, exclusive. Either end
+        # may be given alone.
+        if created_from and created_to and created_from > created_to:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "created_from cannot be after created_to.")
+        if created_from:
+            filters.append(Project.created_at >= ist_day_start_utc(created_from))
+        if created_to:
+            filters.append(Project.created_at < ist_day_end_utc(created_to))
         # The page and its total in one statement. Each round trip to a managed
         # Postgres costs ~85ms whatever it asks for, so a separate COUNT(*) was
         # a measurable fraction of this endpoint for a number the same WHERE
