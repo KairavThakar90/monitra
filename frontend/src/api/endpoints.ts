@@ -163,8 +163,8 @@ export const ENDPOINTS = {
     GET_BY_ID: (id: string | number) => `${API_BASE_URL}/feedback/${id}`,
     // Admin only. Moves one feedback to Working or Resolved and emails the
     // person who submitted it; the recipient is resolved server-side from the
-    // feedback's own submitter, so this carries an id and a status and nothing
-    // that could name a recipient.
+    // feedback's own submitter, so this carries an id, a status and an optional
+    // note to print in the email -- and nothing that could name a recipient.
     STATUS: (id: string | number) => `${API_BASE_URL}/feedback/${id}/status`,
     // The bytes of one attached file, behind the same permission check as the
     // feedback it belongs to. Bearer token required, so it is fetched and shown

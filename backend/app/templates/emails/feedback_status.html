@@ -7,9 +7,11 @@
   and the same spacing as the Admin/HR notification, so the two read as one
   product talking rather than two systems.
 
-  Nothing on this page is user-written. `detail_rows` escapes every value it is
-  given, and the headline and prose come from FEEDBACK_STATUS_PRESENTATION —
-  fixed copy, chosen by status. The employee's own message is deliberately not
+  The headline and prose come from FEEDBACK_STATUS_PRESENTATION — fixed copy,
+  chosen by status — and `detail_rows` escapes every value it is given. The one
+  piece of free text is the administrator's optional note, placed after the
+  prose with every line escaped, and empty (so nothing renders and no space is
+  left) when none was written. The employee's own message is deliberately not
   reproduced here: they wrote it, and it does not need to travel back through a
   mailbox to reach them.
 -->
@@ -30,6 +32,8 @@
 <p style="margin:0 0 26px 0;font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:25px;color:#4B5563;">
   {{ body }}
 </p>
+
+{{ team_message }}
 
 <!-- Which submission this is about: category, where it now stands, and the day
      it was sent. Enough to tell two open pieces of feedback apart without

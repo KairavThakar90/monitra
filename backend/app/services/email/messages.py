@@ -629,12 +629,42 @@ def _status_chip(presentation: dict[str, str]) -> Markup:
     )
 
 
+def _team_message_block(note: Any, presentation: dict[str, str]) -> Markup:
+    """The administrator's optional note, quoted in a box; empty when there is none.
+
+    The note is free text written by a person, so it is the one place in this
+    email where escaping is the whole job. Every line is escaped on its own and
+    the lines are joined with `<br />`: a line break the administrator typed is
+    a line break in the email, and nothing else in what they wrote can ever be
+    read as markup. It is labelled "Message from our team" and not with the
+    administrator's name -- the update is from Monitra, not from a named
+    individual (see `queue_feedback_status_notification`).
+    """
+    text = str(note or "").strip()
+    if not text:
+        return Markup("")
+    body = Markup("<br />").join(Markup.escape(line.rstrip()) for line in text.splitlines())
+    return Markup(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" '
+        'style="margin:0 0 26px 0;"><tr>'
+        '<td style="padding:16px 18px;background-color:#F8FAFC;border:1px solid #E8ECF3;'
+        'border-left:4px solid {accent};border-radius:10px;">'
+        '<p style="margin:0 0 8px 0;font-family:Helvetica,Arial,sans-serif;font-size:12px;'
+        'font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#9AA3AF;">'
+        'Message from our team</p>'
+        '<p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:15px;'
+        'line-height:25px;color:#374151;word-break:break-word;">{body}</p>'
+        '</td></tr></table>'
+    ).format(accent=presentation["accent"], body=body)
+
+
 def build_feedback_status_email(
     payload: dict[str, Any], recipients: list[str]
 ) -> OutgoingEmail:
     """The Working / Resolved update, addressed to the submitter."""
     status = str(payload.get("status") or "")
     presentation = feedback_status_presentation(status)
+    team_message = str(payload.get("team_message") or "").strip()
     subject = feedback_status_subject(payload)
     label = category_label(str(payload.get("category") or ""))
     day, _clock, _submitted = _display_times(payload.get("submitted_at"))
@@ -668,6 +698,7 @@ def build_feedback_status_email(
             "heading": presentation["heading"],
             "lead": presentation["lead"],
             "body": presentation["body"],
+            "team_message": _team_message_block(team_message, presentation),
             "detail_rows": rows,
         },
     )
@@ -683,6 +714,11 @@ def build_feedback_status_email(
         "",
         presentation["body"],
         "",
+    ]
+    if team_message:
+        # Verbatim: plain text needs no escaping, and the same words as the HTML.
+        text_lines += ["Message from our team:", team_message, ""]
+    text_lines += [
         f"  Category   {label}",
         f"  Status     {presentation['label']}",
         f"  Submitted  {day}",

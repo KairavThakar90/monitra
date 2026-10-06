@@ -121,11 +121,12 @@ class StatusRequestSchemaTests(unittest.TestCase):
                     FeedbackStatusUpdate(status=value)
 
     def test_a_recipient_email_in_the_body_is_not_a_field_of_the_request(self):
-        """The body defines `status` and nothing else.
+        """The body defines a status and an optional note, and no person.
 
         A client that sends an address gets a model that never carried it, so
         there is nothing downstream for the service to accidentally prefer over
-        the database.
+        the database. (The note, `message`, was added deliberately: it is text
+        the email prints, not somewhere the email goes.)
         """
         update = FeedbackStatusUpdate.model_validate(
             {
@@ -136,8 +137,9 @@ class StatusRequestSchemaTests(unittest.TestCase):
             }
         )
         self.assertEqual(update.status, FeedbackStatusAction.resolved)
-        self.assertNotIn("recipient_email", update.model_dump())
-        self.assertEqual(set(update.model_dump()), {"status"})
+        for person in ("recipient_email", "employee_id", "user_id", "to", "cc", "bcc"):
+            self.assertNotIn(person, update.model_dump())
+        self.assertEqual(set(update.model_dump()), {"status", "message"})
 
 
 class _ServiceCase(unittest.TestCase):
@@ -698,6 +700,243 @@ class ReadAccessIsUnchangedTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as caught:
             FeedbackService.list_all_feedback(self.db, _user("employee"))
         self.assertEqual(caught.exception.status_code, 403)
+
+
+# ── The administrator's optional note to the employee ───────────────────────
+#
+# When an administrator resolves a feedback they may write a short message, and
+# what they write is printed in the email the employee receives. It is optional,
+# it is plain text, and it never changes who the email goes to or what its
+# subject says.
+
+NOTE = "Fixed in the next release.\nThanks for flagging it, Ada."
+
+
+class StatusNoteSchemaTests(unittest.TestCase):
+    def test_it_is_optional_and_an_update_without_one_is_unchanged(self):
+        update = FeedbackStatusUpdate(status="resolved")
+        self.assertIsNone(update.message)
+
+    def test_it_is_kept_as_written_apart_from_surrounding_whitespace(self):
+        update = FeedbackStatusUpdate(status="resolved", message=f"  {NOTE}\n\n ")
+        self.assertEqual(update.message, NOTE)
+
+    def test_blank_null_and_whitespace_all_mean_no_note(self):
+        for value in (None, "", "   ", "\n\n  \n"):
+            with self.subTest(value=value):
+                self.assertIsNone(FeedbackStatusUpdate(status="resolved", message=value).message)
+
+    def test_the_limit_is_a_thousand_characters_and_not_one_more(self):
+        from app.schemas.feedback import STATUS_MESSAGE_MAX_LENGTH
+
+        self.assertEqual(STATUS_MESSAGE_MAX_LENGTH, 1000)
+        self.assertEqual(len(FeedbackStatusUpdate(status="resolved", message="a" * 1000).message), 1000)
+        with self.assertRaises(ValidationError) as caught:
+            FeedbackStatusUpdate(status="resolved", message="a" * 1001)
+        self.assertIn("at most 1000", str(caught.exception))
+
+    def test_markup_and_control_characters_are_refused_not_scrubbed(self):
+        for value in ("<script>alert(1)</script>", "see <b>this</b>", "bell\x07", "nul\x00byte"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValidationError):
+                    FeedbackStatusUpdate(status="resolved", message=value)
+
+    def test_a_non_text_note_is_refused(self):
+        for value in (123, ["a"], {"a": 1}, True):
+            with self.subTest(value=value):
+                with self.assertRaises(ValidationError):
+                    FeedbackStatusUpdate(status="resolved", message=value)
+
+    def test_ordinary_prose_with_punctuation_and_unicode_is_fine(self):
+        text = "Thanks, Ada! It's sorted: v1.4 — résumé 日本語 (see #12) & more."
+        self.assertEqual(FeedbackStatusUpdate(status="resolved", message=text).message, text)
+
+
+class StatusNoteRouteTests(unittest.TestCase):
+    PAYLOAD = {
+        "id": 3, "employee_id": 42, "employee_name": "Ada", "category": "report_a_problem",
+        "message": "It broke.", "status": "resolved", "created_at": "2026-09-01T10:00:00Z",
+        "updated_at": None, "notification_queued": True,
+    }
+
+    def setUp(self):
+        app.dependency_overrides[get_current_user] = lambda: _user("administrator")
+        app.dependency_overrides[get_db] = lambda: None
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        app.dependency_overrides.clear()
+
+    def test_the_note_reaches_the_service(self):
+        with patch("app.api.feedback.FeedbackService.update_status", return_value=self.PAYLOAD) as called:
+            response = self.client.patch(ROUTE, json={"status": "resolved", "message": NOTE})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(called.call_args.kwargs["message"], NOTE)
+
+    def test_no_note_reaches_the_service_as_none(self):
+        with patch("app.api.feedback.FeedbackService.update_status", return_value=self.PAYLOAD) as called:
+            self.client.patch(ROUTE, json={"status": "resolved"})
+            self.client.patch(ROUTE, json={"status": "resolved", "message": "   "})
+        self.assertEqual([c.kwargs["message"] for c in called.call_args_list], [None, None])
+
+    def test_an_invalid_note_is_a_422_before_any_service_runs(self):
+        for body in ({"status": "resolved", "message": "x" * 1001}, {"status": "resolved", "message": "<b>hi</b>"}):
+            with self.subTest(body=body["message"][:12]):
+                with patch("app.api.feedback.FeedbackService.update_status") as never:
+                    response = self.client.patch(ROUTE, json=body)
+                self.assertEqual(response.status_code, 422)
+                never.assert_not_called()
+
+    def test_a_non_admin_is_refused_whatever_the_note_says(self):
+        # The gate is the real service's (`_require_manage`), so nothing is patched
+        # but the queue, to prove no email was prepared either.
+        for role in ("hr", "leader", "employee"):
+            with self.subTest(role=role):
+                app.dependency_overrides[get_current_user] = lambda role=role: _user(role)
+                with patch("app.services.feedback.queue_feedback_status_notification") as queued:
+                    response = self.client.patch(ROUTE, json={"status": "resolved", "message": NOTE})
+                self.assertEqual(response.status_code, 403)
+                queued.assert_not_called()
+
+
+class StatusNoteServiceTests(_ServiceCase):
+    def test_the_note_is_handed_to_the_notification_and_nowhere_else(self):
+        self._load(_feedback(status="new"))
+        FeedbackService.update_status(
+            self.db, _user("administrator"), 3, FeedbackStatusAction.resolved, message=NOTE,
+        )
+        self.assertEqual(self.queue.call_args.kwargs["message"], NOTE)
+        # Not written onto the feedback row: set_status takes a status and who/when, no text.
+        self.assertNotIn("message", self.repo.set_status.call_args.kwargs)
+        self.assertEqual(
+            set(self.repo.set_status.call_args.kwargs), {"feedback", "status", "changed_by", "changed_at"},
+        )
+
+    def test_without_a_note_none_is_passed(self):
+        self._load(_feedback(status="new"))
+        self._update(_user("administrator"), FeedbackStatusAction.resolved)
+        self.assertIsNone(self.queue.call_args.kwargs["message"])
+
+    def test_the_recipient_arguments_are_unchanged_by_the_note(self):
+        self._load(_feedback(status="new"), _submitter(email="ada@example.com"))
+        FeedbackService.update_status(
+            self.db, _user("administrator"), 3, FeedbackStatusAction.resolved, message=NOTE,
+        )
+        _db, _feedback_row, queued_submitter = self.queue.call_args.args
+        self.assertEqual(queued_submitter.email, "ada@example.com")
+
+    def test_pressing_resolved_again_sends_nothing_even_with_a_new_note(self):
+        self._load(_feedback(status="resolved"))
+        result = FeedbackService.update_status(
+            self.db, _user("administrator"), 3, FeedbackStatusAction.resolved, message="A second thought.",
+        )
+        self.queue.assert_not_called()
+        self.assertFalse(result["notification_queued"])
+
+
+class StatusNoteWorkflowTests(RecipientIsResolvedServerSideTests):
+    """The note travels in the payload -- under its own key, and only when written."""
+
+    def _queue_with(self, feedback, submitter, message):
+        from app.services.email.workflows import queue_feedback_status_notification
+
+        return queue_feedback_status_notification(self.db, feedback, submitter, message=message)
+
+    def test_a_note_is_in_the_payload_under_its_own_key(self):
+        self._queue_with(_feedback(status="resolved"), _submitter(), NOTE)
+        payload = self.enqueue.call_args.kwargs["payload"]
+        self.assertEqual(payload["team_message"], NOTE)
+        # `message` stays unused: a reader of the payload would take it for the employee's own text.
+        self.assertNotIn("message", payload)
+
+    def test_without_a_note_the_payload_is_exactly_what_it_always_was(self):
+        self._queue_with(_feedback(status="resolved"), _submitter(), None)
+        with_none = self.enqueue.call_args.kwargs["payload"]
+        self.enqueue.reset_mock()
+        self._queue(_feedback(status="resolved"), _submitter())
+        self.assertEqual(with_none, self.enqueue.call_args.kwargs["payload"])
+        self.assertNotIn("team_message", with_none)
+
+    def test_a_whitespace_only_note_is_not_carried(self):
+        self._queue_with(_feedback(status="resolved"), _submitter(), "  \n ")
+        self.assertNotIn("team_message", self.enqueue.call_args.kwargs["payload"])
+
+    def test_the_note_changes_neither_the_recipient_nor_the_subject_nor_the_dedupe_key(self):
+        self._queue_with(_feedback(status="resolved"), _submitter(email="ada@example.com"), None)
+        plain = self.enqueue.call_args.kwargs
+        self.enqueue.reset_mock()
+        self._queue_with(_feedback(status="resolved"), _submitter(email="ada@example.com"), NOTE)
+        noted = self.enqueue.call_args.kwargs
+
+        self.assertEqual(noted["recipients"], plain["recipients"])
+        self.assertEqual(noted["subject"], plain["subject"])
+        self.assertEqual(noted["dedupe_key"], plain["dedupe_key"])
+        self.assertNotIn("Fixed in the next release", noted["subject"])
+
+
+class StatusNoteEmailTests(StatusEmailTemplateTests):
+    """What the employee actually reads."""
+
+    def _noted(self, status="resolved", note=NOTE, **overrides):
+        return self._build(status, team_message=note, **overrides)
+
+    def test_the_note_is_in_the_html_under_a_message_from_the_team_heading(self):
+        message = self._noted()
+        self.assertIn("Message from our team", message.html)
+        self.assertIn("Fixed in the next release.", message.html)
+        self.assertIn("Thanks for flagging it, Ada.", message.html)
+
+    def test_a_line_break_the_administrator_typed_is_a_line_break_in_the_email(self):
+        html = self._noted().html
+        self.assertIn("Fixed in the next release.<br />Thanks for flagging it, Ada.", html)
+
+    def test_the_plain_text_part_carries_the_same_note(self):
+        text = self._noted().text
+        self.assertIn("Message from our team:", text)
+        self.assertIn(NOTE, text)
+        # After the standard words and before the details, as in the HTML.
+        self.assertLess(text.index("Message from our team:"), text.index("Category"))
+
+    def test_without_a_note_nothing_about_one_appears_anywhere(self):
+        for status in ("in_progress", "resolved"):
+            with self.subTest(status=status):
+                message = self._build(status)
+                self.assertNotIn("Message from our team", message.html)
+                self.assertNotIn("Message from our team", message.text)
+                self.assertNotIn("team_message", message.html)
+
+    def test_a_blank_note_is_the_same_as_none(self):
+        self.assertEqual(self._noted(note="   ").html, self._build("resolved").html)
+
+    def test_the_subject_never_carries_any_of_it(self):
+        self.assertEqual(self._noted().subject, "Monitra Feedback Update — Resolved")
+
+    def test_markup_in_the_note_is_escaped_even_if_it_somehow_got_this_far(self):
+        # The request schema refuses angle brackets; the renderer must not depend on that.
+        message = self._noted(note='<img src=x onerror=alert(1)> & <b>bold</b> "quoted"')
+        self.assertNotIn("<img src=x", message.html)  # (the frame's own logo <img> tags are fine)
+        self.assertNotIn("<b>bold</b>", message.html)
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", message.html)
+        self.assertIn("&amp;", message.html)
+        self.assertIn("&lt;b&gt;bold&lt;/b&gt;", message.html)
+
+    def test_it_is_not_confused_with_the_employees_own_message(self):
+        message = self._build("resolved", message="The timer resets after sleep.", team_message=NOTE)
+        self.assertNotIn("The timer resets after sleep.", message.html)
+        self.assertNotIn("The timer resets after sleep.", message.text)
+        self.assertIn("Fixed in the next release.", message.html)
+
+    def test_both_statuses_render_with_a_note_and_keep_their_own_wording(self):
+        working = self._noted("in_progress")
+        self.assertIn("working on your feedback", working.html)
+        self.assertIn("Fixed in the next release.", working.html)
+        resolved = self._noted("resolved")
+        self.assertIn("has been resolved", resolved.html)
+
+    def test_a_long_note_and_awkward_characters_render_without_error(self):
+        message = self._noted(note=("Ünïcödé — 日本語 'quotes' \"double\" & ampersand. " * 20).strip())
+        self.assertIn("Ünïcödé", message.html)
+        self.assertTrue(message.text.strip())
 
 
 if __name__ == "__main__":

@@ -1,13 +1,22 @@
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Annotated, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+
+from app.core.validation import description_field
 
 #: Upper bound on a feedback message. Long enough for a detailed bug report,
 #: short enough that a single row cannot be used to store arbitrary payloads.
 #: The desktop dialog enforces the same number client-side.
 MESSAGE_MAX_LENGTH = 5000
+
+#: Upper bound on the note an administrator may add when they move a feedback on
+#: (it is printed in the email the employee receives, so it is a paragraph, not
+#: a document). A `max_length` override of the catalogue's description rule; the
+#: dashboard's dialog enforces the same number
+#: (`STATUS_MESSAGE_MAX_LENGTH` in `features/feedback/feedbackActions.ts`).
+STATUS_MESSAGE_MAX_LENGTH = 1000
 
 
 class FeedbackCategory(str, Enum):
@@ -163,19 +172,37 @@ class FeedbackItem(BaseModel):
 
 
 class FeedbackStatusUpdate(BaseModel):
-    """The Working / Resolved request body — one field, and it is not a person.
+    """The Working / Resolved request body -- a status, an optional note, and no person.
 
     There is no `employee_id`, no `recipient_email` and no `notify` flag, and
     their absence is the security property: the recipient of the notification
     is resolved from the feedback row's own `user_id` server-side. A client
     that sends an address is sending a field this model does not define, and
     it is discarded rather than honoured.
+
+    `message` is the one addition: free text the administrator may write when
+    they resolve a feedback, printed in the email the employee receives. It is
+    not a recipient, an address or a template -- it is validated as plain text
+    by the catalogue's description rule (blank means "no note", markup and
+    control characters are refused) and escaped when the email is rendered.
     """
 
     status: FeedbackStatusAction = Field(
         ...,
         description="The state to move this feedback into: in_progress (Working) or resolved.",
         examples=["in_progress"],
+    )
+    message: Annotated[
+        Optional[str],
+        description_field(label="Message", max_length=STATUS_MESSAGE_MAX_LENGTH),
+    ] = Field(
+        None,
+        description=(
+            "Optional note to the employee, included in the email about this status "
+            f"change. Up to {STATUS_MESSAGE_MAX_LENGTH} characters; blank or omitted "
+            "sends the standard update. It is not stored on the feedback itself."
+        ),
+        examples=["Fixed in the next release. Thanks for flagging it."],
     )
 
 

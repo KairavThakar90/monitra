@@ -302,6 +302,7 @@ class FeedbackService:
         feedback_id: int,
         new_status: FeedbackStatusAction,
         background_tasks=None,
+        message: Optional[str] = None,
     ) -> dict:
         """Move one feedback to Working or Resolved and tell the submitter.
 
@@ -325,6 +326,11 @@ class FeedbackService:
           early; underneath that, the outbox's unique
           `(feedback_status, feedback:<id>:<status>)` makes a duplicate
           impossible even for two concurrent requests that both pass the check.
+
+        `message` is the administrator's optional note to the employee. It only
+        travels into the email that this status change queues; nothing is
+        stored on the feedback row, and an unchanged status (above) sends no
+        email and so uses no note.
         """
         organization_id = FeedbackService._require_manage(current_user)
 
@@ -384,7 +390,9 @@ class FeedbackService:
             submitter.id, organization_id, feedback.status_changed_at,
         )
 
-        notification_id = queue_feedback_status_notification(db, feedback, submitter)
+        notification_id = queue_feedback_status_notification(
+            db, feedback, submitter, message=message,
+        )
         if notification_id is not None and background_tasks is not None:
             # The fast path only. If this never runs — a frozen serverless
             # invocation, a process that dies — the row is still queued and the

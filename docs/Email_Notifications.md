@@ -139,6 +139,34 @@ There is deliberately **no feature flag**. The welcome and release emails have
 one because they fire automatically; this one fires because an administrator
 pressed a button, and a flag would make that press silently do nothing.
 
+**An optional message from the administrator.** Pressing **Resolved** on the
+Feedback page opens a dialog instead of a plain confirmation. It has one
+optional box; whatever is written there is added to the email as a boxed
+"Message from our team" paragraph above the category/status lines, and an empty
+box sends the standard email exactly as before. Pressing **Working** is
+unchanged: the plain confirmation, and no message.
+
+- **Request.** `PATCH /feedback/{id}/status` takes `{"status": ..., "message":
+  ...}`; `message` is optional. The API accepts it for either status — the page
+  only offers it on Resolved. It is checked by the catalogue's description rule
+  with a 1000-character limit (`STATUS_MESSAGE_MAX_LENGTH`, in
+  `backend/app/schemas/feedback.py` and `frontend/src/features/feedback/feedbackActions.ts`),
+  so markup is refused with a 422 rather than scrubbed, like every other prose
+  field. A message of only whitespace is treated as none.
+- **Where it lives.** Only in the queued email's payload (`team_message`) — it is
+  not stored on the feedback row and is not shown anywhere in the app afterwards.
+  The payload already holds only what the email shows, and this is one more
+  thing the email shows. Each line is escaped when the HTML is built, even
+  though the API has already refused markup; the plain-text version carries the
+  lines as written.
+- **Idempotency is unchanged.** The key is still `feedback:<id>:<status>` and the
+  service still returns early when the status has not changed, so a message is
+  sent at most once per state: resolving an already-resolved feedback with a
+  second message queues nothing, and the page says "No new email was sent"
+  rather than claiming the message went out.
+- **Still from Monitra.** The administrator's name does not appear, and the
+  subject carries no fragment of the message.
+
 ### Screenshot notice — a reviewer writes to the employee about a screenshot
 
 On the Screenshots page, hovering a tile shows a message button. It opens a

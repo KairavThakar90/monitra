@@ -338,7 +338,9 @@ def queue_feedback_notification(
         return None
 
 
-def queue_feedback_status_notification(db: Session, feedback, submitter) -> Optional[int]:
+def queue_feedback_status_notification(
+    db: Session, feedback, submitter, message: Optional[str] = None,
+) -> Optional[int]:
     """Tell the submitter that their feedback is being worked on, or is resolved.
 
     The outbound half of the feedback workflow, and the mirror image of
@@ -357,6 +359,13 @@ def queue_feedback_status_notification(db: Session, feedback, submitter) -> Opti
     every other entry point in this module it returns an id or None and never
     raises. An administrator's click succeeds because the status changed; the
     email is what follows from that, not what it depends on.
+
+    `message` is the administrator's optional note to the employee, already
+    validated as plain text by the request schema. It is the one piece of
+    free text the payload may carry, and it carries it because the email shows
+    it (see the payload comment below). It is not part of the dedupe key: a
+    second request for the same status is the double-click the key exists to
+    absorb, whatever it says.
     """
     try:
         recipients = resolve_user_recipient(getattr(submitter, "email", "") or "")
@@ -387,6 +396,14 @@ def queue_feedback_status_notification(db: Session, feedback, submitter) -> Opti
                 else str(submitted_at)
             ),
         }
+        # The administrator's note, only when there is one -- an update without
+        # it queues exactly the payload it always did. Under its own key, not
+        # `message`, which a reader of this payload would take for the
+        # employee's own text (never carried; see above). It belongs here
+        # because "only what the email shows" is the rule, and the email shows it.
+        note = (message or "").strip()
+        if note:
+            payload["team_message"] = note
         row = EmailOutboxService.enqueue(
             db,
             notification_type=TYPE_FEEDBACK_STATUS,

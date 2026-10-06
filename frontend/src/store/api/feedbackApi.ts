@@ -14,9 +14,10 @@ import { ENDPOINTS } from '../../api/endpoints';
  * the caller's own organization.
  *
  * `updateFeedbackStatus` is the one mutation, and its argument list is the
- * point: an id and a status. It carries no recipient, because the employee who
- * gets the email is resolved from the feedback row server-side — the dashboard
- * does not know the address and has no way to supply one. The endpoint refuses
+ * point: an id, a status, and an optional note to the employee. It carries no
+ * recipient, because the employee who gets the email is resolved from the
+ * feedback row server-side — the dashboard does not know the address and has no
+ * way to supply one. The note is text the email prints, not somewhere it goes. The endpoint refuses
  * any caller who is not an administrator, so hiding the buttons from HR is a
  * courtesy to HR rather than the thing that stops them.
  */
@@ -81,6 +82,12 @@ export interface FeedbackStatusUpdateArgs {
   id: number;
   /** `in_progress` is the Working button; `resolved` is the other one. */
   status: 'in_progress' | 'resolved';
+  /**
+   * An optional note to the employee, printed in the email about this status
+   * change (the Resolved dialog's text box). Blank or absent sends the standard
+   * update, and the field is then left out of the request altogether.
+   */
+  message?: string | null;
 }
 
 export interface FeedbackListResponse {
@@ -193,10 +200,12 @@ export const feedbackApi = baseApi.injectEndpoints({
      * same row in two different states on two screens.
      */
     updateFeedbackStatus: builder.mutation<FeedbackStatusUpdateResponse, FeedbackStatusUpdateArgs>({
-      query: ({ id, status }) => ({
+      query: ({ id, status, message }) => ({
         url: ENDPOINTS.FEEDBACK.STATUS(id),
         method: 'PATCH',
-        body: { status },
+        // The note only when there is one, so an update without it is the same
+        // request it always was.
+        body: message && message.trim() ? { status, message: message.trim() } : { status },
       }),
       invalidatesTags: [
         { type: 'Feedback' as const, id: 'ALL' },
