@@ -294,6 +294,36 @@ CREATE TABLE IF NOT EXISTS pending_screenshots (
 );
 CREATE INDEX IF NOT EXISTS idx_screenshots_status ON pending_screenshots(status, next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_screenshots_entry ON pending_screenshots(time_entry_id);
+
+-- What happened to an *expected* capture that did not (yet) produce an image on
+-- the server: the grab failed, the OS refused it, a privacy rule held it back,
+-- or the finished image is stuck in `pending_screenshots` failing to upload.
+-- A successful capture needs no row here -- its image is its own record.
+--
+-- This is the only way the backend ever learns that a window which has tracked
+-- time and activity has no screenshot *for a reason*. Without it the web grid
+-- can say only "No capture", which reads the same whether the screen was never
+-- read, the upload is minutes from landing, or Drive has been refusing it all
+-- afternoon. `id` is the backend's idempotency key (`client_event_id`), so a
+-- retry after a lost response cannot record the same event twice.
+CREATE TABLE IF NOT EXISTS pending_screenshot_events (
+    id TEXT PRIMARY KEY,
+    event_state TEXT NOT NULL,
+    reason TEXT,
+    detail TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    window_start TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    time_entry_id INTEGER,
+    client_screenshot_id TEXT,
+    owner_user_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at REAL NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_screenshot_events_status
+    ON pending_screenshot_events(status, next_retry_at);
 """ % {
     "pending_app_usage": PENDING_APP_USAGE_DDL,
     "pending_url_usage": PENDING_URL_USAGE_DDL,
@@ -334,6 +364,17 @@ MIGRATIONS = [
     # arrived. Existing rows keep NULL, which is correct: they already have
     # an entry id, so there is nothing for an adoption to do.
     ("activity_samples", "client_op", "TEXT"),
+    # Whose screen a queued capture is. A session that ends *involuntarily*
+    # (an expired token, an excluded account) used to take every queued
+    # screenshot, and the file behind it, with it -- including the same
+    # person's, who signs straight back in. With the owner on the row, the next
+    # sign-in keeps its own captures and discards only another user's.
+    # Existing rows keep NULL, which is what they are: owner unknown.
+    ("pending_screenshots", "owner_user_id", "INTEGER"),
+    # The last upload state reported to the backend for this capture, so a
+    # stuck upload is reported on the transition into it and not on every
+    # retry (see `SyncService._report_upload_state`).
+    ("pending_screenshots", "reported_state", "TEXT"),
 ]
 
 #: Indexes over columns `MIGRATIONS` adds, created after it has run.

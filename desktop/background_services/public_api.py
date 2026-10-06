@@ -363,6 +363,17 @@ class BackgroundApi:
         """
         return self._runtime.screenshot
 
+    def screenshot_status(self) -> Dict[str, Any]:
+        """What the person is told about their screenshots, right now.
+
+        `{state, severity, headline, detail, pending, last_uploaded_at}` -- the
+        same dict `api.screenshots.status_changed` emits on every change, for a
+        surface that needs the current value before the first change arrives.
+        Derived from the capture schedule and the upload queue; nothing here
+        says "uploaded" before the backend has confirmed it. Cheap: in memory.
+        """
+        return self._runtime.screenshot.status()
+
     def screenshot_queue_depth(self) -> Dict[str, int]:
         """Counts of locally queued screenshots by status.
 

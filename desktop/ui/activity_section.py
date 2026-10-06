@@ -1341,6 +1341,7 @@ class ActivitySection(QWidget):
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build_ui()
+        self._connect_screenshot_status()
 
         # A UI-only refresh timer. It schedules work through the bounded pool
         # rather than creating threads, and it does not run until the user is
@@ -1439,6 +1440,56 @@ class ActivitySection(QWidget):
             self._auto_timer.stop()
             self._cancel_loads()
 
+    #: Colour by severity. Text only ever says what `screenshot.health` derived;
+    #: the glyph is the one decoration, so the state reads without colour too.
+    _STATUS_STYLE = {
+        "ok": ("✓", "#15803D"),
+        "info": ("⟳", "#475569"),
+        "warning": ("⚠", "#B45309"),
+        "error": ("⚠", "#B91C1C"),
+    }
+
+    def _connect_screenshot_status(self) -> None:
+        """Follow the screenshot service's state, and show the current one now.
+
+        Edge-triggered by the service (`status_changed` fires on a change of
+        state or wording, never on a poll), so this slot cannot become a
+        stream. A host without the service -- a test double -- simply shows
+        nothing.
+        """
+        service = getattr(self.api, "screenshots", None)
+        signal = getattr(service, "status_changed", None)
+        if signal is None:
+            return
+        signal.connect(self.set_screenshot_status)
+        current = getattr(self.api, "screenshot_status", None)
+        if callable(current):
+            try:
+                self.set_screenshot_status(current())
+            except Exception:  # noqa: BLE001 -- a status line must never break the panel
+                pass
+
+    def set_screenshot_status(self, status: Optional[dict]) -> None:
+        """Render one `ScreenshotStatus` dict, or hide the line."""
+        label = self._shot_status
+        headline = (status or {}).get("headline") or ""
+        if not headline or (status or {}).get("state") == "inactive":
+            label.setVisible(False)
+            label.setText("")
+            label.setToolTip("")
+            return
+        glyph, colour = self._STATUS_STYLE.get(
+            (status or {}).get("severity"), ("", TEXT_SECONDARY)
+        )
+        label.setText(f"{glyph} {headline}".strip())
+        label.setStyleSheet(
+            f"QLabel#ScreenshotStatus {{ color: {colour}; font-size: 12px; "
+            f"font-weight: 600; background: transparent; }}"
+        )
+        detail = (status or {}).get("detail") or ""
+        label.setToolTip(detail)
+        label.setVisible(True)
+
     def set_tracking_active(self, active: bool) -> None:
         if hasattr(self, "view_act") and hasattr(self.view_act, "set_tracking_active"):
             self.view_act.set_tracking_active(active)
@@ -1492,6 +1543,15 @@ class ActivitySection(QWidget):
         title_container_layout.addWidget(self._title)
 
         header_layout.addWidget(title_container)
+
+        # What is happening to the screenshots, in one quiet line. Hidden until
+        # there is something true to say, never a popup, and amber or red only
+        # after the retry thresholds in `screenshot.health` -- one upload that
+        # needs a second attempt is not worth the user's attention.
+        self._shot_status = QLabel("", header)
+        self._shot_status.setObjectName("ScreenshotStatus")
+        self._shot_status.setVisible(False)
+        header_layout.addWidget(self._shot_status)
         header_layout.addStretch()
 
         # Screenshots / Apps / URLs navigation, each with a small icon for

@@ -146,6 +146,10 @@ UPLOAD_RETRY_MAX_DELAY_SECONDS = 300
 #: interval, so a fixed server picks the capture up within the hour.
 PARKED_RETRY_INTERVAL_SECONDS = 3600
 
+#: `app_state` key the uploader writes each time the backend confirms a
+#: screenshot is in Drive. It is what the person is told "uploaded" means.
+LAST_UPLOAD_STATE_KEY = "screenshot_last_upload"
+
 #: Cap on one upload's HTTP timeout. A screenshot is ~100 KB, but a queued
 #: backlog uploads over whatever link the user has.
 UPLOAD_TIMEOUT_SECONDS = 30.0

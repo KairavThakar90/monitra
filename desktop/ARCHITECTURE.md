@@ -832,10 +832,34 @@ tick()  ->  first tick: read the persisted schedule, mark ready, wake Wellbeing
   keyed `custom:<id>`, once per IST day, with the same grace window and
   spacing; the daily record is pruned of keys that no longer exist.
 
-**Screenshot capture and URL tracking are likewise not implemented** in the
-client; it only reads screenshots the backend already holds. The mock fallback
-data that previously made these tabs look populated has been removed, so the
-tabs now show honest empty states.
+### Screenshots
+
+`ScreenshotService` ([background_services/screenshot/](background_services/screenshot/))
+captures one screenshot at a random instant inside every epoch-aligned window,
+while -- and only while -- a timer runs. It owns no thread: the schedule is a
+single-shot `QTimer` on the GUI thread and every capture runs on the
+`TaskRunner`. [docs/SCREENSHOT_PERSISTENCE.md](../docs/SCREENSHOT_PERSISTENCE.md)
+is authoritative for everything after the capture.
+
+Two rules about the capture itself, each learned in production:
+
+- **Every expected capture ends in an image, a retry still inside its window,
+  or a recorded outcome.** A failed grab is retried inside the window with
+  backoff; a window that ends unresolved is recorded once
+  (`pending_screenshot_events`, uploaded by `SyncService`), and the web grid
+  shows the reason instead of "No capture".
+- **The schedule cannot silently end.** `_on_due` re-arms in a `finally`, a
+  watchdog restarts a schedule that is not running, a capture that never returns
+  is abandoned after 90 s and retried, and a resume from sleep re-evaluates the
+  schedule at once.
+
+The user is told what is happening through `ScreenshotService.status_changed`
+and `BackgroundApi.screenshot_status()` (a quiet line beside ACTIVITY). It says
+"uploaded" only after the backend has confirmed the Drive file.
+
+URL tracking is documented with the activity pipeline above; the mock fallback
+data that once made the Activity tabs look populated has been removed, so the
+tabs show honest empty states.
 
 ---
 

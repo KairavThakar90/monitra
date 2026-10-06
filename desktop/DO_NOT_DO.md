@@ -1173,6 +1173,142 @@ adoption can ever release one.
 
 ---
 
+## Screenshots
+
+Every entry here was found by reading the capture path after production showed
+windows with tracked time and measured activity and no screenshot -- one here
+and there, and in the worst cases a whole afternoon -- while the timer ran and
+the desktop looked healthy. Each was reproduced against the code as it stood
+before being fixed (`tests/test_screenshot_resilience.py`).
+
+### ❌ Do not let a failed capture return `None` and spend the window
+
+```python
+merged = capture.capture_all_displays()
+if merged is None:
+    return None          # the instant was already popped from the plan
+```
+
+**What it caused:** a locked screen, a monitor asleep or a remote-desktop
+reconnect at the planned instant lost the window's only capture. Nothing was
+rescheduled, the window's budget was not spent, nothing was recorded, and the
+web grid read "No capture" for a window that had tracked time and activity --
+indistinguishable from one that was never due. Measured: one failed grab, zero
+screenshots queued, no retry inside the window, no record of it.
+
+**Instead:** every outcome is a value the GUI thread acts on (`_capture_now`
+returns `{"failed": reason}`, `{"blocked"}`, `{"excluded"}`, or the queued
+capture; a bare `None` means only "authorisation was withdrawn"). A failure is
+retried inside the window with jittered backoff and, if the window ends first,
+recorded (`_finalize_outcome` -> `pending_screenshot_events`). A window must
+end with an image, a retry still inside it, or a recorded outcome.
+
+### ❌ Do not re-arm a single-shot schedule as the last statement of its slot
+
+```python
+def _on_due(self):
+    ...                  # anything in here may raise
+    self._arm()          # ...and then this never runs
+```
+
+**What it caused:** one exception left the `QTimer` stopped for the rest of the
+session. The timer, the activity tracker and every other service carried on, so
+the machine looked healthy, and no screenshot was taken until the user stopped
+and started again. Reproduced: after a fault in the planner, `_due_timer` was
+inactive for good.
+
+**Instead:** re-arm in a `finally` (`_arm_safely`, which cannot itself end the
+schedule), and keep a watchdog on its own timer that restarts a schedule that is
+not running while tracking. A guard that depends on the thing it guards is not a
+guard.
+
+### ❌ Do not serialise a long task by its de-duplication key alone
+
+```python
+tasks.submit(lambda: self._capture_now(...), key="screenshot-capture")
+# TaskRunner drops a submit whose key is in flight -- with a debug-level log
+```
+
+**What it caused:** a call that never returned (a wedged display call, UI
+Automation against a hung browser, a machine that slept mid-grab) held the key
+for ever, so every later capture was dropped silently. Reproduced: four further
+windows, one capture attempt reached the screen, zero screenshots.
+
+**Instead:** serialise captures with an in-flight token, give it a deadline
+(`CAPTURE_STUCK_SECONDS`), abandon a capture that misses it -- its late result is
+still honoured -- and submit the retry under its own key. A timed-out task is a
+failure to account for, not a lock.
+
+### ❌ Do not let a gate's callback be dropped by the session-generation guard
+
+```python
+tasks.submit(fetch_privacy_config, on_success=open_the_gate, key="...")   # guarded by default
+```
+
+**What it caused:** capture is held until the privacy configuration has been
+fetched, so an organisation's exclusions are never skipped. The callback that
+opened the gate was guarded by the session generation, and a sign-in that landed
+while the request was in flight dropped it. Nothing else ever opened the gate --
+the three-minute refresh stored the configuration but never set the flag -- so
+every capture of the process was held, retried every two seconds, until the app
+was restarted. Reproduced: the flag stayed `False` after a later *successful*
+refresh.
+
+**Instead:** the request is not session-scoped (`guard_generation=False`; it says
+what the organisation excludes), *any* successful fetch opens the gate, a held
+capture re-issues the request itself, and a hold that lasts minutes is reported
+to the backend (`blocked` / `privacy_config_unavailable`) instead of being silent.
+
+### ❌ Do not tear down captured work on an involuntary sign-out
+
+```python
+def _on_session_expired(self):
+    self.runtime.on_logout()          # same teardown as pressing Sign Out
+```
+
+**What it caused:** an expired token (or an administrator excluding the account)
+deleted every queued screenshot *and its file* before the person signed back in
+-- although the 401 hold, and `resume_after_auth`, exist precisely so those
+captures can be revived. The first copy of a captured screenshot is the only copy
+until the backend confirms it.
+
+**Instead:** `on_logout(involuntary=True)` keeps the queue; every queued row
+carries its owner, and a sign-in discards only another user's (`discard_foreign_
+captures`), so one person's screen images are never left on disk under another's
+session. A deliberate sign-out still discards all of it.
+
+### ❌ Do not stamp a capture after the work that follows it
+
+```python
+merged = capture.capture_all_displays()
+processed = image_processor.process_merged(merged)     # a second or more
+captured_at = datetime.now(timezone.utc)               # too late
+```
+
+**What it caused:** the backend files a capture into its window by `captured_at`.
+A capture grabbed in the last second of a window was stamped after the encode,
+landed in the next window, and left the window it was taken for showing activity
+and no screenshot. **Instead:** stamp the instant the screen was read.
+
+### ❌ Do not tell the user a screenshot was "captured" and leave it at that
+
+The toast says the picture was *taken*. Nothing used to say whether it had
+reached Drive, and nothing said when it had not -- so a person watching their own
+app saw everything working while the admin's grid showed "No capture" for the
+hour. **Instead:** the status line beside ACTIVITY (`screenshot/health.py`) says
+**uploaded** only once the backend has named the Drive file, turns amber or red
+only past a retry threshold, and never pops up for a single retry.
+
+### ❌ Do not report a batch as a unit when its members are independent
+
+A capture-event batch that failed whole for one malformed row would be retried
+whole, for ever, with every good event behind it. The backend validates each
+event on its own, records the good ones, and reports the rest as `rejected`; the
+desktop treats a 200 as complete. No free text crosses the wire: `reason` is a
+short code.
+
+---
+
 ## Updater and release
 
 ### ❌ Do not start the update helper with `DETACHED_PROCESS` and wait on `tasklist | find`
