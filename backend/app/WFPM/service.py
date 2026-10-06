@@ -226,7 +226,7 @@ class WfpmSyncService:
         unowned -- see `ProjectManagementService.create`.
         """
         full_payload = WfpmSyncService._full_project_payload(db, payload)
-        return ProjectManagementService.create(db, user, full_payload, owner_required=False)
+        return ProjectManagementService.create(db, user, full_payload, owner_required=False, category_required=False)
 
     @staticmethod
     def _replayed_project(db: Session, user: User, project: Project, wfpm_project_id: str) -> dict:
@@ -273,7 +273,8 @@ class WfpmSyncService:
         full_payload = WfpmSyncService._full_project_payload(db, payload)
         try:
             created = ProjectManagementService.create(
-                db, user, full_payload, owner_required=False, wfpm_project_id=wfpm_project_id,
+                db, user, full_payload, owner_required=False, category_required=False,
+                wfpm_project_id=wfpm_project_id,
             )
         except IntegrityError:
             # Two creates for the same WFPM id raced past the lookup above and

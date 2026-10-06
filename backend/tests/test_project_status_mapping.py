@@ -89,7 +89,7 @@ class CreateProjectTests(unittest.TestCase):
         payload = ProjectCreate(
             project_name="Migration", status_id=project_status_id, owner_id=9, leader_id=2,
             employee_ids=[], deadline=date.today() + timedelta(days=30),
-            billing_type=BillingType.free,
+            billing_type=BillingType.free, category="kyle",
         )
         with status_catalog(
             project_statuses=rows((project_status_id, project_status_name)),

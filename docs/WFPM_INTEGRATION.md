@@ -423,7 +423,10 @@ Project (routes 1–3):
 
 `category` is `"kyle"`, `"st"` or `null`. It is set by an administrator in Monitra
 (Project Management); this API neither accepts nor changes it, so a project created
-through it is `null` until someone categorises it there.
+through it is `null` until someone categorises it there. (Monitra's own Create
+Project form *requires* an organization, and so does `POST /projects`; the WFPM
+create routes opt out of that rule because WFPM has no organization to name, so
+creating a project here never fails for want of one.)
 
 Task (routes 6–11 and 13):
 

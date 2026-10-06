@@ -526,5 +526,16 @@ describe('Project Management: Export CSV', () => {
       expect(container.textContent).toContain('All Statuses');
       expect(container.textContent).toContain('Columns');
     });
+
+    it('has no Members filter, and never asks the API to narrow by member', async () => {
+      // The "All members" picker was removed from this toolbar on request.
+      expect(container.textContent).not.toContain('All members');
+      for (const url of projectRequests) expect(url.searchParams.has('employee_ids')).toBe(false);
+
+      await click(buttonText('Export CSV'));
+      await click(download());
+      expect(exportRequests().length).toBeGreaterThan(0);
+      for (const url of exportRequests()) expect(url.searchParams.has('employee_ids')).toBe(false);
+    });
   });
 });

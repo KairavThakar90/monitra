@@ -70,7 +70,7 @@ def _payload(**overrides):
     values = {
         "project_name": "Apollo", "status_id": 1, "owner_id": OWNER_ID, "leader_id": LEADER_ID,
         "employee_ids": [], "deadline": date.today() + timedelta(days=30),
-        "billing_type": BillingType.free,
+        "billing_type": BillingType.free, "category": "kyle",
     }
     values.update(overrides)
     return ProjectCreate(**values)
@@ -394,6 +394,8 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(created.call_args.args[2].owner_id, OWNER_ID)
         self.assertEqual(len(created.call_args.args), 3, "the API route must not opt out of the owner rule")
         self.assertNotIn("owner_required", created.call_args.kwargs)
+        # Nor from the organization rule: only the WFPM routes opt out of that.
+        self.assertNotIn("category_required", created.call_args.kwargs)
         self.assertEqual(response.json()["owner"]["id"], OWNER_ID)
 
     def test_the_wfpm_route_opts_out_of_the_owner_rule(self):
@@ -405,6 +407,8 @@ class RouteTests(unittest.TestCase):
                 "project_name": "From WFPM", "deadline": "2099-01-01", "billing_type": "free",
             })
         self.assertIs(created.call_args.kwargs.get("owner_required"), False)
+        # WFPM has no organization to name either, so it opts out of that rule too.
+        self.assertIs(created.call_args.kwargs.get("category_required"), False)
         self.assertIsNone(created.call_args.args[2].owner_id)
 
 

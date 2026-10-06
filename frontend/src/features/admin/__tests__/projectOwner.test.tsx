@@ -175,6 +175,8 @@ const fillRequiredFields = async () => {
   await setValue(field<HTMLInputElement>('Project Name'), 'Owner feature project');
   await setValue(field<HTMLSelectElement>('Leader'), String(LEADERS[0].id));
   await setValue(field<HTMLInputElement>('Deadline'), futureDate());
+  // The Organization is required to create a project.
+  await setValue(container.querySelector<HTMLSelectElement>('#project-category')!, 'kyle');
   // Free billing, so no hour budget is required.
   await click(byText('span', 'Flexible Time'));
 };

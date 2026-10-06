@@ -21,9 +21,8 @@ import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { PaginationArrow } from '../../components/PaginationArrow';
 import { useAuth } from '../auth/authContext';
 import { isTeamScoped } from '../../utils/roles';
-import { ALL_TIME_RANGE, DateRangeFilter, MemberMultiSelect, type DateRange } from '../dashboard/v2/filters';
+import { ALL_TIME_RANGE, DateRangeFilter, type DateRange } from '../dashboard/v2/filters';
 import { istDateISO } from '../../utils/duration';
-import { useGetAllMembersQuery } from '../../store/api/membersApi';
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
 import { formatApiError } from '../../api/utils';
 import { billingTypeLabel, billingTypesFor, type BillingKind, type BillingScope, type BillingType } from '../../utils/billing';
@@ -541,18 +540,11 @@ export const AdminProjectManagement: React.FC = () => {
   const billingTypes = useMemo(() => billingTypesFor(billingScope, billingKind), [billingScope, billingKind]);
   /** '' means every project; otherwise the `category` the API filters on. */
   const [filterCategory, setFilterCategory] = useState<'' | ProjectCategory>('');
-  /** Empty means every member — the same convention every other filter uses. */
-  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   // The day each project was created, as IST calendar days: the same picker the
   // Assign Tasks page has. It opens on All Time, not a last-7-days window,
   // because this table has always listed every project and must keep doing so
   // until someone picks a range; a bounded default would hide most of them.
   const [dateRange, setDateRange] = useState<DateRange>(ALL_TIME_RANGE);
-  const { data: allMembers = [] } = useGetAllMembersQuery();
-  const selectedMemberIds = useMemo(
-    () => selectedMembers.map(Number),
-    [selectedMembers],
-  );
 
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>({
     // Tasks, Organization and Started start hidden: none is what this table is
@@ -591,7 +583,6 @@ export const AdminProjectManagement: React.FC = () => {
     category: filterCategory || null,
     created_from: dateRange.from || null,
     created_to: dateRange.to || null,
-    employee_ids: selectedMemberIds,
   });
 
   const [createProject] = useCreateProjectMutation();
@@ -618,8 +609,13 @@ export const AdminProjectManagement: React.FC = () => {
   /** Billing (Fixed Hours or Flexible Time) as opposed to Non Billing. */
   const isBilling = formBillingType !== 'non_billing';
   const [formBillingHours, setFormBillingHours] = useState('');
-  /** Optional: '' is "No organization", which is sent as null. */
+  /**
+   * Required when a project is created, like the owner: '' is "not chosen yet".
+   * An edit may leave a project that predates organizations without one, and
+   * then sends nothing for it -- there is no way to clear one that is set.
+   */
   const [formCategory, setFormCategory] = useState<'' | ProjectCategory>('');
+  const [categoryError, setCategoryError] = useState<string | null>(null);
 
   // Dropdown states
   const [isEmpDropdownOpen, setIsEmpDropdownOpen] = useState(false);
@@ -676,6 +672,7 @@ export const AdminProjectManagement: React.FC = () => {
     setFormDescription('');
     setFormOwner('');
     setOwnerError(null);
+    setCategoryError(null);
     setEditingOwner(null);
     setFormLeader(leaderIsFixed && currentUser ? currentUser.id : '');
     setFormDeadline('');
@@ -700,6 +697,7 @@ export const AdminProjectManagement: React.FC = () => {
     setFormDescription(proj.description || '');
     setFormOwner(proj.owner?.id || '');
     setOwnerError(null);
+    setCategoryError(null);
     setEditingOwner(proj.owner || null);
     setFormLeader(proj.leader?.id || (leaderIsFixed && currentUser ? currentUser.id : ''));
     setFormDeadline(proj.deadline ? proj.deadline.split('T')[0] : '');
@@ -739,7 +737,11 @@ export const AdminProjectManagement: React.FC = () => {
     // edit may leave a project that predates owners without one.
     const ownerMissing = drawerMode === 'create' && formOwner === '';
     setOwnerError(ownerMissing ? 'Project owner is required.' : null);
-    if (!check.ok || ownerMissing) {
+    // Likewise the organization: required to create (the backend refuses a
+    // create without one), and an edit may leave an older project without.
+    const categoryMissing = drawerMode === 'create' && formCategory === '';
+    setCategoryError(categoryMissing ? 'Organization is required.' : null);
+    if (!check.ok || ownerMissing || categoryMissing) {
       showToast('Please correct the highlighted fields.', 'error');
       return;
     }
@@ -770,9 +772,10 @@ export const AdminProjectManagement: React.FC = () => {
         formBillingType === 'fixed' && check.values.billingHours !== null
           ? (check.values.billingHours as number)
           : null,
-      // Always sent: on an edit the drawer shows the current category, so
-      // "No organization" has to be able to clear it.
-      category: formCategory === '' ? null : formCategory,
+      // Omitted rather than sent as null when none is chosen: only an edit of a
+      // project that predates organizations gets here blank, and that means
+      // "leave it as it is". A chosen one is always sent, so an edit can change it.
+      ...(formCategory === '' ? {} : { category: formCategory }),
     };
 
     try {
@@ -1045,11 +1048,6 @@ export const AdminProjectManagement: React.FC = () => {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
               </svg>
             </div>
-            <MemberMultiSelect
-              members={allMembers}
-              selected={selectedMembers}
-              onChange={(ids) => { setSelectedMembers(ids); setPage(1); }}
-            />
             {/* Creation date -- the same picker as Assign Tasks, with All Time on offer. */}
             <DateRangeFilter
               allowAll
@@ -1420,19 +1418,23 @@ export const AdminProjectManagement: React.FC = () => {
                     </div>
                     <div>
                       <label htmlFor="project-category" className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">
-                        Organization <span className="font-semibold normal-case tracking-normal text-slate-400">(optional)</span>
+                        Organization{drawerMode === 'create' && <> <span className="text-rose-500">*</span></>}
                       </label>
                       <select
                         id="project-category"
                         value={formCategory}
-                        onChange={e => setFormCategory(e.target.value as '' | ProjectCategory)}
+                        onChange={e => { setFormCategory(e.target.value as '' | ProjectCategory); setCategoryError(null); }}
+                        aria-required={drawerMode === 'create' ? true : undefined}
+                        aria-invalid={categoryError ? true : undefined}
+                        aria-describedby={categoryError ? 'project-category-error' : undefined}
                         className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
                       >
-                        <option value="">No organization</option>
+                        <option value="" disabled hidden>{drawerMode === 'edit' ? 'No organization assigned' : 'Select organization...'}</option>
                         {PROJECT_CATEGORY_OPTIONS.map(option => (
                           <option key={option.value} value={option.value}>{option.label}</option>
                         ))}
                       </select>
+                      <FieldError id="project-category-error" message={categoryError} />
                     </div>
                   </div>
                 </div>
@@ -1595,7 +1597,6 @@ export const AdminProjectManagement: React.FC = () => {
           category: filterCategory || null,
           created_from: dateRange.from || null,
           created_to: dateRange.to || null,
-          employee_ids: selectedMemberIds,
         }}
       />
     </V2Shell>

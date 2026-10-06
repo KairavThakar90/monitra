@@ -220,7 +220,7 @@ class ProjectTeamTests(_World):
     def test_creating_a_project_with_a_team_records_the_assignment_too(self):
         ProjectManagementService.create(
             self.db, self.admin,
-            ProjectCreate(project_name="Gamma", status_id=5, leader_id=LEADER, employee_ids=[ALICE, BOB], billing_type="free"),
+            ProjectCreate(project_name="Gamma", status_id=5, leader_id=LEADER, employee_ids=[ALICE, BOB], billing_type="free", category="kyle"),
             owner_required=False,
         )
         self.assertEqual(
@@ -232,7 +232,7 @@ class ProjectTeamTests(_World):
     def test_creating_a_project_with_no_team_adds_no_assignment_row(self):
         ProjectManagementService.create(
             self.db, self.admin,
-            ProjectCreate(project_name="Gamma", status_id=5, leader_id=LEADER, billing_type="free"),
+            ProjectCreate(project_name="Gamma", status_id=5, leader_id=LEADER, billing_type="free", category="kyle"),
             owner_required=False,
         )
         self.assertEqual([action for action, _ in self.trail()], [ActivityLogAction.PROJECT_CREATED])

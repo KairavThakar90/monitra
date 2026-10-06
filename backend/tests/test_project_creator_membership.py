@@ -69,7 +69,7 @@ def _create(existing_member_ids, employee_ids):
         project_name="Beta launch", status_id=1, owner_id=OWNER_ID, leader_id=LEADER_ID,
         employee_ids=list(employee_ids),
         deadline=date.today() + timedelta(days=20),
-        billing_type=BillingType.free,
+        billing_type=BillingType.free, category="kyle",
     )
     with status_catalog(
         project_statuses=rows((1, "Active")), task_statuses=rows((1, "Todo"))

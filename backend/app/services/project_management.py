@@ -348,7 +348,7 @@ class ProjectManagementService:
         return payloads
 
     @staticmethod
-    def create(db: Session, user: User, payload: ProjectCreate, owner_required: bool = True, wfpm_project_id: Optional[str] = None):
+    def create(db: Session, user: User, payload: ProjectCreate, owner_required: bool = True, wfpm_project_id: Optional[str] = None, category_required: bool = True):
         """Create a project.
 
         `owner_required=False` is for the WFPM integration alone: its callers
@@ -356,6 +356,13 @@ class ProjectManagementService:
         nobody made, so its projects start without one -- exactly like every
         project that predates owners. Every other caller must name an eligible
         owner.
+
+        `category_required=False` is the WFPM integration's too, for the same
+        reason: WFPM has no notion of an organization, so its projects start
+        without one until somebody sets it in Monitra (see
+        docs/WFPM_INTEGRATION.md). Every other caller must name one -- the
+        create form marks the field required, and this is the same rule stated
+        where it is enforced. It is checked before anything is written.
 
         `wfpm_project_id` is likewise the WFPM integration's alone (see
         app/WFPM/service.py): the id this project has in WFPM, written in the
@@ -369,6 +376,8 @@ class ProjectManagementService:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Project owner is required.")
         else:
             owner = None
+        if payload.category is None and category_required:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Project organization is required.")
         # A leader creating a project leads it. The drawer already defaults the
         # Leader field to the signed-in leader and locks it, and this is the
         # same rule stated where it is enforced: without it a leader could hand

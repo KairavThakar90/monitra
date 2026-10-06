@@ -1,15 +1,18 @@
 // @vitest-environment jsdom
 /**
- * The optional Organization of a project (stored as `category`): Kyle Project / ST Project / none.
+ * The Organization of a project (stored as `category`): Kyle Project / ST Project.
  *
  * Rendered against a real RTK Query store with only `fetch` stubbed, so what
  * these pin is what a browser would send:
  *
- * - the Create Project drawer has an optional Organization dropdown that defaults
- *   to "No organization", and a project saves without one (sent as null);
- * - choosing Kyle Project or ST Project sends 'kyle' / 'st';
+ * - the Create Project drawer's Organization dropdown is REQUIRED, like the
+ *   owner: it starts on a placeholder, a create without one is refused beside
+ *   the field and sends nothing, and choosing Kyle Project or ST Project sends
+ *   'kyle' / 'st';
  * - the list can be filtered by category, and sends nothing for all;
- * - editing preselects the project's category, and "No organization" clears it.
+ * - editing preselects the project's category; an older project that has none
+ *   may be saved without choosing (the field is then left out of the request,
+ *   never sent as null), and one that is set cannot be cleared.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -212,24 +215,54 @@ describe('project categories', () => {
 });
 
 describe('Create Project: Organization dropdown', () => {
-  it('is an optional dropdown that defaults to No organization', async () => {
+  it('is a required dropdown that starts on a placeholder, with no "No organization" choice', async () => {
     await renderPage();
     await openCreateDrawer();
     expect(categorySelect()).toBeTruthy();
-    expect(categorySelect().required).toBe(false);
-    expect(optionPairs(categorySelect())).toEqual([['', 'No organization'], ['kyle', 'Kyle Project'], ['st', 'ST Project']]);
+    expect(categorySelect().getAttribute('aria-required')).toBe('true');
+    expect(optionPairs(categorySelect())).toEqual([['', 'Select organization...'], ['kyle', 'Kyle Project'], ['st', 'ST Project']]);
     expect(categorySelect().value).toBe('');
-    expect(container.querySelector('label[for="project-category"]')?.textContent).toContain('(optional)');
+    // The placeholder is a prompt, not a choice: it cannot be picked again once left.
+    expect(categorySelect().options[0].disabled).toBe(true);
   });
 
-  it('saves a project without one, sending null', async () => {
+  it('is marked required, like the other required fields, and no longer says optional', async () => {
+    await renderPage();
+    await openCreateDrawer();
+    const label = container.querySelector('label[for="project-category"]')!;
+    expect(label.textContent).toContain('*');
+    expect(label.textContent).not.toContain('optional');
+    expect(label.querySelector('.text-rose-500')?.textContent).toBe('*');
+  });
+
+  it('will not save without one: says so beside the field, sends nothing, and keeps the drawer open', async () => {
     await renderPage();
     await openCreateDrawer();
     await fillRequiredFields();
     await submit();
 
+    expect(posts()).toHaveLength(0);
+    expect(container.querySelector('#project-category-error')?.textContent).toBe('Organization is required.');
+    expect(categorySelect().getAttribute('aria-invalid')).toBe('true');
+    expect(categorySelect().getAttribute('aria-describedby')).toBe('project-category-error');
+    expect(showToast).toHaveBeenCalledWith('Please correct the highlighted fields.', 'error');
+    expect(container.querySelector('#project-form')).not.toBeNull();
+  });
+
+  it('clears the error as soon as one is chosen, and then saves', async () => {
+    await renderPage();
+    await openCreateDrawer();
+    await fillRequiredFields();
+    await submit();
+    expect(container.querySelector('#project-category-error')).not.toBeNull();
+
+    await setValue(categorySelect(), 'st');
+    expect(container.querySelector('#project-category-error')).toBeNull();
+    expect(categorySelect().getAttribute('aria-invalid')).toBeNull();
+
+    await submit();
     expect(posts()).toHaveLength(1);
-    expect(posts()[0].body.category).toBeNull();
+    expect(posts()[0].body.category).toBe('st');
     expect(showToast).toHaveBeenCalledWith('Project created successfully.', 'success');
   });
 
@@ -244,13 +277,25 @@ describe('Create Project: Organization dropdown', () => {
     expect(showToast).toHaveBeenCalledWith('Project created successfully.', 'success');
   });
 
-  it('starts empty again the next time the drawer opens', async () => {
+  it('is the only thing flagged when it is the only thing missing', async () => {
     await renderPage();
     await openCreateDrawer();
-    await setValue(categorySelect(), 'st');
+    await fillRequiredFields();
+    await submit();
+
+    expect(container.querySelector('#project-owner-error')).toBeNull();
+    expect(container.querySelector('#project-category-error')).not.toBeNull();
+  });
+
+  it('starts empty again the next time the drawer opens, error and all', async () => {
+    await renderPage();
+    await openCreateDrawer();
+    await fillRequiredFields();
+    await submit(); // leaves the error showing
     await click(container.querySelector('div[class*="bg-slate-900/40"]') as HTMLElement); // the backdrop closes the drawer
     await openCreateDrawer();
     expect(categorySelect().value).toBe('');
+    expect(container.querySelector('#project-category-error')).toBeNull();
   });
 });
 
@@ -349,10 +394,26 @@ describe('Edit Project: Organization dropdown', () => {
     expect(categorySelect().value).toBe('kyle');
   });
 
-  it('shows No organization for a project that has none', async () => {
+  it('shows "No organization assigned" for an older project that has none', async () => {
     await renderPage();
     await openEditDrawer('Existing project');
     expect(categorySelect().value).toBe('');
+    expect(categorySelect().options[0].textContent).toBe('No organization assigned');
+  });
+
+  it('offers no way to clear one that is set: the empty choice is a disabled placeholder', async () => {
+    listed = [project({ category: 'st' })];
+    await renderPage();
+    await openEditDrawer('Existing project');
+    expect(categorySelect().options[0].value).toBe('');
+    expect(categorySelect().options[0].disabled).toBe(true);
+  });
+
+  it('is not marked required while editing: an older project may stay as it is', async () => {
+    await renderPage();
+    await openEditDrawer('Existing project');
+    expect(container.querySelector('label[for="project-category"]')!.textContent).not.toContain('*');
+    expect(categorySelect().getAttribute('aria-required')).toBeNull();
   });
 
   it('saves a change of category', async () => {
@@ -364,13 +425,29 @@ describe('Edit Project: Organization dropdown', () => {
     expect(patches()[0].body.category).toBe('st');
   });
 
-  it('clears the organization when No organization is chosen', async () => {
-    listed = [project({ category: 'st' })];
+  it('keeps a project’s category when other things are edited', async () => {
+    listed = [project({ category: 'kyle' })];
     await renderPage();
     await openEditDrawer('Existing project');
-    await setValue(categorySelect(), '');
     await submit();
     expect(patches()).toHaveLength(1);
-    expect(patches()[0].body).toHaveProperty('category', null);
+    expect(patches()[0].body.category).toBe('kyle');
+  });
+
+  it('lets an older project without one be saved without choosing, sending no category at all so it stays as it was', async () => {
+    await renderPage();
+    await openEditDrawer('Existing project');
+    await submit();
+    expect(patches()).toHaveLength(1);
+    expect(patches()[0].body).not.toHaveProperty('category');
+    expect(container.querySelector('#project-category-error')).toBeNull();
+  });
+
+  it('lets an older project be given one', async () => {
+    await renderPage();
+    await openEditDrawer('Existing project');
+    await setValue(categorySelect(), 'kyle');
+    await submit();
+    expect(patches()[0].body.category).toBe('kyle');
   });
 });
