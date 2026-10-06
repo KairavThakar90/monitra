@@ -3,6 +3,7 @@ import { V2Shell } from "../dashboard/v2/V2Shell";
 import { Avatar, Card, EmptyState, ErrorNote, Spinner } from "../member/MemberUi";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
 import { useGetActiveTimeTrackingQuery, type ActiveTimeTrackingItem } from "../../store/api/timeTrackingApi";
+import { useOnResume } from "../../hooks/useResume";
 import { formatISTDate, formatISTTime12 } from "../../utils/duration";
 
 /**
@@ -21,6 +22,13 @@ import { formatISTDate, formatISTTime12 } from "../../utils/duration";
 
 /** How often the list is re-read while the tab is in front. */
 const ACTIVE_USERS_POLL_MS = 30_000;
+
+/**
+ * A snapshot older than this is no longer "right now". While one is being
+ * replaced -- the first thing that happens when a machine wakes -- its figures
+ * are dimmed rather than presented as current.
+ */
+const STALE_AFTER_MS = 45_000;
 
 /** "2:35 pm", or "30 Sep 2026, 11:10 pm" when the entry started on an earlier IST day. */
 const startedLabel = (startIso: string, serverIso: string | undefined) => {
@@ -62,11 +70,27 @@ const SortArrow: React.FC<{ order: SortOrder }> = ({ order }) => (
 );
 
 export const AdminActiveUsers: React.FC = () => {
-  const { data, isLoading, isFetching, isError } = useGetActiveTimeTrackingQuery(undefined, {
+  const { data, isLoading, isFetching, isError, refetch, fulfilledTimeStamp } = useGetActiveTimeTrackingQuery(undefined, {
     pollingInterval: ACTIVE_USERS_POLL_MS,
     // A hidden tab has nobody looking at it; focusing it refetches straight away.
     skipPollingIfUnfocused: true,
   });
+
+  // A machine that slept and woke with this tab still in front fires neither
+  // `focus` nor `visibilitychange`, so nothing else would re-read the list
+  // before the next poll -- and the figures shown are a server snapshot that
+  // keeps its "running for" however long the machine was asleep.
+  useOnResume(() => {
+    void refetch();
+  });
+
+  // The snapshot's age is on this browser's clock (when the answer arrived),
+  // never compared with the server's: the two clocks are only ever subtracted
+  // from themselves (docs/TIMING_MODEL.md section 2).
+  const snapshotAgeMs = fulfilledTimeStamp ? Date.now() - fulfilledTimeStamp : 0;
+  const refreshingStale = isFetching && !isLoading && snapshotAgeMs > STALE_AFTER_MS;
+  // A failed refresh keeps the previous rows on screen; it must say they are old.
+  const refreshFailed = isError && !!data;
 
   // Oldest timer first is how the backend already returns the list, so that is
   // the order the page opens in; the header flips it.
@@ -89,6 +113,16 @@ export const AdminActiveUsers: React.FC = () => {
             </div>
           }
         >
+          {/* Above the conditional, so an empty list that failed to refresh says so too. */}
+          {refreshFailed && (
+            <div
+              role="status"
+              data-testid="active-users-refresh-failed"
+              className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-semibold text-amber-800"
+            >
+              Could not refresh. This is the list as of {formatISTTime12(data!.server_time)} and may be out of date.
+            </div>
+          )}
           {isLoading ? (
             <Spinner label="Loading active users…" />
           ) : isError && !data ? (
@@ -99,7 +133,7 @@ export const AdminActiveUsers: React.FC = () => {
               hint="Members appear here as soon as they start a timer, and leave when they stop it."
             />
           ) : (
-            <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-4" aria-busy={refreshingStale || undefined}>
               <div className="flex items-center gap-2.5">
                 <span aria-hidden="true" className="relative flex h-2.5 w-2.5">
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
@@ -110,7 +144,11 @@ export const AdminActiveUsers: React.FC = () => {
                 </span>
               </div>
 
-              <div className="overflow-x-auto">
+              <div
+                data-testid="active-users-table"
+                className={`overflow-x-auto transition-opacity duration-200 ${refreshingStale ? "opacity-50" : ""}`}
+                data-stale={refreshingStale ? "true" : "false"}
+              >
                 <table className="w-full min-w-[640px] text-left text-[13px]">
                   <thead>
                     <tr className="border-b border-[#E2E8F0] text-[11px] font-bold uppercase tracking-wider text-[#94A3B8]">

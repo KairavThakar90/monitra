@@ -19,7 +19,7 @@ import { IST_TIME_ZONE } from "../../../utils/duration";
  * using plain `getFullYear`/`getMonth`/`setDate` arithmetic and still be
  * talking about the same calendar the server is.
  */
-const istToday = () => {
+export const istToday = () => {
   const [year, month, day] = new Intl.DateTimeFormat('en-CA', {
     timeZone: IST_TIME_ZONE,
     year: 'numeric',

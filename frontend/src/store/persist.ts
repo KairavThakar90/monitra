@@ -7,6 +7,28 @@ const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 /** Trailing write window, so a burst of cache updates costs one serialize. */
 const WRITE_THROTTLE_MS = 1500;
 
+/**
+ * Endpoints whose data is a *live reading of tracked time* and is therefore
+ * never persisted or restored.
+ *
+ * Restoring a cache paints old rows on the first frame and corrects them a
+ * moment later. That is a good trade for a project list. It is a wrong one for
+ * a running entry: the server measures it as `now - start_time`, so a figure
+ * saved before the machine slept (or even yesterday) reads as hours of work
+ * that no longer exist -- the desktop ends a session retroactively once it
+ * wakes -- and Active Users would list members as "working now" who stopped
+ * long ago. These pages start from a loading state and show only what the
+ * server says now.
+ */
+const LIVE_ENDPOINTS: ReadonlySet<string> = new Set([
+  'getActiveTimeTracking',
+  'getTimeTracking',
+  'getTimeTrackingDetails',
+]);
+
+const isLiveEntry = (entry: unknown): boolean =>
+  isRecord(entry) && typeof entry.endpointName === 'string' && LIVE_ENDPOINTS.has(entry.endpointName);
+
 type ApiCacheSnapshot = {
   /** Identifies the session the cache belongs to — see `sessionKey`. */
   owner: string;
@@ -79,10 +101,14 @@ export const loadPersistedApiCache = (): Record<string, unknown> | undefined => 
   // revalidates in the background behind the data it is already showing.
   const queries: Record<string, any> = {};
   for (const [key, entry] of Object.entries(snapshot.api.queries || {})) {
+    // A snapshot written by an earlier build may still hold live tracked-time
+    // readings; they are dropped here rather than shown.
+    if (isLiveEntry(entry)) continue;
     queries[key] = { ...entry, fulfilledTimeStamp: 0 };
   }
 
-  return { api: { ...snapshot.api, queries } };
+  // The tag index must not point at queries that were just dropped.
+  return { api: { ...snapshot.api, queries, provided: pickProvidedFor(snapshot.api.provided, new Set(Object.keys(queries))) } };
 };
 
 /** Keeps only settled, non-error, non-expired entries. */
@@ -92,6 +118,7 @@ const pickReusableQueries = (queries: Record<string, any>) => {
   for (const [key, entry] of Object.entries(queries || {})) {
     if (!entry || entry.status !== 'fulfilled' || entry.error) continue;
     if (entry.data === undefined) continue;
+    if (isLiveEntry(entry)) continue;
     if (entry.fulfilledTimeStamp && now - entry.fulfilledTimeStamp > MAX_AGE_MS) continue;
     kept[key] = {
       ...entry,

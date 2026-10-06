@@ -136,6 +136,38 @@ asserts against the live database.
   Durations are rendered from exact `total_seconds`, never rebuilt from
   two-decimal hours.
 
+  A machine that sleeps and wakes with the tab still in front fires neither a
+  focus nor a visibility event, so three more rules apply to the pages that show
+  a *running* entry (Admin Active Users and Admin Time Tracking):
+
+  * **Poll while a figure can still be moving.** Active Users re-reads every 30
+    seconds; Time Tracking does the same for any range reaching back to
+    yesterday or later (a machine that sleeps through midnight keeps the earlier
+    day's entry open until it wakes). Both pause while the tab is hidden.
+  * **Re-read on resume.** A clock that jumps between two ticks of a
+    five-second timer is the one signal a suspend always leaves
+    (`hooks/useResume.ts`); the pages refetch at once. Resume is reported only
+    while the page is visible -- coming back to a hidden tab is a visibility
+    event, which the slice already handles.
+  * **Live readings are never restored.** The persisted API cache paints old
+    rows on the first frame and corrects them a moment later; for a running
+    entry that shows hours that no longer exist, because the desktop ends a
+    session retroactively once it wakes (the idle answer, the interruption cap
+    in section 7, or the IST-midnight split). `getActiveTimeTracking`,
+    `getTimeTracking` and `getTimeTrackingDetails` are therefore neither
+    written to nor read from that cache (`store/persist.ts`). While one is
+    being replaced after a long gap its figures are dimmed, and a failed
+    re-read keeps the rows but says they are old.
+
+  "Today", and every other relative range preset, is resolved from the IST day
+  *now* -- never captured when the bundle loads -- and a page showing one moves
+  to the new day when IST midnight passes, with no reload.
+
+  What the web cannot do is know a desktop is asleep. While it sleeps, its entry
+  stays open and the server's `now - start_time` keeps growing; the correction
+  arrives only when the desktop wakes and the server records it. Showing it
+  sooner needs a signal from the desktop, which no endpoint carries today.
+
 ## 7. Restart, update, crash
 
 The desktop persists its session record (`app_state.timer_state`) once, when

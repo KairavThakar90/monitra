@@ -256,7 +256,16 @@ describe('Edit Access: the same picker', () => {
       permissions: { share_member_details: true, share_screenshots: false, share_tasks: true, share_timing: true, share_billing: false },
     }];
     await renderPage();
+    // The client list and the project list are two requests; under a loaded
+    // machine five ticks is not always enough for the table to appear, so wait
+    // for what the test acts on rather than for a fixed number of ticks.
+    for (let attempt = 0; attempt < 60 && !byText('button', 'Edit'); attempt += 1) {
+      await flush();
+    }
     await click(byText('button', 'Edit'));
+    for (let attempt = 0; attempt < 60 && (!searchBox() || projectBoxes().length < 4); attempt += 1) {
+      await flush();
+    }
     expect(searchBox()).toBeTruthy();
     expect(tickedNames()).toEqual(['Beta Portal', 'Delta Mobile']);
     expect(countText()).toBe('2 of 4 selected');
