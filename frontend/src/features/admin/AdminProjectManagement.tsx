@@ -456,9 +456,10 @@ const StatusPillDropdown = ({
   );
 };
 
-type ColumnKey = 'project' | 'category' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'started' | 'manage';
+type ColumnKey = 'project' | 'wfpmId' | 'category' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'started' | 'manage';
 const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'project', label: 'Project' },
+  { key: 'wfpmId', label: 'WFPM ID' },
   { key: 'category', label: 'Category' },
   { key: 'status', label: 'Status' },
   { key: 'owner', label: 'Owner' },
@@ -516,7 +517,7 @@ export const AdminProjectManagement: React.FC = () => {
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>({
     // Tasks starts hidden: the count is rarely what this table is opened
     // for, and the Columns dropdown turns it on when it is.
-    project: true, category: true, status: true, owner: true, leader: true, team: true, tasks: false, billing: true,
+    project: true, wfpmId: true, category: true, status: true, owner: true, leader: true, team: true, tasks: false, billing: true,
     usedHours: true, internalHours: true, remainingHours: true, started: true, manage: true
   });
   const [showColumnDropdown, setShowColumnDropdown] = useState(false);
@@ -1003,6 +1004,7 @@ export const AdminProjectManagement: React.FC = () => {
               <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
                 <tr>
                   {visibleColumns.project && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Project</th>}
+                  {visibleColumns.wfpmId && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">WFPM ID</th>}
                   {visibleColumns.category && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Category</th>}
                   {visibleColumns.status && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Status</th>}
                   {visibleColumns.owner && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Owner</th>}
@@ -1023,6 +1025,18 @@ export const AdminProjectManagement: React.FC = () => {
                     {visibleColumns.project && <td className="px-6 py-4">
                       <div className="font-bold text-slate-800">{proj.project_name}</div>
                       {/* {proj.description && <div className="text-xs text-slate-500 truncate max-w-[200px]">{proj.description}</div>} */}
+                    </td>}
+                    {visibleColumns.wfpmId && <td className="px-6 py-4" data-testid="wfpm-id-cell">
+                      {proj.wfpm_project_id ? (
+                        <span
+                          className="inline-block max-w-[180px] truncate rounded-md border border-slate-200 bg-slate-50 px-2 py-1 align-middle font-mono text-[11px] font-semibold text-slate-600"
+                          title={`WFPM project ${proj.wfpm_project_id}`}
+                        >
+                          {proj.wfpm_project_id}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400" title="Not a WFPM project">—</span>
+                      )}
                     </td>}
                     {visibleColumns.category && <td className="px-6 py-4">
                       {proj.category ? (
