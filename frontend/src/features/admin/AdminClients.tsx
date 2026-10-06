@@ -12,6 +12,7 @@ import {
   useUpdateClientAccessMutation,
   type ClientListItem,
   type ClientPermissions,
+  type ClientProjectRef,
 } from '../../store/api/clientsApi';
 
 const STATUS_STYLES: Record<ClientListItem['status'], string> = {
@@ -26,6 +27,67 @@ const StatusBadge: React.FC<{ status: ClientListItem['status'] }> = ({ status })
     {status}
   </span>
 );
+
+/** How many project names a client's row shows before "See all". */
+const PROJECT_PREVIEW_COUNT = 3;
+
+/**
+ * One client's projects, as chips.
+ *
+ * A client can be given hundreds of projects, and the column used to join every
+ * name into one comma-separated paragraph, which made that row taller than the
+ * screen. Now a row shows the first few as chips and a "See all (N)" button;
+ * pressing it shows every project -- in a scrollable box, so even then the row
+ * stays a sensible height -- and the button becomes "Show less". A client with
+ * only a few projects shows them all and has no button at all.
+ *
+ * The open/closed state is the row's own, so expanding one client leaves the
+ * others as they were. Names are cut with an ellipsis when they are long and
+ * carry the full name as a tooltip.
+ */
+const ClientProjectsCell: React.FC<{ clientId: number; projects: ClientProjectRef[] }> = ({ clientId, projects }) => {
+  const [expanded, setExpanded] = useState(false);
+
+  if (projects.length === 0) return <span className="text-[#94A3B8]">—</span>;
+
+  const collapsible = projects.length > PROJECT_PREVIEW_COUNT;
+  const shown = collapsible && !expanded ? projects.slice(0, PROJECT_PREVIEW_COUNT) : projects;
+  const listId = `client-projects-${clientId}`;
+
+  return (
+    <div className="min-w-[240px] max-w-[560px]">
+      <ul
+        id={listId}
+        aria-label="Projects"
+        className={
+          'flex flex-wrap gap-1.5 ' +
+          (expanded ? 'max-h-56 overflow-y-auto rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] p-2' : '')
+        }
+      >
+        {shown.map((project) => (
+          <li
+            key={project.id}
+            title={project.project_name}
+            className="max-w-[240px] truncate rounded-md border border-[#E2E8F0] bg-white px-2 py-1 text-xs font-semibold text-[#334155]"
+          >
+            {project.project_name}
+          </li>
+        ))}
+      </ul>
+      {collapsible && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={listId}
+          onClick={() => setExpanded((open) => !open)}
+          className="mt-2 text-[12px] font-bold text-[#2563EB] transition hover:text-blue-800 hover:underline"
+        >
+          {expanded ? 'Show less' : `See all (${projects.length})`}
+        </button>
+      )}
+    </div>
+  );
+};
 
 /**
  * The project checkbox list, shared by the Add Client and Edit Access modals.
@@ -402,7 +464,7 @@ export const AdminClients: React.FC = () => {
                     <td className="px-4 py-3 font-medium text-[#0F172A]">{client.name}</td>
                     <td className="px-4 py-3 text-[#475569]">{client.email}</td>
                     <td className="px-4 py-3 text-[#475569]">
-                      {client.projects.length ? client.projects.map((p) => p.project_name).join(', ') : '—'}
+                      <ClientProjectsCell clientId={client.id} projects={client.projects} />
                     </td>
                     <td className="px-4 py-3"><StatusBadge status={client.status} /></td>
                     <td className="px-4 py-3 text-[#475569]">
