@@ -83,7 +83,31 @@ export interface ScreenshotTimelineWindow {
   tracked_seconds: number;
   screenshots: ScreenshotView[];
   screenshot_count: number;
+  /**
+   * What is known about this window's capture. Optional so a response from a
+   * backend that predates it reads as `none`, which is exactly what it knew.
+   */
+  capture_state?: CaptureState;
+  /** Short machine code for why (`screen_unreadable`, `http_502`...). */
+  capture_reason?: string | null;
+  /** Attempts the desktop spent before reporting. */
+  capture_attempts?: number;
 }
+
+/**
+ * `captured` — the window holds an image. `pending` — the desktop has it and
+ * is still uploading. `failed`, `blocked`, `excluded`, `unavailable` — the
+ * desktop reported why there is none. `none` — nothing was reported, which is
+ * also how an older desktop, or one that was off, looks.
+ */
+export type CaptureState =
+  | 'captured'
+  | 'pending'
+  | 'failed'
+  | 'blocked'
+  | 'excluded'
+  | 'unavailable'
+  | 'none';
 
 export interface ScreenshotTimelineResponse {
   success: boolean;
