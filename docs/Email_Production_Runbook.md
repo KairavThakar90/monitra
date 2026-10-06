@@ -79,6 +79,65 @@ A job that fails exits non-zero, and `systemctl --failed` lists it.
 `MONITRA_APP_URL=https://staff.peakworkos.com` and `EMAIL_DISPATCH_TOKEN`. The
 feature flags (`*_ENABLED`) all default to on.
 
+## Deliverability — mail that lands in spam
+
+Whether a recipient's server files a message as spam is decided mostly by the
+**sender's domain** (SPF, DKIM, DMARC) and its reputation. Code cannot set
+either, so this is largely configuration — and the client invitation and
+sign-in emails are the most exposed, because they go to people who have never
+heard from this sender before and carry a one-time link.
+
+What the code controls, and does:
+
+- **Every message carries a `Date`** (RFC 5322 requires it; its absence is a
+  classic spam signal). `EmailMessage` does not add one.
+- **The preheader is hidden one standard way** (`display:none`), not with the
+  stack of background-coloured text, 1px font, `opacity:0` and zero-width
+  padding that spam uses to hide text and that filters score as such.
+- **A free-mail sender is reported.** `EMAIL_FROM_ADDRESS` on gmail.com,
+  outlook.com, yahoo.com… produces a `Sender identity (spam placement)` WARN
+  in `scripts/email_preflight.py` and a `deliverability_warnings` count in
+  `GET /health` (`"email"`). Mail sent as "Monitra" from a consumer address can
+  never be authenticated for our own domain, and a brand name on a consumer
+  address with links to an unrelated domain reads as impersonation.
+
+What only the owner of the domains can do — **send from an address on a domain
+you control, authenticated for it.** State of the DNS when this was written
+(2026-10-05; re-check with `nslookup -type=TXT <name>`):
+
+| Domain | Finding |
+|---|---|
+| `peakworkos.com` (the app's own links) | One valid SPF (`include:_spf.google.com ~all`). **No DKIM** at any common selector, **no DMARC**, **no MX**. |
+| `storetransform.com` | MX is Google Workspace. **Two SPF records** (`v=spf1 include:sender.zohobooks.com` and `v=spf1 a mx ~all`) — more than one SPF record is a permanent error (RFC 7208 §4.5), so SPF fails for everything sent as this domain. **Two DMARC records** (`p=quarantine …` and `p=none;`) — with more than one, receivers skip DMARC entirely (RFC 7489 §6.6.3), so the quarantine policy is not in force. DKIM exists only for selector `default`; Google's `google._domainkey` is absent. |
+
+Two ways to get an authenticated sender; either needs `EMAIL_FROM_ADDRESS` (and
+`SMTP_USERNAME`/`SMTP_PASSWORD`) changed in `/etc/monitra/backend.env`, then a
+`sudo systemctl restart monitra-backend`:
+
+1. **Google Workspace, on a domain it already hosts.** Create the sender (for
+   example `monitra@storetransform.com`) and use its app password for
+   `smtp.gmail.com:587`. In the Admin console turn on DKIM for the domain and
+   publish the `google._domainkey` record it generates. Fix the domain's SPF to
+   **one** record that lists every sender — for `storetransform.com` that is
+   `v=spf1 a mx include:_spf.google.com include:sender.zohobooks.com ~all`
+   (keep Zoho Books if it still sends invoices). Reduce DMARC to **one**
+   record. Start it at `p=none` with the existing `rua=` address and tighten it
+   only after the reports show every legitimate sender passing: enforcing
+   `p=quarantine` the moment the duplicate is removed could quarantine mail
+   from any sender (Zoho Books, for one) that is not aligned.
+2. **A transactional provider** (Amazon SES, Postmark, SendGrid, Brevo, Resend)
+   authenticating `peakworkos.com`: publish the DKIM CNAMEs and SPF include the
+   provider gives, add a single DMARC record, and send from
+   `noreply@peakworkos.com`. This also puts the sender on the same domain as
+   the links in the email, which filters like to see.
+
+Also set `EMAIL_REPLY_TO` to a mailbox somebody reads.
+
+**Verify** by sending one real invitation to a Gmail address you own, opening
+it, and choosing ⋮ → *Show original*: SPF, DKIM and DMARC must each say `PASS`,
+and the `DKIM`/`SPF` domains must be the sender's own. Until they do, no change
+to the message's content will reliably keep it out of spam.
+
 Detail for each email lives in [Email_Notifications.md](Email_Notifications.md),
 [Monthly_Project_Summary.md](Monthly_Project_Summary.md) and
 [Project_Budget_Alerts.md](Project_Budget_Alerts.md).

@@ -10,7 +10,8 @@ import type { ManualTimeEntryRequest } from '../../store/api/manualTimeEntryApi'
 import { useFeedback } from '../../components/FeedbackProvider';
 import { useAuth } from '../auth/authContext';
 import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
-import { formatHMS, formatISTDate, formatISTTime, istTodayISO, istWallClockToUtcISO } from '../../utils/duration';
+import { formatHMS, formatISTDate, formatISTTime, formatISTTime12, istTodayISO, istWallClockToUtcISO } from '../../utils/duration';
+import { useIstToday, useOnResume } from '../../hooks/useResume';
 import { PaginationArrow } from '../../components/PaginationArrow';
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
 
@@ -341,6 +342,19 @@ const ProjectAccordionItem: React.FC<{
 const PAGE_SIZE = 50;
 const GRADIENT_CYAN_PURPLE = "bg-gradient-to-r from-[#0ea5e9] to-[#8b5cf6]";
 
+/**
+ * How often a range that can contain a running timer is re-read while the tab
+ * is in front. The same cadence as Active Users, so the two pages never
+ * disagree about whether somebody is still tracking for longer than one poll.
+ */
+const TIME_TRACKING_POLL_MS = 30_000;
+
+/** `YYYY-MM-DD` one calendar day before `iso`. Plain calendar arithmetic, no time zone involved. */
+const dayBefore = (iso: string): string => {
+  const [year, month, day] = iso.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day - 1)).toISOString().slice(0, 10);
+};
+
 export const AdminTimeTracking: React.FC = () => {
   const [search, setSearch] = useState('');
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -351,6 +365,22 @@ export const AdminTimeTracking: React.FC = () => {
   const filterEndDate = dateRange.to;
 
   const [page, setPage] = useState(1);
+
+  // "Today" and every other preset are relative to the day it is *now*. A tab
+  // left open overnight, or a machine that slept through midnight and woke
+  // with this page still loaded, would otherwise keep asking the server about
+  // the day it was opened on -- and show that day's total as if it were today's.
+  // Hand-picked ("custom") and unbounded ("all") ranges are not relative and
+  // are left alone.
+  const istToday = useIstToday();
+  useEffect(() => {
+    if (dateRange.preset === 'custom' || dateRange.preset === 'all') return;
+    const next = rangeFor(dateRange.preset, dateRange);
+    if (next.from !== dateRange.from || next.to !== dateRange.to) {
+      setDateRange(next);
+      setPage(1);
+    }
+  }, [istToday, dateRange]);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | null>(null);
   /**
    * The Time Entries table's own member filter, distinct from
@@ -383,21 +413,52 @@ export const AdminTimeTracking: React.FC = () => {
       open.includes(projectId) ? open.filter((id) => id !== projectId) : [...open, projectId]
     );
 
-  const { data: trackingData, isLoading, isFetching, isError } = useGetTimeTrackingQuery({
+  // A running entry is measured by the server as `now - start_time`, so any
+  // range that reaches back no further than yesterday can hold a total that is
+  // still moving -- yesterday too, because a machine that sleeps through
+  // midnight keeps the earlier day's entry open until it wakes. Those ranges
+  // are re-read on a poll; an older range cannot change and is not.
+  const holdsLiveTime = !filterEndDate || filterEndDate >= dayBefore(istToday);
+  const livePolling = {
+    pollingInterval: holdsLiveTime ? TIME_TRACKING_POLL_MS : 0,
+    // A hidden tab has nobody looking at it; showing it again refetches.
+    skipPollingIfUnfocused: true,
+  } as const;
+
+  const {
+    data: trackingData, currentData: currentTrackingData, isLoading, isFetching, isError,
+    refetch: refetchTracking, fulfilledTimeStamp: trackingFetchedAt,
+  } = useGetTimeTrackingQuery({
     start_date: filterStartDate || undefined,
     end_date: filterEndDate || undefined,
     page,
     limit: PAGE_SIZE,
-  });
-  const { data: employeeDetails, isLoading: isLoadingDetails } = useGetTimeTrackingDetailsQuery({
+  }, livePolling);
+  const { data: employeeDetails, isLoading: isLoadingDetails, refetch: refetchDetails } = useGetTimeTrackingDetailsQuery({
     employeeId: selectedEmployeeId || 0,
     start_date: filterStartDate || undefined,
     end_date: filterEndDate || undefined,
-  }, { skip: selectedEmployeeId === null });
+  }, { skip: selectedEmployeeId === null, ...livePolling });
+
+  // After a sleep the window is usually still focused and visible, so neither
+  // `focus` nor `visibilitychange` fires and nothing else would re-read these
+  // totals before the next poll. The desktop ends a session retroactively once
+  // it wakes, so the figure on screen is typically too high until it does.
+  useOnResume(() => {
+    void refetchTracking();
+    if (selectedEmployeeId !== null) void refetchDetails();
+  });
 
   // Keep the previous range's rows visible while the new one loads instead of
   // covering the table every time a date filter changes.
   const showFirstLoad = isLoading && !trackingData;
+  // Blur only while the rows for the *current* filters have not arrived. A
+  // background re-read (the poll, a focus, a wake) keeps the table crisp and
+  // clickable; blurring on every `isFetching` would flash the page every 30 s.
+  const showBlur = isFetching && currentTrackingData === undefined;
+  // A failed re-read leaves the previous rows in place; they are labelled old
+  // rather than replaced by an error, which is reserved for "nothing to show".
+  const refreshFailed = isError && !!trackingData;
 
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [formEmployeeId, setFormEmployeeId] = useState('');
@@ -719,7 +780,21 @@ export const AdminTimeTracking: React.FC = () => {
               </span>
             ) : null}
           </button>
+          {trackingFetchedAt ? (
+            <span className="ml-auto pb-3 text-[11px] text-slate-400" data-testid="time-tracking-updated">
+              Updated {formatISTTime12(new Date(trackingFetchedAt).toISOString())}
+            </span>
+          ) : null}
         </div>
+        {refreshFailed && (
+          <div
+            role="status"
+            data-testid="time-tracking-refresh-failed"
+            className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-semibold text-amber-800"
+          >
+            Could not refresh. These totals are from {trackingFetchedAt ? formatISTTime12(new Date(trackingFetchedAt).toISOString()) : 'an earlier load'} and may be out of date.
+          </div>
+        )}
         <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm min-h-[400px]">
         {showFirstLoad ? (
           <div className="absolute inset-0 z-10 flex items-start justify-center bg-white/55 pt-20 backdrop-blur-[2px]">
@@ -731,7 +806,7 @@ export const AdminTimeTracking: React.FC = () => {
           </div>
         )}
                   {activeTab === 'entries' ? (
-            <div className={`overflow-x-auto pb-4 transition-all duration-300 ${isFetching ? "blur-[2px] opacity-60 pointer-events-none" : ""}`}>
+            <div className={`overflow-x-auto pb-4 transition-all duration-300 ${showBlur ? "blur-[2px] opacity-60 pointer-events-none" : ""}`}>
               <table className="w-full text-left text-sm whitespace-nowrap">
                 <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
                   <tr>
@@ -744,7 +819,7 @@ export const AdminTimeTracking: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {isError ? (
+                  {isError && !trackingData ? (
                     <tr><td colSpan={6} className="px-6 py-12 text-center text-rose-500">Unable to load time tracking data.</td></tr>
                   ) : paginatedEntries.map(entry => (
                     <tr key={entry.id} className="transition hover:bg-slate-50/80">
@@ -778,7 +853,7 @@ export const AdminTimeTracking: React.FC = () => {
                       </td>
                     </tr>
                   ))}
-                  {!isError && paginatedEntries.length === 0 && !showFirstLoad && (
+                  {!(isError && !trackingData) && paginatedEntries.length === 0 && !showFirstLoad && (
                     <tr>
                       <td colSpan={6} className="px-6 py-12 text-center text-slate-500">
                         No time tracking data found for the selected period.
@@ -814,7 +889,7 @@ export const AdminTimeTracking: React.FC = () => {
               )}
             </div>
           ) : (
-            <div className={`overflow-x-auto pb-4 transition-all duration-300 ${isFetching ? "blur-[2px] opacity-60 pointer-events-none" : ""}`}>
+            <div className={`overflow-x-auto pb-4 transition-all duration-300 ${showBlur ? "blur-[2px] opacity-60 pointer-events-none" : ""}`}>
               <table className="w-full text-left text-sm whitespace-nowrap">
                 <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
                   <tr>

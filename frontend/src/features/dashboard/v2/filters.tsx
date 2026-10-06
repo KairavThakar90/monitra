@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { MONTHS, monthByKey, TODAY } from "./mockData";
+import { MONTHS, monthByKey, istToday } from "./mockData";
 import type { Member } from "../../../store/api/membersApi";
 import type { Project } from "../../../store/api/projectsApi";
 import { brandGradient } from "./theme";
@@ -428,8 +428,17 @@ const parseIso = (iso: string) => {
   return new Date(y, (m || 1) - 1, d || 1);
 };
 
-const shift = (days: number) => {
-  const d = new Date(TODAY);
+/**
+ * `days` before `base`, which defaults to the IST day it is *now*.
+ *
+ * "Today" is read when a range is resolved, never captured at import: it used
+ * to be a module constant (`TODAY`), so a tab that stayed open -- or a laptop
+ * that slept overnight and woke with the page still loaded -- kept calling
+ * yesterday "Today", and the Time Tracking page asked the server about the
+ * wrong day until a manual reload.
+ */
+const shift = (days: number, base: Date = istToday()) => {
+  const d = new Date(base);
   d.setDate(d.getDate() - days);
   return isoOf(d);
 };
@@ -444,25 +453,29 @@ const addDays = (d: Date, days: number) => {
 const startOfWeek = (d: Date) => addDays(d, -((d.getDay() + 6) % 7));
 
 export const rangeFor = (preset: RangePreset, current: DateRange): DateRange => {
-  const y = TODAY.getFullYear();
-  const m = TODAY.getMonth();
+  // One reading of the clock for the whole range, so a midnight that lands
+  // between two lines below cannot produce a range whose ends are on
+  // different days.
+  const today = istToday();
+  const y = today.getFullYear();
+  const m = today.getMonth();
   switch (preset) {
     case "today":
-      return { preset, from: shift(0), to: shift(0) };
+      return { preset, from: shift(0, today), to: shift(0, today) };
     case "yesterday":
-      return { preset, from: shift(1), to: shift(1) };
+      return { preset, from: shift(1, today), to: shift(1, today) };
     case "7d":
-      return { preset, from: shift(6), to: shift(0) };
+      return { preset, from: shift(6, today), to: shift(0, today) };
     case "lastWeek": {
-      const lastMonday = addDays(startOfWeek(TODAY), -7);
+      const lastMonday = addDays(startOfWeek(today), -7);
       return { preset, from: isoOf(lastMonday), to: isoOf(addDays(lastMonday, 6)) };
     }
     case "2w":
-      return { preset, from: shift(13), to: shift(0) };
+      return { preset, from: shift(13, today), to: shift(0, today) };
     case "30d":
-      return { preset, from: shift(29), to: shift(0) };
+      return { preset, from: shift(29, today), to: shift(0, today) };
     case "month":
-      return { preset, from: isoOf(new Date(y, m, 1)), to: shift(0) };
+      return { preset, from: isoOf(new Date(y, m, 1)), to: shift(0, today) };
     case "lastMonth":
       return { preset, from: isoOf(new Date(y, m - 1, 1)), to: isoOf(new Date(y, m, 0)) };
     case "all":
@@ -505,7 +518,7 @@ export const DEFAULT_RANGE: DateRange = rangeFor("7d", { preset: "7d", from: "",
 export const rangeForSpan = (from: string, to: string): DateRange => {
   const iso = /^\d{4}-\d{2}-\d{2}$/;
   if (!iso.test(from) || !iso.test(to)) return DEFAULT_RANGE;
-  const today = isoOf(TODAY);
+  const today = isoOf(istToday());
   const start = from <= to ? from : to;
   const end = from <= to ? to : from;
   if (start > today) return DEFAULT_RANGE;
@@ -556,7 +569,7 @@ export const CalendarPane: React.FC<{
   onPrev?: () => void;
   onNext?: () => void;
 }> = ({ year, month, from, to, onPick, onHover, onPrev, onNext }) => {
-  const todayIso = isoOf(TODAY);
+  const todayIso = isoOf(istToday());
 
   return (
     <div className="w-[248px]">
@@ -659,8 +672,9 @@ export const CalendarPane: React.FC<{
  * inside this month would put a wholly-unselectable future month on the right.
  */
 const viewFor = (from: string) => {
-  const d = from ? parseIso(from) : TODAY;
-  const latest = new Date(TODAY.getFullYear(), TODAY.getMonth() - 1, 1);
+  const today = istToday();
+  const d = from ? parseIso(from) : today;
+  const latest = new Date(today.getFullYear(), today.getMonth() - 1, 1);
   const wanted = new Date(d.getFullYear(), d.getMonth(), 1);
   const shown = wanted > latest ? latest : wanted;
   return { year: shown.getFullYear(), month: shown.getMonth() };
@@ -757,9 +771,10 @@ export const DateRangeFilter: React.FC<{
   const right = new Date(view.year, view.month + 1, 1);
   // The right-hand pane may reach the current month but never go past it --
   // there is nothing to pick beyond today.
+  const today = istToday();
   const atLastMonth =
-    right.getFullYear() > TODAY.getFullYear() ||
-    (right.getFullYear() === TODAY.getFullYear() && right.getMonth() >= TODAY.getMonth());
+    right.getFullYear() > today.getFullYear() ||
+    (right.getFullYear() === today.getFullYear() && right.getMonth() >= today.getMonth());
 
   return (
     <div className="relative flex items-center gap-3" ref={wrapRef}>

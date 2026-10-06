@@ -51,7 +51,7 @@ def report(status: str, check: str, detail: str = "") -> None:
 
 def check_configuration() -> None:
     from app.services.email import describe_configuration, describe_feedback_recipients, unconfigured_reason
-    from app.services.email.provider import credential_warnings
+    from app.services.email.provider import credential_warnings, deliverability_warnings
 
     config = describe_configuration()
     if config["configured"]:
@@ -60,6 +60,11 @@ def check_configuration() -> None:
         report("FAIL", "Email provider configured", unconfigured_reason() or "not configured")
     warnings = credential_warnings()
     report("FAIL" if warnings else "OK", "SMTP credential sanity", "; ".join(warnings))
+    # WARN, not FAIL: the mail is delivered, it just lands in spam -- which is not
+    # something a deploy should be blocked on, but is something someone must see.
+    sender_warnings = deliverability_warnings()
+    report("WARN" if sender_warnings else "OK", "Sender identity (spam placement)",
+           "; ".join(sender_warnings) if sender_warnings else "sender is on its own domain")
     recipients = describe_feedback_recipients()
     report("OK" if recipients.get("configured") else "FAIL", "Feedback recipients (Admin/HR)",
            f"{recipients.get('recipient_count', 0)} configured")
