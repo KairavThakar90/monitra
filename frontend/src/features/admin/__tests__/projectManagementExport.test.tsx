@@ -320,13 +320,29 @@ describe('Project Management: Export CSV', () => {
 
     it('asks for the very filters the table is showing', async () => {
       await selectValue(container.querySelector<HTMLSelectElement>('select[aria-label="Filter by organization"]')!, 'st');
-      await selectValue(container.querySelector<HTMLSelectElement>('select[aria-label="Filter by billing"]')!, 'fixed');
+      await selectValue(container.querySelector<HTMLSelectElement>('select[aria-label="Filter by project type"]')!, 'billing');
+      await selectValue(container.querySelector<HTMLSelectElement>('select[aria-label="Filter by billing type"]')!, 'fixed');
       await click(buttonText('Export CSV'));
       await click(download());
 
       const walk = exportRequests()[0];
       expect(walk.searchParams.get('category')).toBe('st');
-      expect(walk.searchParams.get('billing_type')).toBe('fixed');
+      expect(walk.searchParams.getAll('billing_type')).toEqual(['fixed']);
+    });
+
+    it('asks for both billed kinds when the project type is just Billing', async () => {
+      await selectValue(container.querySelector<HTMLSelectElement>('select[aria-label="Filter by project type"]')!, 'billing');
+      await click(buttonText('Export CSV'));
+      await click(download());
+
+      expect(exportRequests()[0].searchParams.getAll('billing_type')).toEqual(['fixed', 'free']);
+    });
+
+    it('asks for no billing filter at all when the project type is left on All', async () => {
+      await click(buttonText('Export CSV'));
+      await click(download());
+
+      expect(exportRequests()[0].searchParams.has('billing_type')).toBe(false);
     });
 
     it('says so and writes nothing when no project matches', async () => {
@@ -485,7 +501,7 @@ describe('Project Management: Export CSV', () => {
 
     it('keeps the filters that sit beside the button', () => {
       expect(container.querySelector('input[placeholder*="earch"]')).not.toBeNull();
-      expect(container.querySelector('select[aria-label="Filter by billing"]')).not.toBeNull();
+      expect(container.querySelector('select[aria-label="Filter by project type"]')).not.toBeNull();
       expect(container.querySelector('select[aria-label="Filter by organization"]')).not.toBeNull();
       expect(container.textContent).toContain('All Statuses');
       expect(container.textContent).toContain('Columns');

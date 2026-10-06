@@ -424,7 +424,7 @@ class ProjectManagementService:
         return ProjectManagementService._detail_payload(db, project, user)
 
     @staticmethod
-    def list(db: Session, user: User, page: int, limit: int, search: Optional[str], status_id: Optional[int], leader_id: Optional[int], billing_type: Optional[BillingType], include_tasks: bool = True, employee_ids: Optional[list[int]] = None, category: Optional[ProjectCategory] = None):
+    def list(db: Session, user: User, page: int, limit: int, search: Optional[str], status_id: Optional[int], leader_id: Optional[int], billing_type: Optional[list[BillingType]], include_tasks: bool = True, employee_ids: Optional[list[int]] = None, category: Optional[ProjectCategory] = None):
         """A page of projects.
 
         `include_tasks=False` is for the callers that only ever render a
@@ -464,7 +464,7 @@ class ProjectManagementService:
                 )
             )
         if billing_type:
-            filters.append(Project.billing_type == billing_type.value)
+            filters.append(Project.billing_type.in_([kind.value for kind in billing_type]))
         if category:
             filters.append(Project.category == category.value)
         # The page and its total in one statement. Each round trip to a managed

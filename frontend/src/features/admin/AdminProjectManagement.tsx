@@ -25,7 +25,7 @@ import { MemberMultiSelect } from '../dashboard/v2/filters';
 import { useGetAllMembersQuery } from '../../store/api/membersApi';
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
 import { formatApiError } from '../../api/utils';
-import type { BillingType } from '../../utils/billing';
+import { billingTypeLabel, billingTypesFor, type BillingKind, type BillingScope, type BillingType } from '../../utils/billing';
 import { PROJECT_CATEGORY_OPTIONS, projectCategoryLabel, type ProjectCategory } from '../../utils/projectCategory';
 import { ProjectExportDialog } from './ProjectExportDialog';
 
@@ -457,6 +457,35 @@ const StatusPillDropdown = ({
   );
 };
 
+/** A native select in the toolbar's own style, with the chevron the other filter selects carry. */
+const ToolbarSelect: React.FC<{
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  children: React.ReactNode;
+}> = ({ label, value, onChange, children }) => (
+  <div className="relative">
+    <select
+      aria-label={label}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
+    >
+      {children}
+    </select>
+    <svg
+      className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      aria-hidden="true"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+    </svg>
+  </div>
+);
+
 type ColumnKey = 'project' | 'category' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'started' | 'manage';
 const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'project', label: 'Project' },
@@ -502,8 +531,12 @@ export const AdminProjectManagement: React.FC = () => {
   const [search, setSearch] = useState('');
   const [searchError, setSearchError] = useState<string | null>(null);
   const [filterStatusId, setFilterStatusId] = useState<number | null>(null);
-  /** '' means every project; otherwise the `billing_type` the API filters on. */
-  const [filterBilling, setFilterBilling] = useState<'' | BillingType>('');
+  // Project type, in two steps like the Task Listing page and the Create Project
+  // form: Billing or Non Billing first, then (under Billing only) Fixed Hours or
+  // Flexible Time. '' means every project at each step.
+  const [billingScope, setBillingScope] = useState<BillingScope>('');
+  const [billingKind, setBillingKind] = useState<BillingKind>('');
+  const billingTypes = useMemo(() => billingTypesFor(billingScope, billingKind), [billingScope, billingKind]);
   /** '' means every project; otherwise the `category` the API filters on. */
   const [filterCategory, setFilterCategory] = useState<'' | ProjectCategory>('');
   /** Empty means every member — the same convention every other filter uses. */
@@ -545,7 +578,7 @@ export const AdminProjectManagement: React.FC = () => {
     limit: pageSize,
     search: projectSearchCheck.ok ? projectSearchCheck.value : '',
     status_id: filterStatusId,
-    billing_type: filterBilling || null,
+    billing_type: billingTypes ?? null,
     category: filterCategory || null,
     employee_ids: selectedMemberIds,
   });
@@ -952,29 +985,32 @@ export const AdminProjectManagement: React.FC = () => {
                 onChange={(val) => setFilterStatusId(val === 0 ? null : val)}
                 className="w-full sm:w-auto min-h-[38px] flex items-center"
               />
-            <div className="relative">
-              <select
-                aria-label="Filter by billing"
-                value={filterBilling}
-                onChange={(e) => { setFilterBilling(e.target.value as '' | BillingType); setPage(1); }}
-                className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
+            {/* Project type: Billing / Non Billing, then Fixed Hours / Flexible Time under Billing */}
+            <ToolbarSelect
+              label="Filter by project type"
+              value={billingScope}
+              onChange={(value) => {
+                setBillingScope(value as BillingScope);
+                // The second choice belongs to Billing; leaving Billing clears it.
+                setBillingKind('');
+                setPage(1);
+              }}
+            >
+              <option value="">All Project Types</option>
+              <option value="billing">Billing</option>
+              <option value="non_billing">Non Billing</option>
+            </ToolbarSelect>
+            {billingScope === 'billing' && (
+              <ToolbarSelect
+                label="Filter by billing type"
+                value={billingKind}
+                onChange={(value) => { setBillingKind(value as BillingKind); setPage(1); }}
               >
-                <option value="">Budget &amp; Billing</option>
-                <option value="fixed">Billing</option>
-                <option value="free">Free</option>
-                <option value="non_billing">Non Billing</option>
-              </select>
-              <svg
-                className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                aria-hidden="true"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
-              </svg>
-            </div>
+                <option value="">All Billing</option>
+                <option value="fixed">{billingTypeLabel('fixed')}</option>
+                <option value="free">{billingTypeLabel('free')}</option>
+              </ToolbarSelect>
+            )}
             <div className="relative">
               <select
                 aria-label="Filter by organization"
@@ -1532,7 +1568,7 @@ export const AdminProjectManagement: React.FC = () => {
         filters={{
           search: projectSearchCheck.ok ? projectSearchCheck.value : '',
           status_id: filterStatusId,
-          billing_type: filterBilling || null,
+          billing_type: billingTypes ?? null,
           category: filterCategory || null,
           employee_ids: selectedMemberIds,
         }}
