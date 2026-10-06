@@ -166,6 +166,11 @@ export const ENDPOINTS = {
     // feedback's own submitter, so this carries an id and a status and nothing
     // that could name a recipient.
     STATUS: (id: string | number) => `${API_BASE_URL}/feedback/${id}/status`,
+    // The bytes of one attached file, behind the same permission check as the
+    // feedback it belongs to. Bearer token required, so it is fetched and shown
+    // from an object URL, never linked; add `?download=true` for an attachment
+    // disposition.
+    ATTACHMENT: (id: string | number) => `${API_BASE_URL}/feedback/attachments/${id}/content`,
   },
   // Desktop downloads. Unauthenticated: someone installing Monitra for the
   // first time has no account yet. These are asked for "the latest", never for
