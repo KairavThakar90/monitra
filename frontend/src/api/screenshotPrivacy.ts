@@ -35,6 +35,20 @@ export interface ScreenshotExclusion {
   updated_at: string;
 }
 
+/**
+ * Who a new rule is switched on for, in the same request that creates it.
+ * `all` is every active member of the organization at that moment (members who
+ * join later are not covered); `members` is exactly the listed ids. Omit it and
+ * the rule is only added to the catalogue. Administrators only, server-side.
+ */
+export type ScreenshotRuleScope =
+  | { scope: 'all' }
+  | { scope: 'members'; user_ids: number[] };
+
+/** What creating a rule returns: the rule, and how many members it was switched on for. */
+export type ScreenshotApplicationCreated = ScreenshotApplication & { applied_to_count: number };
+export type ScreenshotUrlCreated = ScreenshotUrl & { applied_to_count: number };
+
 export interface PrivacyConfig {
   applications: ScreenshotApplication[];
   urls: ScreenshotUrl[];
@@ -48,13 +62,18 @@ export const screenshotPrivacyApi = baseApi.injectEndpoints({
       query: () => `${API_BASE_URL}/screenshot/applications`,
       providesTags: ['ScreenshotApplication'] as any,
     }),
-    createScreenshotApplication: builder.mutation<ScreenshotApplication, Partial<ScreenshotApplication>>({
+    // A rule created with `apply_to` also writes per-member exclusions, so those
+    // are refreshed too (the bare tag matches every member's cached list).
+    createScreenshotApplication: builder.mutation<
+      ScreenshotApplicationCreated,
+      Partial<ScreenshotApplication> & { apply_to?: ScreenshotRuleScope }
+    >({
       query: (body) => ({
         url: `${API_BASE_URL}/screenshot/applications`,
         method: 'POST',
         body,
       }),
-      invalidatesTags: ['ScreenshotApplication'] as any,
+      invalidatesTags: ['ScreenshotApplication', 'ScreenshotExclusion'] as any,
     }),
     updateScreenshotApplication: builder.mutation<ScreenshotApplication, Partial<ScreenshotApplication> & { id: number }>({
       query: ({ id, ...body }) => ({
@@ -76,13 +95,16 @@ export const screenshotPrivacyApi = baseApi.injectEndpoints({
       query: () => `${API_BASE_URL}/screenshot/urls`,
       providesTags: ['ScreenshotUrl'] as any,
     }),
-    createScreenshotUrl: builder.mutation<ScreenshotUrl, Partial<ScreenshotUrl>>({
+    createScreenshotUrl: builder.mutation<
+      ScreenshotUrlCreated,
+      Partial<ScreenshotUrl> & { apply_to?: ScreenshotRuleScope }
+    >({
       query: (body) => ({
         url: `${API_BASE_URL}/screenshot/urls`,
         method: 'POST',
         body,
       }),
-      invalidatesTags: ['ScreenshotUrl'] as any,
+      invalidatesTags: ['ScreenshotUrl', 'ScreenshotExclusion'] as any,
     }),
     updateScreenshotUrl: builder.mutation<ScreenshotUrl, Partial<ScreenshotUrl> & { id: number }>({
       query: ({ id, ...body }) => ({

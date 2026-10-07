@@ -10,10 +10,12 @@ from app.models.screenshot_url import ScreenshotUrl
 from app.models.screenshot_exclusion import ScreenshotExclusion
 from app.schemas.screenshot_privacy import (
     ScreenshotApplicationCreate, ScreenshotApplicationUpdate, ScreenshotApplicationResponse,
-    ScreenshotUrlCreate, ScreenshotUrlUpdate, ScreenshotUrlResponse,
+    ScreenshotApplicationCreatedResponse,
+    ScreenshotUrlCreate, ScreenshotUrlUpdate, ScreenshotUrlResponse, ScreenshotUrlCreatedResponse,
     ScreenshotExclusionCreate, ScreenshotExclusionUpdate, ScreenshotExclusionResponse,
     PrivacyConfigResponse
 )
+from app.services.screenshot_privacy import ScreenshotPrivacyService
 
 router = APIRouter(prefix="/api/v1/screenshot", tags=["Screenshot Privacy"])
 
@@ -24,13 +26,31 @@ def list_applications(db: Session = Depends(get_db, scope="function"), current_u
     # TODO: Add admin role check if needed
     return db.query(ScreenshotApplication).all()
 
-@router.post("/applications", response_model=ScreenshotApplicationResponse)
+@router.post(
+    "/applications",
+    response_model=ScreenshotApplicationCreatedResponse,
+    summary="Add an application rule, optionally switching it on for all members or chosen members",
+    description=(
+        "With `apply_to` omitted this only adds the rule to the shared catalogue. With "
+        "`apply_to` (`{\"scope\": \"all\"}` or `{\"scope\": \"members\", \"user_ids\": [...]}`) the rule "
+        "is also switched on for those members in the same transaction -- **administrators only**. "
+        "`all` is every active member of the caller's organization today; later joiners are not covered."
+    ),
+    responses={
+        400: {"description": "A listed member does not exist in the caller's organization. Nothing was created."},
+        403: {"description": "`apply_to` was sent by someone who is not an administrator. Nothing was created."},
+    },
+)
 def create_application(req: ScreenshotApplicationCreate, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
-    app = ScreenshotApplication(**req.dict())
+    # Every refusal happens here, before the first write.
+    member_ids = ScreenshotPrivacyService.members_for(db, current_user, req.apply_to)
+    app = ScreenshotApplication(**req.dict(exclude={"apply_to"}))
     db.add(app)
+    db.flush()
+    applied = ScreenshotPrivacyService.exclude_members(db, member_ids, application_id=app.id)
     db.commit()
     db.refresh(app)
-    return app
+    return ScreenshotApplicationCreatedResponse.model_validate(app, from_attributes=True).model_copy(update={"applied_to_count": applied})
 
 @router.put("/applications/{app_id}", response_model=ScreenshotApplicationResponse)
 def update_application(app_id: int, req: ScreenshotApplicationUpdate, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
@@ -56,13 +76,25 @@ def delete_application(app_id: int, db: Session = Depends(get_db, scope="functio
 def list_urls(db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     return db.query(ScreenshotUrl).all()
 
-@router.post("/urls", response_model=ScreenshotUrlResponse)
+@router.post(
+    "/urls",
+    response_model=ScreenshotUrlCreatedResponse,
+    summary="Add a website rule, optionally switching it on for all members or chosen members",
+    description="As `POST /applications`: `apply_to` is optional and, when present, administrators only.",
+    responses={
+        400: {"description": "A listed member does not exist in the caller's organization. Nothing was created."},
+        403: {"description": "`apply_to` was sent by someone who is not an administrator. Nothing was created."},
+    },
+)
 def create_url(req: ScreenshotUrlCreate, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
-    url = ScreenshotUrl(**req.dict())
+    member_ids = ScreenshotPrivacyService.members_for(db, current_user, req.apply_to)
+    url = ScreenshotUrl(**req.dict(exclude={"apply_to"}))
     db.add(url)
+    db.flush()
+    applied = ScreenshotPrivacyService.exclude_members(db, member_ids, url_id=url.id)
     db.commit()
     db.refresh(url)
-    return url
+    return ScreenshotUrlCreatedResponse.model_validate(url, from_attributes=True).model_copy(update={"applied_to_count": applied})
 
 @router.put("/urls/{url_id}", response_model=ScreenshotUrlResponse)
 def update_url(url_id: int, req: ScreenshotUrlUpdate, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):

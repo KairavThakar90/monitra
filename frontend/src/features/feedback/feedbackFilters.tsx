@@ -285,9 +285,10 @@ export const CategorySelect: React.FC<{
 /**
  * A row of pill tabs, each with a count -- the one look both tab strips on the
  * org-wide screen share, so the scope tabs and the status tabs read as the same
- * kind of control.
+ * kind of control. Exported so other pages' tab strips are this same one (the
+ * Screenshot Privacy rule list uses it).
  */
-function PillTabs<T extends string>({
+export function PillTabs<T extends string>({
   options, value, onChange, counts, label,
 }: {
   options: { id: T; label: string }[];

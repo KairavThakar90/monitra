@@ -8,14 +8,23 @@ import {
   useCreateScreenshotApplicationMutation,
   useCreateScreenshotUrlMutation,
 } from '../../api/screenshotPrivacy';
-import { useGetMembersQuery } from '../../store/api/membersApi';
+import type { ScreenshotRuleScope } from '../../api/screenshotPrivacy';
+import { useGetAllMembersQuery } from '../../store/api/membersApi';
+import { useFeedback } from '../../components/FeedbackProvider';
+import { MemberMultiSelect } from '../dashboard/v2/filters';
 import { V2Shell } from './../dashboard/v2/V2Shell';
+import { PrivacyRuleCatalogue } from './PrivacyRuleCatalogue';
 
 /**
  * Screenshot Privacy: which applications and websites are blurred/skipped in
  * a member's captures. The admin picks a member, then flips each rule
  * between Captured and Excluded for that member; "+ Add Privacy Rule" adds a
  * new application or URL rule to the shared catalogue.
+ *
+ * Both member controls here -- the picker for whose settings are shown, and the
+ * "Applies to" filter in the Add Privacy Rule drawer -- are the same
+ * `MemberMultiSelect` the Reports page filters by, so the member filter looks
+ * and behaves the same everywhere.
  *
  * Redesigned (2026-09-29) to the same design language as the rest of the
  * admin area — V2Shell tables with uppercase slate headers, per-section
@@ -137,23 +146,53 @@ const RuleSection: React.FC<{
   );
 };
 
+/**
+ * The people a rule can apply to: active members who run the desktop app. A
+ * client account sees reports and never captures, and the release pipeline's
+ * service account is not a person, so neither is offered -- matching what "All
+ * members" means on the server.
+ */
+const CAPTURING_EXCLUDED_ROLES = new Set(['client', 'release_bot']);
+
+/** What the dialog says will happen, so saving is never a surprise. */
+const scopeNote = (selectedCount: number, activeCount: number) => {
+  if (selectedCount === 0) {
+    if (activeCount === 0) return 'There are no active members to apply this rule to yet.';
+    return (
+      `This rule will be switched on for all ${activeCount} active ${activeCount === 1 ? 'member' : 'members'}. ` +
+      'Members who join later are not added automatically. You can still turn it off for any member afterwards.'
+    );
+  }
+  return (
+    `This rule will be switched on for ${selectedCount} selected ${selectedCount === 1 ? 'member' : 'members'}. ` +
+    'You can still turn it off for any of them afterwards.'
+  );
+};
+
 export const AdminScreenshotPrivacy: React.FC = () => {
+  const { showToast } = useFeedback();
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
 
-  const { data: membersData, isLoading: membersLoading } = useGetMembersQuery({
-    limit: 100,
-    status: 'active',
-  });
-  const members = membersData?.items;
-  const selectedMember = members?.find((member) => member.id === selectedUserId);
+  const { data: everyone, isLoading: membersLoading } = useGetAllMembersQuery();
+  const members = useMemo(
+    () => (everyone ?? []).filter((member) => member.status === 'active' && !CAPTURING_EXCLUDED_ROLES.has(member.role)),
+    [everyone],
+  );
+  const selectedMember = members.find((member) => member.id === selectedUserId);
 
   const { data: apps, isLoading: appsLoading } = useGetScreenshotApplicationsQuery();
   const { data: urls, isLoading: urlsLoading } = useGetScreenshotUrlsQuery();
 
-  const { data: exclusions = [], isLoading: exclusionsLoading } = useGetUserExclusionsQuery(
+  // `currentData`, not `data`: RTK Query keeps the *previous* member's rows in
+  // `data` while the next member's load, which painted one member's Captured /
+  // Excluded states under another's name (and let a toggle act on them). Until
+  // this member's own rows arrive the section is loading, not "all captured".
+  const { currentData: exclusionsData, isError: exclusionsFailed } = useGetUserExclusionsQuery(
     selectedUserId ?? 0,
     { skip: !selectedUserId },
   );
+  const exclusions = useMemo(() => exclusionsData ?? [], [exclusionsData]);
+  const exclusionsLoading = !!selectedUserId && exclusionsData === undefined && !exclusionsFailed;
 
   const [createExclusion] = useCreateUserExclusionMutation();
   const [deleteExclusion] = useDeleteUserExclusionMutation();
@@ -230,10 +269,17 @@ export const AdminScreenshotPrivacy: React.FC = () => {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerType, setDrawerType] = useState<'application' | 'url'>('application');
   const [form, setForm] = useState({ name: '', process_name: '', domain: '', url_pattern: '', category: '' });
+  // Who the new rule is switched on for. Empty is "All members", the same
+  // convention as the member filter on every report page.
+  const [ruleMemberIds, setRuleMemberIds] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const closeDrawer = () => {
     setDrawerOpen(false);
     setForm({ name: '', process_name: '', domain: '', url_pattern: '', category: '' });
+    setRuleMemberIds([]);
+    setSaveError(null);
   };
 
   const formValid =
@@ -242,24 +288,51 @@ export const AdminScreenshotPrivacy: React.FC = () => {
       : Boolean(form.name && form.domain && form.url_pattern && form.category);
 
   const handleCreateRule = async () => {
-    if (!formValid) return;
-    if (drawerType === 'application') {
-      await createApplication({
-        name: form.name,
-        process_name: form.process_name,
-        category: form.category,
-        is_active: true,
-      });
-    } else {
-      await createUrl({
-        name: form.name,
-        domain: form.domain,
-        url_pattern: form.url_pattern,
-        category: form.category,
-        is_active: true,
-      });
+    if (!formValid || saving) return;
+    const applyTo: ScreenshotRuleScope =
+      ruleMemberIds.length === 0
+        ? { scope: 'all' }
+        : { scope: 'members', user_ids: ruleMemberIds.map(Number) };
+
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const created =
+        drawerType === 'application'
+          ? await createApplication({
+              name: form.name,
+              process_name: form.process_name,
+              category: form.category,
+              is_active: true,
+              apply_to: applyTo,
+            }).unwrap()
+          : await createUrl({
+              name: form.name,
+              domain: form.domain,
+              url_pattern: form.url_pattern,
+              category: form.category,
+              is_active: true,
+              apply_to: applyTo,
+            }).unwrap();
+      const count = created.applied_to_count ?? 0;
+      showToast(
+        count > 0
+          ? `Rule added and switched on for ${count} ${count === 1 ? 'member' : 'members'}.`
+          : 'Rule added. There were no active members to switch it on for.',
+        'success',
+      );
+      closeDrawer();
+    } catch (err) {
+      // Kept open, with what was typed, so a refusal costs nothing.
+      const data = (err as { data?: { detail?: unknown } } | null)?.data;
+      setSaveError(
+        typeof data?.detail === 'string'
+          ? data.detail
+          : 'Could not save the rule. Nothing was changed — please try again.',
+      );
+    } finally {
+      setSaving(false);
     }
-    closeDrawer();
   };
 
   const field = (label: string, node: React.ReactNode) => (
@@ -306,20 +379,12 @@ export const AdminScreenshotPrivacy: React.FC = () => {
             </div>
           </div>
           <div className="w-full md:w-80">
-            <select
-              className={inputClass}
-              value={selectedUserId || ''}
-              onChange={(e) => setSelectedUserId(Number(e.target.value))}
-            >
-              <option value="" disabled>
-                Select a member…
-              </option>
-              {members?.map((member) => (
-                <option key={member.id} value={member.id}>
-                  {member.name} ({member.email})
-                </option>
-              ))}
-            </select>
+            <MemberMultiSelect
+              single
+              members={members}
+              selected={selectedUserId ? [String(selectedUserId)] : []}
+              onChange={(ids) => setSelectedUserId(ids[0] ? Number(ids[0]) : null)}
+            />
           </div>
         </div>
 
@@ -329,21 +394,10 @@ export const AdminScreenshotPrivacy: React.FC = () => {
           </div>
         )}
 
+        {/* No member picked: the rules that have been added, as Applications and
+            Websites tabs. Picking a member swaps this for their switches. */}
         {!selectedUserId && !isLoading && (
-          <div className="rounded-xl border border-[#E2E8F0] bg-white p-12 text-center shadow-sm">
-            <svg className="mx-auto h-12 w-12 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="1.5"
-                d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z M15 13a3 3 0 11-6 0 3 3 0 016 0z"
-              />
-            </svg>
-            <h3 className="mt-4 text-sm font-bold text-slate-800">No member selected</h3>
-            <p className="mt-1 text-xs font-medium text-slate-500">
-              Choose a member above to see which applications and websites are excluded from their screenshots.
-            </p>
-          </div>
+          <PrivacyRuleCatalogue applications={apps ?? []} websites={urls ?? []} />
         )}
 
         {selectedUserId && !isLoading && (
@@ -410,7 +464,7 @@ export const AdminScreenshotPrivacy: React.FC = () => {
             <div>
               <h2 className="text-lg font-bold text-slate-800">Add Privacy Rule</h2>
               <p className="text-[12px] text-slate-400">
-                Adds to the shared catalogue; exclude it per member afterwards.
+                Adds to the shared catalogue and switches it on for the members chosen below.
               </p>
             </div>
             <button
@@ -511,22 +565,39 @@ export const AdminScreenshotPrivacy: React.FC = () => {
                   placeholder="e.g. Communication"
                 />,
               )}
+
+              <div>
+                <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Applies to
+                </label>
+                <MemberMultiSelect members={members} selected={ruleMemberIds} onChange={setRuleMemberIds} align="left" />
+                <p className="mt-2 text-[12px] leading-5 text-slate-500" data-testid="rule-scope-note">
+                  {scopeNote(ruleMemberIds.length, members.length)}
+                </p>
+              </div>
+
+              {saveError && (
+                <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-600">
+                  {saveError}
+                </div>
+              )}
             </div>
           </div>
 
           <div className="flex justify-end gap-3 border-t border-slate-100 bg-slate-50 px-6 py-4">
             <button
               onClick={closeDrawer}
-              className="cursor-pointer rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-600 transition hover:bg-slate-50"
+              disabled={saving}
+              className="cursor-pointer rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
             >
               Cancel
             </button>
             <button
               onClick={handleCreateRule}
-              disabled={!formValid}
+              disabled={!formValid || saving}
               className="cursor-pointer rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Save Rule
+              {saving ? 'Saving…' : 'Save Rule'}
             </button>
           </div>
         </div>
