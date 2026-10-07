@@ -30,15 +30,25 @@ export const ENDPOINTS = {
     REFRESH: `${API_BASE_URL}/auth/refresh`,
     LOGOUT: `${API_BASE_URL}/auth/logout`,
     ME: `${API_BASE_URL}/auth/me`,
-    // A client has no password: this emails a fresh single-use sign-in link
-    // to an approved client account, or does nothing silently if the address
-    // does not match one.
+    // A way in that needs no password: this emails a fresh single-use sign-in
+    // link to an active client account, or refuses if the address does not
+    // match one.
     CLIENT_LOGIN_LINK: `${API_BASE_URL}/auth/client/login-link`,
     CLIENT_LOGIN: `${API_BASE_URL}/auth/client/login`,
+    // Asked with the email alone, before anything secret is sent: does this
+    // address sign in with a client password (so the password goes here) or not
+    // (so it goes to the staff provider)?
+    CLIENT_SIGN_IN_METHOD: `${API_BASE_URL}/auth/client/sign-in-method`,
   },
   CLIENTS: {
     BASE: `${API_BASE_URL}/clients`,
     INVITATIONS: `${API_BASE_URL}/clients/invitations`,
+    // The set-password page's two calls, both made from an invitation email's
+    // link and both without a session: which account the link is for, and
+    // choosing its password. The token in the path is the whole credential.
+    INVITATION: (token: string) => `${API_BASE_URL}/clients/invitations/${encodeURIComponent(token)}`,
+    INVITATION_PASSWORD: (token: string) =>
+      `${API_BASE_URL}/clients/invitations/${encodeURIComponent(token)}/password`,
     ACCESS: (id: string | number) => `${API_BASE_URL}/clients/${id}/access`,
     RESEND_INVITATION: (id: string | number) => `${API_BASE_URL}/clients/${id}/resend-invitation`,
     DEACTIVATE: (id: string | number) => `${API_BASE_URL}/clients/${id}/deactivate`,

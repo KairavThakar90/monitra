@@ -1057,7 +1057,7 @@ async def _send_immediately_in_background(message) -> bool:
 def queue_client_invitation_email(
     db: Session, *, invitation, client, token: str, project_names: list[str], background_tasks=None,
 ) -> bool:
-    """Send one client invitation, with its Approve/Reject links.
+    """Send one client invitation, with its Set-password and Reject links.
 
     Returns whether a send was attempted (queued to run, or sent). Does not
     guarantee delivery -- there is no durable retry here, by design; see the

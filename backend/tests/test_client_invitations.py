@@ -1,4 +1,4 @@
-"""Client invitations: creation, single-use approve/reject, and the access
+"""Client invitations: creation, single-use set-password/reject, and the access
 boundary the client portal rests on.
 
 Runs against a real SQLite database, not a mocked session — the interesting
@@ -65,6 +65,10 @@ def _bigint_is_integer_on_sqlite(type_, compiler, **kw):
 
 
 ORG = 1
+
+#: A password that meets the length policy, for the tests that only need an
+#: invitation accepted.
+PASSWORD = "correct horse battery"
 
 
 class ClientInvitationCase(unittest.TestCase):
@@ -169,7 +173,7 @@ class ClientInvitationCase(unittest.TestCase):
         )
         self.assertEqual(client.user_id, orphaned_user.id)
 
-    # -------------------------------------------------------- approve/reject
+    # ---------------------------------------------- set password / reject
 
     def _invite(self):
         with patch("app.services.client_invitation_service.secrets.token_urlsafe", return_value="plaintext-token"):
@@ -178,21 +182,22 @@ class ClientInvitationCase(unittest.TestCase):
             )
         return "plaintext-token"
 
-    def test_approving_activates_the_client_and_the_token_cannot_be_reused(self):
+    def test_setting_a_password_activates_the_client_and_the_token_cannot_be_reused(self):
         token = self._invite()
 
-        handoff_token, expires_at = ClientInvitationService.approve_invitation(self.db, token)
-        self.assertTrue(handoff_token)
+        email = ClientInvitationService.set_password(self.db, token, PASSWORD)
+        self.assertEqual(email, "client@example.com")
 
         client = self.db.query(Client).filter_by(email="client@example.com").one()
         self.assertEqual(client.status, "active")
         user = self.db.get(User, client.user_id)
         self.assertTrue(user.is_active)
         self.assertEqual(user.status, "active")
+        self.assertTrue(user.password_hash)
 
-        # A second click on the same link is refused, not re-approved.
+        # A second submission of the same link is refused, not accepted again.
         with self.assertRaises(HTTPException) as ctx:
-            ClientInvitationService.approve_invitation(self.db, token)
+            ClientInvitationService.set_password(self.db, token, "a different password")
         self.assertEqual(ctx.exception.status_code, 401)
 
     def test_rejecting_marks_the_invitation_and_leaves_the_account_inactive(self):
@@ -209,14 +214,17 @@ class ClientInvitationCase(unittest.TestCase):
 
     def test_an_unknown_token_is_refused(self):
         with self.assertRaises(HTTPException) as ctx:
-            ClientInvitationService.approve_invitation(self.db, "not-a-real-token")
+            ClientInvitationService.set_password(self.db, "not-a-real-token", PASSWORD)
+        self.assertEqual(ctx.exception.status_code, 401)
+        with self.assertRaises(HTTPException) as ctx:
+            ClientInvitationService.get_invitation(self.db, "not-a-real-token")
         self.assertEqual(ctx.exception.status_code, 401)
 
     # ------------------------------------------------------------ deactivate
 
     def test_deactivating_an_active_client_disables_the_account(self):
         token = self._invite()
-        ClientInvitationService.approve_invitation(self.db, token)
+        ClientInvitationService.set_password(self.db, token, PASSWORD)
         client = self.db.query(Client).filter_by(email="client@example.com").one()
 
         deactivated = ClientInvitationService.deactivate_client(self.db, self.admin, client.id)
@@ -234,7 +242,7 @@ class ClientInvitationCase(unittest.TestCase):
 
     def test_a_deactivated_client_can_be_resent_an_invitation(self):
         token = self._invite()
-        ClientInvitationService.approve_invitation(self.db, token)
+        ClientInvitationService.set_password(self.db, token, PASSWORD)
         client = self.db.query(Client).filter_by(email="client@example.com").one()
         ClientInvitationService.deactivate_client(self.db, self.admin, client.id)
 

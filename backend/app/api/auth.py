@@ -2,7 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.schemas.user import UserRead, DevLoginRequest, LoginRequest, SsoTokenRequest
-from app.schemas.client import ClientLoginLinkRequest
+from app.schemas.client import ClientLoginLinkRequest, ClientLoginRequest, ClientSignInMethod
 from app.schemas.token import LogoutRequest, RefreshRequest, SsoHandoffResponse, TokenPair
 from app.services.auth import AuthService
 from app.models.user import User
@@ -141,10 +141,10 @@ def get_me(current_user: User = Depends(get_current_user)):
 @router.post(
     "/client/login-link",
     status_code=204,
-    summary="Email an active client a fresh passwordless sign-in link",
+    summary="Email an active client a fresh single-use sign-in link",
     description=(
-        "A client has no password: every sign-in after the initial invitation "
-        "approval goes through a single-use link emailed here. Returns 404 "
+        "A way back in that needs no password: a single-use link emailed to the "
+        "client's own address, which proves they control it. Returns 404 "
         "when the address is not an active client account, so the sign-in "
         "screen can tell the visitor plainly rather than pretending to have "
         "sent something."
@@ -161,20 +161,47 @@ def request_client_login_link(
 
 
 @router.post(
+    "/client/sign-in-method",
+    response_model=ClientSignInMethod,
+    summary="Does this address sign in with a client password?",
+    description=(
+        "Called by the web sign-in form with the email alone, before it has sent "
+        "anything secret, to decide where the password goes: to the staff provider, "
+        "or to `POST /auth/client/login`. `password_required` is true only for an "
+        "active client who chose a password; it is false for everyone else "
+        "(staff, unknown addresses, older clients with no password, deactivated "
+        "clients), so it reveals nothing a client's own sign-in screen does not."
+    ),
+)
+def client_sign_in_method(payload: ClientLoginLinkRequest, db: Session = Depends(get_db, scope="function")):
+    return {"password_required": AuthService.client_sign_in_method(db, payload.email)}
+
+
+@router.post(
     "/client/login",
     response_model=TokenPair,
-    summary="Sign a client in immediately from their email address alone",
+    summary="Sign a client in -- with the password they chose, or (older accounts) their email alone",
     description=(
-        "A client has no password. This issues a real session directly from "
-        "the email address, with no link to click and no second factor -- "
-        "deliberately weaker than every other credential in this system, at "
-        "the product's explicit request. Scoped to `client`-role accounts "
-        "only, which hold nothing beyond read-only access to the specific "
-        "projects an admin chose to share."
+        "**With `password`:** signs in the client who chose that password from "
+        "their invitation link. Any failure -- unknown address, not a client, wrong "
+        "password, account not active -- is the same 401, so a response never says "
+        "which.\n\n"
+        "**Without `password`:** for client accounts that predate passwords. This "
+        "issues a real session directly from the email address, with no second "
+        "factor -- deliberately weaker than every other credential in this system, "
+        "at the product's explicit request. Scoped to `client`-role accounts only, "
+        "which hold nothing beyond read-only access to the specific projects an "
+        "admin chose to share. **Refused with 401 for a client who has chosen a "
+        "password**: from then on the password is the only way in."
     ),
-    responses={404: {"description": "No active client account matches this email"}},
+    responses={
+        401: {"description": "Wrong credentials, or this account has a password and none was sent."},
+        404: {"description": "No active client account matches this email (email-only sign-in)."},
+    },
 )
-def client_direct_login(payload: ClientLoginLinkRequest, db: Session = Depends(get_db, scope="function")):
+def client_login(payload: ClientLoginRequest, db: Session = Depends(get_db, scope="function")):
+    if payload.password is not None:
+        return AuthService.client_password_login(db, payload.email, payload.password)
     return AuthService.client_direct_login(db, payload.email)
 
 

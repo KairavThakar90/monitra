@@ -9,7 +9,10 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user, require_permission
 from app.models.user import User
-from app.schemas.client import ClientAccessUpdate, ClientInvitationCreate, ClientListResponse
+from app.schemas.client import (
+    ClientAccessUpdate, ClientInvitationCreate, ClientInvitationRead, ClientListResponse,
+    ClientSetPassword,
+)
 from app.services.client_invitation_service import ClientInvitationService
 from app.services.client_portal_service import ClientPortalService
 
@@ -109,21 +112,65 @@ def resend_invitation(
     return {"id": client.id, "status": client.status}
 
 
+# ------------------------------------------- the invitation link's own calls
+#
+# No auth dependency: the person opening an invitation has no account to sign
+# in to yet. The token in the path is the whole credential -- 256 bits, single
+# use, expiring (see ClientInvitationRepository) -- and every way it can fail
+# answers with the same 401, so a response never says *why* a link is unusable.
+
+@router.get(
+    "/clients/invitations/{token}",
+    response_model=ClientInvitationRead,
+    summary="Which account an invitation link is for (read-only; does not use the link up)",
+    responses={401: {"description": "The link is unknown, expired, already used or replaced."}},
+)
+def get_invitation(token: str, db: Session = Depends(get_db, scope="function")):
+    return ClientInvitationService.get_invitation(db, token)
+
+
+@router.post(
+    "/clients/invitations/{token}/password",
+    response_model=ClientInvitationRead,
+    summary="Choose a password from an invitation link and activate the client account",
+    description=(
+        "Accepts the invitation: stores the password (as a hash), activates the account "
+        "and uses the link up. It issues no session -- the client is sent to the sign-in "
+        "screen to enter the address and password they just chose. Returns the account's "
+        "email for that screen."
+    ),
+    responses={
+        401: {"description": "The link is unknown, expired, already used or replaced."},
+        422: {"description": "The password does not meet the length policy."},
+    },
+)
+def set_invitation_password(
+    token: str,
+    payload: ClientSetPassword,
+    db: Session = Depends(get_db, scope="function"),
+):
+    email = ClientInvitationService.set_password(db, token, payload.password)
+    return {"email": email}
+
+
 # ------------------------------------------------- invitation action links
 #
-# No auth dependency: these are the direct, unauthenticated GET links the
-# invitation email's two buttons point at. Each token is single-use and
-# expiring (see ClientInvitationRepository), which is the entire security
-# boundary here -- there is deliberately no session to check.
+# The direct, unauthenticated GET links an invitation email can point at. They
+# are already embedded in mail that has been sent, so their paths never change.
 
 @public_router.get(
     "/clients/invitations/{token}/approve",
-    summary="Approve a client invitation (opened from the invitation email)",
+    summary="Open the set-password page for an invitation (the link older invitation emails carry)",
 )
-def approve_invitation(token: str, db: Session = Depends(get_db, scope="function")):
-    handoff_token, _expires_at = ClientInvitationService.approve_invitation(db, token)
+def approve_invitation(token: str):
+    """Older invitation emails carried an *Approve* button pointing here, and it
+    used to approve the invitation and sign the client in with no password. An
+    invitation is now accepted by choosing a password, so this only forwards to
+    that page. It changes nothing -- a GET that consumed the link would be spent
+    by any mail scanner that follows links -- and the token stays valid for the
+    page to use."""
     base = (settings.MONITRA_APP_URL or "").rstrip("/")
-    return RedirectResponse(url=f"{base}/login?token={handoff_token}")
+    return RedirectResponse(url=f"{base}/client/set-password/{token}")
 
 
 @public_router.get(

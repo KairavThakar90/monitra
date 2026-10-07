@@ -929,29 +929,36 @@ def client_invitation_subject() -> str:
 
 
 def _client_invitation_urls(token: str) -> tuple[str, str]:
-    """The direct backend GET endpoints the two buttons point at.
+    """Where the two buttons point: `(set_password_url, reject_url)`.
 
-    Deliberately built from `API_BASE_URL`, not `MONITRA_APP_URL`: these links
-    are meant to be opened once, unauthenticated, and hit this service
-    directly -- the backend performs the approve/reject and redirects into the
-    web client itself. See `app/api/clients.py`.
+    *Set your password* opens a page of the web client (`MONITRA_APP_URL`), not
+    a backend endpoint. Accepting an invitation means typing a password into a
+    form, which a link cannot do on its own -- and opening the page changes
+    nothing, so a mail scanner that follows every link cannot use the
+    invitation up. *Reject* stays a direct backend link (`API_BASE_URL`) that
+    the backend answers and redirects from; see `app/api/clients.py`.
     """
-    base = (settings.API_BASE_URL or "").strip().rstrip("/")
-    if not base:
+    app_base = (settings.MONITRA_APP_URL or "").strip().rstrip("/")
+    api_base = (settings.API_BASE_URL or "").strip().rstrip("/")
+    if not app_base or not api_base:
         # Without a base these render as host-less links ("http:///clients/…"
         # once a mail client absolutises them), which is exactly how a
         # production invitation shipped with broken buttons on 2026-09-29.
         # The email still sends -- the token is valid and support can hand
         # the client a working link -- but the misconfiguration is shouted.
         logger.error(
-            "CLIENT_INVITATION_LINKS_UNCONFIGURED: API_BASE_URL is not set; "
-            "this invitation's Approve/Reject buttons will be broken relative links"
+            "CLIENT_INVITATION_LINKS_UNCONFIGURED: %s not set; this invitation's "
+            "buttons will be broken relative links",
+            " and ".join(
+                name for name, value in (("MONITRA_APP_URL", app_base), ("API_BASE_URL", api_base))
+                if not value
+            ),
         )
-    return f"{base}/clients/invitations/{token}/approve", f"{base}/clients/invitations/{token}/reject"
+    return f"{app_base}/client/set-password/{token}", f"{api_base}/clients/invitations/{token}/reject"
 
 
 def build_client_invitation_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
-    """The invitation, with its Approve/Reject buttons, for one client."""
+    """The invitation, with its Set-password and Reject buttons, for one client."""
     subject = client_invitation_subject()
     project_names = [str(name) for name in (payload.get("project_names") or [])]
 
@@ -981,11 +988,15 @@ def build_client_invitation_email(payload: dict[str, Any], recipients: list[str]
         )
     )
 
-    approve_url, reject_url = _client_invitation_urls(str(payload.get("token") or ""))
+    set_password_url, reject_url = _client_invitation_urls(str(payload.get("token") or ""))
+    expiry_hours = settings.CLIENT_INVITATION_EXPIRE_HOURS
 
     html = render_page(
         "client_invitation.html",
-        {**frame, "project_rows": project_rows, "approve_url": approve_url, "reject_url": reject_url},
+        {
+            **frame, "project_rows": project_rows, "set_password_url": set_password_url,
+            "reject_url": reject_url, "expiry_hours": expiry_hours,
+        },
     )
 
     text_lines = [
@@ -998,9 +1009,11 @@ def build_client_invitation_email(payload: dict[str, Any], recipients: list[str]
     text_lines += [f"  - {name}" for name in project_names] if project_names else ["  (none yet)"]
     text_lines += [
         "",
-        "Your login credential is your email address. There is no password to set.",
+        "To get started, set a password for your account. Then sign in with this "
+        "email address and the password you chose.",
+        f"The link can be used once and expires in {expiry_hours} hours.",
         "",
-        f"Approve invitation: {approve_url}",
+        f"Set your password: {set_password_url}",
         f"Not needed / reject: {reject_url}",
         "",
         "Monitra — Staff Management System",
@@ -1014,7 +1027,7 @@ def build_client_invitation_email(payload: dict[str, Any], recipients: list[str]
         text="\n".join(text_lines),
         reply_to=(settings.EMAIL_REPLY_TO or "").strip() or None,
         inline_images=frame["_inline_images"],
-        # Carries Approve/Reject links: copying anyone would let them act as the client.
+        # Carries the set-password and reject links: copying anyone would let them act as the client.
         copy_exempt=True,
     )
 

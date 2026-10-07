@@ -95,7 +95,7 @@ class OutgoingEmail:
     inline_images: Sequence[InlineImage] = field(default_factory=tuple)
     #: True for a message that must reach its recipient alone, so the standing
     #: CC (`EMAIL_CC_ADDRESSES`) is not added. Reserved for mail carrying a
-    #: bearer secret -- a one-time sign-in link, an invitation's Approve/Reject
+    #: bearer secret -- a one-time sign-in link, an invitation's Set-password/Reject
     #: links -- where copying anyone would hand them the recipient's access, and
     #: for rehearsals that are meant to reach only their own test list.
     copy_exempt: bool = False

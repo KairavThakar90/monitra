@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./authContext";
 import {
   LOGIN_DISABLED_MESSAGE,
@@ -15,13 +15,18 @@ import {
   useFormValidation,
 } from "../../validation";
 
-/** Read once on mount: whether this load is a client invitation's Reject
- * redirect (`/login?client_invite=rejected`), so the reason can be shown
- * without it reappearing after the query string is cleaned up. */
-const consumeRejectedInviteFlag = (): boolean => {
+/** What a client invitation sent the visitor back to the sign-in screen to say. */
+type InviteNotice = "rejected" | "password_set";
+
+/** Read once on mount: whether this load follows a client invitation -- the
+ * Reject redirect (`/login?client_invite=rejected`) or the set-password page
+ * (`/login?client_invite=password_set`) -- so the reason can be shown without
+ * it reappearing after the query string is cleaned up. */
+const consumeInviteNotice = (): InviteNotice | null => {
   try {
     const params = new URLSearchParams(window.location.search);
-    if (params.get("client_invite") !== "rejected") return false;
+    const value = params.get("client_invite");
+    if (value !== "rejected" && value !== "password_set") return null;
     params.delete("client_invite");
     const query = params.toString();
     window.history.replaceState(
@@ -29,9 +34,9 @@ const consumeRejectedInviteFlag = (): boolean => {
       document.title,
       `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`
     );
-    return true;
+    return value;
   } catch {
-    return false;
+    return null;
   }
 };
 
@@ -63,9 +68,15 @@ const LockIcon = () => (
 export const LoginScreen: React.FC = () => {
   const { login, loginAsClient, ssoError } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
-  // Login states
-  const [email, setEmail] = useState("");
+  // Login states. A client who has just chosen their password arrives with the
+  // address already filled in, so all that is left to type is the password.
+  const [prefilledEmail] = useState<string>(() => {
+    const carried = (location.state as { email?: unknown } | null)?.email;
+    return typeof carried === "string" ? carried : "";
+  });
+  const [email, setEmail] = useState(prefilledEmail);
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   // A failed `?token=...` handoff explains itself here rather than dropping the
@@ -76,7 +87,7 @@ export const LoginScreen: React.FC = () => {
   const [showLoginDisabledPopup, setShowLoginDisabledPopup] = useState<boolean>(peekLoginDisabledNotice);
   useEffect(() => clearLoginDisabledNotice(), []);
   const [isLoading, setIsLoading] = useState(false);
-  const [rejectedInvite] = useState<boolean>(consumeRejectedInviteFlag);
+  const [inviteNotice] = useState<InviteNotice | null>(consumeInviteNotice);
 
   // Forgot password modal states
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -103,7 +114,9 @@ export const LoginScreen: React.FC = () => {
     newPassword: { rule: "password", label: "New password" },
   });
 
-  // A client, signing in with just their email: either the Password field is
+  // An *older* client, signing in with just their email (one who never set a
+  // password -- a client who has one must enter it, and is refused here with a
+  // message saying so): either the Password field is
   // blank, or it holds the same address as Email. The second case is
   // deliberate, not a coincidence to guard against -- a browser that
   // autofills a saved credential routinely fills an identical value into
@@ -216,10 +229,20 @@ export const LoginScreen: React.FC = () => {
           </div>
 
           <div className="mt-8">
-          {rejectedInvite && (
+          {inviteNotice === "rejected" && (
             <div className="mb-6 p-3 bg-slate-50 border border-[#E2E8F0] rounded-md text-sm text-[#475569]">
               You have declined this client invitation. If this was a mistake, ask
               the person who invited you to send a new one.
+            </div>
+          )}
+
+          {inviteNotice === "password_set" && (
+            <div
+              role="status"
+              className="mb-6 p-3 bg-emerald-50 border border-emerald-200 rounded-md text-sm text-emerald-700"
+            >
+              Your password has been set. Sign in with your email address and the
+              password you just chose.
             </div>
           )}
 
@@ -312,6 +335,7 @@ export const LoginScreen: React.FC = () => {
                   name="password"
                   type={showPassword ? "text" : "password"}
                   autoComplete="current-password"
+                  autoFocus={!!prefilledEmail}
                   disabled={isLoading}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}

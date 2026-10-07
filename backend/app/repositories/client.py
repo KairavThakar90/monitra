@@ -80,8 +80,9 @@ class ClientRepository:
     @staticmethod
     def create_client_user(db: Session, *, organization_id: int, email: str, name: str) -> User:
         """A client's sign-in account: created inactive at invite time and
-        activated only once the invitation is approved. No password -- a
-        client authenticates through the passwordless magic-link flow."""
+        activated only once the client accepts the invitation by choosing a
+        password (`ClientInvitationService.set_password`). It has no password
+        until then, which is also what keeps it from signing in."""
         user = User(
             organization_id=organization_id,
             username=email.split("@")[0][:255],

@@ -1,9 +1,10 @@
 <!--
-  Client invitation — sent once per invitation, carrying its own Approve and
-  Reject links (direct backend GET redirects, single-use, expiring). No
-  password appears anywhere in this message: the recipient's login credential
-  is their email address, and signing in happens through a passwordless link
-  after they approve.
+  Client invitation — sent once per invitation, carrying its own Set-password
+  and Reject links (single-use, expiring). The set-password button opens a page
+  of the web client where the recipient chooses a password; the reject button is
+  a direct backend link. No password appears anywhere in this message: the
+  recipient chooses theirs on that page and then signs in with this address and
+  that password.
 -->
 <h1 class="st-h1" style="margin:0 0 14px 0;font-family:Helvetica,Arial,sans-serif;font-size:28px;line-height:36px;font-weight:700;color:#0F172A;letter-spacing:-0.4px;">
   You're invited to Monitra
@@ -29,9 +30,10 @@
 </table>
 
 <p style="margin:0 0 26px 0;font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:23px;color:#374151;background-color:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:12px 16px;">
-  <strong>Your login credential is your email address.</strong> There is no
-  password to set — once you approve this invitation, you can always sign back
-  in from the login page using this same address.
+  <strong>Set a password to get started.</strong> Use the button below to choose
+  your password, then sign in from the login page with this email address and
+  the password you chose. The link can be used once and expires in
+  {{ expiry_hours }} hours.
 </p>
 
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
@@ -39,7 +41,7 @@
     <td width="50%" align="center" style="padding:0 8px 0 0;">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
         <tr><td align="center" style="background-color:#16A34A;border-radius:8px;">
-          <a href="{{ approve_url }}" style="display:block;padding:13px 10px;font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;color:#FFFFFF;text-decoration:none;">Approve Invitation</a>
+          <a href="{{ set_password_url }}" style="display:block;padding:13px 10px;font-family:Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;color:#FFFFFF;text-decoration:none;">Set Your Password</a>
         </td></tr>
       </table>
     </td>

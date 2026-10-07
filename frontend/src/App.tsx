@@ -2,6 +2,7 @@ import React from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './features/auth/authContext'
 import { LoginScreen } from './features/auth/LoginScreen'
+import { ClientSetPassword } from './features/auth/ClientSetPassword'
 import { DownloadPage } from './features/download/DownloadPage'
 import { DashboardV2 } from './features/dashboard/v2/DashboardV2'
 import { ReportPage } from './features/dashboard/v2/ReportPage'
@@ -235,6 +236,11 @@ const AppRoutes: React.FC = () => {
         path="/login"
         element={isAuthenticated ? <Navigate to={home} replace /> : <LoginScreen />}
       />
+
+      {/* Public: the page an invitation email's button opens, where an invited
+          client chooses their password. They have no account to sign in to yet,
+          and the token in the address is the whole credential. */}
+      <Route path="/client/set-password/:token" element={<ClientSetPassword />} />
 
       {/* Public, and deliberately not redirected when signed in: someone
           installing Monitra for the first time has no account yet, and asking

@@ -261,11 +261,12 @@ class Settings(BaseSettings):
 
     # ── Client invitations ────────────────────────────────────────────────
     #: This backend's own publicly reachable base URL. The invitation email's
-    #: Approve/Reject buttons are direct backend GET links (not frontend
-    #: routes), so they need an absolute URL to this service rather than to
-    #: MONITRA_APP_URL, which points at the web client.
+    #: *Reject* button is a direct backend GET link, so it needs an absolute URL
+    #: to this service. (Its *Set your password* button opens a page of the web
+    #: client instead and is built from MONITRA_APP_URL, which must therefore be
+    #: set for invitations to work.)
     API_BASE_URL: str = ""
-    #: How long an invitation's Approve/Reject link stays valid.
+    #: How long an invitation's Set-password/Reject link stays valid.
     CLIENT_INVITATION_EXPIRE_HOURS: int = 72
 
     # ── Release announcement ──────────────────────────────────────────────

@@ -56,6 +56,28 @@ class ClientInvitationRepository:
         return result.rowcount > 0
 
     @staticmethod
+    def supersede_other_pending(db: Session, invitation: ClientInvitation) -> int:
+        """Retire every *other* still-pending link this client was sent.
+
+        A resend issues a new link and leaves the earlier one valid until it
+        expires. Once the client has used one of them to set their password,
+        the rest must stop working: a link that can set a password is a way
+        into the account, and an old one sitting in a mailbox for up to three
+        days must not be able to change what the client just chose.
+        """
+        result = db.execute(
+            ClientInvitation.__table__.update()
+            .where(
+                ClientInvitation.client_id == invitation.client_id,
+                ClientInvitation.id != invitation.id,
+                ClientInvitation.status == "pending",
+            )
+            .values(status="superseded")
+        )
+        db.commit()
+        return result.rowcount
+
+    @staticmethod
     def mark_rejected(db: Session, invitation: ClientInvitation) -> bool:
         now = datetime.now(timezone.utc)
         result = db.execute(
