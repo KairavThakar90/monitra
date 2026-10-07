@@ -1111,3 +1111,74 @@ python tests/soak/run_soak.py --duration 120  # scale + soak
 The boundary check fails the build if feature code touches `QThread`,
 `QThreadPool` or `QRunnable`, imports a service implementation instead of
 `public_api`, or resurrects one of the removed modules.
+
+---
+
+## 16. Layout: what decides the size of things
+
+The dashboard is a PySide6 layout, not CSS, so "responsive" here means *size hints,
+size policies and a handful of width-driven switches*. The rule that keeps it stable:
+**every switch is a pure function of the width (or height) it is given -- never of
+what the widgets happen to contain, never of history.** The same width always draws
+the same screen.
+
+### The shell
+
+```
+DashboardWindow
+├── SidebarWidget          fixed 300px (60px collapsed); never changes with the window
+└── right column
+    ├── TopBar             full form / compact form, chosen by width (below)
+    └── ContentScroll      a QScrollArea -- scrolls only below the content's own floor
+        └── summary cards · task/Activity splitter
+```
+
+`ContentScroll` is why the window can always be made to fit its screen. Qt honours a
+layout's minimum size, so before it existed the dashboard's floor (1136x790) made a
+1366x768 laptop at 125% scaling (about 1092x578 usable) open a window larger than the
+screen, with its bottom edge unreachable. At or above the content's floor the scroll
+area is invisible; below it, a scrollbar appears instead of a clipped window.
+
+### The switches
+
+| What | Rule | Where |
+|---|---|---|
+| Screenshot columns | `screenshot_columns(width)`: as many as fit at >= 220px a card, 1..4, equal stretch; unused columns stretch 0 | `ui/activity_section.py` |
+| Summary cards | one row at >= `SINGLE_ROW_MINIMUM_WIDTH` (1202px), else 2x2 | `ui/stat_cards.py` |
+| Top bar | compact (icon-only Add Task/Request, short date, no Ctrl+K chip) below the full form's minimum width | `ui/topbar.py` |
+| Task name column | the one stretch column; its *applied* width gives way (to 160px) only while the section is narrower than the model needs | `ui/task_table.py` |
+
+The window's width floor is the sidebar plus the top bar's *compact* minimum. Nothing
+else sets it: the content pane scrolls, and the task list reports its own low floor.
+
+### Scrollbars never move a column
+
+Every vertical scrollbar slot that sits beside aligned content is reserved
+(`ScrollBarAlwaysOn`; the bar is a transparent 6px track, so an empty slot is
+invisible), and whatever sits outside the scroll area reserves the same width. The
+task header does this itself (`_sync_header_gutter`: the measured slot, plus the
+rows' 2px border). The Activity panel never scrolls sideways.
+
+### Refresh does not rebuild
+
+`ScreenshotsTabView.render_view` is idempotent and incremental: a card whose
+screenshot is unchanged is the *same widget* after a refresh, a changed one is replaced
+in its own cell, order is whatever the data gives, and a state panel already showing
+is left alone. Loading, empty and loaded all have the same minimum height
+(`SCREENSHOT_STATE_MIN_HEIGHT`).
+
+### Not decided by a rule -- the owner's call
+
+How the content area is *divided* (the summary cards' 2x2 wrap and the 40/60
+task/Activity splitter) is a visual decision the owner has made before and reversed
+(see DO_NOT_DO.md). Change it only with a screenshot of the result in hand.
+
+### Verifying a layout
+
+`tests/test_layout_stability.py` (the grid) and `tests/test_layout_shell.py` (the shell,
+top bar, task list) run the real widgets at the usable sizes of real screens and assert
+on geometry. They assert *structure*, not pixel counts: the test machine's fonts are not
+the user's. To look at the real thing, run a throwaway test with
+`QT_QPA_PLATFORM=windows` (real fonts, real DPI; add `QT_SCALE_FACTOR=1.25` to see a
+scaled display) and `widget.grab().save(...)`; offscreen needs `QT_QPA_FONTDIR` or it
+draws boxes and every text width is wrong.

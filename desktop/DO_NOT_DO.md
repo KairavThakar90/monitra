@@ -702,6 +702,77 @@ long (`searchable=True`). It is still a `QComboBox` — the dialogs' own code
 does not change. `tests/test_dropdown.py` fails on any bare `QComboBox(` or
 `QDateEdit(` in `ui/`.
 
+### ❌ Do not elide in `paintEvent` and leave the size hint alone
+
+```python
+class ElidedLabel(QLabel):
+    def paintEvent(self, event):
+        elided = metrics.elidedText(self._full_text, Qt.ElideRight, self.width())
+```
+
+**What it caused:** a plain `QLabel` reports the *whole string* as its minimum width,
+and drawing less of it does not change that. So a long project or task name set the
+minimum of whatever it sat in. In the screenshot grid that made each column as wide as
+its widest card's text: columns of unequal width, a grid wider than its viewport (a
+horizontal scrollbar), and cards overlapping their neighbours. **Instead:** override
+`minimumSizeHint` to an ellipsis (`ui/elided_label.py`); `sizeHint` stays the full text,
+so a label with room still asks for it. The task name column clipped mid-word for the
+same reason.
+
+### ❌ Do not give a card a width that comes from its content
+
+Four columns were demanded at every width, and a column took its widest cell's
+minimum. **Instead:** the column count is a function of the width the grid is given
+(`screenshot_columns`), cards are `Ignored` horizontally so the column decides their
+width, and an unused column's stretch is set to 0 -- one that keeps its stretch is still
+given a share and makes the cards narrower than they should be.
+
+### ❌ Do not delete and rebuild a view on every refresh
+
+```python
+while self.layout.count():
+    self.layout.takeAt(0).widget().deleteLater()      # then build it all again
+```
+
+A refresh calls `set_data` and then `set_mode`, so every card was destroyed and
+recreated **twice**, each at its default geometry, with the scroll content collapsing in
+between and the scroll position going with it: "the grid jumps every few seconds".
+**Instead:** reconcile by identity (`ScreenshotsTabView._show_data`).
+
+### ❌ Do not let a scrollbar appear and disappear beside aligned content
+
+With `ScrollBarAsNeeded`, the bar appeared the moment a refresh added a row (or the rows
+outgrew the task list) and took its width from the content -- a column boundary moved,
+and the task rows' ACTION/HOURS/CREATE ON stopped lying under their header, by exactly
+the bar's width, until the list shrank back. **Instead:** reserve the slot and make
+whatever sits outside the scroll area reserve the same width.
+
+### ❌ Do not use `setMinimumHeight` to give a container a floor
+
+An explicit minimum *replaces* the layout's own minimum rather than adding to it. Set
+on the grid's container it let a tall grid be squeezed to the floor and the fixed-height
+cards overlapped. **Instead:** raise the hint only (`_FloorHeightWidget`): at least the
+floor, never less than the content needs. (And a word-wrapped label makes Qt size through
+height-for-width, which ignores a `sizeHint` override -- the floor lives in
+`minimumSizeHint`.)
+
+### ❌ Do not let a layout minimum exceed the screen
+
+The window declared `MINIMUM_WINDOW_*` clamped to the work area, and a test pinned it --
+against a stand-in window. The *real* minimum is whatever the layout adds up to: the top
+bar's 760, the task list's 796 (its default column widths, each a floor) and the
+sections' 220px minimum heights made it 1136x790, so on a 1366x768 laptop at 125%
+(about 1092x578 usable) the window opened larger than the screen and its bottom edge
+could not be reached or resized back. **Instead:** a width-driven compact form for the
+top bar, an *applied* width that gives way for the one column that can, and a content
+pane that scrolls below its floor. Test the real widgets at the real usable sizes.
+
+### ❌ Do not measure a layout inside `showEvent`
+
+The top bar read its two forms' minimum widths there and got figures ~130px too wide:
+the children are polished, and their fonts and padding resolved, only once the show has
+completed. Measure one event-loop turn later (`QTimer.singleShot(0, ...)`).
+
 ---
 
 ## Naming
