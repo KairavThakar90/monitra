@@ -22,10 +22,10 @@ enforces for itself (see `ui/task_table.py` and `ui/activity_section.py`).
 from datetime import date, timedelta
 from typing import Optional
 
-from PySide6.QtCore import Qt, QSize, QDate, QTimer, Signal
+from PySide6.QtCore import QDate, QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QCalendarWidget, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu,
+    QCalendarWidget, QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit, QMenu,
     QPushButton, QSizePolicy, QToolButton, QWidget, QWidgetAction
 )
 
@@ -56,11 +56,20 @@ DAY_ROLLOVER_CHECK_MS = 60_000
 #: at every window size instead of being pushed past the right edge.
 SEARCH_PREFERRED_WIDTH = 280
 SEARCH_MIN_WIDTH = 130
+#: The "Ctrl + K" chip is drawn inside the field, so it needs the field wide
+#: enough for the placeholder *and* the chip. Narrower than this it sat on top
+#: of the placeholder text; the shortcut still works, only the reminder goes.
+SEARCH_HINT_MIN_WIDTH = 200
 
 
 def _format_date_win(d: date) -> str:
     """Windows-compatible date formatting."""
     return d.strftime("%B %d, %Y (%a)").replace(" 0", " ")
+
+
+def _format_date_compact(d: date) -> str:
+    """The same day in the shorter form the compact bar shows ("Oct 7, 2026")."""
+    return d.strftime("%b %d, %Y").replace(" 0", " ")
 
 
 class TopBar(QFrame):
@@ -101,8 +110,29 @@ class TopBar(QFrame):
         #: rollover watchdog reads it; every rule is evaluated against a fresh
         #: `ist_today()` so no verdict here can go stale.
         self._today = self._selected_date
+        #: Icon-only buttons and a short date, because the bar was given less
+        #: width than its full form needs. A pure function of the width (see
+        #: `resizeEvent`), never of anything the bar contains.
+        self._compact = False
+        #: True while the construction below is still going on, and while
+        #: `_measure_forms` is switching forms; style changes in either must not
+        #: start a measurement of their own.
+        self._measuring = True
         self._build_ui()
         self._apply_style()
+        # The layout never forces the bar wider than a form it can switch out
+        # of, so the bar's own minimum is the *compact* one (see
+        # `minimumSizeHint`) and the full form's minimum is the threshold at
+        # which it goes compact. Both are measured in `_measure_forms`, once
+        # the bar has been polished and so has its real fonts and padding; the
+        # figures here are only the estimate it is built with.
+        self.layout().setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        #: The narrowest the *full* bar can be.
+        self._full_minimum_width = self.layout().minimumSize().width()
+        #: The narrowest the *compact* bar can be -- the bar's real floor.
+        self._compact_minimum_width = self._full_minimum_width
+        self._measuring = False
+        self._measure_forms()
 
         # Midnight rollover. A window left open overnight would otherwise keep
         # calling yesterday "today": the forward chevron would stay disabled on
@@ -419,6 +449,12 @@ class TopBar(QFrame):
                 color: {PRIMARY};
                 background: {PRIMARY_LIGHT};
             }}
+            /* Icon-only: no side padding, or a 34px button has nothing left
+               for its 16px glyph. */
+            QPushButton#HeaderAddTaskBtn[compact="true"],
+            QPushButton#RequestBtn[compact="true"] {{
+                padding: 0;
+            }}
             QFrame#StatusFrame {{
                 background: transparent;
                 border: none;
@@ -438,7 +474,9 @@ class TopBar(QFrame):
             self._search.width() - hint.width() - 10,
             (self._search.height() - hint.height()) // 2,
         )
-        hint.setVisible(not self._search.text())
+        hint.setVisible(
+            not self._search.text() and self._search.width() >= SEARCH_HINT_MIN_WIDTH
+        )
 
     def _focus_search(self) -> None:
         self._search.setFocus(Qt.FocusReason.ShortcutFocusReason)
@@ -497,6 +535,101 @@ class TopBar(QFrame):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._position_shortcut_hint()
+        self._set_compact(self.width() < self._full_minimum_width)
+
+    # ── Compact form ──────────────────────────────────────────────────────────
+
+    def is_compact(self) -> bool:
+        return self._compact
+
+    def _measure_forms(self) -> None:
+        """Measure the narrowest the bar can be in each form.
+
+        Run when the bar is built, again when it is first shown, and whenever
+        its fonts or style change -- the figures depend on the polished
+        widgets, which do not exist yet at construction. The bar is put back in
+        the form it was in, inside this call, so nothing is ever painted in the
+        other one.
+        """
+        if self._measuring:
+            return
+        self._measuring = True
+        try:
+            was = self._compact
+            self._set_compact(False)
+            full = self.layout().minimumSize().width()
+            self._set_compact(True)
+            compact = self.layout().minimumSize().width()
+            self._set_compact(was)
+        finally:
+            self._measuring = False
+        changed = (full, compact) != (self._full_minimum_width, self._compact_minimum_width)
+        self._full_minimum_width, self._compact_minimum_width = full, max(1, min(full, compact))
+        if changed:
+            self.updateGeometry()
+            self._set_compact(self.width() < self._full_minimum_width and self.isVisible())
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt's own casing
+        super().showEvent(event)
+        # One event-loop turn later, not now: the children are polished and
+        # their fonts and padding resolved only once the show has completed, and
+        # a measurement taken inside `showEvent` read figures ~130px too wide.
+        QTimer.singleShot(0, self._measure_forms)
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt's own casing
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self._measure_forms()
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt's own casing
+        """The compact form's width: the bar can always become that narrow.
+
+        The default (the layout's minimum in whatever form it is in now) made
+        the full bar's 760px the floor of the whole window, so the compact form
+        was never reachable -- the width it is chosen by could not occur.
+        """
+        hint = super().minimumSizeHint()
+        return QSize(min(hint.width(), self._compact_minimum_width), hint.height())
+
+    def _set_compact(self, compact: bool) -> None:
+        """Switch between the full bar and the one that fits a narrow window.
+
+        Edge-triggered: an unchanged answer touches nothing. The two forms are
+        separated by the full bar's own minimum width, and the compact form's
+        minimum is lower than that, so the choice cannot oscillate: below the
+        threshold the compact bar fits, at or above it the full bar does.
+
+        Nothing is hidden. Add Task and Request keep their glyph, their
+        tooltip and an accessible name; only their words go. The search field
+        and Refresh are untouched.
+        """
+        if compact == self._compact:
+            return
+        self._compact = compact
+        for button, label, full_min in (
+            (self._add_task_btn, "Add Task", 116),
+            (self._request_btn, "Request", 112),
+        ):
+            button.setAccessibleName(label)
+            if compact:
+                button.setText("")
+                button.setFixedWidth(34)
+            else:
+                button.setText(f" {label}")
+                button.setMinimumWidth(full_min)
+                button.setMaximumWidth(16777215)  # QWIDGETSIZE_MAX
+            button.setProperty("compact", compact)
+            button.style().unpolish(button)
+            button.style().polish(button)
+        self._update_date_text()
+        self.updateGeometry()
+
+    def _update_date_text(self) -> None:
+        text = (
+            _format_date_compact(self._selected_date) if self._compact
+            else _format_date_win(self._selected_date)
+        )
+        self._date_btn.setText(text)
 
     # ── Date filter ───────────────────────────────────────────────────────────
 
@@ -724,7 +857,7 @@ class TopBar(QFrame):
         return self._selected_date
 
     def _update_date_display(self) -> None:
-        self._date_btn.setText(_format_date_win(self._selected_date))
+        self._update_date_text()
         self._update_next_button_state()
         self.date_changed.emit(self._selected_date)
 
