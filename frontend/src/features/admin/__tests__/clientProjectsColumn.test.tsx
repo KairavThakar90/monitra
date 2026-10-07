@@ -81,6 +81,11 @@ const renderPage = async () => {
     root.render(<Provider store={store}><AdminClients /></Provider>);
   });
   await flush();
+  // Wait for the table itself, not for a fixed number of ticks: when the whole
+  // suite runs in parallel the clients request can take longer than that.
+  for (let attempt = 0; attempt < 80 && container.querySelectorAll('tbody tr').length < clients.length; attempt += 1) {
+    await flush();
+  }
 };
 
 const click = async (element: Element | undefined) => {
