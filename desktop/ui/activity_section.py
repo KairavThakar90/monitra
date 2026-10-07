@@ -707,9 +707,14 @@ class UsageActivityRow(QFrame):
         else:
             full_title = self.item_data.get("name") or self.item_data.get("application_name", "Application")
 
-        # Truncate title cleanly if too long so card height stays strictly 68px
-        display_title = full_title[:75] + "..." if len(full_title) > 75 else full_title
-        self.title_lbl = QLabel(display_title, mid_container)
+        # An eliding label, not a pre-truncated QLabel. The row's height is
+        # fixed, so the text never wraps; what a long name used to do instead
+        # was set the row's *minimum width* (a QLabel reports the whole string
+        # as its minimum), and the widest row set the width of the whole
+        # Activity panel -- wider than its viewport on a laptop, clipped on the
+        # right, whichever tab was showing. Now the label draws as much as the
+        # room allows, ends in an ellipsis, and offers the full text on hover.
+        self.title_lbl = ElidedLabel(full_title, mid_container)
         self.title_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
         # The tooltip is restated because a label's sheet styles the label's
         # own tooltip too (see TOOLTIP_QSS): this one came out as dark text
@@ -721,8 +726,7 @@ class UsageActivityRow(QFrame):
         # Subtitle (Clickable URL for URLs tab)
         if self.row_type == "url":
             url_text = self.item_data.get("url", "")
-            display_url = url_text[:85] + "..." if len(url_text) > 85 else url_text
-            self.sub_lbl = QLabel(display_url, mid_container)
+            self.sub_lbl = ElidedLabel(url_text, mid_container)
             self.sub_lbl.setFont(QFont("Segoe UI", 8))
             self.sub_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
             self.sub_lbl.setStyleSheet(f"""
@@ -731,20 +735,23 @@ class UsageActivityRow(QFrame):
                     background: transparent;
                     border: none;
                 }}
-                QLabel:hover {{
-                    text-decoration: underline;
-                }}
                 {TOOLTIP_QSS}
             """)
             self.sub_lbl.setToolTip(f"Click to open: {url_text}")
             self.sub_lbl.mousePressEvent = lambda e, u=url_text: safe_open_url(u)
+            # The label draws its own text, so a stylesheet `:hover` underline
+            # no longer reaches it; the underline is the font's, set on enter
+            # and leave.
+            self.sub_lbl.enterEvent = lambda e: self._underline_link(True)
+            self.sub_lbl.leaveEvent = lambda e: self._underline_link(False)
             mid_layout.addWidget(self.sub_lbl)
         elif self.item_data.get("subtitle"):
             sub_text = self.item_data.get("subtitle", "")
-            display_sub = sub_text[:85] + "..." if len(sub_text) > 85 else sub_text
-            self.sub_lbl = QLabel(display_sub, mid_container)
+            self.sub_lbl = ElidedLabel(sub_text, mid_container)
             self.sub_lbl.setFont(QFont("Segoe UI", 8))
-            self.sub_lbl.setStyleSheet(f"color: {TEXT_MUTED};")
+            # Types the selector and restates the tooltip rule: the label has a
+            # tooltip now (the full text), and a bare `color:` reaches it too.
+            self.sub_lbl.setStyleSheet(f"QLabel {{ color: {TEXT_MUTED}; }}{TOOLTIP_QSS}")
             mid_layout.addWidget(self.sub_lbl)
 
         # Usage progress bar
@@ -790,6 +797,11 @@ class UsageActivityRow(QFrame):
         meta_layout.addWidget(time_lbl)
         meta_layout.addWidget(pct_lbl)
         layout.addWidget(meta_container, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    def _underline_link(self, on: bool) -> None:
+        font = self.sub_lbl.font()
+        font.setUnderline(on)
+        self.sub_lbl.setFont(font)
 
     def _load_icon(self) -> None:
         mgr = IconManager.instance()

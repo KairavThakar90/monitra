@@ -1144,7 +1144,8 @@ area is invisible; below it, a scrollbar appears instead of a clipped window.
 | What | Rule | Where |
 |---|---|---|
 | Screenshot columns | `screenshot_columns(width)`: as many as fit at >= 220px a card, 1..4, equal stretch; unused columns stretch 0 | `ui/activity_section.py` |
-| Summary cards | one row at >= `SINGLE_ROW_MINIMUM_WIDTH` (1202px), else 2x2 | `ui/stat_cards.py` |
+| Summary cards | four full cards (icon tiles) on one row from `SINGLE_ROW_MINIMUM_WIDTH` (1202px); the same four on one row *without tiles* from `COMPACT_ROW_MINIMUM_WIDTH` (978px, derived from the card floors); 2x2 below that | `ui/stat_cards.py` |
+| Task / Activity split | opens at 60/40 (`TASK_SECTION_SHARE`/`ACTIVITY_SECTION_SHARE`); the task list keeps >= 200px, Activity >= 190px; still draggable | `ui/dashboard_window.py` |
 | Top bar | compact (icon-only Add Task/Request, short date, no Ctrl+K chip) below the full form's minimum width | `ui/topbar.py` |
 | Task name column | the one stretch column; its *applied* width gives way (to 160px) only while the section is narrower than the model needs | `ui/task_table.py` |
 
@@ -1167,11 +1168,21 @@ in its own cell, order is whatever the data gives, and a state panel already sho
 is left alone. Loading, empty and loaded all have the same minimum height
 (`SCREENSHOT_STATE_MIN_HEIGHT`).
 
-### Not decided by a rule -- the owner's call
+### How the content area is divided
 
-How the content area is *divided* (the summary cards' 2x2 wrap and the 40/60
-task/Activity splitter) is a visual decision the owner has made before and reversed
-(see DO_NOT_DO.md). Change it only with a screenshot of the result in hand.
+This is a visual decision, and it is the owner's. It was changed on 2026-10-07 to the
+rules in the table above (one row of cards where the width allows; 60/40), chosen from
+side-by-side renders at three laptop sizes. An earlier content-driven rule and
+font-measured card floors were reverted as ugly, so any further change to how the area
+is divided should be shown as a screenshot first.
+
+### Apps and URLs rows
+
+`UsageActivityRow`'s title and subtitle are `ElidedLabel`s. All three Activity tabs
+share one container (the scroll area's content), so one row with a long name used to set
+the minimum width of the whole panel -- wider than its viewport on a laptop, clipped on
+the right, whichever tab was showing. Now no name or URL, however long, changes the
+panel's floor.
 
 ### Verifying a layout
 

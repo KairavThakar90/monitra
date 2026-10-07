@@ -405,3 +405,214 @@ class TestTaskListFloor:
         row = dashboard._task_section._task_rows[0]
         assert row.width() <= dashboard._task_section.width(), "and the row did not outgrow its section"
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Option 4: one row of summary cards where the width allows, and a 60/40 split
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# On a laptop the 2x2 cards took 206px and the 40/60 split left the task list
+# two rows. Now: full cards (icon tiles) on one row from SINGLE_ROW_MINIMUM_WIDTH;
+# the same four on one row without their tiles from COMPACT_ROW_MINIMUM_WIDTH;
+# 2x2 below that. The task list opens at 60% of the content area.
+
+ALL_SCREENS = dict(SCREENS)
+ALL_SCREENS["1920x1080 @100% (large)"] = (1920, 1000)
+ALL_SCREENS["2560x1440 @100%"] = (2560, 1400)
+ALL_SCREENS["1536x816"] = (1536, 816)
+
+
+class TestSummaryCards:
+    @pytest.fixture
+    def row(self, qapp, pump):
+        from ui.stat_cards import StatCardsRow
+
+        row = StatCardsRow()
+        row.show()
+        pump()
+        yield row
+        row.close()
+
+    def _at(self, row, pump, width):
+        row.resize(width, row.sizeHint().height())
+        pump()
+
+    def test_the_thresholds_are_ordered_and_derived_from_the_card_floors(self, qapp):
+        from ui.stat_cards import ACTIVE_CARD_EXTRA_WIDTH, StatCardsRow
+
+        assert StatCardsRow.TWO_COLUMN_MINIMUM_WIDTH < StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH
+        assert StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH < StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH
+        row = StatCardsRow()
+        floors = [card.minimum_width_for(True) for card in row._cards]
+        assert sum(floors) + 3 * 14 == StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH
+        floors = [card.minimum_width_for(False) for card in row._cards]
+        assert sum(floors) + 3 * 14 == StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH
+        # The active card is the one that carries the Break In / Break Out button.
+        assert row.active_card.minimum_width_for(True) - row.status_card.minimum_width_for(True) == ACTIVE_CARD_EXTRA_WIDTH
+
+    def test_wide_means_four_full_cards_with_their_tiles(self, qapp, pump, row):
+        from ui.stat_cards import StatCardsRow
+
+        self._at(row, pump, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH)
+        assert row.columns() == 4 and not row.is_compact()
+        assert all(card._tile.isVisible() for card in row._cards)
+
+    def test_a_laptop_gets_one_row_without_tiles(self, qapp, pump, row):
+        from ui.stat_cards import StatCardsRow
+
+        for width in (StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH, 1020, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH - 1):
+            self._at(row, pump, width)
+            assert row.columns() == 4, width
+            assert row.is_compact(), width
+            assert not any(card._tile.isVisible() for card in row._cards)
+            assert {card.height() for card in row._cards} == {96}, "same height as the full cards"
+
+    def test_narrower_still_wraps_to_two_by_two_with_tiles(self, qapp, pump, row):
+        from ui.stat_cards import StatCardsRow
+
+        self._at(row, pump, StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH - 1)
+        assert row.columns() == 2 and not row.is_compact()
+        assert all(card._tile.isVisible() for card in row._cards)
+
+    def test_the_state_is_a_function_of_width_alone(self, qapp, pump, row):
+        from ui.stat_cards import StatCardsRow
+
+        seen = {}
+        widths = list(range(StatCardsRow.TWO_COLUMN_MINIMUM_WIDTH, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH + 80, 23))
+        for width in widths + widths[::-1]:
+            self._at(row, pump, width)
+            state = (row.columns(), row.is_compact())
+            assert seen.setdefault(width, state) == state, width
+            if width >= StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH:
+                assert state == (4, False)
+            elif width >= StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH:
+                assert state == (4, True)
+            else:
+                assert state == (2, False)
+
+    def test_no_card_overflows_or_overlaps_in_any_state(self, qapp, pump, row):
+        from ui.stat_cards import StatCardsRow
+
+        for width in range(StatCardsRow.TWO_COLUMN_MINIMUM_WIDTH, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH + 80, 31):
+            self._at(row, pump, width)
+            rects = [card.geometry() for card in row._cards]
+            for rect in rects:
+                assert rect.left() >= 0 and rect.right() <= row.width(), width
+            for i, a in enumerate(rects):
+                for b in rects[i + 1:]:
+                    assert not a.intersects(b), width
+            for card in row._cards:
+                assert card.width() >= card.minimumWidth(), (width, card.width(), card.minimumWidth())
+
+    def test_every_value_stays_readable_in_the_compact_form(self, qapp, pump, row):
+        from ui.stat_cards import StatCardsRow
+
+        row.set_total_seconds(3 * 3600 + 42 * 60 + 10, False)
+        row.set_project_status("Active", "#10B981")
+        row.set_active_task("Prepare Q3 client report", "Website Redesign")
+        row.set_today_activity(68, has_measurement=True, is_tracking=False)
+        self._at(row, pump, StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH)
+        assert row.is_compact()
+        assert row.total_card._value.text() == "03:42:10", "a clock is never abbreviated"
+        assert row.status_card._value.text() == "Active"
+        assert row.activity_card._value.text() == "68%"
+        assert row.activity_card._progress.isVisible(), "the progress bar is kept"
+        assert row.break_button.isVisible(), "so is the Break In / Break Out control"
+
+    def test_going_compact_and_back_restores_the_full_cards_exactly(self, qapp, pump, row):
+        from ui.stat_cards import StatCardsRow
+
+        self._at(row, pump, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH + 100)
+        before = [(c.geometry(), c.minimumWidth()) for c in row._cards]
+        self._at(row, pump, StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH)
+        self._at(row, pump, StatCardsRow.TWO_COLUMN_MINIMUM_WIDTH)
+        self._at(row, pump, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH + 100)
+        assert [(c.geometry(), c.minimumWidth()) for c in row._cards] == before
+
+    def test_the_timer_ticking_does_not_move_a_card(self, qapp, pump, row):
+        from ui.stat_cards import StatCardsRow
+
+        self._at(row, pump, 1020)
+        geometry = [c.geometry() for c in row._cards]
+        for seconds in (0, 59, 3599, 36000, 359999):
+            row.set_total_seconds(seconds, True)
+            row.set_today_activity(seconds % 100, has_measurement=True, is_tracking=True)
+            pump(2)
+            assert [c.geometry() for c in row._cards] == geometry
+
+
+class TestSplitter:
+    def test_it_opens_at_sixty_forty(self, qapp, pump, dashboard):
+        from ui.dashboard_window import ACTIVITY_SECTION_SHARE, TASK_SECTION_SHARE
+
+        dashboard.show()
+        dashboard.resize(1920, 1040)
+        pump(20)
+        tasks, activity = dashboard._content_splitter.sizes()
+        share = tasks / (tasks + activity)
+        assert abs(share - TASK_SECTION_SHARE / (TASK_SECTION_SHARE + ACTIVITY_SECTION_SHARE)) < 0.02, share
+
+    @pytest.mark.parametrize("name", list(ALL_SCREENS))
+    def test_neither_section_goes_below_its_minimum(self, qapp, pump, dashboard, name):
+        from ui.dashboard_window import ACTIVITY_SECTION_MIN_HEIGHT, TASK_SECTION_MIN_HEIGHT
+
+        width, height = ALL_SCREENS[name]
+        dashboard.show()
+        dashboard.resize(width, height)
+        pump(20)
+        tasks, activity = dashboard._content_splitter.sizes()
+        assert tasks >= TASK_SECTION_MIN_HEIGHT and activity >= ACTIVITY_SECTION_MIN_HEIGHT
+
+    def test_the_user_can_still_drag_it(self, qapp, pump, dashboard):
+        dashboard.show()
+        dashboard.resize(1920, 1040)
+        pump(20)
+        splitter = dashboard._content_splitter
+        total = sum(splitter.sizes())
+        splitter.setSizes([total // 2, total - total // 2])
+        pump(5)
+        tasks, activity = splitter.sizes()
+        assert abs(tasks - activity) <= 10
+
+    def test_more_task_rows_are_visible_than_before_on_a_1080p_laptop(self, qapp, pump, runtime, dashboard):
+        from PySide6.QtCore import QPoint
+
+        from background_services.public_api import NetworkState
+
+        dashboard.api.network_state = lambda: NetworkState.BACKEND_REACHABLE
+        runtime.cache.cache_projects([{"id": 1, "project_name": "Alpha"}])
+        runtime.cache.cache_tasks(1, [{"id": i, "name": f"Task {i}", "status": "todo",
+                                       "created_at": "2026-09-10T09:00:00Z"} for i in range(1, 25)])
+        dashboard.show()
+        dashboard.resize(1536, 816)
+        dashboard.on_login({"id": 1, "name": "Kairav", "role_name": "staff"})
+        dashboard._on_project_selected({"id": 1, "project_name": "Alpha"})
+        pump(25)
+        scroll = dashboard._task_section._scroll
+        viewport = scroll.viewport().rect()
+        rows = [
+            r for r in dashboard._task_section._task_rows
+            if r.isVisible()
+            and r.mapTo(scroll.viewport(), QPoint(0, 0)).y() >= 0
+            and r.mapTo(scroll.viewport(), QPoint(0, 0)).y() + r.height() <= viewport.height() + 1
+        ]
+        assert len(rows) >= 3, "it was 2 with 2x2 cards and the 40/60 split"
+        assert dashboard._stat_cards.columns() == 4 and dashboard._stat_cards.height() == 96
+
+
+class TestDashboardAcrossScreens:
+    @pytest.mark.parametrize("name", list(ALL_SCREENS))
+    def test_everything_is_inside_the_window_and_nothing_scrolls_sideways(self, qapp, pump, dashboard, name):
+        from PySide6.QtCore import QPoint
+
+        width, height = ALL_SCREENS[name]
+        dashboard.show()
+        dashboard.resize(width, height)
+        pump(20)
+        assert (dashboard.width(), dashboard.height()) == (width, height)
+        assert not dashboard._content_scroll.horizontalScrollBar().isVisible() or width < 900
+        assert not dashboard._activity_section._scroll_area.horizontalScrollBar().isVisible()
+        assert not dashboard._task_section._scroll.horizontalScrollBar().isVisible()
+        for widget in (dashboard._topbar, dashboard._stat_cards, dashboard._task_section, dashboard._activity_section):
+            right = widget.mapTo(dashboard, QPoint(widget.width(), 0)).x()
+            assert right <= dashboard.width(), (name, type(widget).__name__, right)

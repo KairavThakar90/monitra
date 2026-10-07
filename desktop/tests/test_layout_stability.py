@@ -23,7 +23,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
 from ui.activity_section import (
     MODE_DATA, MODE_EMPTY, MODE_LOADING, SCREENSHOT_COLUMNS,
@@ -410,3 +410,157 @@ class TestScrolling:
         assert section._scroll_area.viewport().width() == empty_width
         assert screenshot_columns(section.view_ss.width()) == columns_empty
         section.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Apps and URLs: long names must never widen the Activity panel
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# The rows' title and subtitle were plain QLabels, whose minimum width is their
+# whole text. The widest row set the minimum width of the panel's content --
+# shared by all three tabs -- and past a laptop's viewport it was clipped on the
+# right with the sideways scroll switched off (46px at 1092px wide).
+
+PANEL_WIDTHS = [452, 676, 788, 868, 932, 1018, 1188, 1572, 2212]
+LONG_APP = "Visual Studio Code - Extraordinarily Long Customer Migration Programme Workspace "
+LONG_URL = "https://very-long-subdomain.customer-migration-programme.example.com/" + "path/segment/" * 12
+
+
+def _apps(n=8):
+    return [{"name": LONG_APP * (1 + i % 3), "application_name": LONG_APP, "time_str": "2h 15m",
+             "seconds": 8100, "percentage": 40 - i, "color": "#3B82F6", "letter": "VS",
+             "subtitle": "Code.exe " + LONG_APP} for i in range(n)]
+
+
+def _urls(n=8):
+    return [{"title": LONG_APP * 2, "domain": "very-long-subdomain.customer-migration-programme.example.com",
+             "url": LONG_URL, "time_str": "1h 02m", "seconds": 3700, "percentage": 30 - i,
+             "color": "#10B981", "letter": "E"} for i in range(n)]
+
+
+def _panel(qapp, pump, width, height=420):
+    section = ActivitySection(api=MagicMock(), api_client=MagicMock())
+    section.resize(width, height)
+    section.show()
+    section.view_apps.set_data(_apps())
+    section.view_apps.set_mode(MODE_DATA)
+    section.view_urls.set_data(_urls())
+    section.view_urls.set_mode(MODE_DATA)
+    section.view_ss.set_mode(MODE_DATA)
+    section.view_ss.set_data(_shots(12))
+    pump(15)
+    return section
+
+
+class TestUsageRowsDoNotWidenThePanel:
+    def test_a_long_name_is_an_ellipsis_with_the_full_text_on_hover(self, qapp):
+        from ui.activity_section import AppRowWidget, URLRowWidget
+
+        app = AppRowWidget(_apps(1)[0])
+        url = URLRowWidget(_urls(1)[0])
+        assert app.title_lbl.minimumSizeHint().width() < 40
+        assert app.sub_lbl.minimumSizeHint().width() < 40
+        assert url.title_lbl.minimumSizeHint().width() < 40
+        assert url.sub_lbl.minimumSizeHint().width() < 40
+        assert app.title_lbl.text() == _apps(1)[0]["name"], "the label still holds the whole name"
+        assert url.title_lbl.toolTip() == _urls(1)[0]["title"]
+        assert LONG_URL in url.sub_lbl.toolTip()
+        # Once a name is long enough to elide, making it longer changes nothing.
+        longer = dict(_apps(1)[0], name=LONG_APP * 9, subtitle="Code.exe " + LONG_APP * 9)
+        assert app.minimumSizeHint().width() == AppRowWidget(longer).minimumSizeHint().width(), (
+            "a row's floor is its fixed parts; the length of its text is not one of them")
+        longer_url = dict(_urls(1)[0], title=LONG_APP * 9, url=LONG_URL * 5)
+        assert url.minimumSizeHint().width() == URLRowWidget(longer_url).minimumSizeHint().width()
+
+    @pytest.mark.parametrize("width", PANEL_WIDTHS)
+    @pytest.mark.parametrize("tab", ["screenshots", "apps", "urls"])
+    def test_the_content_is_exactly_as_wide_as_the_viewport_on_every_tab(self, qapp, pump, width, tab):
+        section = _panel(qapp, pump, width)
+        section.switch_tab(tab)
+        pump(10)
+        area = section._scroll_area
+        assert area.widget().width() == area.viewport().width(), (width, tab)
+        assert not area.horizontalScrollBar().isVisible()
+        # The panel's floor does not depend on how long the names in it are.
+        longer = _panel(qapp, pump, width)
+        longer.view_apps.set_data([dict(a, name=LONG_APP * 9, subtitle=LONG_APP * 9) for a in _apps()])
+        longer.view_apps.set_mode(MODE_DATA)
+        longer.view_urls.set_data([dict(u, title=LONG_APP * 9, url=LONG_URL * 5) for u in _urls()])
+        longer.view_urls.set_mode(MODE_DATA)
+        pump(10)
+        assert section.minimumSizeHint().width() == longer.minimumSizeHint().width(), (width, tab)
+        longer.close()
+        section.close()
+
+    @pytest.mark.parametrize("width", PANEL_WIDTHS)
+    def test_every_row_ends_inside_the_viewport(self, qapp, pump, width):
+        from PySide6.QtCore import QPoint
+
+        section = _panel(qapp, pump, width)
+        area = section._scroll_area
+        for tab, view in (("apps", section.view_apps), ("urls", section.view_urls)):
+            section.switch_tab(tab)
+            pump(10)
+            rows = view.findChildren(QFrame, options=Qt.FindChildOption.FindChildrenRecursively)
+            rows = [r for r in rows if r.__class__.__name__ in ("AppRowWidget", "URLRowWidget") and r.isVisible()]
+            assert rows, tab
+            for row in rows:
+                right = row.mapTo(area.viewport(), QPoint(row.width(), 0)).x()
+                assert right <= area.viewport().width(), (width, tab, right)
+        section.close()
+
+    def test_switching_tabs_never_changes_the_panel_or_its_width(self, qapp, pump):
+        section = _panel(qapp, pump, 868)
+        area = section._scroll_area
+        measurements = set()
+        for tab in ("screenshots", "apps", "urls", "apps", "screenshots", "urls", "screenshots"):
+            section.switch_tab(tab)
+            pump(8)
+            measurements.add((
+                section.width(), area.width(), area.viewport().width(), area.widget().width(),
+                area.verticalScrollBar().isVisible(),
+            ))
+        assert len(measurements) == 1, measurements
+        section.close()
+
+    def test_the_screenshot_grid_is_unaffected_by_long_apps_and_urls(self, qapp, pump):
+        # The panel's width is shared by the three tabs, so a long application
+        # name used to clip the *screenshot* cards' right column too.
+        section = _panel(qapp, pump, 868)
+        section.switch_tab("screenshots")
+        pump(10)
+        area = section._scroll_area
+        cards = section.view_ss._placed
+        assert cards
+        for card in cards:
+            assert card.geometry().right() <= section.view_ss.width()
+        assert section.view_ss.width() <= area.viewport().width()
+        section.close()
+
+    def test_a_refresh_changes_neither_rows_nor_width(self, qapp, pump):
+        section = _panel(qapp, pump, 868)
+        section.switch_tab("apps")
+        pump(8)
+        area = section._scroll_area
+        before = (area.widget().width(), area.viewport().width())
+        for _ in range(3):
+            section.view_apps.set_data(_apps())
+            section.view_apps.set_mode(MODE_DATA)
+            pump(5)
+        assert (area.widget().width(), area.viewport().width()) == before
+        section.close()
+
+    def test_a_url_row_still_opens_its_link_and_underlines_on_hover(self, qapp, monkeypatch):
+        import ui.activity_section as module
+        from ui.activity_section import URLRowWidget
+
+        opened = []
+        monkeypatch.setattr(module, "safe_open_url", lambda url: opened.append(url))
+        row = URLRowWidget(_urls(1)[0])
+        row.sub_lbl.mousePressEvent(None)
+        assert opened == [LONG_URL]
+        assert not row.sub_lbl.font().underline()
+        row.sub_lbl.enterEvent(None)
+        assert row.sub_lbl.font().underline()
+        row.sub_lbl.leaveEvent(None)
+        assert not row.sub_lbl.font().underline()

@@ -31,7 +31,7 @@ from ui import icons
 from ui.break_button import BREAK_BUTTON_WIDTH, BreakButton
 from ui.styles import (
     BORDER_LIGHT, CARD_BG, CARD_RADIUS, STAT_TILE_GRADIENTS, SUCCESS,
-    TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY, WARNING,
+    TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY, TOOLTIP_QSS, WARNING,
 )
 
 #: The one authoritative duration formatter (core.time_format.format_hms).
@@ -40,6 +40,10 @@ _fmt = format_hms
 #: What one card needs beside its text: the 48px gradient tile, the layout's
 #: 16/18 margins and the 14px gap.
 _CARD_CHROME_WIDTH = 48 + 16 + 18 + 14
+
+#: The same card without its tile: just the layout's 16/18 margins. The tile and
+#: the gap after it are the whole difference between the two forms.
+_CARD_CHROME_WIDTH_COMPACT = 16 + 18
 
 #: Room for the card's *value*. Measured, not guessed: "01:02:05" in the
 #: 17pt mono face the total-time card uses is 184px wide. The sub-line and the
@@ -143,12 +147,16 @@ class StatCard(QFrame):
         self._accent = STAT_TILE_GRADIENTS[tile][2]
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(96)
+        #: Without its tile (see `set_compact`).
+        self._compact = False
+        #: Width a control placed beside the text adds to the floor.
+        self._extra_min_width = 0
+        self._build_ui(caption, icon_name)
+        self._apply_style()
         # Wide enough for the value, and no wider. The sub-line and caption
         # elide below their natural width, so a narrow card shortens a
         # sentence instead of clipping the number above it.
-        self.setMinimumWidth(_CARD_CHROME_WIDTH + _CARD_VALUE_WIDTH)
-        self._build_ui(caption, icon_name)
-        self._apply_style()
+        self._apply_floor()
 
     def _build_ui(self, caption: str, icon_name: str) -> None:
         layout = QHBoxLayout(self)
@@ -173,14 +181,20 @@ class StatCard(QFrame):
 
         self._caption = ElidingLabel(caption.upper(), self)
         self._caption.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        # The three text labels name their type and restate the tooltip rule
+        # (TOOLTIP_QSS): they elide, so they have a tooltip, and a sheet with no
+        # selector reaches that too.
         self._caption.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; letter-spacing: 0.9px; background: transparent;"
+            f"QLabel {{ color: {TEXT_SECONDARY}; letter-spacing: 0.9px;"
+            f" background: transparent; }}{TOOLTIP_QSS}"
         )
         text_col.addWidget(self._caption)
 
         self._value = ElidingLabel("—", self)
         self._value.setFont(QFont("Segoe UI", 18, QFont.Weight.Black))
-        self._value.setStyleSheet(f"color: {TEXT_PRIMARY}; background: transparent;")
+        self._value.setStyleSheet(
+            f"QLabel {{ color: {TEXT_PRIMARY}; background: transparent; }}{TOOLTIP_QSS}"
+        )
         text_col.addWidget(self._value)
 
         self._progress = QProgressBar(self)
@@ -203,7 +217,9 @@ class StatCard(QFrame):
 
         self._sub = ElidingLabel("", self)
         self._sub.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
-        self._sub.setStyleSheet(f"color: {TEXT_MUTED}; background: transparent;")
+        self._sub.setStyleSheet(
+            f"QLabel {{ color: {TEXT_MUTED}; background: transparent; }}{TOOLTIP_QSS}"
+        )
         text_col.addWidget(self._sub)
 
         layout.addLayout(text_col, 1)
@@ -216,7 +232,34 @@ class StatCard(QFrame):
         that; its labels elide."""
         self._layout.addSpacing(_ACTION_SPACING - self._layout.spacing())
         self._layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.setMinimumWidth(self.minimumWidth() + extra_min_width)
+        self._extra_min_width += extra_min_width
+        self._apply_floor()
+
+    def is_compact(self) -> bool:
+        return self._compact
+
+    def set_compact(self, compact: bool) -> None:
+        """Show the card without its gradient tile, so four fit on one row in
+        the band of widths where four full cards do not.
+
+        Everything the card says is kept -- caption, value, sub-line, progress
+        and any action; only the tile and the gap after it go, and the floor
+        drops by exactly their width. Edge-triggered: an unchanged answer
+        touches nothing.
+        """
+        if compact == self._compact:
+            return
+        self._compact = compact
+        self._tile.setVisible(not compact)
+        self._apply_floor()
+
+    def minimum_width_for(self, compact: bool) -> int:
+        """The floor this card has in either form, whichever it is in now."""
+        chrome = _CARD_CHROME_WIDTH_COMPACT if compact else _CARD_CHROME_WIDTH
+        return chrome + _CARD_VALUE_WIDTH + self._extra_min_width
+
+    def _apply_floor(self) -> None:
+        self.setMinimumWidth(self.minimum_width_for(self._compact))
 
     def _apply_style(self) -> None:
         self.setStyleSheet(f"""
@@ -260,7 +303,7 @@ class StatCard(QFrame):
     def set_sub(self, text: str, color: Optional[str] = None) -> None:
         self._sub.setText(text)
         self._sub.setStyleSheet(
-            f"color: {color or TEXT_MUTED}; background: transparent;"
+            f"QLabel {{ color: {color or TEXT_MUTED}; background: transparent; }}{TOOLTIP_QSS}"
         )
         self._sub.setVisible(bool(text))
 
@@ -294,6 +337,14 @@ class StatCardsRow(QWidget):
     #: card is wider than the others by its break button.
     SINGLE_ROW_MINIMUM_WIDTH = (
         CARD_MINIMUM_WIDTH * 4 + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING * 3
+    )
+    #: The width at or above which all four fit on one line *without their
+    #: tiles* (the compact form). Between this and `SINGLE_ROW_MINIMUM_WIDTH`
+    #: the cards stay on one row and lose only the gradient tile; at
+    #: `SINGLE_ROW_MINIMUM_WIDTH` and wider they are exactly as designed.
+    COMPACT_ROW_MINIMUM_WIDTH = (
+        (_CARD_CHROME_WIDTH_COMPACT + _CARD_VALUE_WIDTH) * 4
+        + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING * 3
     )
     #: The width at or above which two fit on a line -- the widget's own floor.
     #: Unchanged by the fourth card: at two columns the ACTIVE TASK card is
@@ -380,7 +431,34 @@ class StatCardsRow(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt's own casing
         super().resizeEvent(event)
-        self._arrange(len(self._cards) if self.width() >= self.SINGLE_ROW_MINIMUM_WIDTH else 2)
+        # Three states, chosen by the width given and nothing else:
+        #   >= SINGLE_ROW_MINIMUM_WIDTH   four full cards on one row, tiles shown
+        #   >= COMPACT_ROW_MINIMUM_WIDTH   four tile-less cards on one row
+        #   narrower                       2x2 of full cards
+        # Each state's floor fits inside its own threshold, so the choice
+        # cannot oscillate.
+        width = self.width()
+        if width >= self.SINGLE_ROW_MINIMUM_WIDTH:
+            compact, columns = False, len(self._cards)
+        elif width >= self.COMPACT_ROW_MINIMUM_WIDTH:
+            compact, columns = True, len(self._cards)
+        else:
+            compact, columns = False, 2
+        self._set_compact(compact)
+        self._arrange(columns)
+
+    def is_compact(self) -> bool:
+        """Whether the cards are showing without their tiles."""
+        return self._cards[0].is_compact()
+
+    def _set_compact(self, compact: bool) -> None:
+        if compact == self.is_compact():
+            return
+        for card in self._cards:
+            card.set_compact(compact)
+        # The column stretch is proportional to each card's floor, which just
+        # changed: re-apply it even though the column count did not.
+        self._columns = 0
 
     def reset(self) -> None:
         """The signed-out / nothing-loaded state. Honest blanks, not zeros."""

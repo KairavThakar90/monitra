@@ -59,6 +59,18 @@ from ui.stat_cards import StatCardsRow
 from ui.task_table import TaskSection
 from ui.topbar import TopBar
 
+#: How the content area is divided between the task list and Activity: the
+#: proportion the splitter opens at (the user can still drag it), and the least
+#: height either section keeps. 60/40 rather than the earlier 40/60 because on a
+#: laptop the task list is the thing worked in, and at 40% it showed two rows;
+#: Activity still keeps its tabs and most of a screenshot row, and scrolls inside
+#: itself for the rest. The owner picked it from side-by-side renders at
+#: 1920x1080 @125%, 1366x768 @100% and 1366x768 @125%.
+TASK_SECTION_SHARE = 6
+ACTIVITY_SECTION_SHARE = 4
+TASK_SECTION_MIN_HEIGHT = 200
+ACTIVITY_SECTION_MIN_HEIGHT = 190
+
 log = get_logger("dashboard")
 
 #: Which project the user was last in, so reopening the app lands on it with
@@ -577,19 +589,21 @@ class DashboardWindow(QWidget):
         self._task_section.add_task_available.connect(self._topbar.set_add_task_enabled)
         self._task_section.task_creation_blocked.connect(self._topbar.set_add_task_blocked_reason)
         self._topbar.add_task_blocked_clicked.connect(self._on_add_task_blocked_clicked)
-        self._task_section.setMinimumHeight(220)
+        self._task_section.setMinimumHeight(TASK_SECTION_MIN_HEIGHT)
         self._content_splitter.addWidget(self._task_section)
 
         self._activity_section = ActivitySection(self.api, self.api_client, self._content_splitter)
         self._activity_section.profile_requested.connect(self._open_activity_in_profile)
-        self._activity_section.setMinimumHeight(220)
+        self._activity_section.setMinimumHeight(ACTIVITY_SECTION_MIN_HEIGHT)
         self._content_splitter.addWidget(self._activity_section)
 
-        # Initial split mirrors the previous 4:6 stretch-factor proportion;
-        # the user can drag it anywhere between the two minimums afterward.
-        self._content_splitter.setStretchFactor(0, 4)
-        self._content_splitter.setStretchFactor(1, 6)
-        self._content_splitter.setSizes([400, 600])
+        # Opens at TASK_SECTION_SHARE : ACTIVITY_SECTION_SHARE; the user can
+        # drag it anywhere between the two minimums afterward.
+        self._content_splitter.setStretchFactor(0, TASK_SECTION_SHARE)
+        self._content_splitter.setStretchFactor(1, ACTIVITY_SECTION_SHARE)
+        self._content_splitter.setSizes([
+            TASK_SECTION_SHARE * 100, ACTIVITY_SECTION_SHARE * 100,
+        ])
 
         content_outer_layout.addWidget(self._content_splitter)
         right_layout.addWidget(self._content_scroll, 1)
