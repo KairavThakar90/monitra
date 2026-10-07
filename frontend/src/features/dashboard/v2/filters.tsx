@@ -165,11 +165,28 @@ const ProjectIcon = (
   </svg>
 );
 
+/**
+ * The member filter every report-style page uses: an avatar-stack button that
+ * reads "All members" until someone is picked, opening a searchable list.
+ *
+ * `single` is for a screen that manages one person at a time (Screenshot
+ * Privacy): the same button and the same list, but a pick chooses that one
+ * member and closes the list, the button names the member (or `placeholder`
+ * until one is chosen), and the Select all / Clear row -- which only makes sense
+ * for several -- is not shown. Without it nothing here changes.
+ *
+ * The list opens flush with the button's right edge (a report toolbar keeps the
+ * button on the right); `align="left"` opens it from the left edge instead, for
+ * a button that sits at the left of a form.
+ */
 export const MemberMultiSelect: React.FC<{
   members: Member[];
   selected: string[];
   onChange: (ids: string[]) => void;
-}> = ({ members, selected, onChange }) => {
+  single?: boolean;
+  placeholder?: string;
+  align?: "left" | "right";
+}> = ({ members, selected, onChange, single = false, placeholder = "Select a member", align = "right" }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const wrapRef = useClickOutside(() => setOpen(false), open);
@@ -187,12 +204,31 @@ export const MemberMultiSelect: React.FC<{
       <button
         type="button"
         onClick={() => setOpen(!open)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
         className={
           "flex h-9 items-center gap-2 rounded-lg border bg-white px-3 text-[13px] font-semibold transition " +
+          (single ? "w-full " : "") +
           (open ? "border-[#38BDF8] ring-2 ring-[#38BDF8]/20" : "border-[#E2E8F0] hover:border-[#CBD5E1]")
         }
       >
-        {selectedMembers.length === 0 ? (
+        {single ? (
+          selectedMembers[0] ? (
+            <>
+              <div
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white text-[9px] font-bold shadow-sm ${getColor(selectedMembers[0].id)}`}
+              >
+                {(selectedMembers[0].name || 'U').split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase()}
+              </div>
+              <span className="min-w-0 flex-1 truncate text-left text-[#0F172A]">{selectedMembers[0].name}</span>
+            </>
+          ) : (
+            <>
+              <svg className="h-4 w-4 text-[#94A3B8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
+              <span className="min-w-0 flex-1 truncate text-left text-[#64748B]">{placeholder}</span>
+            </>
+          )
+        ) : selectedMembers.length === 0 ? (
           <>
             <svg className="h-4 w-4 text-[#94A3B8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
             <span className="text-[#0F172A]">All members</span>
@@ -219,7 +255,12 @@ export const MemberMultiSelect: React.FC<{
       </button>
 
       {open && (
-        <div className="absolute right-0 z-40 mt-2 w-[280px] rounded-xl border border-[#E2E8F0] bg-white shadow-xl">
+        <div
+          className={
+            "absolute z-40 mt-2 rounded-xl border border-[#E2E8F0] bg-white shadow-xl " +
+            (single ? "left-0 w-full min-w-[280px]" : align === "left" ? "left-0 w-[280px]" : "right-0 w-[280px]")
+          }
+        >
           <div className="border-b border-[#F1F5F9] p-2.5">
             <input
               type="text"
@@ -231,23 +272,25 @@ export const MemberMultiSelect: React.FC<{
             />
           </div>
 
-          <div className="flex items-center justify-between border-b border-[#F1F5F9] px-3 py-2">
-            <button
-              onClick={() => onChange(members.map((m) => String(m.id)))}
-              className="text-[11px] font-bold uppercase tracking-wider text-[#2563EB] hover:underline"
-            >
-              Select all
-            </button>
-            <span className="text-[11px] text-[#94A3B8]">
-              {selected.length} / {members.length}
-            </span>
-            <button
-              onClick={() => onChange([])}
-              className="text-[11px] font-bold uppercase tracking-wider text-[#64748B] hover:underline"
-            >
-              Clear
-            </button>
-          </div>
+          {!single && (
+            <div className="flex items-center justify-between border-b border-[#F1F5F9] px-3 py-2">
+              <button
+                onClick={() => onChange(members.map((m) => String(m.id)))}
+                className="text-[11px] font-bold uppercase tracking-wider text-[#2563EB] hover:underline"
+              >
+                Select all
+              </button>
+              <span className="text-[11px] text-[#94A3B8]">
+                {selected.length} / {members.length}
+              </span>
+              <button
+                onClick={() => onChange([])}
+                className="text-[11px] font-bold uppercase tracking-wider text-[#64748B] hover:underline"
+              >
+                Clear
+              </button>
+            </div>
+          )}
 
           <div className="max-h-64 overflow-y-auto p-1.5 custom-scrollbar">
             {filteredOptions.length > 0 ? (
@@ -256,15 +299,26 @@ export const MemberMultiSelect: React.FC<{
                 return (
                   <button
                     key={emp.id}
+                    type="button"
+                    role={single ? "option" : undefined}
+                    aria-selected={single ? isSelected : undefined}
                     onClick={() => {
-                      if (isSelected) onChange(selected.filter((id) => id !== String(emp.id)));
+                      if (single) {
+                        onChange([String(emp.id)]);
+                        setOpen(false);
+                        setQuery("");
+                      } else if (isSelected) onChange(selected.filter((id) => id !== String(emp.id)));
                       else onChange([...selected, String(emp.id)]);
                     }}
-                    className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition hover:bg-[#F8FAFC]"
+                    className={
+                      "flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition hover:bg-[#F8FAFC] " +
+                      (single && isSelected ? "bg-[#EFF6FF]" : "")
+                    }
                   >
                     <span
                       className={
-                        "flex h-4 w-4 shrink-0 items-center justify-center rounded border transition " +
+                        "flex h-4 w-4 shrink-0 items-center justify-center border transition " +
+                        (single ? "rounded-full " : "rounded ") +
                         (isSelected ? "border-[#2563EB] bg-[#2563EB]" : "border-[#CBD5E1] bg-white")
                       }
                     >

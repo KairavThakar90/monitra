@@ -26,6 +26,8 @@ import {
   confirmationFor,
   errorMessage,
   isActionComplete,
+  resolveDialogCopy,
+  STATUS_MESSAGE_MAX_LENGTH,
   statusLabel,
   successMessage,
 } from '../feedbackActions';
@@ -144,6 +146,40 @@ describe('successMessage', () => {
     expect(message).toContain('already');
     expect(message).toContain('No new email was sent');
     expect(message).not.toContain('has been notified');
+  });
+
+  it('says the message went with the email only when one did', () => {
+    expect(successMessage('resolved', 'Ada', true, true)).toContain('with your message');
+    expect(successMessage('resolved', 'Ada', true, false)).not.toContain('with your message');
+    expect(successMessage('resolved', 'Ada', true)).not.toContain('with your message');
+  });
+
+  it('never claims a message went out when the server sent no email', () => {
+    // A repeated request queues nothing, so the note went nowhere.
+    const message = successMessage('resolved', 'Ada', false, true);
+    expect(message).not.toContain('with your message');
+    expect(message).toContain('No new email was sent');
+  });
+});
+
+describe('resolveDialogCopy', () => {
+  it('names the employee and says an email goes to them', () => {
+    const copy = resolveDialogCopy('Ada');
+    expect(copy.intro).toContain('Ada');
+    expect(copy.intro).toContain('emailed');
+    expect(copy.label).toContain('Ada');
+  });
+
+  it('tells the administrator the message is optional and that it travels in the email', () => {
+    const copy = resolveDialogCopy('Ada');
+    expect(copy.label).toContain('optional');
+    expect(copy.help).toContain('included in the email');
+    expect(copy.help).toContain('empty');
+  });
+
+  it('keeps the limit the backend enforces', () => {
+    // backend/app/schemas/feedback.py: STATUS_MESSAGE_MAX_LENGTH
+    expect(STATUS_MESSAGE_MAX_LENGTH).toBe(1000);
   });
 });
 

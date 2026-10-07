@@ -10,12 +10,16 @@ import {
   confirmationFor,
   errorMessage,
   isActionComplete,
+  NO_REPLY_NOTE,
+  repliesOf,
+  showsNoReplyNote,
   statusLabel,
   successMessage,
   type FeedbackAction,
 } from "./feedbackActions";
 import { attachmentCountOf, attachmentsOf } from "./attachmentFiles";
 import { AttachmentChip, AttachmentsSection } from "./FeedbackAttachments";
+import { ResolveFeedbackDialog } from "./ResolveFeedbackDialog";
 
 /**
  * The feedback list, shared by the member and the organization-wide page.
@@ -142,25 +146,24 @@ const RowActions: React.FC<{
   const { showToast, confirmAction } = useFeedback();
   const [updateStatus] = useUpdateFeedbackStatusMutation();
   const [pending, setPending] = useState<FeedbackAction | null>(null);
+  // Resolved asks for its optional note in a dialog, which is also its
+  // confirmation; Working keeps the plain confirmation.
+  const [resolveOpen, setResolveOpen] = useState(false);
 
-  const perform = async (action: FeedbackAction) => {
-    // Re-checked here and not only in `disabled`: a rapid double-click can
-    // land the second event before React has re-rendered with the new state.
-    if (!canPerformAction(item.status, action, pending)) return;
-
-    const { title, message } = confirmationFor(action, item.employee_name);
-    if (!(await confirmAction(title, message))) return;
-
+  /** Sends the request. Returns whether it succeeded, so a dialog knows whether to close. */
+  const send = async (action: FeedbackAction, note: string | null): Promise<boolean> => {
     setPending(action);
     try {
-      const updated = await updateStatus({ id: item.id, status: action }).unwrap();
+      const updated = await updateStatus({ id: item.id, status: action, message: note }).unwrap();
       showToast(
-        successMessage(action, item.employee_name, updated.notification_queued),
+        successMessage(action, item.employee_name, updated.notification_queued, note !== null),
         "success",
       );
+      return true;
     } catch (err) {
       console.error("Failed to update feedback status", err);
       showToast(errorMessage((err as { status?: number } | null)?.status), "error");
+      return false;
     } finally {
       // Cleared whatever happened: a failed request must leave the button
       // pressable again, or a transient error would strand the row.
@@ -168,8 +171,39 @@ const RowActions: React.FC<{
     }
   };
 
+  const perform = async (action: FeedbackAction) => {
+    // Re-checked here and not only in `disabled`: a rapid double-click can
+    // land the second event before React has re-rendered with the new state.
+    if (!canPerformAction(item.status, action, pending)) return;
+
+    if (action === "resolved") {
+      setResolveOpen(true);
+      return;
+    }
+
+    const { title, message } = confirmationFor(action, item.employee_name);
+    if (!(await confirmAction(title, message))) return;
+    await send(action, null);
+  };
+
+  const confirmResolve = async (note: string | null) => {
+    if (!canPerformAction(item.status, "resolved", pending)) return;
+    // Closed only on success: a failure leaves the dialog open with the note
+    // still in it, so a transient error does not cost the administrator what
+    // they wrote.
+    if (await send("resolved", note)) setResolveOpen(false);
+  };
+
   return (
     <div className="flex flex-wrap justify-end gap-1.5">
+      {resolveOpen && (
+        <ResolveFeedbackDialog
+          employeeName={item.employee_name}
+          busy={pending === "resolved"}
+          onCancel={() => setResolveOpen(false)}
+          onConfirm={(note) => void confirmResolve(note)}
+        />
+      )}
       {(["in_progress", "resolved"] as const).map((action) => {
         const complete = isActionComplete(item.status, action);
         // A resolved row shows Resolved as reached and Working as spent, so
@@ -407,6 +441,38 @@ export const FeedbackTable: React.FC<{
                   key={selectedDescription.id}
                   attachments={attachmentsOf(selectedDescription)}
                 />
+              )}
+              {/* What the administrator wrote back to the employee -- the note
+                  that went out in the status email, read from the row so this
+                  dialog says what the employee was actually told. */}
+              {repliesOf(selectedDescription).length > 0 && (
+                <section className="mt-5" aria-label="Reply to the employee">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#94A3B8]">
+                    Reply to {showEmployee ? selectedDescription.employee_name : "you"}
+                  </div>
+                  <div className="mt-2 space-y-3">
+                    {repliesOf(selectedDescription).map((reply) => (
+                      <div
+                        key={`${reply.status}-${reply.created_at}`}
+                        className="rounded-lg border border-[#E2E8F0] border-l-4 bg-[#F8FAFC] p-3.5"
+                        style={{ borderLeftColor: reply.status === "resolved" ? "#047857" : "#B45309" }}
+                      >
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] font-bold text-[#64748B]">
+                          <span style={{ color: reply.status === "resolved" ? "#047857" : "#B45309" }}>
+                            {ACTION_LABELS[reply.status]}
+                          </span>
+                          <span>{formatISTDate(reply.created_at)}</span>
+                        </div>
+                        <p className="mt-1.5 whitespace-pre-wrap break-words text-[13px] leading-6 text-[#334155]">
+                          {reply.message}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+              {showsNoReplyNote(selectedDescription) && (
+                <p className="mt-5 text-[12px] font-semibold text-[#94A3B8]">{NO_REPLY_NOTE}</p>
               )}
             </div>
             <div className="flex justify-end border-t border-[#E2E8F0] bg-[#F8FAFC] px-6 py-4">

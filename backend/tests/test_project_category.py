@@ -18,6 +18,7 @@ import unittest
 from datetime import date, timedelta
 from unittest.mock import MagicMock
 
+from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import BigInteger, create_engine, select
 from sqlalchemy.dialects.postgresql import JSONB
@@ -95,8 +96,10 @@ class CategorySchemaTests(unittest.TestCase):
 
 
 class CategoryCreateTests(unittest.TestCase):
-    def _create(self, **overrides) -> Project:
-        """Run `create()` against a stubbed session and return the Project it added."""
+    """A project is created with an organization -- required, like the owner --
+    except by the WFPM integration, which has no notion of one and opts out."""
+
+    def _session(self) -> MagicMock:
         db = MagicMock()
         db.scalar.return_value = User(
             id=OWNER, organization_id=ORG, role_name="administrator", permissions={},
@@ -105,17 +108,61 @@ class CategoryCreateTests(unittest.TestCase):
         leader = User(id=LEADER, organization_id=ORG, role_name="project_leader", permissions={})
         answers = [[leader], [], []]
         db.scalars.return_value.all.side_effect = lambda: answers.pop(0) if answers else []
+        return db
+
+    def _run(self, db, create_options=None, **overrides):
         actor = User(id=ADMIN, organization_id=ORG, role_name="administrator", permissions={})
         with status_catalog(project_statuses=rows((1, "Active")), task_statuses=rows((1, "Todo"))):
-            ProjectManagementService.create(db, actor, _payload(**overrides))
+            return ProjectManagementService.create(db, actor, _payload(**overrides), **(create_options or {}))
+
+    def _create(self, create_options=None, **overrides) -> Project:
+        """Run `create()` against a stubbed session and return the Project it added."""
+        db = self._session()
+        self._run(db, create_options, **overrides)
         return next(call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], Project))
 
     def test_a_chosen_category_is_stored(self):
         self.assertEqual(self._create(category="kyle").category, "kyle")
         self.assertEqual(self._create(category="st").category, "st")
 
-    def test_no_category_is_stored_as_none_not_a_default(self):
-        self.assertIsNone(self._create().category)
+    def test_a_create_without_one_is_refused(self):
+        db = self._session()
+        with self.assertRaises(HTTPException) as caught:
+            self._run(db)
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertEqual(caught.exception.detail, "Project organization is required.")
+
+    def test_a_refused_create_writes_nothing(self):
+        db = self._session()
+        with self.assertRaises(HTTPException):
+            self._run(db)
+        db.add.assert_not_called()
+        db.commit.assert_not_called()
+
+    def test_an_explicit_null_is_refused_like_an_omitted_one(self):
+        with self.assertRaises(HTTPException) as caught:
+            self._run(self._session(), category=None)
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_the_rule_is_on_unless_a_caller_opts_out(self):
+        # A default that silently flipped to False would let every caller skip it.
+        import inspect
+        parameter = inspect.signature(ProjectManagementService.create).parameters["category_required"]
+        self.assertIs(parameter.default, True)
+
+    def test_the_wfpm_opt_out_stores_none_not_a_default(self):
+        # WFPM has no organization to name; its projects start without one,
+        # exactly like every project that predates the field.
+        self.assertIsNone(self._create(create_options={"category_required": False}).category)
+
+    def test_the_opt_out_does_not_stop_a_category_that_is_sent_being_stored(self):
+        self.assertEqual(self._create(create_options={"category_required": False}, category="st").category, "st")
+
+    def test_the_organization_rule_is_independent_of_the_owner_rule(self):
+        # Opting out of one does not opt out of the other.
+        with self.assertRaises(HTTPException) as caught:
+            self._run(self._session(), create_options={"owner_required": False})
+        self.assertEqual(caught.exception.detail, "Project organization is required.")
 
 
 class _World(unittest.TestCase):

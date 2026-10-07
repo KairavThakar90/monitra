@@ -162,7 +162,8 @@ app.include_router(desktop_notifications_router)
 app.include_router(activity_rollup_router)
 # Registered once, without the /api/v1 prefix: its routes are a scheduler
 # trigger, a public image URL, and (clients_public_router) an invitation's
-# Approve/Reject links, and all of these are referenced by absolute path —
+# Reject link (and the older Approve link, which now forwards to the
+# set-password page), and all of these are referenced by absolute path —
 # from a cron configuration and from inside already-delivered email. A second
 # spelling of any of them would be a second URL to keep working forever.
 app.include_router(email_notifications_router)

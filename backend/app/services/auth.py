@@ -676,14 +676,71 @@ class AuthService:
             raise HTTPException(status.HTTP_404_NOT_FOUND, AuthService.NOT_A_CLIENT_DETAIL)
         return user
 
+    #: What a client is told when their address has a password and they tried
+    #: to sign in without it.
+    PASSWORD_REQUIRED_DETAIL = "Enter your email address and password to sign in."
+
+    @staticmethod
+    def _client_with_password(db: Session, email: str) -> User | None:
+        """The `client`-role account this address names, if it holds a password."""
+        normalized = (email or "").strip()
+        if not normalized:
+            return None
+        user = UserRepository.get_by_normalized_email(db, normalized)
+        if user is None or user.role_name != "client" or not user.password_hash:
+            return None
+        return user
+
+    @staticmethod
+    def client_sign_in_method(db: Session, email: str) -> bool:
+        """Whether this address is an active client who signs in with a password.
+
+        The web sign-in form asks this *with the email alone*, before it has
+        sent anything secret, to decide where the password should go: to the
+        staff provider (everyone else) or to `client_password_login` (a client).
+        A staff password is therefore never sent to this backend, and a
+        client's is never sent to the provider.
+
+        It answers `False` for everything that is not exactly that -- a staff
+        member, an unknown address, an older client with no password, a client
+        who is deactivated -- so it says no more than "this address is a client
+        with a password", which a client's own sign-in screen reveals anyway.
+        """
+        user = AuthService._client_with_password(db, email)
+        return user is not None and user.is_active and user.status == "active"
+
+    @staticmethod
+    def client_password_login(db: Session, email: str, password: str) -> TokenPair:
+        """Sign in a client with the password they chose from their invitation.
+
+        Every way this can fail -- no such address, not a client, no password
+        set, the wrong password, an account that is not active -- is the same
+        401 the staff provider gives for a wrong credential, so a response does
+        not say which it was. The password is compared as typed and never
+        logged. An administrator's exclusion (`can_login`) is enforced by
+        `_issue_token_pair`, after the password is proven, so it cannot be used
+        to probe for accounts either.
+        """
+        user = AuthService._client_with_password(db, email)
+        if (
+            user is None
+            or not verify_password(password, user.password_hash)
+            or not user.is_active
+            or user.status != "active"
+        ):
+            logger.info("CLIENT_PASSWORD_LOGIN_REFUSED")
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
+        logger.info("CLIENT_PASSWORD_LOGIN: user %s signed in with a password", user.id)
+        return AuthService._issue_token_pair(db, user)
+
     @staticmethod
     def request_client_login_link(db: Session, email: str, background_tasks=None) -> None:
         """Email an active client a fresh sign-in link.
 
-        Reuses `issue_handoff_token` -- a client has no password, so every
-        sign-in after the initial invitation approval goes through the same
-        single-use SSO handoff mechanism the desktop client uses, requested
-        here instead of minted from an existing session.
+        Reuses `issue_handoff_token` -- the same single-use SSO handoff
+        mechanism the desktop client uses, requested here instead of minted
+        from an existing session. It is a way in that needs no password: the
+        link goes to the client's own mailbox, which proves they control it.
 
         Raises a 404 when the address is not an active client account. This
         is a deliberate product choice, not an oversight: the login screen
@@ -716,6 +773,14 @@ class AuthService:
         admin chose to share. It must never be reused for any other role.
         """
         user = AuthService._active_client_by_email(db, email)
+        if user.password_hash:
+            # The client chose a password from their invitation. Signing in on
+            # the address alone would make that password decoration -- anyone
+            # who knew the address could walk past it -- so from the moment a
+            # password exists it is the only way in. Accounts that never set
+            # one (older clients) keep the behaviour described above.
+            logger.info("CLIENT_DIRECT_LOGIN_REFUSED: user %s has a password", user.id)
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, AuthService.PASSWORD_REQUIRED_DETAIL)
         logger.info("CLIENT_DIRECT_LOGIN: user %s signed in from email alone", user.id)
         return AuthService._issue_token_pair(db, user)
 

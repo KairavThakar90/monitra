@@ -101,6 +101,12 @@ const tickedNames = () => projectBoxes().filter((box) => box.checked).map((box) 
 const openAddClient = async () => {
   await renderPage();
   await click(byText('button', '+ Add Client'));
+  // The modal opens at once but its project list is a request of its own; wait for
+  // the rows the tests act on instead of hoping a fixed number of ticks was enough
+  // (it is not, when the whole suite is running in parallel).
+  for (let attempt = 0; attempt < 60 && (!searchBox() || projectBoxes().length < PROJECTS.length); attempt += 1) {
+    await flush();
+  }
 };
 
 beforeEach(() => {

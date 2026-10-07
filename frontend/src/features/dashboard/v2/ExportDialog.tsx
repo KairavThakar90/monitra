@@ -9,20 +9,21 @@ import { IST_TIME_ZONE } from "../../../utils/duration";
 import { exportToCsv } from "./filters";
 import type { DateRange } from "./filters";
 import {
-  buildTimesheetRows,
+  buildDailyRows,
+  dailyBody,
+  dailyHeaders,
   datesInRange,
-  timesheetBody,
-  timesheetHeaders,
 } from "./timesheetExport";
 
 /**
  * Export dialog for the Reports page.
  *
- * There is one file: the **timesheet** -- one row per member x project x
- * to-do, one column per day in the range, and a row total. It replaced a
- * second "ranked table" format, so an export always has the same shape
- * whichever report tab it is opened from; the client portal writes the same
- * file (`features/client/ClientExportDialog`).
+ * There is one file: the **timesheet** -- one row per day for each member x
+ * project x to-do, with the **date in its own column**, the time worked and the
+ * average activity. It replaced a second "ranked table" format, so an export
+ * always has the same shape whichever report tab it is opened from. The client
+ * portal writes its own layout, one column per day, because its data carries no
+ * activity figures (`features/client/ClientExportDialog`).
  *
  * It does not export what is on screen. The page holds only its first rows,
  * so the file is built by re-querying `/reports/detailed-logs` -- the only
@@ -133,13 +134,13 @@ export const ExportDialog: React.FC<{
       }
       setProgress("Building file…");
 
-      const dates = datesInRange(range.from, range.to);
-      const rows = buildTimesheetRows(logs);
+      // One row per day, the date as a column (see `buildDailyRows`).
+      const rows = buildDailyRows(logs);
 
       exportToCsv(
         `timesheet_report_${range.from}_to_${range.to}.csv`,
-        timesheetHeaders(dates),
-        timesheetBody(rows, dates, organizationName, IST_TIME_ZONE),
+        dailyHeaders(),
+        dailyBody(rows, organizationName, IST_TIME_ZONE),
         [],
         // Quoted throughout, matching the timesheet format this mirrors.
         true,
@@ -195,7 +196,7 @@ export const ExportDialog: React.FC<{
             <div className="mt-3 rounded-lg border border-[#2563EB]/40 bg-[#EFF6FF] px-3 py-2.5">
               <span className="block text-[13px] font-bold text-[#0F172A]">Timesheet</span>
               <span className="mt-0.5 block text-[11px] font-medium text-[#64748B]">
-                Every member x project x to-do, one column per day.
+                One row per day for every member x project x to-do, with the date in its own column and each row&rsquo;s activity.
               </span>
             </div>
           </section>
@@ -209,7 +210,7 @@ export const ExportDialog: React.FC<{
 
         <footer className="flex items-center justify-between gap-3 border-t border-[#E2E8F0] bg-[#F8FAFC] px-6 py-4">
           <span className="text-[12px] font-semibold text-[#94A3B8]">
-            {busy ? progress : `CSV · ${dayCount} day column${dayCount === 1 ? "" : "s"}`}
+            {busy ? progress : `CSV · ${dayCount} day${dayCount === 1 ? "" : "s"} selected`}
           </span>
           <div className="flex items-center gap-2">
             <button

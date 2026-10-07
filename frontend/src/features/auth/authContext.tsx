@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import type { ReactNode } from "react";
-import { clientDirectLoginAPI, loginAPI, getMeAPI, logoutAPI, refreshSessionAPI, ssoLoginAPI } from "../../api/auth";
+import { clientDirectLoginAPI, getMeAPI, logoutAPI, refreshSessionAPI, signInAPI, ssoLoginAPI } from "../../api/auth";
 import { clearSessionStorage, ensureSessionExpiry, getSessionExpiresAt, storeSessionTokens } from "../../auth/session";
 import { store } from "../../store";
 import { baseApi } from "../../store/api/baseApi";
@@ -239,7 +239,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, [accessToken]);
 
   const login = async (email: string, password: string) => {
-    const response = await loginAPI({ email, password });
+    // A client who chose a password signs in with it against our backend;
+    // everyone else goes through the staff provider as before. See `signInAPI`.
+    const response = await signInAPI({ email, password });
     applySession(response);
   };
 

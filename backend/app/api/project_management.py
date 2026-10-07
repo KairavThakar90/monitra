@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, status
@@ -65,8 +66,8 @@ def create_project(payload: ProjectCreate, user: User = Depends(get_current_user
 
 
 @router.get("/projects", response_model=ProjectListResponse, dependencies=[Depends(require_permission("projects:view"))], summary="List projects")
-def list_projects(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), search: Optional[str] = Query(None, max_length=100), status_id: Optional[int] = Query(None, gt=0), leader_id: Optional[int] = Query(None, gt=0), billing_type: Optional[BillingType] = None, include_tasks: bool = Query(True, description="Embed each project's tasks. Pass false when only the project itself is rendered; `task_count` stays correct and `tasks` comes back null."), employee_ids: Optional[list[int]] = Query(None, description="Only projects staffed with at least one of these members."), category: Optional[ProjectCategory] = Query(None, description="Only projects tagged with this category."), user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
-    return ProjectManagementService.list(db, user, page, limit, search, status_id, leader_id, billing_type, include_tasks, employee_ids, category)
+def list_projects(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), search: Optional[str] = Query(None, max_length=100), status_id: Optional[int] = Query(None, gt=0), leader_id: Optional[int] = Query(None, gt=0), billing_type: Optional[list[BillingType]] = Query(None, description="Only projects of these billing types: fixed, free (flexible time) or non_billing. Repeat to combine, e.g. ?billing_type=fixed&billing_type=free for every billed project. Omit for all types."), include_tasks: bool = Query(True, description="Embed each project's tasks. Pass false when only the project itself is rendered; `task_count` stays correct and `tasks` comes back null."), employee_ids: Optional[list[int]] = Query(None, description="Only projects staffed with at least one of these members."), category: Optional[ProjectCategory] = Query(None, description="Only projects tagged with this category."), created_from: Optional[date] = Query(None, description="Only projects created on or after this day (an Asia/Kolkata calendar day, YYYY-MM-DD). Omit for no lower bound."), created_to: Optional[date] = Query(None, description="Only projects created on or before this day (an Asia/Kolkata calendar day, YYYY-MM-DD, inclusive). Omit for no upper bound. 400 if before created_from."), user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
+    return ProjectManagementService.list(db, user, page, limit, search, status_id, leader_id, billing_type, include_tasks, employee_ids, category, created_from, created_to)
 
 
 @router.get("/projects/hours-summary", response_model=ProjectHoursSummaryResponse, dependencies=[Depends(require_permission("projects:view"))], summary="All-time tracked hours per project")

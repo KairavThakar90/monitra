@@ -348,7 +348,7 @@ class ProjectManagementService:
         return payloads
 
     @staticmethod
-    def create(db: Session, user: User, payload: ProjectCreate, owner_required: bool = True, wfpm_project_id: Optional[str] = None):
+    def create(db: Session, user: User, payload: ProjectCreate, owner_required: bool = True, wfpm_project_id: Optional[str] = None, category_required: bool = True):
         """Create a project.
 
         `owner_required=False` is for the WFPM integration alone: its callers
@@ -356,6 +356,13 @@ class ProjectManagementService:
         nobody made, so its projects start without one -- exactly like every
         project that predates owners. Every other caller must name an eligible
         owner.
+
+        `category_required=False` is the WFPM integration's too, for the same
+        reason: WFPM has no notion of an organization, so its projects start
+        without one until somebody sets it in Monitra (see
+        docs/WFPM_INTEGRATION.md). Every other caller must name one -- the
+        create form marks the field required, and this is the same rule stated
+        where it is enforced. It is checked before anything is written.
 
         `wfpm_project_id` is likewise the WFPM integration's alone (see
         app/WFPM/service.py): the id this project has in WFPM, written in the
@@ -369,6 +376,8 @@ class ProjectManagementService:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Project owner is required.")
         else:
             owner = None
+        if payload.category is None and category_required:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Project organization is required.")
         # A leader creating a project leads it. The drawer already defaults the
         # Leader field to the signed-in leader and locks it, and this is the
         # same rule stated where it is enforced: without it a leader could hand
@@ -424,7 +433,7 @@ class ProjectManagementService:
         return ProjectManagementService._detail_payload(db, project, user)
 
     @staticmethod
-    def list(db: Session, user: User, page: int, limit: int, search: Optional[str], status_id: Optional[int], leader_id: Optional[int], billing_type: Optional[BillingType], include_tasks: bool = True, employee_ids: Optional[list[int]] = None, category: Optional[ProjectCategory] = None):
+    def list(db: Session, user: User, page: int, limit: int, search: Optional[str], status_id: Optional[int], leader_id: Optional[int], billing_type: Optional[list[BillingType]], include_tasks: bool = True, employee_ids: Optional[list[int]] = None, category: Optional[ProjectCategory] = None, created_from: Optional[date] = None, created_to: Optional[date] = None):
         """A page of projects.
 
         `include_tasks=False` is for the callers that only ever render a
@@ -464,9 +473,19 @@ class ProjectManagementService:
                 )
             )
         if billing_type:
-            filters.append(Project.billing_type == billing_type.value)
+            filters.append(Project.billing_type.in_([kind.value for kind in billing_type]))
         if category:
             filters.append(Project.category == category.value)
+        # Creation date, as IST calendar days -- the day the table shows and the
+        # date picker offers -- not UTC ones. Both ends are inclusive days; the
+        # upper bound is the start of the next IST day, exclusive. Either end
+        # may be given alone.
+        if created_from and created_to and created_from > created_to:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "created_from cannot be after created_to.")
+        if created_from:
+            filters.append(Project.created_at >= ist_day_start_utc(created_from))
+        if created_to:
+            filters.append(Project.created_at < ist_day_end_utc(created_to))
         # The page and its total in one statement. Each round trip to a managed
         # Postgres costs ~85ms whatever it asks for, so a separate COUNT(*) was
         # a measurable fraction of this endpoint for a number the same WHERE

@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { formatHMS, formatHoursAsHMS, istTodayISO, secondsOf } from '../duration';
+import { formatHMS, formatHoursAsHMS, istDateISO, istTodayISO, secondsOf } from '../duration';
 
 describe('formatHMS', () => {
   it('renders exact seconds and never wraps at 24 hours', () => {
@@ -68,5 +68,26 @@ describe('istTodayISO', () => {
     const early = istTodayISO(new Date('2026-09-14T18:00:00Z'));
     const later = istTodayISO(new Date('2026-09-14T20:00:00Z'));
     expect(early).not.toBe(later);
+  });
+});
+
+describe('istDateISO', () => {
+  it('is the IST calendar day a timestamp falls on, not the UTC date in its text', () => {
+    // 18:30:00 UTC is exactly midnight IST: the 6th, though the text says the 5th.
+    expect(istDateISO('2026-10-05T18:30:00Z')).toBe('2026-10-06');
+    expect(istDateISO('2026-10-05T18:29:59Z')).toBe('2026-10-05');
+    expect(istDateISO('2026-10-05T00:00:00Z')).toBe('2026-10-05');
+  });
+
+  it('reads a timestamp with an offset by the instant it names', () => {
+    expect(istDateISO('2026-10-06T00:00:00+05:30')).toBe('2026-10-06');
+    expect(istDateISO('2026-10-05T23:59:59+05:30')).toBe('2026-10-05');
+  });
+
+  it('answers with nothing for a missing or unreadable value rather than a made-up day', () => {
+    expect(istDateISO(null)).toBe('');
+    expect(istDateISO(undefined)).toBe('');
+    expect(istDateISO('')).toBe('');
+    expect(istDateISO('not a date')).toBe('');
   });
 });

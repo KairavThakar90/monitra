@@ -3,6 +3,7 @@ import { DateRangeFilter, type DateRange } from "../dashboard/v2/filters";
 import { FEEDBACK_CATEGORY_LABELS } from "../../store/api/feedbackApi";
 import type { Feedback, FeedbackCategory } from "../../store/api/feedbackApi";
 import { FieldError, SEARCH_MAX_LENGTH, validateSearchTerm } from "../../validation";
+import { STATUS_LABELS } from "./feedbackActions";
 
 /**
  * The filter bar both Feedback screens share, and the filtering it describes.
@@ -47,6 +48,15 @@ export const CATEGORIES = Object.keys(FEEDBACK_CATEGORY_LABELS) as FeedbackCateg
 /** Whose feedback the org-wide screen is showing. */
 export type FeedbackScope = "all" | "employees" | "mine";
 
+/**
+ * Where a feedback stands: the three states the workflow produces (`new` is
+ * where every submission starts; Working and Resolved are what the two Admin
+ * buttons set), or everything. `reviewing` and `closed` exist in the backend
+ * enum and nothing sets them, so they have no tab of their own -- "All" still
+ * includes any such row.
+ */
+export type FeedbackStatusFilter = "all" | "new" | "in_progress" | "resolved";
+
 export interface FeedbackFilterState {
   search: string;
   category: FeedbackCategory | null;
@@ -54,6 +64,8 @@ export interface FeedbackFilterState {
   scope: FeedbackScope;
   /** Empty means everyone — the same convention every other filter uses. */
   selectedMembers: string[];
+  /** Absent means "all", so a screen with no status control passes nothing. */
+  status?: FeedbackStatusFilter;
 }
 
 /** `YYYY-MM-DD` for an ISO timestamp, read in the viewer's own timezone. */
@@ -75,7 +87,7 @@ const dayOf = (isoTimestamp: string) => {
  */
 export const filterFeedback = (
   items: Feedback[],
-  { search, category, range, scope, selectedMembers }: FeedbackFilterState,
+  { search, category, range, scope, selectedMembers, status = "all" }: FeedbackFilterState,
   currentUserId: number | null,
   /**
    * For a leader, the ids of the people they lead. `null` means "no
@@ -91,6 +103,8 @@ export const filterFeedback = (
 
   return items.filter((item) => {
     if (category && item.category !== category) return false;
+
+    if (status !== "all" && item.status !== status) return false;
 
     if (selectedMembers.length > 0 && !selectedMembers.includes(String(item.employee_id))) {
       return false;
@@ -269,27 +283,23 @@ export const CategorySelect: React.FC<{
 };
 
 /**
- * Whose feedback to show: everyone the caller may read, their people only, or
- * their own.
- *
- * This is a *view* filter over rows the caller is already entitled to, not a
- * permission boundary -- `GET /feedback` decides what arrives here.
+ * A row of pill tabs, each with a count -- the one look both tab strips on the
+ * org-wide screen share, so the scope tabs and the status tabs read as the same
+ * kind of control. Exported so other pages' tab strips are this same one (the
+ * Screenshot Privacy rule list uses it).
  */
-export const ScopeTabs: React.FC<{
-  value: FeedbackScope;
-  onChange: (value: FeedbackScope) => void;
-  /** "My team" reads better than "Employees" for a leader. */
-  employeesLabel: string;
-  counts: Record<FeedbackScope, number>;
-}> = ({ value, onChange, employeesLabel, counts }) => {
-  const options: { id: FeedbackScope; label: string }[] = [
-    { id: "all", label: "All" },
-    { id: "employees", label: employeesLabel },
-    { id: "mine", label: "My feedback" },
-  ];
-
+export function PillTabs<T extends string>({
+  options, value, onChange, counts, label,
+}: {
+  options: { id: T; label: string }[];
+  value: T;
+  onChange: (value: T) => void;
+  counts: Record<T, number>;
+  /** The accessible name of the tab list. */
+  label: string;
+}) {
   return (
-    <div className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-[#F1F5F9] p-1" role="tablist" aria-label="Whose feedback">
+    <div className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-[#F1F5F9] p-1" role="tablist" aria-label={label}>
       {options.map((item) => {
         const active = value === item.id;
         return (
@@ -318,10 +328,68 @@ export const ScopeTabs: React.FC<{
       })}
     </div>
   );
-};
+}
+
+const ALL_SCOPES: FeedbackScope[] = ["all", "employees", "mine"];
 
 /**
- * The filter bar. `scope` is omitted on the member screen, which has one.
+ * Whose feedback to show: everyone the caller may read, their people only, or
+ * their own.
+ *
+ * This is a *view* filter over rows the caller is already entitled to, not a
+ * permission boundary -- `GET /feedback` decides what arrives here. `scopes`
+ * picks which tabs are offered: an administrator's own feedback is already in
+ * "All", so their screen leaves "My feedback" out.
+ */
+export const ScopeTabs: React.FC<{
+  value: FeedbackScope;
+  onChange: (value: FeedbackScope) => void;
+  /** "My team" reads better than "Employees" for a leader. */
+  employeesLabel: string;
+  counts: Record<FeedbackScope, number>;
+  /** The tabs to offer, in order. Defaults to all three. */
+  scopes?: FeedbackScope[];
+}> = ({ value, onChange, employeesLabel, counts, scopes = ALL_SCOPES }) => {
+  const labels: Record<FeedbackScope, string> = {
+    all: "All",
+    employees: employeesLabel,
+    mine: "My feedback",
+  };
+  return (
+    <PillTabs
+      options={scopes.map((id) => ({ id, label: labels[id] }))}
+      value={value}
+      onChange={onChange}
+      counts={counts}
+      label="Whose feedback"
+    />
+  );
+};
+
+/** The status tabs, in the order a feedback moves through them. */
+const STATUS_TABS: FeedbackStatusFilter[] = ["all", "new", "in_progress", "resolved"];
+
+/**
+ * Where a feedback stands: All, New, Working or Resolved. Wording comes from
+ * `STATUS_LABELS`, the same words the dialog and the row controls use.
+ */
+export const StatusTabs: React.FC<{
+  value: FeedbackStatusFilter;
+  onChange: (value: FeedbackStatusFilter) => void;
+  counts: Record<FeedbackStatusFilter, number>;
+}> = ({ value, onChange, counts }) => (
+  <PillTabs
+    options={STATUS_TABS.map((id) => ({ id, label: id === "all" ? "All" : STATUS_LABELS[id] }))}
+    value={value}
+    onChange={onChange}
+    counts={counts}
+    label="Feedback status"
+  />
+);
+
+/**
+ * The filter bar. `scope` and `status` are omitted on the member screen, which
+ * has neither.
  * `members` is omitted wherever a member picker would not narrow anything --
  * the member's own "My feedback" screen, for instance.
  */
@@ -335,8 +403,10 @@ export const FeedbackFilterBar: React.FC<{
   onReset: () => void;
   isDirty: boolean;
   scope?: React.ReactNode;
+  /** A second row of tabs under the controls: where each feedback stands. */
+  status?: React.ReactNode;
   members?: React.ReactNode;
-}> = ({ search, onSearch, category, onCategory, range, onRange, onReset, isDirty, scope, members }) => (
+}> = ({ search, onSearch, category, onCategory, range, onRange, onReset, isDirty, scope, status, members }) => (
   <div className="rounded-xl border border-[#E2E8F0] bg-white p-4 shadow-sm">
     <div className="flex flex-wrap items-center gap-3">
       <SearchInput value={search} onChange={onSearch} />
@@ -354,6 +424,7 @@ export const FeedbackFilterBar: React.FC<{
       )}
       {scope && <div className="ml-auto">{scope}</div>}
     </div>
+    {status && <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-[#F1F5F9] pt-3">{status}</div>}
   </div>
 );
 

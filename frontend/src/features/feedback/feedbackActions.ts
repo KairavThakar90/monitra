@@ -1,5 +1,5 @@
 import type { UserRead } from '../../api/auth';
-import type { Feedback, FeedbackStatus } from '../../store/api/feedbackApi';
+import type { Feedback, FeedbackReply, FeedbackStatus } from '../../store/api/feedbackApi';
 
 /**
  * The rules behind the Working / Resolved row controls, as plain functions.
@@ -31,6 +31,15 @@ export const canManageFeedback = (user: UserRead | null | undefined) =>
 
 /** The two states a row control can ask for. Matches the API's `status` field. */
 export type FeedbackAction = 'in_progress' | 'resolved';
+
+/**
+ * The longest note an administrator may add when resolving a feedback.
+ *
+ * Mirrors `STATUS_MESSAGE_MAX_LENGTH` in `backend/app/schemas/feedback.py`,
+ * which is the authority: a client must never be stricter than the backend, and
+ * a note longer than this is refused there too.
+ */
+export const STATUS_MESSAGE_MAX_LENGTH = 1000;
 
 /** What each button is called, for confirmations, toasts and labels. */
 export const ACTION_LABELS: Record<FeedbackAction, string> = {
@@ -93,10 +102,25 @@ export const successMessage = (
   action: FeedbackAction,
   employeeName: string,
   notificationQueued: boolean,
+  withNote = false,
 ) =>
   notificationQueued
-    ? `Marked as ${ACTION_LABELS[action]}. ${employeeName} has been notified by email.`
+    ? `Marked as ${ACTION_LABELS[action]}. ${employeeName} has been notified by email${withNote ? ', with your message' : ''}.`
     : `This feedback was already marked as ${ACTION_LABELS[action]}. No new email was sent.`;
+
+/**
+ * The wording of the dialog Resolved opens. It replaces the plain confirmation
+ * for that button: it says the same thing -- an email goes to the employee --
+ * and adds the optional note the email will carry.
+ */
+export const resolveDialogCopy = (employeeName: string) => ({
+  title: 'Mark this feedback as resolved?',
+  intro: `${employeeName} will be emailed to say their feedback has been resolved.`,
+  label: `Message to ${employeeName} (optional)`,
+  placeholder: 'Add a note about how this was resolved, or anything you would like to discuss…',
+  help: 'Whatever you write here is included in the email. Leave it empty to send the standard update.',
+  confirm: 'Mark as Resolved',
+});
 
 /**
  * What to say when the request fails, chosen by status code.
@@ -132,3 +156,21 @@ export const STATUS_LABELS: Record<FeedbackStatus, string> = {
 /** A row's display status, tolerating a server that sends something unmapped. */
 export const statusLabel = (item: Pick<Feedback, 'status'>) =>
   STATUS_LABELS[item.status] ?? item.status;
+
+/**
+ * What an administrator wrote to the employee, oldest first. Absent on a
+ * payload from an older backend or an older persisted cache, which reads as
+ * none.
+ */
+export const repliesOf = (item: Pick<Feedback, 'replies'>): FeedbackReply[] => item.replies ?? [];
+
+/**
+ * Said in place of a reply when a feedback was resolved without a note, so a
+ * reader can tell "nothing was written" from "this screen does not show it".
+ * Only for Resolved: that is the one button that offers a note, so a Working
+ * row with no reply is the ordinary case and needs no remark.
+ */
+export const NO_REPLY_NOTE = 'No message was added when this was marked Resolved.';
+
+export const showsNoReplyNote = (item: Pick<Feedback, 'status' | 'replies'>) =>
+  item.status === 'resolved' && repliesOf(item).length === 0;

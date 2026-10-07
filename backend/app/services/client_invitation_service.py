@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import hash_token
+from app.core.security import hash_password, hash_token
 from app.core.validation import validate_email
 from app.models.activity_log import ActivityLogAction, ActivityLogModule
 from app.models.client import Client
@@ -19,7 +19,6 @@ from app.repositories.client_project import ClientProjectRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.user import UserRepository
 from app.services.activity_log import ActivityLogService
-from app.services.auth import AuthService
 from app.services.email.workflows import queue_client_invitation_email
 
 
@@ -32,6 +31,11 @@ DEFAULT_CLIENT_PERMISSIONS = {
     "share_timing": True,
     "share_billing": False,
 }
+
+#: What a link that cannot be used says, for every reason it cannot: unknown,
+#: expired, already used, replaced by a newer one. One message, so the answer
+#: tells nobody which of those it was.
+INVALID_INVITATION_DETAIL = "This invitation link is invalid or has expired."
 
 #: Each sharing switch as the activity trail says it.
 _PERMISSION_LABELS = {
@@ -299,45 +303,81 @@ class ClientInvitationService:
             "pagination": {"page": page, "limit": limit, "total": total, "total_pages": total_pages},
         }
 
-    # ------------------------------------------------------- approve/reject
+    # ------------------------------------------- set password / reject
 
     @staticmethod
-    def approve_invitation(db: Session, token: str) -> tuple[str, datetime]:
-        """Approve the invitation this token names. Returns a handoff token
-        (see `AuthService.issue_handoff_token`) so the caller can redirect the
-        client straight into a signed-in session -- no password is ever
-        involved."""
+    def _pending_invitation(db: Session, token: str):
+        """The invitation this link names, or a 401 that says only "not usable"."""
         invitation = ClientInvitationRepository.get_pending_by_token_hash(db, hash_token(token))
         if invitation is None:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "This invitation link is invalid or has expired.")
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_INVITATION_DETAIL)
+        client = db.get(Client, invitation.client_id)
+        # An active client's links are all spent: whatever else is still marked
+        # pending must not be able to change a password that has been chosen.
+        if client is not None and client.status == "active":
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_INVITATION_DETAIL)
+        return invitation
+
+    @staticmethod
+    def get_invitation(db: Session, token: str) -> dict:
+        """What the set-password page may show for this link: the address the
+        account is for. Read-only -- it claims nothing, so opening the page (or
+        a mail scanner fetching it) cannot use the link up."""
+        invitation = ClientInvitationService._pending_invitation(db, token)
+        return {"email": invitation.email}
+
+    @staticmethod
+    def set_password(db: Session, token: str, password: str) -> str:
+        """Let the client choose their password from the link, and activate them.
+
+        This is the one way an invitation is accepted. It issues **no session**:
+        the client is sent back to the sign-in screen to enter the address and
+        password they just chose, so the password is proven to work and the link
+        is never also a login.
+
+        The password is hashed *before* the link is claimed, so a failure there
+        cannot burn a link that has done nothing. The claim (`mark_approved`) is
+        the single-use guarantee: two submissions of the same link race to it
+        and exactly one wins. Only a `client`-role account can be reached this
+        way -- the link is a bearer secret, and it must never be able to set
+        the password of a staff account whatever the rows say.
+
+        :return: the account's email address, for the sign-in screen.
+        """
+        invitation = ClientInvitationService._pending_invitation(db, token)
 
         client = db.get(Client, invitation.client_id)
         if client is None or client.user_id is None:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Invitation is missing its account.")
+        user = UserRepository.get_by_id(db, client.user_id)
+        if user is None:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Invitation is missing its account.")
+        if user.role_name != "client":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "This invitation cannot be used.")
+
+        password_hash = hash_password(password)
 
         if not ClientInvitationRepository.mark_approved(db, invitation):
-            # Lost the race to a concurrent click on the same link.
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "This invitation link is invalid or has expired.")
+            # Lost the race to a concurrent submission of the same link.
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_INVITATION_DETAIL)
 
         client.status = "active"
-        db.commit()
-
-        user = UserRepository.get_by_id(db, client.user_id)
+        user.password_hash = password_hash
         user.is_active = True
         user.status = "active"
         db.commit()
-        db.refresh(user)
 
-        return AuthService.issue_handoff_token(db, user)
+        ClientInvitationRepository.supersede_other_pending(db, invitation)
+        return invitation.email
 
     @staticmethod
     def reject_invitation(db: Session, token: str) -> None:
         invitation = ClientInvitationRepository.get_pending_by_token_hash(db, hash_token(token))
         if invitation is None:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "This invitation link is invalid or has expired.")
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_INVITATION_DETAIL)
 
         if not ClientInvitationRepository.mark_rejected(db, invitation):
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "This invitation link is invalid or has expired.")
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, INVALID_INVITATION_DETAIL)
 
         client = db.get(Client, invitation.client_id)
         if client is not None:

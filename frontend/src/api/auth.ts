@@ -148,10 +148,11 @@ export async function refreshSessionAPI(refreshToken: string): Promise<TokenPair
 }
 
 /**
- * Sign a client in immediately from their email address alone -- no link to
- * click, no second factor. Deliberately the weakest credential in this
+ * Sign an *older* client in immediately from their email address alone -- no
+ * link to click, no second factor. Deliberately the weakest credential in this
  * system, scoped to `client`-role accounts only; see `AuthService.client_direct_login`
- * on the backend for the reasoning.
+ * on the backend for the reasoning. The backend refuses it for a client who has
+ * chosen a password (`clientPasswordLoginAPI` is how they sign in).
  *
  * Throws with the backend's own explanation when the address does not match
  * an active client account ("you are not registered as a client...").
@@ -180,9 +181,160 @@ export async function clientDirectLoginAPI(email: string): Promise<TokenPair> {
   return { ...data, user: normalizeUserProfile(data.user) };
 }
 
+/** How long the "which way does this address sign in" question may take. */
+const SIGN_IN_METHOD_TIMEOUT_MS = 4000;
+
+/**
+ * Does this address sign in with a client password?
+ *
+ * Asked with the email alone, *before* anything secret is sent, so the form can
+ * decide where the password goes: to our backend for a client who chose one, to
+ * the staff provider for everyone else. That keeps a staff password away from
+ * this backend (the web client's sign-in is documented to send it only to the
+ * provider) and a client's away from the provider.
+ *
+ * It never throws. A slow or unreachable answer reads as "no", which sends the
+ * sign-in down the path it has always taken -- an outage here must not become
+ * an outage of every staff member's sign-in.
+ */
+export async function clientSignInMethodAPI(email: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SIGN_IN_METHOD_TIMEOUT_MS);
+  try {
+    const response = await fetch(ENDPOINTS.AUTH.CLIENT_SIGN_IN_METHOD, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return false;
+    const data = await response.json();
+    return data?.password_required === true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Sign a client in with the password they chose from their invitation.
+ *
+ * The password goes to our backend and nowhere else. Throws with the backend's
+ * own wording on a refusal ("Invalid email or password"), and with
+ * `LoginDisabledError` when an administrator has excluded the account.
+ */
+export async function clientPasswordLoginAPI(email: string, password: string): Promise<TokenPair> {
+  let response: Response;
+  try {
+    response = await fetch(ENDPOINTS.AUTH.CLIENT_LOGIN, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // The password exactly as typed -- never trimmed or altered.
+      body: JSON.stringify({ email, password }),
+    });
+  } catch {
+    throw new Error("Could not reach the sign-in service. Check your connection and try again.");
+  }
+
+  if (!response.ok) {
+    let message = "Invalid email or password";
+    try {
+      const data = await response.json();
+      if (isLoginDisabledBody(data)) throw new LoginDisabledError();
+      if (typeof data?.detail === "string") message = data.detail;
+    } catch (err) {
+      if (isLoginDisabledError(err)) throw err;
+      // The default message already says what is wrong.
+    }
+    throw new Error(message);
+  }
+
+  const data = (await response.json()) as TokenPair;
+  return { ...data, user: normalizeUserProfile(data.user) };
+}
+
+/**
+ * The web sign-in form's one entry point: a client who chose a password signs in
+ * with it here; everyone else signs in exactly as before, through the staff
+ * provider (`loginAPI`).
+ *
+ * The only thing sent to our backend ahead of the choice is the email address.
+ */
+export async function signInAPI(payload: DevLoginPayload): Promise<TokenPair> {
+  if (await clientSignInMethodAPI(payload.email)) {
+    return clientPasswordLoginAPI(payload.email, payload.password);
+  }
+  return loginAPI(payload);
+}
+
+/**
+ * Why a call made from an invitation link failed. `invalid` is a link that is
+ * unknown, expired, already used or replaced (the page says so and stops);
+ * `rejected` is a password the server would not accept; `unavailable` is
+ * anything that is worth trying again -- the network, or the server.
+ */
+export class ClientInvitationError extends Error {
+  readonly kind: "invalid" | "rejected" | "unavailable";
+
+  constructor(kind: "invalid" | "rejected" | "unavailable", message: string) {
+    super(message);
+    this.name = "ClientInvitationError";
+    this.kind = kind;
+  }
+}
+
+const INVALID_LINK_MESSAGE =
+  "This invitation link is invalid or has expired. Ask the person who invited you to send a new one.";
+const UNAVAILABLE_MESSAGE = "Could not reach Monitra. Check your connection and try again.";
+
+async function invitationCall(url: string, init?: RequestInit): Promise<{ email: string }> {
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch {
+    throw new ClientInvitationError("unavailable", UNAVAILABLE_MESSAGE);
+  }
+  if (response.status === 401) throw new ClientInvitationError("invalid", INVALID_LINK_MESSAGE);
+  if (response.status === 422) {
+    throw new ClientInvitationError(
+      "rejected",
+      "That password was not accepted. Use at least 8 characters and try again."
+    );
+  }
+  if (!response.ok) throw new ClientInvitationError("unavailable", UNAVAILABLE_MESSAGE);
+  const data = await response.json().catch(() => null);
+  if (typeof data?.email !== "string") throw new ClientInvitationError("unavailable", UNAVAILABLE_MESSAGE);
+  return { email: data.email };
+}
+
+/**
+ * Which account an invitation link is for -- so the set-password page can say
+ * so, and so a dead link is reported before anyone types a password. Read-only:
+ * it does not use the link up.
+ */
+export function getClientInvitationAPI(token: string): Promise<{ email: string }> {
+  return invitationCall(ENDPOINTS.CLIENTS.INVITATION(token));
+}
+
+/**
+ * Choose the password for the account an invitation link names. Accepting the
+ * invitation signs nobody in: the caller sends the client back to the sign-in
+ * screen. Resolves with the account's email, for that screen.
+ */
+export function setClientPasswordAPI(token: string, password: string): Promise<{ email: string }> {
+  return invitationCall(ENDPOINTS.CLIENTS.INVITATION_PASSWORD(token), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    // Exactly as typed -- see docs/VALIDATION.md, "Passwords are special".
+    body: JSON.stringify({ password }),
+  });
+}
+
 /**
  * Ask the backend to email a fresh passwordless sign-in link to a client
- * account. A client has no password, so this is the whole of a returning
+ * account -- a way in that needs no password, for an older client who never
+ * set one, or one who has forgotten theirs. It was the whole of a returning
  * client's sign-in: enter the email, nothing else.
  *
  * Throws when the address does not match an active client account, with the

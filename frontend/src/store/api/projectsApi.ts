@@ -146,9 +146,17 @@ export type GetProjectsArgs = {
   search?: string;
   status_id?: number | null;
   leader_id?: number | null;
-  billing_type?: string | null;
+  /** Only projects of these billing types ('fixed', 'free', 'non_billing'); empty or absent means all. */
+  billing_type?: string[] | null;
   /** Only projects tagged with this category. */
   category?: ProjectCategory | null;
+  /**
+   * Only projects created inside this span, as inclusive IST calendar days
+   * (`YYYY-MM-DD`). Either end may be given alone; empty or absent means no
+   * limit on that side.
+   */
+  created_from?: string | null;
+  created_to?: string | null;
   /** Only projects staffed with at least one of these members. */
   employee_ids?: number[];
 };
@@ -234,8 +242,10 @@ export const projectsApi = baseApi.injectEndpoints({
         if (params.search) url += `&search=${encodeURIComponent(params.search)}`;
         if (params.status_id) url += `&status_id=${params.status_id}`;
         if (params.leader_id) url += `&leader_id=${params.leader_id}`;
-        if (params.billing_type) url += `&billing_type=${params.billing_type}`;
+        for (const type of params.billing_type || []) url += `&billing_type=${type}`;
         if (params.category) url += `&category=${params.category}`;
+        if (params.created_from) url += `&created_from=${params.created_from}`;
+        if (params.created_to) url += `&created_to=${params.created_to}`;
         for (const id of params.employee_ids || []) url += `&employee_ids=${id}`;
         return url;
       },

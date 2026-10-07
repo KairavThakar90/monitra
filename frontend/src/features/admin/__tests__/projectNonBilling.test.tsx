@@ -177,6 +177,8 @@ const fillRequiredFields = async () => {
   await setValue(container.querySelector<HTMLSelectElement>('#project-owner')!, String(OWNER.id));
   await setValue(field<HTMLSelectElement>('Leader'), String(LEADER.id));
   await setValue(field<HTMLInputElement>('Deadline'), futureDate());
+  // The Organization is required to create a project.
+  await setValue(container.querySelector<HTMLSelectElement>('#project-category')!, 'kyle');
 };
 
 const openCreateDrawer = async () => {

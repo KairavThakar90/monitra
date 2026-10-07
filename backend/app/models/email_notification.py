@@ -100,7 +100,7 @@ TYPE_MONTHLY_PROJECT_SUMMARY = "monthly_project_summary"
 #: claimed once in `project_budget_alerts` before any row is queued.
 TYPE_PROJECT_BUDGET_ALERT = "project_budget_alert"
 #: "You're invited to Monitra" -- one per invitation, carrying its own
-#: Approve/Reject links. Keyed on the invitation row, never the client: a
+#: Set-password/Reject links. Keyed on the invitation row, never the client: a
 #: resend creates a new invitation row (a new token) and must be a distinct,
 #: separately-deliverable email.
 TYPE_CLIENT_INVITATION = "client_invitation"

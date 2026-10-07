@@ -35,7 +35,7 @@ def _payload(billing_type, fixed_hours=None):
     return ProjectCreate(
         project_name="Internal tooling", status_id=1, owner_id=OWNER_ID, leader_id=LEADER_ID,
         employee_ids=[], deadline=date.today() + timedelta(days=20),
-        billing_type=billing_type, fixed_hours=fixed_hours,
+        billing_type=billing_type, fixed_hours=fixed_hours, category="kyle",
     )
 
 

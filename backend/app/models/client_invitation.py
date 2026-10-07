@@ -13,8 +13,10 @@ class ClientInvitation(Base):
     `RefreshToken` use, for the same reason: a database dump must not hand
     anyone a usable credential. The row is claimed (status flipped, `used_at`
     -- via `approved_at`/`rejected_at` -- set) under a condition that only
-    matches a pending, unexpired row, so the Approve and Reject links can each
-    be clicked at most once, even if both are opened at the same moment.
+    matches a pending, unexpired row, so the link can be used at most once --
+    to choose a password (which is how an invitation is approved) or to reject
+    -- even if both are tried at the same moment. A newer invitation, or the
+    client accepting one, marks the others `superseded`.
     """
 
     __tablename__ = 'client_invitations'

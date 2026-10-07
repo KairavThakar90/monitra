@@ -168,6 +168,23 @@ asserts against the live database.
   arrives only when the desktop wakes and the server records it. Showing it
   sooner needs a signal from the desktop, which no endpoint carries today.
 
+  **Which day an entry's time belongs to.** The desktop splits a session at IST
+  midnight, but only while it is awake, so an entry can be open across a
+  midnight for as long as the machine is asleep, off or offline. Time Tracking
+  (the day list and the per-member drill-down) therefore apportions an entry to
+  every IST calendar day it overlaps, clipped at the boundary
+  (`TimeTrackingRepository.day_segments`), instead of reporting all of it under
+  the day it started. For a member who began on the 5th at 19:00 and is still
+  running on the 6th, the 5th shows 19:00-24:00 and the 6th shows 00:00-now with
+  the entry still running -- the same figures the desktop's own split produces
+  when it wakes, so nothing moves when it does. An entry that lies wholly inside
+  one day keeps its persisted `total_seconds`, so every figure that did not
+  cross a midnight is unchanged. An entry's adjustments are one signed figure
+  with no instant of their own, so they belong to the day the entry started on.
+  Active Users is not day-scoped: it reads every running entry and shows the
+  whole of its `now - start_time`, `start_time` included. The Reports pages are
+  not changed here and still key an entry on its `start_time`.
+
 ## 7. Restart, update, crash
 
 The desktop persists its session record (`app_state.timer_state`) once, when

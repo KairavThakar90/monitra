@@ -14,9 +14,10 @@ import { ENDPOINTS } from '../../api/endpoints';
  * the caller's own organization.
  *
  * `updateFeedbackStatus` is the one mutation, and its argument list is the
- * point: an id and a status. It carries no recipient, because the employee who
- * gets the email is resolved from the feedback row server-side — the dashboard
- * does not know the address and has no way to supply one. The endpoint refuses
+ * point: an id, a status, and an optional note to the employee. It carries no
+ * recipient, because the employee who gets the email is resolved from the
+ * feedback row server-side — the dashboard does not know the address and has no
+ * way to supply one. The note is text the email prints, not somewhere it goes. The endpoint refuses
  * any caller who is not an administrator, so hiding the buttons from HR is a
  * courtesy to HR rather than the thing that stops them.
  */
@@ -50,6 +51,18 @@ export interface FeedbackAttachment {
   is_image: boolean;
 }
 
+/**
+ * A note an administrator wrote to the employee when moving their feedback on
+ * -- what the status email said, and when. There is no author: the update is
+ * from Monitra, not from a named person.
+ */
+export interface FeedbackReply {
+  message: string;
+  /** The move the note went out with: Working or Resolved. */
+  status: 'in_progress' | 'resolved';
+  created_at: string;
+}
+
 export interface Feedback {
   id: number;
   employee_id: number;
@@ -60,11 +73,13 @@ export interface Feedback {
   created_at: string;
   updated_at: string | null;
   /**
-   * Both are absent on payloads from an older backend or an older persisted
-   * cache; treat absent as none.
+   * All three are absent on payloads from an older backend or an older
+   * persisted cache; treat absent as none.
    */
   attachment_count?: number;
   attachments?: FeedbackAttachment[];
+  /** What administrators wrote to the employee, oldest first. */
+  replies?: FeedbackReply[];
 }
 
 /** The status update's response: the refreshed row, plus what it caused. */
@@ -81,6 +96,12 @@ export interface FeedbackStatusUpdateArgs {
   id: number;
   /** `in_progress` is the Working button; `resolved` is the other one. */
   status: 'in_progress' | 'resolved';
+  /**
+   * An optional note to the employee, printed in the email about this status
+   * change (the Resolved dialog's text box). Blank or absent sends the standard
+   * update, and the field is then left out of the request altogether.
+   */
+  message?: string | null;
 }
 
 export interface FeedbackListResponse {
@@ -193,10 +214,12 @@ export const feedbackApi = baseApi.injectEndpoints({
      * same row in two different states on two screens.
      */
     updateFeedbackStatus: builder.mutation<FeedbackStatusUpdateResponse, FeedbackStatusUpdateArgs>({
-      query: ({ id, status }) => ({
+      query: ({ id, status, message }) => ({
         url: ENDPOINTS.FEEDBACK.STATUS(id),
         method: 'PATCH',
-        body: { status },
+        // The note only when there is one, so an update without it is the same
+        // request it always was.
+        body: message && message.trim() ? { status, message: message.trim() } : { status },
       }),
       invalidatesTags: [
         { type: 'Feedback' as const, id: 'ALL' },

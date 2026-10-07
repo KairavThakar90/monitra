@@ -276,9 +276,11 @@ def get_feedback(
         "gate is enforced server-side and does not depend on the dashboard "
         "hiding the buttons.\n\n"
         "**The recipient is not a parameter.** The request body carries a "
-        "status and nothing else; the address is resolved from the feedback "
-        "row's own submitter, server-side. There is no field a caller could "
-        "add to redirect the notification.\n\n"
+        "status and an optional note to the employee; the address is resolved "
+        "from the feedback row's own submitter, server-side. There is no field "
+        "a caller could add to redirect the notification. A `message`, when "
+        "given, is printed in that email (escaped), is limited to plain text of "
+        "at most 1000 characters, and is not stored on the feedback.\n\n"
         "Allowed transitions are `new → in_progress`, `new → resolved` and "
         "`in_progress → resolved`. Requesting the status the feedback is "
         "already in succeeds, changes nothing and sends nothing — which is "
@@ -292,7 +294,7 @@ def get_feedback(
         403: {"description": "The caller is not an Admin."},
         404: {"description": "No such feedback in this organization."},
         409: {"description": "That status transition is not allowed."},
-        422: {"description": "`status` is not one of in_progress, resolved."},
+        422: {"description": "`status` is not one of in_progress, resolved, or `message` is not valid plain text."},
     },
 )
 def update_feedback_status(
@@ -303,5 +305,6 @@ def update_feedback_status(
     db: Session = Depends(get_db, scope="function"),
 ):
     return FeedbackService.update_status(
-        db, current_user, feedback_id, update.status, background_tasks=background_tasks
+        db, current_user, feedback_id, update.status,
+        background_tasks=background_tasks, message=update.message,
     )

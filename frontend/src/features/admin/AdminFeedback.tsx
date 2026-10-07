@@ -6,9 +6,11 @@ import {
   FeedbackFilterBar,
   ResultSummary,
   ScopeTabs,
+  StatusTabs,
   filterFeedback,
   spanCovering,
   type FeedbackScope,
+  type FeedbackStatusFilter,
 } from "../feedback/feedbackFilters";
 import { useGetAllFeedbackItemsQuery } from "../../store/api/feedbackApi";
 import type { FeedbackCategory } from "../../store/api/feedbackApi";
@@ -30,8 +32,9 @@ import { MemberMultiSelect } from "../dashboard/v2/filters";
  * do is let the reader narrow that list: by search term, by category, by date,
  * and by whose feedback it is.
  *
- * All four filters run client-side, because the endpoint takes only `page`,
- * `limit` and `category`. The page therefore loads the whole list once through
+ * All five filters run client-side (search, category, date, whose feedback it
+ * is, and where it stands: New / Working / Resolved), because the endpoint takes
+ * only `page`, `limit` and `category`. The page therefore loads the whole list once through
  * `getAllFeedbackItems` and paginates the filtered result itself -- filtering a
  * single server page would report "no matches" for a row sitting on page two.
  *
@@ -82,6 +85,7 @@ export const AdminFeedback: React.FC = () => {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<FeedbackCategory | null>(null);
   const [scope, setScope] = useState<FeedbackScope>("all");
+  const [status, setStatus] = useState<FeedbackStatusFilter>("all");
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   const [page, setPage] = useState(1);
 
@@ -102,8 +106,8 @@ export const AdminFeedback: React.FC = () => {
   const currentUserId = currentUser?.id ?? null;
 
   const filters = useMemo(
-    () => ({ search: debouncedSearch, category, range: effectiveRange, scope, selectedMembers }),
-    [debouncedSearch, category, effectiveRange, scope, selectedMembers],
+    () => ({ search: debouncedSearch, category, range: effectiveRange, scope, selectedMembers, status }),
+    [debouncedSearch, category, effectiveRange, scope, selectedMembers, status],
   );
 
   const visible = useMemo(
@@ -113,7 +117,9 @@ export const AdminFeedback: React.FC = () => {
 
   /**
    * The tab counts reflect the other filters, so switching tabs never lands on
-   * an empty list whose count said otherwise.
+   * an empty list whose count said otherwise. Each strip counts with its own
+   * filter swapped out and the other one kept: the scope tabs count within the
+   * chosen status, and the status tabs within the chosen scope.
    */
   const counts = useMemo(() => {
     const withScope = (next: FeedbackScope) =>
@@ -121,10 +127,22 @@ export const AdminFeedback: React.FC = () => {
     return { all: withScope("all"), employees: withScope("employees"), mine: withScope("mine") };
   }, [items, filters, currentUserId, teamIds]);
 
+  const statusCounts = useMemo(() => {
+    const withStatus = (next: FeedbackStatusFilter) =>
+      filterFeedback(items, { ...filters, status: next }, currentUserId, teamIds).length;
+    return {
+      all: withStatus("all"),
+      new: withStatus("new"),
+      in_progress: withStatus("in_progress"),
+      resolved: withStatus("resolved"),
+    };
+  }, [items, filters, currentUserId, teamIds]);
+
   const isDirty =
     search !== "" ||
     category !== null ||
     scope !== "all" ||
+    status !== "all" ||
     range !== null ||
     selectedMembers.length > 0;
 
@@ -132,6 +150,7 @@ export const AdminFeedback: React.FC = () => {
     setSearch("");
     setCategory(null);
     setScope("all");
+    setStatus("all");
     setRange(null);
     setSelectedMembers([]);
   };
@@ -140,7 +159,7 @@ export const AdminFeedback: React.FC = () => {
   // result that now has one page would render as empty.
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, category, scope, effectiveRange.from, effectiveRange.to, selectedMembers]);
+  }, [debouncedSearch, category, scope, status, effectiveRange.from, effectiveRange.to, selectedMembers]);
 
   const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
   const pageItems = visible.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -178,8 +197,12 @@ export const AdminFeedback: React.FC = () => {
               onChange={setScope}
               employeesLabel={teamScoped ? "My team" : "Employees"}
               counts={counts}
+              // An administrator's own feedback is already in "All", so their
+              // screen has no "My feedback" tab. HR and Leader keep it.
+              scopes={canManage ? ["all", "employees"] : undefined}
             />
           }
+          status={<StatusTabs value={status} onChange={setStatus} counts={statusCounts} />}
         />
 
         {isError && <ErrorNote message="Feedback could not be loaded. Please try again." />}

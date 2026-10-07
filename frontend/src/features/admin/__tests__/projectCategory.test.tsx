@@ -1,15 +1,18 @@
 // @vitest-environment jsdom
 /**
- * The optional Category of a project: Kyle Project / ST Project / none.
+ * The Organization of a project (stored as `category`): Kyle Project / ST Project.
  *
  * Rendered against a real RTK Query store with only `fetch` stubbed, so what
  * these pin is what a browser would send:
  *
- * - the Create Project drawer has an optional Category dropdown that defaults
- *   to "No category", and a project saves without one (sent as null);
- * - choosing Kyle Project or ST Project sends 'kyle' / 'st';
+ * - the Create Project drawer's Organization dropdown is REQUIRED, like the
+ *   owner: it starts on a placeholder, a create without one is refused beside
+ *   the field and sends nothing, and choosing Kyle Project or ST Project sends
+ *   'kyle' / 'st';
  * - the list can be filtered by category, and sends nothing for all;
- * - editing preselects the project's category, and "No category" clears it.
+ * - editing preselects the project's category; an older project that has none
+ *   may be saved without choosing (the field is then left out of the request,
+ *   never sent as null), and one that is set cannot be cleared.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -128,7 +131,7 @@ const setValue = async (element: HTMLInputElement | HTMLSelectElement, value: st
 };
 
 const categorySelect = () => container.querySelector<HTMLSelectElement>('#project-category')!;
-const filterSelect = () => container.querySelector<HTMLSelectElement>('select[aria-label="Filter by category"]')!;
+const filterSelect = () => container.querySelector<HTMLSelectElement>('select[aria-label="Filter by organization"]')!;
 const optionPairs = (select: HTMLSelectElement) => Array.from(select.options).map((o) => [o.value, o.textContent]);
 
 const submit = async () => {
@@ -211,25 +214,55 @@ describe('project categories', () => {
   });
 });
 
-describe('Create Project: Category dropdown', () => {
-  it('is an optional dropdown that defaults to No category', async () => {
+describe('Create Project: Organization dropdown', () => {
+  it('is a required dropdown that starts on a placeholder, with no "No organization" choice', async () => {
     await renderPage();
     await openCreateDrawer();
     expect(categorySelect()).toBeTruthy();
-    expect(categorySelect().required).toBe(false);
-    expect(optionPairs(categorySelect())).toEqual([['', 'No category'], ['kyle', 'Kyle Project'], ['st', 'ST Project']]);
+    expect(categorySelect().getAttribute('aria-required')).toBe('true');
+    expect(optionPairs(categorySelect())).toEqual([['', 'Select organization...'], ['kyle', 'Kyle Project'], ['st', 'ST Project']]);
     expect(categorySelect().value).toBe('');
-    expect(container.querySelector('label[for="project-category"]')?.textContent).toContain('(optional)');
+    // The placeholder is a prompt, not a choice: it cannot be picked again once left.
+    expect(categorySelect().options[0].disabled).toBe(true);
   });
 
-  it('saves a project without one, sending null', async () => {
+  it('is marked required, like the other required fields, and no longer says optional', async () => {
+    await renderPage();
+    await openCreateDrawer();
+    const label = container.querySelector('label[for="project-category"]')!;
+    expect(label.textContent).toContain('*');
+    expect(label.textContent).not.toContain('optional');
+    expect(label.querySelector('.text-rose-500')?.textContent).toBe('*');
+  });
+
+  it('will not save without one: says so beside the field, sends nothing, and keeps the drawer open', async () => {
     await renderPage();
     await openCreateDrawer();
     await fillRequiredFields();
     await submit();
 
+    expect(posts()).toHaveLength(0);
+    expect(container.querySelector('#project-category-error')?.textContent).toBe('Organization is required.');
+    expect(categorySelect().getAttribute('aria-invalid')).toBe('true');
+    expect(categorySelect().getAttribute('aria-describedby')).toBe('project-category-error');
+    expect(showToast).toHaveBeenCalledWith('Please correct the highlighted fields.', 'error');
+    expect(container.querySelector('#project-form')).not.toBeNull();
+  });
+
+  it('clears the error as soon as one is chosen, and then saves', async () => {
+    await renderPage();
+    await openCreateDrawer();
+    await fillRequiredFields();
+    await submit();
+    expect(container.querySelector('#project-category-error')).not.toBeNull();
+
+    await setValue(categorySelect(), 'st');
+    expect(container.querySelector('#project-category-error')).toBeNull();
+    expect(categorySelect().getAttribute('aria-invalid')).toBeNull();
+
+    await submit();
     expect(posts()).toHaveLength(1);
-    expect(posts()[0].body.category).toBeNull();
+    expect(posts()[0].body.category).toBe('st');
     expect(showToast).toHaveBeenCalledWith('Project created successfully.', 'success');
   });
 
@@ -244,25 +277,37 @@ describe('Create Project: Category dropdown', () => {
     expect(showToast).toHaveBeenCalledWith('Project created successfully.', 'success');
   });
 
-  it('starts empty again the next time the drawer opens', async () => {
+  it('is the only thing flagged when it is the only thing missing', async () => {
     await renderPage();
     await openCreateDrawer();
-    await setValue(categorySelect(), 'st');
+    await fillRequiredFields();
+    await submit();
+
+    expect(container.querySelector('#project-owner-error')).toBeNull();
+    expect(container.querySelector('#project-category-error')).not.toBeNull();
+  });
+
+  it('starts empty again the next time the drawer opens, error and all', async () => {
+    await renderPage();
+    await openCreateDrawer();
+    await fillRequiredFields();
+    await submit(); // leaves the error showing
     await click(container.querySelector('div[class*="bg-slate-900/40"]') as HTMLElement); // the backdrop closes the drawer
     await openCreateDrawer();
     expect(categorySelect().value).toBe('');
+    expect(container.querySelector('#project-category-error')).toBeNull();
   });
 });
 
-describe('Project list: category', () => {
-  it('has a category filter defaulting to all, and sends nothing for all', async () => {
+describe('Project list: organization', () => {
+  it('has an organization filter defaulting to all, and sends nothing for all', async () => {
     await renderPage();
-    expect(optionPairs(filterSelect())).toEqual([['', 'All Categories'], ['kyle', 'Kyle Project'], ['st', 'ST Project']]);
+    expect(optionPairs(filterSelect())).toEqual([['', 'All Organizations'], ['kyle', 'Kyle Project'], ['st', 'ST Project']]);
     expect(filterSelect().value).toBe('');
     expect(lastListQuery().has('category')).toBe(false);
   });
 
-  it('sends the chosen category, and drops it again for All Categories', async () => {
+  it('sends the chosen organization, and drops it again for All Organizations', async () => {
     await renderPage();
     await setValue(filterSelect(), 'st');
     expect(lastListQuery().get('category')).toBe('st');
@@ -279,25 +324,69 @@ describe('Project list: category', () => {
     expect(sent).toEqual([null, 'st', 'kyle']);
   });
 
-  it('shows each project’s category, and a dash for an uncategorised one', async () => {
-    listed = [
-      project({ id: 1, project_name: 'Kyle job', category: 'kyle' }),
-      project({ id: 2, project_name: 'ST job', category: 'st' }),
-      project({ id: 3, project_name: 'Plain job', category: null }),
-    ];
-    await renderPage();
+  describe('Organization column', () => {
+    beforeEach(() => {
+      listed = [
+        project({ id: 1, project_name: 'Kyle job', category: 'kyle' }),
+        project({ id: 2, project_name: 'ST job', category: 'st' }),
+        project({ id: 3, project_name: 'Plain job', category: null }),
+      ];
+    });
+
     const cells = (name: string) =>
       Array.from(Array.from(container.querySelectorAll('tbody tr')).find((row) => row.textContent?.includes(name))!.querySelectorAll('td'))
         .map((cell) => cell.textContent?.trim());
-    expect(cells('Kyle job')).toContain('Kyle Project');
-    expect(cells('ST job')).toContain('ST Project');
-    expect(cells('Plain job')).not.toContain('Kyle Project');
-    expect(cells('Plain job')).not.toContain('ST Project');
-    expect(cells('Plain job')).toContain('—');
+    const headers = () => Array.from(container.querySelectorAll('thead th')).map((th) => th.textContent?.trim());
+    const columnToggle = () =>
+      Array.from(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
+        .find((box) => box.closest('label')?.textContent?.trim() === 'Organization')!;
+    const openColumnsMenu = async () => { await click(byText('button', 'Columns')); };
+
+    it('is hidden by default: no header and no category in any row', async () => {
+      await renderPage();
+      expect(headers()).not.toContain('Organization');
+      for (const name of ['Kyle job', 'ST job', 'Plain job']) {
+        expect(cells(name)).not.toContain('Kyle Project');
+        expect(cells(name)).not.toContain('ST Project');
+      }
+    });
+
+    it('is offered in the Columns menu, unticked', async () => {
+      await renderPage();
+      await openColumnsMenu();
+      expect(columnToggle()).toBeTruthy();
+      expect(columnToggle().checked).toBe(false);
+    });
+
+    it('shows each project’s category, and a dash for an uncategorised one, once turned on', async () => {
+      await renderPage();
+      await openColumnsMenu();
+      await click(columnToggle());
+
+      expect(headers()).toContain('Organization');
+      expect(cells('Kyle job')).toContain('Kyle Project');
+      expect(cells('ST job')).toContain('ST Project');
+      expect(cells('Plain job')).not.toContain('Kyle Project');
+      expect(cells('Plain job')).not.toContain('ST Project');
+      expect(cells('Plain job')).toContain('—');
+    });
+
+    it('can be turned off again', async () => {
+      await renderPage();
+      await openColumnsMenu();
+      await click(columnToggle());
+      await click(columnToggle());
+      expect(headers()).not.toContain('Organization');
+    });
+
+    it('hiding the column does not hide the category filter', async () => {
+      await renderPage();
+      expect(filterSelect()).toBeTruthy();
+    });
   });
 });
 
-describe('Edit Project: Category dropdown', () => {
+describe('Edit Project: Organization dropdown', () => {
   it('preselects the project’s category', async () => {
     listed = [project({ category: 'kyle' })];
     await renderPage();
@@ -305,10 +394,26 @@ describe('Edit Project: Category dropdown', () => {
     expect(categorySelect().value).toBe('kyle');
   });
 
-  it('shows No category for a project that has none', async () => {
+  it('shows "No organization assigned" for an older project that has none', async () => {
     await renderPage();
     await openEditDrawer('Existing project');
     expect(categorySelect().value).toBe('');
+    expect(categorySelect().options[0].textContent).toBe('No organization assigned');
+  });
+
+  it('offers no way to clear one that is set: the empty choice is a disabled placeholder', async () => {
+    listed = [project({ category: 'st' })];
+    await renderPage();
+    await openEditDrawer('Existing project');
+    expect(categorySelect().options[0].value).toBe('');
+    expect(categorySelect().options[0].disabled).toBe(true);
+  });
+
+  it('is not marked required while editing: an older project may stay as it is', async () => {
+    await renderPage();
+    await openEditDrawer('Existing project');
+    expect(container.querySelector('label[for="project-category"]')!.textContent).not.toContain('*');
+    expect(categorySelect().getAttribute('aria-required')).toBeNull();
   });
 
   it('saves a change of category', async () => {
@@ -320,13 +425,29 @@ describe('Edit Project: Category dropdown', () => {
     expect(patches()[0].body.category).toBe('st');
   });
 
-  it('clears the category when No category is chosen', async () => {
-    listed = [project({ category: 'st' })];
+  it('keeps a project’s category when other things are edited', async () => {
+    listed = [project({ category: 'kyle' })];
     await renderPage();
     await openEditDrawer('Existing project');
-    await setValue(categorySelect(), '');
     await submit();
     expect(patches()).toHaveLength(1);
-    expect(patches()[0].body).toHaveProperty('category', null);
+    expect(patches()[0].body.category).toBe('kyle');
+  });
+
+  it('lets an older project without one be saved without choosing, sending no category at all so it stays as it was', async () => {
+    await renderPage();
+    await openEditDrawer('Existing project');
+    await submit();
+    expect(patches()).toHaveLength(1);
+    expect(patches()[0].body).not.toHaveProperty('category');
+    expect(container.querySelector('#project-category-error')).toBeNull();
+  });
+
+  it('lets an older project be given one', async () => {
+    await renderPage();
+    await openEditDrawer('Existing project');
+    await setValue(categorySelect(), 'kyle');
+    await submit();
+    expect(patches()[0].body.category).toBe('kyle');
   });
 });

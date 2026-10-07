@@ -217,7 +217,7 @@ class LeaderAssignmentTests(unittest.TestCase):
         payload = ProjectCreate(
             project_name="Nova", description=None, status_id=1, owner_id=77, leader_id=999,
             employee_ids=[], deadline=date(2099, 1, 1), billing_type=BillingType.free,
-            fixed_hours=None,
+            fixed_hours=None, category="kyle",
         )
         # The owner lookup comes first and is not what these tests are about.
         db = MagicMock()

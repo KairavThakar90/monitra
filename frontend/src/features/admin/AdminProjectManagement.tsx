@@ -21,12 +21,13 @@ import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { PaginationArrow } from '../../components/PaginationArrow';
 import { useAuth } from '../auth/authContext';
 import { isTeamScoped } from '../../utils/roles';
-import { MemberMultiSelect } from '../dashboard/v2/filters';
-import { useGetAllMembersQuery } from '../../store/api/membersApi';
+import { ALL_TIME_RANGE, DateRangeFilter, type DateRange } from '../dashboard/v2/filters';
+import { istDateISO } from '../../utils/duration';
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
 import { formatApiError } from '../../api/utils';
-import type { BillingType } from '../../utils/billing';
+import { billingTypeLabel, billingTypesFor, type BillingKind, type BillingScope, type BillingType } from '../../utils/billing';
 import { PROJECT_CATEGORY_OPTIONS, projectCategoryLabel, type ProjectCategory } from '../../utils/projectCategory';
+import { ProjectExportDialog } from './ProjectExportDialog';
 
 const GRADIENT_CYAN_PURPLE = 'bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[#8b5cf6]';
 
@@ -456,11 +457,40 @@ const StatusPillDropdown = ({
   );
 };
 
-type ColumnKey = 'project' | 'wfpmId' | 'category' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'started' | 'manage';
+/** A native select in the toolbar's own style, with the chevron the other filter selects carry. */
+const ToolbarSelect: React.FC<{
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  children: React.ReactNode;
+}> = ({ label, value, onChange, children }) => (
+  <div className="relative">
+    <select
+      aria-label={label}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
+    >
+      {children}
+    </select>
+    <svg
+      className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      aria-hidden="true"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+    </svg>
+  </div>
+);
+
+type ColumnKey = 'project' | 'wfpmId' | 'category' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'created' | 'started' | 'manage';
 const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'project', label: 'Project' },
   { key: 'wfpmId', label: 'WFPM ID' },
-  { key: 'category', label: 'Category' },
+  { key: 'category', label: 'Organization' },
   { key: 'status', label: 'Status' },
   { key: 'owner', label: 'Owner' },
   { key: 'leader', label: 'Leader' },
@@ -470,6 +500,7 @@ const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'usedHours', label: 'Used Hours' },
   { key: 'internalHours', label: 'Internal Hours' },
   { key: 'remainingHours', label: 'Remaining Hours' },
+  { key: 'created', label: 'Created' },
   { key: 'started', label: 'Started' },
   { key: 'manage', label: 'Manage' },
 ];
@@ -502,29 +533,35 @@ export const AdminProjectManagement: React.FC = () => {
   const [search, setSearch] = useState('');
   const [searchError, setSearchError] = useState<string | null>(null);
   const [filterStatusId, setFilterStatusId] = useState<number | null>(null);
-  /** '' means every project; otherwise the `billing_type` the API filters on. */
-  const [filterBilling, setFilterBilling] = useState<'' | BillingType>('');
+  // Project type, in two steps like the Task Listing page and the Create Project
+  // form: Billing or Non Billing first, then (under Billing only) Fixed Hours or
+  // Flexible Time. '' means every project at each step.
+  const [billingScope, setBillingScope] = useState<BillingScope>('');
+  const [billingKind, setBillingKind] = useState<BillingKind>('');
+  const billingTypes = useMemo(() => billingTypesFor(billingScope, billingKind), [billingScope, billingKind]);
   /** '' means every project; otherwise the `category` the API filters on. */
   const [filterCategory, setFilterCategory] = useState<'' | ProjectCategory>('');
-  /** Empty means every member — the same convention every other filter uses. */
-  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
-  const { data: allMembers = [] } = useGetAllMembersQuery();
-  const selectedMemberIds = useMemo(
-    () => selectedMembers.map(Number),
-    [selectedMembers],
-  );
+  // The day each project was created, as IST calendar days: the same picker the
+  // Assign Tasks page has. It opens on All Time, not a last-7-days window,
+  // because this table has always listed every project and must keep doing so
+  // until someone picks a range; a bounded default would hide most of them.
+  const [dateRange, setDateRange] = useState<DateRange>(ALL_TIME_RANGE);
 
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>({
-    // Tasks starts hidden: the count is rarely what this table is opened
-    // for, and the Columns dropdown turns it on when it is.
-    project: true, wfpmId: true, category: true, status: true, owner: true, leader: true, team: true, tasks: false, billing: true,
-    usedHours: true, internalHours: true, remainingHours: true, started: true, manage: true
+    // Tasks, Organization and Started start hidden: none is what this table is
+    // usually opened for, and the Columns dropdown turns them on when it is. Created
+    // and WFPM ID are shown. (The Organization filter, the creation-date filter, the
+    // form's dropdown and the detail view are unaffected -- hiding a column never
+    // hides its filter.)
+    project: true, wfpmId: true, category: false, status: true, owner: true, leader: true, team: true, tasks: false, billing: true,
+    usedHours: true, internalHours: true, remainingHours: true, created: true, started: false, manage: true
   });
   const [showColumnDropdown, setShowColumnDropdown] = useState(false);
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [viewingProject, setViewingProject] = useState<Project | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
 
   // RTK Query Hooks
   const { data: metadata } = useGetProjectMetadataQuery();
@@ -543,9 +580,10 @@ export const AdminProjectManagement: React.FC = () => {
     limit: pageSize,
     search: projectSearchCheck.ok ? projectSearchCheck.value : '',
     status_id: filterStatusId,
-    billing_type: filterBilling || null,
+    billing_type: billingTypes ?? null,
     category: filterCategory || null,
-    employee_ids: selectedMemberIds,
+    created_from: dateRange.from || null,
+    created_to: dateRange.to || null,
   });
 
   const [createProject] = useCreateProjectMutation();
@@ -572,8 +610,13 @@ export const AdminProjectManagement: React.FC = () => {
   /** Billing (Fixed Hours or Flexible Time) as opposed to Non Billing. */
   const isBilling = formBillingType !== 'non_billing';
   const [formBillingHours, setFormBillingHours] = useState('');
-  /** Optional: '' is "no category", which is sent as null. */
+  /**
+   * Required when a project is created, like the owner: '' is "not chosen yet".
+   * An edit may leave a project that predates organizations without one, and
+   * then sends nothing for it -- there is no way to clear one that is set.
+   */
   const [formCategory, setFormCategory] = useState<'' | ProjectCategory>('');
+  const [categoryError, setCategoryError] = useState<string | null>(null);
 
   // Dropdown states
   const [isEmpDropdownOpen, setIsEmpDropdownOpen] = useState(false);
@@ -630,6 +673,7 @@ export const AdminProjectManagement: React.FC = () => {
     setFormDescription('');
     setFormOwner('');
     setOwnerError(null);
+    setCategoryError(null);
     setEditingOwner(null);
     setFormLeader(leaderIsFixed && currentUser ? currentUser.id : '');
     setFormDeadline('');
@@ -654,6 +698,7 @@ export const AdminProjectManagement: React.FC = () => {
     setFormDescription(proj.description || '');
     setFormOwner(proj.owner?.id || '');
     setOwnerError(null);
+    setCategoryError(null);
     setEditingOwner(proj.owner || null);
     setFormLeader(proj.leader?.id || (leaderIsFixed && currentUser ? currentUser.id : ''));
     setFormDeadline(proj.deadline ? proj.deadline.split('T')[0] : '');
@@ -693,7 +738,11 @@ export const AdminProjectManagement: React.FC = () => {
     // edit may leave a project that predates owners without one.
     const ownerMissing = drawerMode === 'create' && formOwner === '';
     setOwnerError(ownerMissing ? 'Project owner is required.' : null);
-    if (!check.ok || ownerMissing) {
+    // Likewise the organization: required to create (the backend refuses a
+    // create without one), and an edit may leave an older project without.
+    const categoryMissing = drawerMode === 'create' && formCategory === '';
+    setCategoryError(categoryMissing ? 'Organization is required.' : null);
+    if (!check.ok || ownerMissing || categoryMissing) {
       showToast('Please correct the highlighted fields.', 'error');
       return;
     }
@@ -724,9 +773,10 @@ export const AdminProjectManagement: React.FC = () => {
         formBillingType === 'fixed' && check.values.billingHours !== null
           ? (check.values.billingHours as number)
           : null,
-      // Always sent: on an edit the drawer shows the current category, so
-      // "No category" has to be able to clear it.
-      category: formCategory === '' ? null : formCategory,
+      // Omitted rather than sent as null when none is chosen: only an edit of a
+      // project that predates organizations gets here blank, and that means
+      // "leave it as it is". A chosen one is always sent, so an edit can change it.
+      ...(formCategory === '' ? {} : { category: formCategory }),
     };
 
     try {
@@ -851,6 +901,17 @@ export const AdminProjectManagement: React.FC = () => {
       actions={
           <div className="flex items-center gap-4">
             <InlineRefreshIndicator active={isRevalidating || isUpdatingProject} />
+            {/* Same button as the Reports page's "Export CSV". */}
+            <button
+              type="button"
+              onClick={() => setExportOpen(true)}
+              className="flex items-center gap-1.5 rounded-lg bg-[#0F172A] px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-[#1E293B]"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+              </svg>
+              Export CSV
+            </button>
             {canCreateProject && (
               <button
                 onClick={openCreateDrawer}
@@ -939,37 +1000,40 @@ export const AdminProjectManagement: React.FC = () => {
                 onChange={(val) => setFilterStatusId(val === 0 ? null : val)}
                 className="w-full sm:w-auto min-h-[38px] flex items-center"
               />
+            {/* Project type: Billing / Non Billing, then Fixed Hours / Flexible Time under Billing */}
+            <ToolbarSelect
+              label="Filter by project type"
+              value={billingScope}
+              onChange={(value) => {
+                setBillingScope(value as BillingScope);
+                // The second choice belongs to Billing; leaving Billing clears it.
+                setBillingKind('');
+                setPage(1);
+              }}
+            >
+              <option value="">All Project Types</option>
+              <option value="billing">Billing</option>
+              <option value="non_billing">Non Billing</option>
+            </ToolbarSelect>
+            {billingScope === 'billing' && (
+              <ToolbarSelect
+                label="Filter by billing type"
+                value={billingKind}
+                onChange={(value) => { setBillingKind(value as BillingKind); setPage(1); }}
+              >
+                <option value="">All Billing</option>
+                <option value="fixed">{billingTypeLabel('fixed')}</option>
+                <option value="free">{billingTypeLabel('free')}</option>
+              </ToolbarSelect>
+            )}
             <div className="relative">
               <select
-                aria-label="Filter by billing"
-                value={filterBilling}
-                onChange={(e) => { setFilterBilling(e.target.value as '' | BillingType); setPage(1); }}
-                className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
-              >
-                <option value="">Budget &amp; Billing</option>
-                <option value="fixed">Billing</option>
-                <option value="free">Free</option>
-                <option value="non_billing">Non Billing</option>
-              </select>
-              <svg
-                className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                aria-hidden="true"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
-              </svg>
-            </div>
-            <div className="relative">
-              <select
-                aria-label="Filter by category"
+                aria-label="Filter by organization"
                 value={filterCategory}
                 onChange={(e) => { setFilterCategory(e.target.value as '' | ProjectCategory); setPage(1); }}
                 className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
               >
-                <option value="">All Categories</option>
+                <option value="">All Organizations</option>
                 {PROJECT_CATEGORY_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
@@ -985,10 +1049,11 @@ export const AdminProjectManagement: React.FC = () => {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
               </svg>
             </div>
-            <MemberMultiSelect
-              members={allMembers}
-              selected={selectedMembers}
-              onChange={(ids) => { setSelectedMembers(ids); setPage(1); }}
+            {/* Creation date -- the same picker as Assign Tasks, with All Time on offer. */}
+            <DateRangeFilter
+              allowAll
+              value={dateRange}
+              onChange={(range) => { setDateRange(range); setPage(1); }}
             />
           </div>
         </div>
@@ -1005,7 +1070,7 @@ export const AdminProjectManagement: React.FC = () => {
                 <tr>
                   {visibleColumns.project && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Project</th>}
                   {visibleColumns.wfpmId && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">WFPM ID</th>}
-                  {visibleColumns.category && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Category</th>}
+                  {visibleColumns.category && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Organization</th>}
                   {visibleColumns.status && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Status</th>}
                   {visibleColumns.owner && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Owner</th>}
                   {visibleColumns.leader && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Leader</th>}
@@ -1015,6 +1080,7 @@ export const AdminProjectManagement: React.FC = () => {
                   {visibleColumns.usedHours && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Used Hours</th>}
                   {visibleColumns.internalHours && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Internal Hours</th>}
                   {visibleColumns.remainingHours && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Remaining Hours</th>}
+                  {visibleColumns.created && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Created</th>}
                   {visibleColumns.started && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Started</th>}
                   {visibleColumns.manage && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Manage</th>}
                 </tr>
@@ -1107,6 +1173,11 @@ export const AdminProjectManagement: React.FC = () => {
                     {visibleColumns.remainingHours && <td className="px-6 py-4">
                       <RemainingHoursCell project={proj} usedSeconds={hoursByProject.get(proj.id)?.total_used_seconds ?? 0} />
                     </td>}
+                    {visibleColumns.created && <td className="px-6 py-4 font-medium text-slate-600 whitespace-nowrap" data-testid="created-cell">
+                      {istDateISO(proj.created_at)
+                        ? formatDate(istDateISO(proj.created_at))
+                        : <span className="text-slate-400">—</span>}
+                    </td>}
                     {visibleColumns.started && <td className="px-6 py-4 font-medium text-slate-600">
                       {hoursByProject.get(proj.id)?.started_at
                         ? formatDate(hoursByProject.get(proj.id)!.started_at)
@@ -1168,8 +1239,8 @@ export const AdminProjectManagement: React.FC = () => {
             <div className="max-h-[calc(90vh-86px)] overflow-y-auto p-6">
               <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
                 <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Category</div>
-                  <div className="mt-2 text-sm font-bold text-slate-800">{viewingProject.category ? projectCategoryLabel(viewingProject.category) : 'Not categorised'}</div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Organization</div>
+                  <div className="mt-2 text-sm font-bold text-slate-800">{viewingProject.category ? projectCategoryLabel(viewingProject.category) : 'No organization'}</div>
                 </div>
                 <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Owner</div>
@@ -1361,19 +1432,23 @@ export const AdminProjectManagement: React.FC = () => {
                     </div>
                     <div>
                       <label htmlFor="project-category" className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">
-                        Category <span className="font-semibold normal-case tracking-normal text-slate-400">(optional)</span>
+                        Organization{drawerMode === 'create' && <> <span className="text-rose-500">*</span></>}
                       </label>
                       <select
                         id="project-category"
                         value={formCategory}
-                        onChange={e => setFormCategory(e.target.value as '' | ProjectCategory)}
+                        onChange={e => { setFormCategory(e.target.value as '' | ProjectCategory); setCategoryError(null); }}
+                        aria-required={drawerMode === 'create' ? true : undefined}
+                        aria-invalid={categoryError ? true : undefined}
+                        aria-describedby={categoryError ? 'project-category-error' : undefined}
                         className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
                       >
-                        <option value="">No category</option>
+                        <option value="" disabled hidden>{drawerMode === 'edit' ? 'No organization assigned' : 'Select organization...'}</option>
                         {PROJECT_CATEGORY_OPTIONS.map(option => (
                           <option key={option.value} value={option.value}>{option.label}</option>
                         ))}
                       </select>
+                      <FieldError id="project-category-error" message={categoryError} />
                     </div>
                   </div>
                 </div>
@@ -1524,6 +1599,20 @@ export const AdminProjectManagement: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Asks for the same filters the table is showing, then walks every page. */}
+      <ProjectExportDialog
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        filters={{
+          search: projectSearchCheck.ok ? projectSearchCheck.value : '',
+          status_id: filterStatusId,
+          billing_type: billingTypes ?? null,
+          category: filterCategory || null,
+          created_from: dateRange.from || null,
+          created_to: dateRange.to || null,
+        }}
+      />
     </V2Shell>
   );
 };

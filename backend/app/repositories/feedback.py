@@ -1,9 +1,12 @@
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.models.email_notification import (
+    STATUS_CANCELLED, TYPE_FEEDBACK_STATUS, EmailNotification,
+)
 from app.models.feedback_attachment import FeedbackAttachment
 from app.models.feedback_request import FeedbackRequest
 from app.models.user import User
@@ -193,6 +196,41 @@ class FeedbackRepository:
             )
         ).first()
         return (row[0], row[1], row[2]) if row else None
+
+    @staticmethod
+    def list_status_notices(
+        db: Session, dedupe_keys: Iterable[str]
+    ) -> List[Tuple[str, str, datetime]]:
+        """The status emails queued under these keys, as `(key, payload, queued_at)`.
+
+        This is where an administrator's note to the employee lives: it is
+        printed in the status email, and the outbox row that carries that email
+        is the one place it is kept (see `queue_feedback_status_notification`).
+        Reading it from there, in **one** statement for a whole page of
+        feedback, means the note exists exactly once; a copy on the feedback
+        row would be a second one that could disagree with what was sent.
+
+        Oldest first, so a feedback that was moved Working and then Resolved
+        reads in the order it happened. A cancelled row was deliberately never
+        delivered, so what it said was never said to the employee.
+        """
+        keys = sorted({key for key in dedupe_keys})
+        if not keys:
+            return []
+        rows = db.execute(
+            select(
+                EmailNotification.dedupe_key,
+                EmailNotification.payload,
+                EmailNotification.created_at,
+            )
+            .where(
+                EmailNotification.notification_type == TYPE_FEEDBACK_STATUS,
+                EmailNotification.dedupe_key.in_(keys),
+                EmailNotification.status != STATUS_CANCELLED,
+            )
+            .order_by(EmailNotification.created_at, EmailNotification.id)
+        ).all()
+        return [(row[0], row[1], row[2]) for row in rows]
 
     # ------------------------------------------------------------------
     # The Admin status workflow.

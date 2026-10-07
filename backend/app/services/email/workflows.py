@@ -62,6 +62,13 @@ def feedback_dedupe_key(feedback_id: int) -> str:
     return f"feedback:{feedback_id}"
 
 
+#: The payload key an administrator's note travels under. The feedback list
+#: reads the note back out of the queued row under this same name
+#: (`FeedbackService._replies_for`) so the View dialog can show what was said to
+#: the employee; naming it once keeps the writer and that reader from drifting.
+FEEDBACK_STATUS_NOTE_KEY = "team_message"
+
+
 def feedback_status_dedupe_key(feedback_id: int, status: str) -> str:
     """The status update's identity: this feedback, in this state.
 
@@ -338,7 +345,9 @@ def queue_feedback_notification(
         return None
 
 
-def queue_feedback_status_notification(db: Session, feedback, submitter) -> Optional[int]:
+def queue_feedback_status_notification(
+    db: Session, feedback, submitter, message: Optional[str] = None,
+) -> Optional[int]:
     """Tell the submitter that their feedback is being worked on, or is resolved.
 
     The outbound half of the feedback workflow, and the mirror image of
@@ -357,6 +366,13 @@ def queue_feedback_status_notification(db: Session, feedback, submitter) -> Opti
     every other entry point in this module it returns an id or None and never
     raises. An administrator's click succeeds because the status changed; the
     email is what follows from that, not what it depends on.
+
+    `message` is the administrator's optional note to the employee, already
+    validated as plain text by the request schema. It is the one piece of
+    free text the payload may carry, and it carries it because the email shows
+    it (see the payload comment below). It is not part of the dedupe key: a
+    second request for the same status is the double-click the key exists to
+    absorb, whatever it says.
     """
     try:
         recipients = resolve_user_recipient(getattr(submitter, "email", "") or "")
@@ -387,6 +403,14 @@ def queue_feedback_status_notification(db: Session, feedback, submitter) -> Opti
                 else str(submitted_at)
             ),
         }
+        # The administrator's note, only when there is one -- an update without
+        # it queues exactly the payload it always did. Under its own key, not
+        # `message`, which a reader of this payload would take for the
+        # employee's own text (never carried; see above). It belongs here
+        # because "only what the email shows" is the rule, and the email shows it.
+        note = (message or "").strip()
+        if note:
+            payload[FEEDBACK_STATUS_NOTE_KEY] = note
         row = EmailOutboxService.enqueue(
             db,
             notification_type=TYPE_FEEDBACK_STATUS,
@@ -1033,7 +1057,7 @@ async def _send_immediately_in_background(message) -> bool:
 def queue_client_invitation_email(
     db: Session, *, invitation, client, token: str, project_names: list[str], background_tasks=None,
 ) -> bool:
-    """Send one client invitation, with its Approve/Reject links.
+    """Send one client invitation, with its Set-password and Reject links.
 
     Returns whether a send was attempted (queued to run, or sent). Does not
     guarantee delivery -- there is no durable retry here, by design; see the
