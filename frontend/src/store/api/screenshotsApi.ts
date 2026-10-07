@@ -97,8 +97,9 @@ export interface ScreenshotTimelineWindow {
 /**
  * `captured` — the window holds an image. `pending` — the desktop has it and
  * is still uploading. `failed`, `blocked`, `excluded`, `unavailable` — the
- * desktop reported why there is none. `none` — nothing was reported, which is
- * also how an older desktop, or one that was off, looks.
+ * desktop reported why there is none. `not_expected` — no timer was running in
+ * the window, so no screenshot was due. `none` — a timer ran and nothing was
+ * reported, which is also how an older desktop, or one that was off, looks.
  */
 export type CaptureState =
   | 'captured'
@@ -107,6 +108,7 @@ export type CaptureState =
   | 'blocked'
   | 'excluded'
   | 'unavailable'
+  | 'not_expected'
   | 'none';
 
 export interface ScreenshotTimelineResponse {

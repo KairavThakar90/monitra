@@ -275,9 +275,29 @@ class WindowStateTests(unittest.TestCase):
 
     def test_callers_that_know_nothing_of_events_are_unchanged(self):
         with_image = _build_windows(600, [_shot()], [], [], {})
-        activity_only = _build_windows(600, [], [(W0 + timedelta(seconds=5), 50, 60)], [], {})
+        worked = _build_windows(
+            600, [], [(W0 + timedelta(seconds=5), 50, 60)], [(W0, W0 + timedelta(minutes=10))], {}
+        )
         self.assertEqual(with_image[0]["capture_state"], "captured")
-        self.assertEqual(activity_only[0]["capture_state"], "none")
+        self.assertEqual(worked[0]["capture_state"], "none")
+
+    def test_a_window_nobody_was_tracking_in_expected_no_screenshot(self):
+        """No timer, so nothing was due: not "No capture", and never a broken image."""
+        untracked = _build_windows(600, [], [(W0 + timedelta(seconds=5), 50, 60)], [], {})
+        self.assertEqual(untracked[0]["capture_state"], "not_expected")
+        self.assertEqual(untracked[0]["tracked_seconds"], 0)
+
+    def test_a_timer_that_stopped_before_the_window_is_still_not_expected(self):
+        earlier = [(W0 - timedelta(hours=1), W0 - timedelta(minutes=1))]
+        untracked = _build_windows(600, [], [(W0 + timedelta(seconds=5), 50, 60)], earlier, {})
+        self.assertEqual(untracked[0]["capture_state"], "not_expected")
+
+    def test_an_unknown_tracked_time_never_claims_not_expected(self):
+        self.assertEqual(_capture_state([], [], None), ("none", None, 0))
+
+    def test_a_report_outranks_not_expected(self):
+        # The desktop said it tried, so something *was* due, whatever the entries say.
+        self.assertEqual(_capture_state([], [_event_row("failed")], 0)[0], "failed")
 
 
 # ── The timeline and the grid ────────────────────────────────────────────────

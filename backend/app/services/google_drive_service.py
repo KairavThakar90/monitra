@@ -139,7 +139,9 @@ class GoogleDriveNotAccessible(GoogleDriveError):
 class GoogleDriveFileNotFound(GoogleDriveError):
     """The object named by a file id is not in Drive.
 
-    Raised only by `delete_file_strict`, where "it is already gone" is the one
+    Raised by `download_file` (so a viewer is told the image is *missing*, not
+    that storage is having a bad minute) and by `delete_file_strict`, where "it
+    is already gone" is the one
     failure that must not block the caller: a screenshot whose bytes were
     removed out of band would otherwise be undeletable forever, its metadata
     pinned in the database by a file that no longer exists.
@@ -221,6 +223,16 @@ def normalize_folder_id(value: str) -> str:
         if index + 1 < len(segments):
             return segments[index + 1]
     return segments[-1] if segments else text
+
+
+def _http_status(exc: BaseException) -> Optional[int]:
+    """The HTTP status a googleapiclient `HttpError` carries, else None."""
+    resp = getattr(exc, "resp", None)
+    status = getattr(resp, "status", None)
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 class GoogleDriveService:
@@ -894,11 +906,96 @@ class GoogleDriveService:
 
         downloader = MediaIoBaseDownload(buffer, request)
         done = False
-        while not done:
-            _, done = downloader.next_chunk(num_retries=DRIVE_READ_RETRIES)
+        try:
+            while not done:
+                _, done = downloader.next_chunk(num_retries=DRIVE_READ_RETRIES)
+        except GoogleDriveError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # A 404 from Drive is not an outage: the object is not there, and no
+            # amount of retrying will bring it back. Reporting it as the same
+            # "storage is temporarily unavailable" a 5xx gets made a deleted
+            # image and a bad minute look identical to everyone downstream.
+            if _http_status(exc) == 404:
+                raise GoogleDriveFileNotFound(
+                    f"Drive object {file_id} does not exist"
+                ) from exc
+            raise
         data = buffer.getvalue()
         self.image_cache.put(file_id, data)
         return data
+
+    def stat_file(self, file_id: str) -> dict:
+        """Does this Drive object exist, and is it an image? Read-only.
+
+        Metadata only -- the bytes are not downloaded -- so an audit can check
+        every screenshot of a day cheaply. ``state`` is one of ``ok``,
+        ``missing`` (Drive answers 404), ``trashed``, ``forbidden`` (403: the
+        service account cannot see it) or ``error`` (anything else, which says
+        nothing about the object).
+        """
+        try:
+            meta = self._client().files().get(
+                fileId=file_id, fields="id, name, mimeType, size, trashed",
+                supportsAllDrives=True,
+            ).execute(num_retries=DRIVE_READ_RETRIES)
+        except Exception as exc:  # noqa: BLE001
+            status = _http_status(exc)
+            if status == 404:
+                return {"state": "missing"}
+            if status == 403:
+                return {"state": "forbidden"}
+            return {"state": "error", "detail": type(exc).__name__}
+        if meta.get("trashed"):
+            return {"state": "trashed", "name": meta.get("name")}
+        return {
+            "state": "ok",
+            "name": meta.get("name"),
+            "mime_type": meta.get("mimeType"),
+            "size": int(meta.get("size") or 0),
+        }
+
+    def list_screenshot_day_files(
+        self, user_id: int, captured_on: date, user_name: Optional[str] = None
+    ) -> Optional[list]:
+        """Every object in one member's Drive folder for one IST day. Read-only.
+
+        Walks ``<root>/<year>/<month>/User_<id>_<name>/<date>`` with lookups
+        only -- it never creates a folder, unlike `ensure_screenshot_folder` --
+        and answers None when any level is absent (nothing was stored for that
+        day) so an audit can tell "no folder" from "an empty folder".
+
+        Returns ``[{"id", "name", "mimeType", "size", "createdTime"}]``.
+        """
+        parent = self.root_folder_id
+        for name in (f"{captured_on.year:04d}", captured_on.strftime("%B")):
+            parent = self._find_folder(parent, name)
+            if not parent:
+                return None
+        # Both spellings: the current one and the legacy `User_<id>` that is
+        # renamed in place the first time it is resolved for an upload.
+        user_folder = (
+            self._find_folder(parent, self.user_folder_name(user_id, user_name))
+            or self._find_folder(parent, f"User_{user_id}")
+        )
+        if not user_folder:
+            return None
+        day_folder = self._find_folder(user_folder, captured_on.isoformat())
+        if not day_folder:
+            return None
+        found: list = []
+        page_token = None
+        while True:
+            response = self._client().files().list(
+                q=f"'{day_folder}' in parents and trashed = false and mimeType != '{FOLDER_MIME}'",
+                fields="nextPageToken, files(id, name, mimeType, size, createdTime)",
+                pageSize=200, pageToken=page_token,
+                supportsAllDrives=True, includeItemsFromAllDrives=True,
+            ).execute(num_retries=DRIVE_READ_RETRIES)
+            found.extend(response.get("files", []))
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                return found
 
     def delete_file(self, file_id: str) -> None:
         """Remove an object. Used to roll back a file whose row could not be

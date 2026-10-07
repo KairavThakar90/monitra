@@ -39,6 +39,14 @@ from tests.e2e.test_screenshot_lifecycle_e2e import (  # noqa: F401  (fixtures a
     api, backend, broken_drive_backend, desktop, drive_litter, drive_required,
 )
 
+#: Deletes one Drive object in the backend's own interpreter. Strict, so a
+#: failure to delete is a failure of the test rather than a silent no-op.
+_DRIVE_DELETE_STRICT = (
+    "import sys;"
+    "from app.services.google_drive_service import drive_service;"
+    "drive_service.delete_file_strict(sys.argv[1])"
+)
+
 pytestmark = pytest.mark.skipif(
     os.environ.get("MONITRA_E2E") != "1",
     reason="real-backend E2E; set MONITRA_E2E=1 to run",
@@ -270,3 +278,92 @@ def test_stop_start_cycles_keep_exactly_one_live_schedule(
     _pump(qapp, lambda: not timer.is_running(), 30, "the stop")
 
 
+def test_a_row_whose_drive_object_is_gone_is_a_410_a_visible_row_and_an_audit_finding(
+    qapp, desktop, api, db, principal, drive_litter, backend
+):
+    """The "Image unavailable" integrity case, against the real stack.
+
+    A real screenshot is stored (real Drive, real Postgres), then its Drive
+    object -- a test object this test created, never anything real -- is
+    deleted behind the backend's back. The row survives (nothing cascades from
+    Drive), so the grid still lists the capture. What changes is the answer:
+
+    * `/view` says 410 ("no longer in storage"), not the transient 502 a Drive
+      outage gets, so the web page can say "Image missing from storage" and not
+      retry;
+    * the timeline still counts the capture;
+    * the read-only audit finds it as MISSING-IN-DRIVE.
+    """
+    timer = desktop.timer
+    timer.start_tracking(principal["project_id"], principal["task_id"], "E2E missing image")
+    _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
+    entry_id = timer.entry_id
+    _capture_windows(desktop, 1)
+    _drain(qapp, desktop, 1, db, lambda: entry_id, "the capture to be stored")
+    (row,) = _stored_rows(db, entry_id)
+    shot_id = row["id"]
+
+    healthy = api.get(f"/time-entry-screenshots/{shot_id}/view")
+    assert healthy.status_code == 200 and healthy.content[:4] == b"RIFF"
+
+    # Delete the Drive object behind the backend's back (our own test object).
+    gone = subprocess.run(
+        [sys.executable, "-c", _DRIVE_DELETE_STRICT, row["google_drive_file_id"]],
+        cwd=str(BACKEND_ROOT), capture_output=True, text=True,
+    )
+    assert gone.returncode == 0, gone.stderr
+    # The first request above warmed the long-lived backend's in-process image
+    # cache, which would keep serving the deleted object. Ask a fresh backend
+    # process, whose cache is empty, so the uncached Drive path is what answers.
+    from tests.e2e.test_screenshot_lifecycle_e2e import _free_port
+
+    port = _free_port()
+    env = dict(os.environ, ENV="development", PYTHONUNBUFFERED="1")
+    fresh = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1",
+         "--port", str(port), "--log-level", "warning"],
+        cwd=str(BACKEND_ROOT), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+    )
+    try:
+        import httpx
+
+        base = f"http://127.0.0.1:{port}"
+        deadline = time.monotonic() + 90
+        while True:
+            try:
+                if httpx.get(f"{base}/health", timeout=2).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                pass
+            assert fresh.poll() is None and time.monotonic() < deadline, "backend did not start"
+            time.sleep(0.25)
+        client = httpx.Client(base_url=base, timeout=60,
+                              headers={"Authorization": f"Bearer {principal['token']}"})
+        missing = client.get(f"/time-entry-screenshots/{shot_id}/view")
+        assert missing.status_code == 410, (missing.status_code, missing.text)
+        assert "no longer in storage" in missing.text
+
+        # The row still exists and is still counted.
+        from datetime import datetime, timedelta, timezone
+
+        ist_day = datetime.now(timezone(timedelta(hours=5, minutes=30))).date().isoformat()
+        timeline = client.get("/time-entry-screenshots/timeline", params={"date": ist_day}).json()
+        assert sum(w["screenshot_count"] for w in timeline["windows"]) == 1
+    finally:
+        fresh.terminate()
+        try:
+            fresh.wait(10)
+        except subprocess.TimeoutExpired:
+            fresh.kill()
+
+    audit = subprocess.run(
+        [sys.executable, "scripts/screenshot_window_audit.py", "--user-id",
+         str(principal["user_id"]), "--date", ist_day, "--check-drive"],
+        cwd=str(BACKEND_ROOT), capture_output=True, text=True, env=dict(os.environ, ENV="development"),
+    )
+    assert audit.returncode == 0, audit.stderr
+    assert "MISSING-IN-DRIVE" in audit.stdout, audit.stdout
+    assert "drive:MISSING-IN-DRIVE=1" in audit.stdout, audit.stdout
+
+    timer.stop_tracking()
+    _pump(qapp, lambda: not timer.is_running(), 30, "the stop")

@@ -77,6 +77,14 @@ describe('describeCaptureState', () => {
       .toBe('Capture unavailable');
   });
 
+  it('does not call a window nobody was tracking in a missing capture', () => {
+    const view = describeCaptureState(emptyWindow('not_expected'));
+    expect(view.label).toBe('No capture expected');
+    expect(view.label).not.toBe('No capture');
+    expect(view.detail).toBe('No timer was running in this window');
+    expect(view.tone).toBe('neutral');
+  });
+
   it('shows a reason code it does not know rather than hiding it', () => {
     expect(describeCaptureReason('brand_new_reason')).toBe('brand new reason');
     expect(describeCaptureReason(null)).toBeNull();
@@ -123,6 +131,7 @@ describe('the tile', () => {
     ['blocked', 'screen_recording_blocked', 'Capture blocked'],
     ['excluded', 'privacy_rule', 'Held back by privacy rule'],
     ['unavailable', 'capture_unavailable', 'Capture unavailable'],
+    ['not_expected', null, 'No capture expected'],
   ] as const)('renders the %s state', async (state, reason, label) => {
     await render(emptyWindow(state, reason, 3));
     expect(container.textContent).toContain(label);

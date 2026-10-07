@@ -226,13 +226,16 @@ def _build_windows(
         # two apart.
         percentage = int(round(slot["weighted"] / measured)) if measured else 0
         shots = sorted(slot["screenshots"], key=lambda s: s.captured_at)
-        capture_state, capture_reason, capture_attempts = _capture_state(shots, slot["events"])
+        tracked_seconds = _overlap_seconds(intervals or [], window_start, window_end)
+        capture_state, capture_reason, capture_attempts = _capture_state(
+            shots, slot["events"], tracked_seconds
+        )
         windows.append({
             "window_start": window_start,
             "window_end": window_end,
             "activity_percentage": max(0, min(100, percentage)),
             "activity_measured_seconds": measured,
-            "tracked_seconds": _overlap_seconds(intervals or [], window_start, window_end),
+            "tracked_seconds": tracked_seconds,
             "screenshots": [
                 {
                     "id": s.id,
@@ -274,7 +277,8 @@ _EVENT_TO_CAPTURE_STATE = {
 
 
 def _capture_state(
-    shots: list, events: List[TimeEntryScreenshotEvent]
+    shots: list, events: List[TimeEntryScreenshotEvent],
+    tracked_seconds: Optional[int] = None,
 ) -> Tuple[str, Optional[str], int]:
     """What a window's capture came to: ``(state, reason, attempts)``.
 
@@ -284,10 +288,18 @@ def _capture_state(
     window's state. With no image, the newest report decides -- a capture that
     failed and was later reported held back is held back. With neither there is
     nothing to say, and that is `none`, never a guess.
+
+    ``tracked_seconds`` is how long a timer ran inside the window. A window with
+    no image, no report and *no tracked time* is one nobody was working in: no
+    screenshot was due, so it is ``not_expected`` -- never "No capture" and
+    never a broken image. ``None`` (a caller that does not know) leaves the
+    old reading, ``none``.
     """
     if shots:
         return "captured", None, 0
     if not events:
+        if tracked_seconds is not None and tracked_seconds <= 0:
+            return "not_expected", None, 0
         return "none", None, 0
     newest = max(events, key=lambda e: (e.occurred_at, e.id or 0))
     return (
@@ -718,9 +730,28 @@ class TimeEntryScreenshotService:
         drive_file_id = record.google_drive_file_id
         mime_type = record.mime_type or "image/webp"
         file_name = record.file_name or f"screenshot_{record.id}.webp"
+        # Read before the transaction ends: ending it expires every instance,
+        # and touching one afterwards would check out a connection again.
+        owner_id = getattr(entry, "user_id", None)
         end_transaction(db)
         try:
             content = drive_service.download_file(drive_file_id)
+        except GoogleDriveFileNotFound as exc:
+            # The row says the image is in Drive and Drive says it is not. That
+            # is an integrity failure with a permanent answer, so it is not
+            # dressed as the transient 502 a Drive outage gets: a viewer must be
+            # able to tell "storage is having a bad minute" from "this image is
+            # gone", and an operator must be able to find these by name.
+            drive_service.image_cache.discard(drive_file_id)
+            logger.error(
+                "SCREENSHOT_IMAGE_MISSING id=%s user=%s drive_file=%s reason=%s; the "
+                "row exists but its Drive object does not",
+                screenshot_id, owner_id, drive_file_id, exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="This screenshot's image is no longer in storage",
+            )
         except GoogleDriveError as exc:
             logger.error("could not read Drive file %s: %s", drive_file_id, exc)
             raise HTTPException(

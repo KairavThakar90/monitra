@@ -1299,6 +1299,28 @@ hour. **Instead:** the status line beside ACTIVITY (`screenshot/health.py`) says
 **uploaded** only once the backend has named the Drive file, turns amber or red
 only past a retry threshold, and never pops up for a single retry.
 
+### ❌ Do not answer every failed image load with the same sentence
+
+```tsx
+.catch(() => setFailed(true))      // ... <span>Image unavailable</span>
+```
+
+**What it caused:** the grid printed "Image unavailable" for a file permanently
+gone from Drive, for a request that timed out under the load of a whole day's
+thumbnails, and for a viewer who was signed out -- and threw the HTTP status
+away. A deleted image (data loss someone has to find) and a bad second (retry it)
+were indistinguishable, nothing was retried, and a screenshot of the page said
+nothing about which. On the server a Drive 404 and a Drive outage were both the
+same 502.
+
+**Instead:** classify by status (`AuthedImage.classifyStatus`): 404/410 is
+*missing from storage* and is never retried; 408/425/429/5xx and network errors
+are *transient* and are retried with backoff, then offered a Retry button; 401 and
+403 say so. Keep the status on the tile. On the server, a Drive 404 is
+`GoogleDriveFileNotFound` -> **410**, everything else stays 502. Cap concurrent
+image requests; a day of thumbnails fired at once is how the transient ones
+happen.
+
 ### ❌ Do not report a batch as a unit when its members are independent
 
 A capture-event batch that failed whole for one malformed row would be retried

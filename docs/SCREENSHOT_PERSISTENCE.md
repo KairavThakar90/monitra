@@ -279,6 +279,50 @@ No log line ever contains the key, a token, or image bytes.
    recovery on a different backend process, and a desktop restart with an
    upload outstanding.
 
+## Why a card can show no picture
+
+A card in the grid is a *window*. What it shows is derived, and each reason is
+its own state -- "Image unavailable" used to cover all of them.
+
+| What the card has | Backend | What the person sees |
+|---|---|---|
+| A screenshot row and its Drive object | `/view` 200 | the image |
+| No timer ran in the window, no screenshot, no report | `capture_state: not_expected` | "No capture expected -- no timer was running" |
+| A timer ran, nothing reported | `none` | "No capture" |
+| The desktop reported why | `failed` / `blocked` / `excluded` / `unavailable` | named, with the reason |
+| Captured on the desktop, upload still failing | `pending` | "Upload pending" |
+| A row exists, no Drive id (legacy only: the current upload path never writes one) | `/view` **404** "no stored image" | "Image missing from storage" |
+| A row exists, Drive says the object is gone | `/view` **410** | "Image missing from storage" -- an integrity failure |
+| Drive or the backend failed for a moment (5xx, 429, timeout) | `/view` 502/503 | retried with backoff, then "Couldn't load image" + **Retry** |
+| The viewer is signed out / not permitted | 401 / 403 | "Sign in again" / "Not permitted" |
+| Bytes arrive that the browser cannot draw | 200 | "Image is damaged" |
+
+* A card that has a project, a task and "N capture(s)" has a screenshot row:
+  those labels come from the row's own time entry, which cannot exist without a
+  timer. **A window with no timer never produces a broken-image card**; it has no
+  screenshot row at all, and is `not_expected` should one ever be produced (a
+  window with activity rows but no tracked time).
+* `GoogleDriveService.download_file` raises `GoogleDriveFileNotFound` on a Drive
+  404; every other failure stays a retryable 502. They were the same 502 before.
+  `SCREENSHOT_IMAGE_MISSING id=<n> user=<n> drive_file=<id>` is logged for each
+  410, so the rows can be found by name.
+* The browser caps concurrent image requests at 6 (`AuthedImage`), retries a
+  transient failure up to three times (1 s, 3 s, 8 s) and puts the HTTP status on
+  the tile (`data-http-status`, `title`).
+
+### Finding the rows
+
+```bash
+python scripts/screenshot_window_audit.py --user-id <n> --date YYYY-MM-DD --check-drive
+```
+
+Read-only. `--check-drive` asks Drive for metadata only (never the bytes, never a
+folder created, renamed or deleted) and reports per screenshot `OK`,
+`MISSING-IN-DRIVE`, `TRASHED`, `FORBIDDEN`, `NOT-AN-IMAGE` or `DRIVE-ERROR`, plus
+`ORPHAN` (a row with no Drive id) and `DRIVE-ONLY` (an object in the member's
+Drive day folder with no database row -- stored, never shown). On a database that
+has not had migration `a7c3e9d15b42` it says so and carries on without events.
+
 ## Deploying the capture-event table
 
 Migration `a7c3e9d15b42_add_screenshot_capture_events` creates

@@ -91,6 +91,14 @@ export const describeCaptureState = (
         detail: reason ? capitalise(reason) : null,
         tone: 'problem',
       };
+    case 'not_expected':
+      // No timer ran here, so nothing was due. Said as what it is -- never as a
+      // missing capture, and never as a broken image.
+      return {
+        label: 'No capture expected',
+        detail: 'No timer was running in this window',
+        tone: 'neutral',
+      };
     case 'captured':
     case 'none':
     default:

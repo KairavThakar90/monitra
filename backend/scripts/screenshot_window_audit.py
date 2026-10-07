@@ -23,6 +23,7 @@ line: the time, how long the timer ran, the measured activity, how many images
 the database holds, and the verdict:
 
     captured     an image is stored (and the Drive id is present)
+    NOT EXPECTED no timer was running in the window, so no screenshot was due
     ORPHAN       a row exists but carries no Drive file id -- the image cannot be shown
     pending      the desktop reported the image queued and failing to upload
     failed       the desktop reported the capture failed, or the server refused the upload
@@ -36,6 +37,16 @@ the database holds, and the verdict:
                  `SCREENSHOT_PERMISSION_BLOCKED`, `SCREENSHOT_QUEUED`.
                  (An older desktop reports nothing, so every miss on one is
                  NO RECORD whatever the cause.)
+
+With `--check-drive` it also asks Drive about every stored image (metadata only;
+nothing is downloaded, created, renamed or deleted) and reports, per screenshot:
+
+    OK                 the object exists and is an image
+    MISSING-IN-DRIVE   the row names a Drive object Drive says does not exist --
+                       the web page shows this as "Image missing from storage"
+    TRASHED / FORBIDDEN / NOT-AN-IMAGE / DRIVE-ERROR
+    DRIVE-ONLY         an object in that day's Drive folder with no database row
+                       (the reverse inconsistency: stored, but never shown)
 
 It also flags a capture filed within `--edge` seconds of a window boundary, the
 shape the old capture timestamp produced (stamped after the encode, so a capture
@@ -64,9 +75,40 @@ def verdict_for(window: dict) -> str:
     if window["screenshots"]:
         return "captured"
     state = window.get("capture_state", "none")
+    if state == "not_expected":
+        return "NOT EXPECTED"
     if state == "none":
         return "NO RECORD" if window.get("tracked_seconds", 0) > 0 else "-"
     return state
+
+
+#: A Drive object is an acceptable screenshot only if it is an image with bytes.
+def drive_verdict(stat: dict) -> str:
+    """One word for what `GoogleDriveService.stat_file` found. Pure."""
+    state = stat.get("state")
+    if state == "ok":
+        mime = (stat.get("mime_type") or "").lower()
+        if not mime.startswith("image/") or not stat.get("size"):
+            return "NOT-AN-IMAGE"
+        return "OK"
+    return {
+        "missing": "MISSING-IN-DRIVE", "trashed": "TRASHED", "forbidden": "FORBIDDEN",
+    }.get(state or "", "DRIVE-ERROR")
+
+
+def drive_only_files(day_files: List[dict], client_ids: set) -> List[dict]:
+    """Objects in the day's Drive folder that no database row accounts for.
+
+    Screenshot objects are named ``screenshot_<client_screenshot_id>.webp``, and
+    the id is the join key. Pure.
+    """
+    extra = []
+    for item in day_files:
+        name = item.get("name") or ""
+        if name.startswith("screenshot_") and name.endswith(".webp"):
+            if name[len("screenshot_"):-len(".webp")] not in client_ids:
+                extra.append(item)
+    return extra
 
 
 def edge_spills(windows: List[dict], edge_seconds: int) -> List[str]:
@@ -125,6 +167,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--user-id", type=int)
     parser.add_argument("--date", help="IST calendar day, YYYY-MM-DD (default: today)")
     parser.add_argument("--find", help="list users whose name or email contains this")
+    parser.add_argument("--check-drive", action="store_true",
+                        help="also verify every stored image in Drive (read-only metadata)")
     parser.add_argument("--edge", type=int, default=5,
                         help="seconds after a boundary that count as a late-stamped capture")
     args = parser.parse_args(argv)
@@ -165,14 +209,28 @@ def main(argv: Optional[List[str]] = None) -> int:
             db, user.organization_id, user.id, start, end
         )
         intervals = Repo.list_tracked_intervals(db, user.organization_id, user.id, start, end)
-        events = Repo.list_events(db, user.organization_id, user.id, start, end)
+        events_note = ""
+        try:
+            # A savepoint, so a database that has not had the capture-event
+            # migration yet loses only this query, not the whole audit.
+            with db.begin_nested():
+                events = Repo.list_events(db, user.organization_id, user.id, start, end)
+        except Exception as exc:  # noqa: BLE001 -- UndefinedTable on a pre-migration database
+            events = []
+            events_note = (
+                "capture events: NOT AVAILABLE (the time_entry_screenshot_events table is "
+                f"missing -- migration a7c3e9d15b42 is not applied here): {type(exc).__name__}"
+            )
         windows = _build_windows(window_minutes * 60, shots, activity, intervals, {}, events=events)
 
         print(f"member: {user.name} (id {user.id})  day: {day} IST  "
               f"capture_frequency: {user.capture_frequency} min "
               f"(window used: {window_minutes} min)")
         print(f"rows: {len(shots)} screenshots, {len(events)} capture events, "
-              f"{len(intervals)} tracked spans\n")
+              f"{len(intervals)} tracked spans")
+        if events_note:
+            print(events_note)
+        print()
 
         counts: Dict[str, int] = {}
         for window in windows:
@@ -185,6 +243,36 @@ def main(argv: Optional[List[str]] = None) -> int:
             counts["ORPHAN"] = counts.get("ORPHAN", 0) + 1
             print(f"ORPHAN: screenshot {shot.id} captured {shot.captured_at:%H:%M:%S}Z "
                   f"has no Drive file id")
+
+        if args.check_drive:
+            from app.services.google_drive_service import drive_service
+
+            print("\nDrive check (metadata only):")
+            for shot in shots:
+                if not shot.google_drive_file_id:
+                    continue
+                stat = drive_service.stat_file(shot.google_drive_file_id)
+                verdict = drive_verdict(stat)
+                counts["drive:" + verdict] = counts.get("drive:" + verdict, 0) + 1
+                if verdict != "OK":
+                    print(f"  {verdict}: screenshot {shot.id} captured {shot.captured_at:%H:%M:%S}Z "
+                          f"drive_file={shot.google_drive_file_id} "
+                          f"entry={shot.time_entry_id} client_id={shot.client_screenshot_id} "
+                          f"stat={stat}")
+            try:
+                day_files = drive_service.list_screenshot_day_files(user.id, day, user.name)
+            except Exception as exc:  # noqa: BLE001
+                day_files = None
+                print(f"  could not list the Drive folder: {type(exc).__name__}")
+            if day_files is None:
+                print("  no Drive folder for that member and day")
+            else:
+                extra = drive_only_files(
+                    day_files, {s.client_screenshot_id for s in shots if s.client_screenshot_id}
+                )
+                counts["drive:DRIVE-ONLY"] = len(extra)
+                for item in extra:
+                    print(f"  DRIVE-ONLY: {item.get('name')} (id {item.get('id')}) has no database row")
 
         print("\nsummary: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
         notes = edge_spills(windows, args.edge)
