@@ -10,6 +10,9 @@ import {
   confirmationFor,
   errorMessage,
   isActionComplete,
+  NO_REPLY_NOTE,
+  repliesOf,
+  showsNoReplyNote,
   statusLabel,
   successMessage,
   type FeedbackAction,
@@ -438,6 +441,38 @@ export const FeedbackTable: React.FC<{
                   key={selectedDescription.id}
                   attachments={attachmentsOf(selectedDescription)}
                 />
+              )}
+              {/* What the administrator wrote back to the employee -- the note
+                  that went out in the status email, read from the row so this
+                  dialog says what the employee was actually told. */}
+              {repliesOf(selectedDescription).length > 0 && (
+                <section className="mt-5" aria-label="Reply to the employee">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#94A3B8]">
+                    Reply to {showEmployee ? selectedDescription.employee_name : "you"}
+                  </div>
+                  <div className="mt-2 space-y-3">
+                    {repliesOf(selectedDescription).map((reply) => (
+                      <div
+                        key={`${reply.status}-${reply.created_at}`}
+                        className="rounded-lg border border-[#E2E8F0] border-l-4 bg-[#F8FAFC] p-3.5"
+                        style={{ borderLeftColor: reply.status === "resolved" ? "#047857" : "#B45309" }}
+                      >
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] font-bold text-[#64748B]">
+                          <span style={{ color: reply.status === "resolved" ? "#047857" : "#B45309" }}>
+                            {ACTION_LABELS[reply.status]}
+                          </span>
+                          <span>{formatISTDate(reply.created_at)}</span>
+                        </div>
+                        <p className="mt-1.5 whitespace-pre-wrap break-words text-[13px] leading-6 text-[#334155]">
+                          {reply.message}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+              {showsNoReplyNote(selectedDescription) && (
+                <p className="mt-5 text-[12px] font-semibold text-[#94A3B8]">{NO_REPLY_NOTE}</p>
               )}
             </div>
             <div className="flex justify-end border-t border-[#E2E8F0] bg-[#F8FAFC] px-6 py-4">

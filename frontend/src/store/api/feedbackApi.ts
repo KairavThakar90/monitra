@@ -51,6 +51,18 @@ export interface FeedbackAttachment {
   is_image: boolean;
 }
 
+/**
+ * A note an administrator wrote to the employee when moving their feedback on
+ * -- what the status email said, and when. There is no author: the update is
+ * from Monitra, not from a named person.
+ */
+export interface FeedbackReply {
+  message: string;
+  /** The move the note went out with: Working or Resolved. */
+  status: 'in_progress' | 'resolved';
+  created_at: string;
+}
+
 export interface Feedback {
   id: number;
   employee_id: number;
@@ -61,11 +73,13 @@ export interface Feedback {
   created_at: string;
   updated_at: string | null;
   /**
-   * Both are absent on payloads from an older backend or an older persisted
-   * cache; treat absent as none.
+   * All three are absent on payloads from an older backend or an older
+   * persisted cache; treat absent as none.
    */
   attachment_count?: number;
   attachments?: FeedbackAttachment[];
+  /** What administrators wrote to the employee, oldest first. */
+  replies?: FeedbackReply[];
 }
 
 /** The status update's response: the refreshed row, plus what it caused. */

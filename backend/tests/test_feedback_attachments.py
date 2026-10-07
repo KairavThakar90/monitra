@@ -35,6 +35,7 @@ from app.core.database import Base, get_db
 from app.core.permissions import ROLE_PERMISSIONS
 from app.core.security import get_current_user
 from app.main import app
+from app.models.email_notification import EmailNotification
 from app.models.feedback_attachment import FeedbackAttachment
 from app.models.feedback_request import FeedbackRequest
 from app.models.user import User
@@ -142,7 +143,9 @@ def _database() -> Session:
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
     )
-    tables = [m.__table__ for m in (FeedbackRequest, FeedbackAttachment, User)]
+    # `EmailNotification` because the feedback list reads an administrator's
+    # note back out of the queued status email (`FeedbackService._replies_for`).
+    tables = [m.__table__ for m in (FeedbackRequest, FeedbackAttachment, User, EmailNotification)]
     stripped = []
     for table in tables:
         for column in table.columns:

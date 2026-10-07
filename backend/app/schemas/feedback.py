@@ -139,6 +139,21 @@ class FeedbackSubmissionRead(FeedbackRead):
     duplicate: bool = False
 
 
+class FeedbackReplyRead(BaseModel):
+    """A note an administrator wrote to the employee when moving their feedback on.
+
+    It is what the employee was sent in the status email: the text, which move
+    it came with, and when. There is deliberately no author -- the update is
+    from Monitra, not from a named person, and this model also answers
+    `/feedback/my`.
+    """
+
+    message: str
+    #: The move the note went out with: `in_progress` (Working) or `resolved`.
+    status: FeedbackStatusAction
+    created_at: datetime
+
+
 class FeedbackItem(BaseModel):
     """One row of the dashboard's feedback list.
 
@@ -169,6 +184,10 @@ class FeedbackItem(BaseModel):
     #: feedback with none (every row that predates attachments) reads `0` / `[]`.
     attachment_count: int = 0
     attachments: list[FeedbackAttachmentRead] = Field(default_factory=list)
+    #: What an administrator wrote to the employee, oldest first -- empty when
+    #: nobody added a note (the usual case: Working carries none, and a Resolved
+    #: note is optional).
+    replies: list[FeedbackReplyRead] = Field(default_factory=list)
 
 
 class FeedbackStatusUpdate(BaseModel):

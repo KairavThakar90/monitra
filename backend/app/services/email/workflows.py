@@ -62,6 +62,13 @@ def feedback_dedupe_key(feedback_id: int) -> str:
     return f"feedback:{feedback_id}"
 
 
+#: The payload key an administrator's note travels under. The feedback list
+#: reads the note back out of the queued row under this same name
+#: (`FeedbackService._replies_for`) so the View dialog can show what was said to
+#: the employee; naming it once keeps the writer and that reader from drifting.
+FEEDBACK_STATUS_NOTE_KEY = "team_message"
+
+
 def feedback_status_dedupe_key(feedback_id: int, status: str) -> str:
     """The status update's identity: this feedback, in this state.
 
@@ -403,7 +410,7 @@ def queue_feedback_status_notification(
         # because "only what the email shows" is the rule, and the email shows it.
         note = (message or "").strip()
         if note:
-            payload["team_message"] = note
+            payload[FEEDBACK_STATUS_NOTE_KEY] = note
         row = EmailOutboxService.enqueue(
             db,
             notification_type=TYPE_FEEDBACK_STATUS,

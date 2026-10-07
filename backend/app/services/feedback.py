@@ -1,3 +1,4 @@
+import json
 import logging
 import math
 from datetime import datetime, timezone
@@ -13,9 +14,10 @@ from app.repositories.feedback import FeedbackRepository, FeedbackRow
 from app.repositories.feedback_attachment import FeedbackAttachmentRepository
 from app.schemas.feedback import FeedbackCreate, FeedbackStatus, FeedbackStatusAction
 from app.services.email import (
-    deliver_in_background, queue_feedback_notification,
+    deliver_in_background, feedback_status_dedupe_key, queue_feedback_notification,
     queue_feedback_status_notification,
 )
+from app.services.email.workflows import FEEDBACK_STATUS_NOTE_KEY
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -200,7 +202,51 @@ class FeedbackService:
         }
 
     @staticmethod
-    def _item(row: FeedbackRow, attachments=()) -> dict:
+    def _replies_for(db: Session, feedback_ids) -> dict:
+        """`{feedback_id: [reply, ...]}` -- what administrators wrote to the
+        employees, for many feedbacks in **one** statement.
+
+        The note is kept in the status email's queued row and nowhere else, so
+        it is read back from there (`FeedbackRepository.list_status_notices`)
+        rather than copied onto the feedback, where it could disagree with what
+        was sent. A status email carries a note only when the administrator
+        wrote one, so most rows contribute nothing; a payload that cannot be
+        read is skipped rather than failing the list it sits in.
+        """
+        ids = {int(i) for i in feedback_ids}
+        grouped: dict = {}
+        if not ids:
+            return grouped
+        owners = {
+            feedback_status_dedupe_key(feedback_id, action.value): (feedback_id, action.value)
+            for feedback_id in ids
+            for action in FeedbackStatusAction
+        }
+        for dedupe_key, payload, queued_at in FeedbackRepository.list_status_notices(
+            db, owners
+        ):
+            owner = owners.get(dedupe_key)
+            if owner is None:
+                continue
+            try:
+                note = json.loads(payload).get(FEEDBACK_STATUS_NOTE_KEY)
+            except (TypeError, ValueError, AttributeError):
+                logger.warning("FEEDBACK_REPLY_UNREADABLE: key=%s", dedupe_key)
+                continue
+            if not isinstance(note, str) or not note.strip():
+                continue
+            feedback_id, action = owner
+            grouped.setdefault(feedback_id, []).append(
+                {"message": note.strip(), "status": action, "created_at": queued_at}
+            )
+        return grouped
+
+    @staticmethod
+    def _replies_of(db: Session, feedback_id: int) -> list:
+        return FeedbackService._replies_for(db, [feedback_id]).get(feedback_id, [])
+
+    @staticmethod
+    def _item(row: FeedbackRow, attachments=(), replies=()) -> dict:
         feedback, employee_id, employee_name = row
         return {
             "id": feedback.id,
@@ -213,6 +259,7 @@ class FeedbackService:
             "updated_at": feedback.updated_at,
             "attachment_count": len(attachments),
             "attachments": [FeedbackService._attachment_read(a) for a in attachments],
+            "replies": list(replies),
         }
 
     @staticmethod
@@ -222,9 +269,13 @@ class FeedbackService:
         attachments = FeedbackAttachmentRepository.list_for_feedback_ids(
             db, [row[0].id for row in rows]
         )
+        replies = FeedbackService._replies_for(db, [row[0].id for row in rows])
         return {
             "items": [
-                FeedbackService._item(row, attachments.get(row[0].id, ())) for row in rows
+                FeedbackService._item(
+                    row, attachments.get(row[0].id, ()), replies.get(row[0].id, ())
+                )
+                for row in rows
             ],
             "page": page,
             "limit": limit,
@@ -253,7 +304,11 @@ class FeedbackService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Feedback not found."
             )
-        return FeedbackService._item(row, FeedbackService._attachments_of(db, row[0].id))
+        return FeedbackService._item(
+            row,
+            FeedbackService._attachments_of(db, row[0].id),
+            FeedbackService._replies_of(db, row[0].id),
+        )
 
     @staticmethod
     def _attachments_of(db: Session, feedback_id: int):
@@ -289,7 +344,11 @@ class FeedbackService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Feedback not found."
             )
-        return FeedbackService._item(row, FeedbackService._attachments_of(db, row[0].id))
+        return FeedbackService._item(
+            row,
+            FeedbackService._attachments_of(db, row[0].id),
+            FeedbackService._replies_of(db, row[0].id),
+        )
 
     # ------------------------------------------------------------------
     # The Admin status workflow — the one write path on this resource.
@@ -360,6 +419,7 @@ class FeedbackService:
             return FeedbackService._response(
                 feedback, submitter, notification_queued=False,
                 attachments=FeedbackService._attachments_of(db, feedback.id),
+                replies=FeedbackService._replies_of(db, feedback.id),
             )
 
         if target not in ALLOWED_STATUS_TRANSITIONS.get(current_status, frozenset()):
@@ -415,15 +475,18 @@ class FeedbackService:
         return FeedbackService._response(
             feedback, submitter, notification_queued=notification_id is not None,
             attachments=FeedbackService._attachments_of(db, feedback.id),
+            replies=FeedbackService._replies_of(db, feedback.id),
         )
 
     @staticmethod
     def _response(
         feedback: FeedbackRequest, submitter: User, *, notification_queued: bool,
-        attachments=(),
+        attachments=(), replies=(),
     ) -> dict:
         """The updated row in the same shape the list returns, plus what happened."""
         return {
-            **FeedbackService._item((feedback, submitter.id, submitter.name), attachments),
+            **FeedbackService._item(
+                (feedback, submitter.id, submitter.name), attachments, replies
+            ),
             "notification_queued": notification_queued,
         }

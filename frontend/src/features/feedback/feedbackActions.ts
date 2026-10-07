@@ -1,5 +1,5 @@
 import type { UserRead } from '../../api/auth';
-import type { Feedback, FeedbackStatus } from '../../store/api/feedbackApi';
+import type { Feedback, FeedbackReply, FeedbackStatus } from '../../store/api/feedbackApi';
 
 /**
  * The rules behind the Working / Resolved row controls, as plain functions.
@@ -156,3 +156,21 @@ export const STATUS_LABELS: Record<FeedbackStatus, string> = {
 /** A row's display status, tolerating a server that sends something unmapped. */
 export const statusLabel = (item: Pick<Feedback, 'status'>) =>
   STATUS_LABELS[item.status] ?? item.status;
+
+/**
+ * What an administrator wrote to the employee, oldest first. Absent on a
+ * payload from an older backend or an older persisted cache, which reads as
+ * none.
+ */
+export const repliesOf = (item: Pick<Feedback, 'replies'>): FeedbackReply[] => item.replies ?? [];
+
+/**
+ * Said in place of a reply when a feedback was resolved without a note, so a
+ * reader can tell "nothing was written" from "this screen does not show it".
+ * Only for Resolved: that is the one button that offers a note, so a Working
+ * row with no reply is the ordinary case and needs no remark.
+ */
+export const NO_REPLY_NOTE = 'No message was added when this was marked Resolved.';
+
+export const showsNoReplyNote = (item: Pick<Feedback, 'status' | 'replies'>) =>
+  item.status === 'resolved' && repliesOf(item).length === 0;
