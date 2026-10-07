@@ -917,13 +917,27 @@ class GoogleDriveService:
             # "storage is temporarily unavailable" a 5xx gets made a deleted
             # image and a bad minute look identical to everyone downstream.
             if _http_status(exc) == 404:
-                raise GoogleDriveFileNotFound(
-                    f"Drive object {file_id} does not exist"
-                ) from exc
+                self._confirm_object_is_gone(file_id, exc)
             raise
         data = buffer.getvalue()
         self.image_cache.put(file_id, data)
         return data
+
+    def _confirm_object_is_gone(self, file_id: str, cause: BaseException) -> None:
+        """Raise `GoogleDriveFileNotFound` only if the 404 really means *gone*.
+
+        Google answers **404, not 403**, for an object the service account can no
+        longer see: a share that was revoked, a rotated account, a moved root.
+        Taken at face value, one such change would turn every screenshot in the
+        organisation into "image missing from storage" -- mass data loss as far
+        as anyone reading the page can tell, when nothing was lost at all. So a
+        404 is believed only while the configured root is still readable; if it
+        is not, `verify_root_access` raises `GoogleDriveNotAccessible` (a
+        `GoogleDriveError`), which the caller answers as the retryable storage
+        failure it is.
+        """
+        self.verify_root_access()
+        raise GoogleDriveFileNotFound(f"Drive object {file_id} does not exist") from cause
 
     def stat_file(self, file_id: str) -> dict:
         """Does this Drive object exist, and is it an image? Read-only.
@@ -942,6 +956,14 @@ class GoogleDriveService:
         except Exception as exc:  # noqa: BLE001
             status = _http_status(exc)
             if status == 404:
+                try:
+                    self.verify_root_access()
+                except GoogleDriveError as root_exc:
+                    # The root is not readable, so a 404 on one object proves
+                    # nothing about it.
+                    return {"state": "error", "detail": f"root not accessible: {type(root_exc).__name__}"}
+                except Exception as root_exc:  # noqa: BLE001
+                    return {"state": "error", "detail": type(root_exc).__name__}
                 return {"state": "missing"}
             if status == 403:
                 return {"state": "forbidden"}

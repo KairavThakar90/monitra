@@ -71,6 +71,33 @@ def principal():
         )
 
 
+def _hold_the_real_schedule(desktop) -> None:
+    """Stop the live scheduler taking its own screenshot during the test.
+
+    The runtime here is the real one, so once tracking starts it plans a genuine
+    capture at a random instant of the current ten-minute window. When that
+    instant fell inside a test (about one run in fourteen) a real image arrived
+    in the very window the test was asserting about, and "captured" outranked
+    the state under test. These tests take every capture themselves, through
+    `_capture_now`, which is what the schedule calls.
+    """
+    service = desktop.screenshot
+    service._due_timer.stop()
+    service._planned_times = []
+
+
+@pytest.fixture(autouse=True)
+def _signed_in(desktop, principal):
+    """Record whose desktop this is, as a real sign-in does (`claim_cache_for`).
+
+    The runtime here is given a bearer token directly and never goes through the
+    login window, so nothing else would say whose captures these are -- and a
+    capture with no owner is deliberately never reported on, because the report
+    would be filed against whoever is signed in.
+    """
+    desktop.cache.claim_cache_for(principal["user_id"])
+
+
 @pytest.fixture
 def db(principal):
     engine = create_engine(principal["database_url"], pool_pre_ping=True)
@@ -124,6 +151,7 @@ def test_a_failed_window_is_explained_on_the_real_timeline_then_overtaken_by_the
     timer = desktop.timer
     timer.start_tracking(principal["project_id"], principal["task_id"], "E2E explained window")
     _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
+    _hold_the_real_schedule(desktop)
     entry_id = timer.entry_id
     service = desktop.screenshot
 
@@ -212,6 +240,7 @@ def test_an_upload_stuck_on_drive_shows_as_pending_then_as_the_image(
     timer = desktop.timer
     timer.start_tracking(principal["project_id"], principal["task_id"], "E2E pending upload")
     _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
+    _hold_the_real_schedule(desktop)
     entry_id = timer.entry_id
 
     (record,) = _capture_windows(desktop, 1)
@@ -297,6 +326,7 @@ def test_a_row_whose_drive_object_is_gone_is_a_410_a_visible_row_and_an_audit_fi
     timer = desktop.timer
     timer.start_tracking(principal["project_id"], principal["task_id"], "E2E missing image")
     _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
+    _hold_the_real_schedule(desktop)
     entry_id = timer.entry_id
     _capture_windows(desktop, 1)
     _drain(qapp, desktop, 1, db, lambda: entry_id, "the capture to be stored")
@@ -341,7 +371,7 @@ def test_a_row_whose_drive_object_is_gone_is_a_410_a_visible_row_and_an_audit_fi
                               headers={"Authorization": f"Bearer {principal['token']}"})
         missing = client.get(f"/time-entry-screenshots/{shot_id}/view")
         assert missing.status_code == 410, (missing.status_code, missing.text)
-        assert "no longer in storage" in missing.text
+        assert "not found in storage" in missing.text
 
         # The row still exists and is still counted.
         from datetime import datetime, timedelta, timezone

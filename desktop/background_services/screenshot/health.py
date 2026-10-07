@@ -120,8 +120,13 @@ class ScreenshotStatus:
         )
 
 
-def _clock(iso: Optional[str], tz=None) -> str:
-    """`10:34 AM` from an ISO instant, in `tz` (the local zone by default)."""
+def _clock(iso: Optional[str], tz=None, now: Optional[datetime] = None) -> str:
+    """`10:34 AM` from an ISO instant, in `tz` (the local zone by default).
+
+    An instant from another day carries its date (`5 Oct, 10:34 AM`): the last
+    confirmed upload is remembered across launches, and a bare time would read
+    yesterday's 5:12 PM as an upload that just happened.
+    """
     if not iso:
         return ""
     try:
@@ -130,7 +135,11 @@ def _clock(iso: Optional[str], tz=None) -> str:
         return ""
     if moment.tzinfo is not None:
         moment = moment.astimezone(tz)
-    return moment.strftime("%I:%M %p").lstrip("0")
+    clock = moment.strftime("%I:%M %p").lstrip("0")
+    today = (now or datetime.now(moment.tzinfo)).date()
+    if moment.date() != today:
+        return f"{moment.day} {moment.strftime('%b')}, {clock}"
+    return clock
 
 
 def derive_status(
@@ -143,6 +152,7 @@ def derive_status(
     queue: Optional[Dict[str, Any]] = None,
     last_upload_at: Optional[str] = None,
     tz=None,
+    now: Optional[datetime] = None,
 ) -> ScreenshotStatus:
     """
     The one place the screenshot state shown to the user is decided.
@@ -227,7 +237,7 @@ def derive_status(
         )
 
     if last_upload_at:
-        at = _clock(last_upload_at, tz)
+        at = _clock(last_upload_at, tz, now)
         return ScreenshotStatus(
             OK, SEVERITY_OK,
             f"Screenshot uploaded {at}".strip(), "", pending, last_upload_at,

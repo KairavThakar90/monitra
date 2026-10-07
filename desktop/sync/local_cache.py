@@ -2075,7 +2075,9 @@ class LocalCache:
                 time_entry_id, client_screenshot_id, owner_user_id, status,
                 retry_count, next_retry_at, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
-            (event_id, event_state, reason, (detail or "")[:500] or None, int(attempts),
+            (event_id, event_state, reason, (detail or "")[:500] or None,
+             # The backend accepts 0..1000; more is the same fact.
+             max(0, min(int(attempts), 1000)),
              window_start, occurred_at, time_entry_id, client_screenshot_id,
              owner_user_id, now, now),
         )
@@ -2111,9 +2113,44 @@ class LocalCache:
     SCREENSHOT_EVENT_MAX_RETRIES = 30
 
     def fail_screenshot_events(self, ids: List[str]) -> None:
+        if ids:
+            # A row being failed is pending again (a launch requeues parked
+            # ones), so any stamp left from an earlier parking is stale.
+            stale = ",".join("?" for _ in ids)
+            self._storage.execute(
+                f"UPDATE pending_screenshot_events SET parked_at = NULL "
+                f"WHERE status = 'pending' AND id IN ({stale})",
+                list(ids),
+            )
         self._fail_queue_records(
             "pending_screenshot_events", ids, self.SCREENSHOT_EVENT_MAX_RETRIES
         )
+        if ids:
+            # Stamp the moment one was parked, for `revive_parked_screenshot_events`.
+            placeholders = ",".join("?" for _ in ids)
+            self._storage.execute(
+                f"UPDATE pending_screenshot_events SET parked_at = ? "
+                f"WHERE status = 'failed' AND parked_at IS NULL AND id IN ({placeholders})",
+                [time.time(), *ids],
+            )
+
+    def revive_parked_screenshot_events(self, older_than_seconds: float = 0.0) -> int:
+        """Return events that exhausted their retries to the queue.
+
+        The same rule as `revive_parked_screenshots`, for the same reason: an
+        event is the only explanation the web grid will ever get for a window, so
+        one parked after half an hour of a backend that was down (or not yet
+        deployed) must not wait for a launch -- a tray application is not
+        relaunched for days. Offered again when a hold ends and hourly.
+        """
+        now = time.time()
+        cursor = self._storage.execute(
+            "UPDATE pending_screenshot_events "
+            "SET status = 'pending', retry_count = 0, next_retry_at = 0, parked_at = NULL "
+            "WHERE status = 'failed' AND COALESCE(parked_at, created_at) <= ?",
+            (now - older_than_seconds,),
+        )
+        return cursor.rowcount or 0
 
     def count_screenshot_events(self) -> int:
         row = self._storage.query_one("SELECT COUNT(*) AS cnt FROM pending_screenshot_events")

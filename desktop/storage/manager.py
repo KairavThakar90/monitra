@@ -375,6 +375,9 @@ MIGRATIONS = [
     # stuck upload is reported on the transition into it and not on every
     # retry (see `SyncService._report_upload_state`).
     ("pending_screenshots", "reported_state", "TEXT"),
+    # When an event exhausted its retries, so "offer it again an hour later"
+    # counts from then and not from when it was first queued.
+    ("pending_screenshot_events", "parked_at", "REAL"),
 ]
 
 #: Indexes over columns `MIGRATIONS` adds, created after it has run.

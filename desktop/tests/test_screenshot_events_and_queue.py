@@ -380,3 +380,109 @@ class TestAStuckUploadIsReportedOnTheTransition:
         assert code("") == "unknown"
         assert code("A very odd / reason: with  stuff!") == "a_very_odd_reason_with_stuff"
         assert len(code("x" * 500)) <= 60
+
+
+class TestEventsAreNeverStrandedByARetryBudget:
+    """An event is the only explanation the grid will ever get for a window. One
+    parked after half an hour of a backend that was down -- or not deployed yet --
+    must not wait for a launch: a tray application is not relaunched for days."""
+
+    def _park(self, cache, event_id="e1"):
+        cache.save_screenshot_event(event_id, "failed", "2026-10-06T05:00:00+00:00",
+                                    "2026-10-06T05:08:00+00:00", reason="store_failed")
+        for _ in range(cache.SCREENSHOT_EVENT_MAX_RETRIES + 1):
+            cache.fail_screenshot_events([event_id])
+        assert cache.storage.query_one(
+            "SELECT status FROM pending_screenshot_events")["status"] == "failed"
+
+    def test_a_parked_event_is_revived_when_a_hold_ends(self, cache):
+        self._park(cache)
+        assert cache.revive_parked_screenshot_events() == 1
+        assert [e["id"] for e in cache.get_pending_screenshot_events()] == ["e1"]
+
+    def test_a_recently_parked_event_waits_for_the_hourly_revival(self, cache):
+        self._park(cache)
+        assert cache.revive_parked_screenshot_events(older_than_seconds=3600) == 0
+        cache.storage.execute("UPDATE pending_screenshot_events SET parked_at = ?",
+                              (time.time() - 7200,))
+        assert cache.revive_parked_screenshot_events(older_than_seconds=3600) == 1
+
+    def test_the_hour_counts_from_when_it_was_parked_not_from_when_it_was_queued(self, cache):
+        """An event queued long ago but parked just now is not offered again at once."""
+        self._park(cache)
+        cache.storage.execute("UPDATE pending_screenshot_events SET created_at = ?",
+                              (time.time() - 86400,))
+        assert cache.storage.query_one(
+            "SELECT parked_at FROM pending_screenshot_events")["parked_at"] is not None
+        assert cache.revive_parked_screenshot_events(older_than_seconds=3600) == 0
+        cache.storage.execute("UPDATE pending_screenshot_events SET parked_at = ?",
+                              (time.time() - 7200,))
+        assert cache.revive_parked_screenshot_events(older_than_seconds=3600) == 1
+        assert cache.storage.query_one(
+            "SELECT parked_at FROM pending_screenshot_events")["parked_at"] is None
+
+    def test_a_second_parking_after_a_launch_requeue_is_stamped_afresh(self, cache):
+        self._park(cache)
+        cache.storage.execute("UPDATE pending_screenshot_events SET parked_at = ?",
+                              (time.time() - 86400,))
+        cache.requeue_telemetry_for_new_run()              # a launch: pending again
+        cache.storage.execute("UPDATE pending_screenshot_events SET next_retry_at = 0")
+        for _ in range(cache.SCREENSHOT_EVENT_MAX_RETRIES + 1):
+            cache.fail_screenshot_events(["e1"])
+        stamp = cache.storage.query_one(
+            "SELECT status, parked_at FROM pending_screenshot_events")
+        assert stamp["status"] == "failed"
+        assert stamp["parked_at"] > time.time() - 60, "not the day-old stamp from the first time"
+
+    def test_the_uploader_revives_parked_events_on_its_own_pass(self, sync, cache):
+        service, entries = sync
+        self._park(cache)
+        cache.storage.execute("UPDATE pending_screenshot_events SET parked_at = ?",
+                              (time.time() - 7200,))
+        entries.record_screenshot_events = lambda events: {}
+        service._sync_screenshot_events()                  # nothing due: revives
+        assert len(cache.get_pending_screenshot_events()) == 1
+        assert service._sync_screenshot_events() is False  # and sends it
+        assert cache.count_screenshot_events() == 0
+
+    def test_attempts_are_clamped_to_what_the_backend_accepts(self, cache):
+        cache.save_screenshot_event("e1", "upload_retrying", "2026-10-06T05:00:00+00:00",
+                                    "2026-10-06T05:08:00+00:00", reason="http_502",
+                                    attempts=5000)
+        assert cache.get_pending_screenshot_events()[0]["attempts"] == 1000
+
+
+class TestUnownedRowsDoNotReport:
+    def test_a_legacy_row_with_no_owner_emits_no_event(self, sync, cache, tmp_path):
+        """It would be filed against whoever is signed in now, which may not be
+        the person the capture is about -- a phantom failed window on another
+        user's grid. The upload still retries; only the report is withheld."""
+        service, entries = sync
+        _capture(cache, tmp_path, "legacy", owner=None)
+        entries.upload_screenshot = _refusing(422)
+        service._sync_screenshots()
+        assert _events(cache) == []
+        assert cache.storage.query_one(
+            "SELECT status FROM pending_screenshots")["status"] == "failed"   # parked, file kept
+
+
+class TestTheLastUploadSaysWhenWhenItIsNotToday:
+    def test_yesterdays_upload_carries_its_date(self):
+        from datetime import datetime, timezone
+
+        from background_services.screenshot import health
+
+        last = "2026-10-05T11:42:00+00:00"
+        now = datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc)
+        status = health.derive_status(tracking=True, last_upload_at=last, tz=timezone.utc, now=now)
+        assert status.headline == "Screenshot uploaded 5 Oct, 11:42 AM"
+
+    def test_todays_upload_is_just_the_time(self):
+        from datetime import datetime, timezone
+
+        from background_services.screenshot import health
+
+        last = "2026-10-06T08:15:00+00:00"
+        now = datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc)
+        status = health.derive_status(tracking=True, last_upload_at=last, tz=timezone.utc, now=now)
+        assert status.headline == "Screenshot uploaded 8:15 AM"

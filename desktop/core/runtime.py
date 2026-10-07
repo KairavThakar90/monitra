@@ -275,6 +275,8 @@ class ApplicationRuntime(QObject):
         # whether it can drain. (Queued: the emitter is on the recovery
         # thread, the slots belong here.)
         self.recovery.system_resumed.connect(self._on_system_resumed)
+        # The status line says "uploaded" when the uploader confirms one.
+        self.sync.screenshot_uploaded.connect(self.screenshot.refresh_status)
 
         log.info("runtime constructed in %.0fms", (time.monotonic() - self._started_at) * 1000)
 

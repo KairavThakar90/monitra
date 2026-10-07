@@ -83,6 +83,10 @@ the images, in batches of 50 -- to `POST /time-entry-screenshots/capture-events`
   the body. A `time_entry_id` that is not the caller's is dropped, not trusted.
 * No free text crosses the wire. `reason` is a short code (`screen_unreadable`,
   `http_502`, ...); the desktop's log carries the detail.
+* An event that exhausts its retries (about half an hour of a failing or
+  not-yet-deployed backend) is parked, never discarded, and is offered again when
+  a hold ends and an hour after it was parked (`parked_at`) -- not left for a
+  launch, because a tray application is not relaunched for days.
 * Persisted in `time_entry_screenshot_events` (migration `a7c3e9d15b42`,
   additive). A window's state is derived at read time from the newest event and
   **ignored once the window holds an image**, so an upload that finally lands

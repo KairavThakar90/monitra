@@ -176,6 +176,30 @@ describe('AuthedImage', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('retries once with the new token when a 401 came from a token replaced mid-flight', async () => {
+    const store = { token: 'old-token' };
+    vi.stubGlobal('localStorage', { getItem: () => store.token });
+    fetchMock.mockImplementationOnce(async () => {
+      store.token = 'refreshed-token';              // the app refreshed it while this was in flight
+      return status(401);
+    });
+    fetchMock.mockResolvedValue(ok());
+    await mount();
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][1].headers).toEqual({ Authorization: 'Bearer refreshed-token' });
+    expect(container.querySelector('img')).not.toBeNull();
+  });
+
+  it('does not loop on a 401 when the token has not changed, and offers Retry', async () => {
+    fetchMock.mockResolvedValue(status(401));
+    await mount();
+    await settle(30_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(state()).toBe('signed_out');
+    expect(container.querySelector('button')?.textContent).toBe('Retry');
+  });
+
   it('says a forbidden viewer is not permitted', async () => {
     fetchMock.mockResolvedValue(status(403));
     await mount();
@@ -248,5 +272,119 @@ describe('the page-wide request cap', () => {
     container.remove();
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+});
+
+describe('only tiles the viewer can reach load, and a tile that goes away stops loading', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let observers: Array<{ cb: IntersectionObserverCallback; disconnected: boolean }>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    observers = [];
+    class FakeObserver {
+      entry: { cb: IntersectionObserverCallback; disconnected: boolean };
+      constructor(cb: IntersectionObserverCallback) {
+        this.entry = { cb, disconnected: false };
+        observers.push(this.entry);
+      }
+      observe() {}
+      disconnect() { this.entry.disconnected = true; }
+      unobserve() {}
+      takeRecords() { return []; }
+    }
+    vi.stubGlobal('IntersectionObserver', FakeObserver);
+    fetchMock = vi.fn(() => Promise.resolve(ok()));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('localStorage', { getItem: () => null });
+    URL.createObjectURL = vi.fn(() => 'blob:mock');
+    URL.revokeObjectURL = vi.fn();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => { root.unmount(); });
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const reach = async () => {
+    await act(async () => {
+      observers.forEach((o) => o.cb([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+      // Each tile's load is a few chained promises (effect, acquire, fetch);
+      // flush them all rather than guess how many ticks that takes.
+      for (let i = 0; i < 10; i += 1) await vi.advanceTimersByTimeAsync(0);
+    });
+  };
+
+  it('makes no request for a tile that has not come near the viewport', async () => {
+    await act(async () => {
+      root.render(<AuthedImage url="/time-entry-screenshots/1/view" alt="s1" />);
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-image-state="loading"]')).not.toBeNull();
+
+    await reach();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('img')).not.toBeNull();
+    expect(observers.every((o) => o.disconnected)).toBe(true);
+  });
+
+  it('a day of tiles scrolled past without being reached makes no requests at all', async () => {
+    await act(async () => {
+      root.render(
+        <>
+          {Array.from({ length: 144 }, (_, i) => (
+            <AuthedImage key={i} url={`/time-entry-screenshots/${i}/view`} alt={`s${i}`} />
+          ))}
+        </>,
+      );
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('abandons the request in flight when the tile goes away', async () => {
+    let signal: AbortSignal | undefined;
+    fetchMock.mockImplementation((_u: string, init: { signal: AbortSignal }) => {
+      signal = init.signal;
+      return new Promise(() => {});                    // never answers
+    });
+    await act(async () => {
+      root.render(<AuthedImage url="/time-entry-screenshots/1/view" alt="s1" />);
+    });
+    await reach();
+    expect(signal?.aborted).toBe(false);
+    await act(async () => { root.render(<div />); });
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it('a tile that goes away while it waits its turn never makes the request', async () => {
+    const blockers: Array<() => void> = [];
+    fetchMock.mockImplementation(() => new Promise<Response>((resolve) => blockers.push(() => resolve(ok()))));
+    await act(async () => {
+      root.render(
+        <>
+          {Array.from({ length: MAX_CONCURRENT_IMAGE_REQUESTS + 3 }, (_, i) => (
+            <AuthedImage key={i} url={`/time-entry-screenshots/${i}/view`} alt={`s${i}`} />
+          ))}
+        </>,
+      );
+    });
+    await reach();
+    expect(fetchMock).toHaveBeenCalledTimes(MAX_CONCURRENT_IMAGE_REQUESTS);
+
+    await act(async () => { root.render(<div />); });             // all tiles unmount
+    await act(async () => {
+      blockers.splice(0).forEach((resolve) => resolve());
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(MAX_CONCURRENT_IMAGE_REQUESTS);
   });
 });

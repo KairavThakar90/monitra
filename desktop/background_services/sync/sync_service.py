@@ -83,6 +83,9 @@ class SyncService(LoopService):
     action_completed = Signal(str, str, dict)
     action_failed = Signal(str, str, str, bool)
     auth_required = Signal()
+    #: A screenshot was confirmed stored in Drive. Edge-triggered by the upload
+    #: itself, so the status line can say "uploaded" when it is true.
+    screenshot_uploaded = Signal()
     queue_drained = Signal()
     pending_count_changed = Signal(int)
     synced_at_changed = Signal(object)
@@ -290,6 +293,10 @@ class SyncService(LoopService):
                         "SCREENSHOT_REVIVED count=%d reason=hold_ended brought_forward=%d",
                         revived, ready,
                     )
+            try:
+                self._cache.revive_parked_screenshot_events()
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not revive parked screenshot events")
 
         # Walk past rows that only defer (their prerequisite has not landed)
         # to the first one that can be attempted. See MAX_DEFERRALS_PER_TICK
@@ -933,6 +940,15 @@ class SyncService(LoopService):
             self.log.exception("could not read pending screenshot events")
             return False
         if not pending:
+            # Nothing due. An event parked after a long outage is offered again
+            # once an hour, as parked screenshots are -- not left for a launch.
+            try:
+                if self._cache.revive_parked_screenshot_events(
+                    older_than_seconds=SCREENSHOT_PARKED_RETRY_INTERVAL
+                ):
+                    self.wake()
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not revive parked screenshot events")
             return False
         ids = [event["id"] for event in pending]
         payload = [
@@ -979,6 +995,13 @@ class SyncService(LoopService):
         network blip; the screenshot itself is the record of those.
         """
         if record.get("reported_state") == state:
+            return
+        if record.get("owner_user_id") is None:
+            # Queued by a build that did not record whose screen it is. An event
+            # about it would be filed against whoever is signed in now, which
+            # may not be the person it is about -- a phantom failed window on
+            # someone else's grid. The upload itself still retries; only the
+            # report is withheld.
             return
         created = record.get("created_at")
         if (
@@ -1197,6 +1220,7 @@ class SyncService(LoopService):
         if stored_path:
             store.delete_screenshot(stored_path)
         self._mark_synced()
+        self.screenshot_uploaded.emit()
         # What the person sees as "uploaded": the last instant the backend
         # *confirmed* a capture in Drive, never the instant one was taken.
         try:

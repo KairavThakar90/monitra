@@ -357,6 +357,31 @@ class TestAFailedCaptureIsNotAWindowLost:
         assert len(cache.get_pending_screenshots()) == 1
         assert service._consecutive_failed_windows == 0
 
+    def test_five_consecutive_failing_windows_are_five_records_and_bounded_work(
+        self, service, clock, screen, cache
+    ):
+        """An afternoon of a locked screen: every window explained once, the
+        schedule alive at the end, and no growth in what it is holding."""
+        service.start_tracker(SESSION)
+        screen.script = [None] * 1000
+        for n in range(5):
+            clock.now = NOW + n * WINDOW + 1
+            service._on_due()
+            service._planned_times = [clock.now]
+            service._on_due()
+            while service._planned_times and clock.now < NOW + (n + 1) * WINDOW:
+                _advance_to_retry(service, clock)
+            assert len(service._planned_times) <= 2, "no backlog of retries builds up"
+        clock.now = NOW + 5 * WINDOW + 1
+        service._on_due()                              # the last window is closed out
+
+        events = _events(cache)
+        assert [e["event_state"] for e in events] == ["failed"] * 5
+        assert len({e["window_start"] for e in events}) == 5, "one per window, never two"
+        assert service._consecutive_failed_windows == 5
+        assert service._due_timer.isActive(), "and the schedule is still alive"
+        assert screen.reads <= 5 * service.CAPTURE_MAX_ATTEMPTS, "retries are bounded"
+
     def test_a_window_that_ends_with_a_retry_pending_is_recorded_at_the_boundary(
         self, service, clock, screen, cache
     ):
@@ -536,11 +561,10 @@ class TestAStuckCaptureCannotBlockEveryLaterOne:
         first = tasks.captures()[0]
         clock.now = NOW + 10 + svc.CAPTURE_STUCK_SECONDS + 1
         svc._on_health_tick()
-        assert svc._abandoned
+        assert svc._inflight is None, "abandoned"
 
         tasks.finish(first)                           # it finally completes
 
-        assert not svc._abandoned
         assert len(cache.get_pending_screenshots()) == 1, "its image is queued, not discarded"
 
     def test_a_stuck_capture_in_a_window_that_ended_is_recorded(
@@ -1073,3 +1097,352 @@ class TestTimerLifecycleNeverEndsTheSchedule:
         from pathlib import Path
 
         assert Path(survivors[0]["local_file_path"]).exists(), "the file is there too"
+
+
+# ── Pool protection, churn and old databases ──────────────────────────────────
+
+class KeyDedupTasks(DeferredTasks):
+    """A pool that models `TaskRunner`: a submit whose key is still in flight is
+    dropped and answers None. The other doubles do not, which is how a
+    capture-blocking key went unseen."""
+
+    def __init__(self):
+        super().__init__()
+        self.in_flight_keys = set()
+
+    def submit(self, fn, on_success=None, on_error=None, key=None, **kwargs):
+        if key is not None and key in self.in_flight_keys:
+            return None
+        handle = super().submit(fn, on_success=on_success, on_error=on_error, key=key, **kwargs)
+        if key is not None and not str(key).startswith(self.INLINE_PREFIXES):
+            self.in_flight_keys.add(key)
+        return handle
+
+    def finish(self, entry):
+        self.in_flight_keys.discard(entry["key"])
+        super().finish(entry)
+
+
+class TestWedgedCapturesCannotTakeThePool:
+    """A thread stuck in an OS call cannot be killed. The pool has four. One
+    wedged capture per window would, in forty minutes, take every thread the
+    application has and stop sync, config and every other background job."""
+
+    def test_no_new_capture_starts_once_too_many_are_running(
+        self, qapp, cache, cache_root, clock, screen
+    ):
+        tasks = DeferredTasks()
+        svc = _service(qapp, cache, tasks)
+        try:
+            svc.start_tracker(SESSION)
+            svc._running_captures = svc.MAX_RUNNING_CAPTURES      # wedged on the pool
+            started = len(tasks.captures())
+
+            _fire(svc, clock, clock.now + 1)
+
+            assert len(tasks.captures()) == started, "no further task is put on the pool"
+            assert svc._last_failure_reason == "capture_stuck"
+        finally:
+            svc._running_captures = 0
+            svc.stop_tracker()
+
+    def test_the_refusal_is_recorded_for_the_window_not_silent(
+        self, qapp, cache, cache_root, clock, screen
+    ):
+        svc = _service(qapp, cache, DeferredTasks())
+        try:
+            svc.start_tracker(SESSION)
+            svc._running_captures = svc.MAX_RUNNING_CAPTURES
+            svc.CAPTURE_MAX_ATTEMPTS = 1
+            window = scheduler.window_index(NOW, WINDOW)
+            svc._roll_window(window)
+            svc._submit_capture(window)
+            assert [(e["event_state"], e["reason"]) for e in _events(cache)] == [
+                ("failed", "capture_stuck")
+            ]
+        finally:
+            svc._running_captures = 0
+            svc.stop_tracker()
+
+    def test_running_captures_are_counted_where_they_run_even_if_the_callback_is_dropped(
+        self, service, clock
+    ):
+        """Counted in the task itself, not in a callback the session guard can drop."""
+        seen = []
+        real = service._capture_now_inner
+
+        def watch(*args, **kwargs):
+            seen.append(service._running_captures)
+            return real(*args, **kwargs)
+
+        service._capture_now_inner = watch
+        service.start_tracker(SESSION)
+        service._capture_now(1, service._current_generation())
+        assert seen == [1]
+        assert service._running_captures == 0, "released when the task ends"
+
+    def test_a_capture_that_raises_still_releases_its_slot(self, service, screen):
+        service.start_tracker(SESSION)
+        screen.script = [OSError("gdi")]
+        service._capture_now(1, service._current_generation())
+        assert service._running_captures == 0
+
+    def test_a_stop_and_start_while_a_capture_is_wedged_does_not_end_capture_for_ever(
+        self, qapp, cache, cache_root, clock, screen
+    ):
+        """The reviewer's reproduction. The wedged task keeps its pool thread and
+        (in the old design) its de-duplication key; after a stop/start every later
+        submit answered None, was read as 'pool shutting down', and retried in
+        silence -- no image and no event for every later window."""
+        tasks = KeyDedupTasks()
+        svc = _service(qapp, cache, tasks)
+        try:
+            svc.start_tracker(SESSION)
+            _fire(svc, clock, NOW + 5)
+            wedged = tasks.captures()[0]                   # never finishes
+            svc.stop_tracker()
+            svc.start_tracker(SESSION)                     # the user switches task
+
+            for window in (1, 2, 3):
+                clock.now = NOW + window * WINDOW + 5
+                svc._on_due()
+                _fire(svc, clock)
+                fresh = [e for e in tasks.captures() if e is not wedged]
+                assert fresh, f"window {window}: a capture was submitted"
+                tasks.finish(fresh[-1])
+            assert len(cache.get_pending_screenshots()) == 3
+        finally:
+            svc.stop_tracker()
+
+
+class TestOneImagePerWindow:
+    """A capture abandoned as stuck can still finish late. Its retry has been
+    planned meanwhile; both must not become images."""
+
+    def test_a_late_result_cancels_the_retry_planned_for_it(
+        self, qapp, cache, cache_root, clock, screen
+    ):
+        tasks = DeferredTasks()
+        svc = _service(qapp, cache, tasks)
+        try:
+            svc.start_tracker(SESSION)
+            _fire(svc, clock, NOW + 10)
+            original = tasks.captures()[0]
+            clock.now = NOW + 10 + svc.CAPTURE_STUCK_SECONDS + 1
+            svc._on_health_tick()                          # abandoned; a retry is planned
+            assert svc._planned_times
+
+            tasks.finish(original)                         # ...and it finishes after all
+            assert len(cache.get_pending_screenshots()) == 1
+            assert all(t > NOW + WINDOW for t in svc._planned_times), (
+                "the retry for this window is gone"
+            )
+
+            clock.now += 30
+            svc._on_due()
+            retried = [e for e in tasks.captures() if e is not original]
+            assert retried == [], "no second capture is started"
+            assert len(cache.get_pending_screenshots()) == 1
+        finally:
+            svc.stop_tracker()
+
+    def test_an_overdue_instant_in_a_window_that_holds_its_image_is_dropped(
+        self, service, clock, cache
+    ):
+        service.start_tracker(SESSION)
+        _fire(service, clock, NOW + 20)
+        assert len(cache.get_pending_screenshots()) == 1
+        service._planned_times = [NOW + 40]               # a stale retry
+        clock.now = NOW + 50
+        service._on_due()
+        assert len(cache.get_pending_screenshots()) == 1
+
+
+class TestOwnerAndWindowAreFixedWhenTheyAreKnown:
+    def test_a_capture_is_stamped_with_the_owner_it_was_authorised_for(
+        self, service, clock, cache
+    ):
+        service.start_tracker(SESSION)                    # owner 9
+        generation = service._current_generation()
+        service._owner_user_id = 77                       # a sign-in lands while it runs
+        service._capture_now(1, generation, 9)
+        (row,) = cache.storage.query_all("SELECT owner_user_id FROM pending_screenshots")
+        assert row["owner_user_id"] == 9
+
+    def test_an_events_window_start_survives_a_capture_frequency_change(
+        self, service, clock, screen, cache
+    ):
+        service.start_tracker(SESSION)
+        screen.script = [None]
+        service.CAPTURE_MAX_ATTEMPTS = 1
+        _fire(service, clock, NOW + 30)
+        assert service._outcome.start == NOW
+        service._capture_frequency_minutes = 5            # an administrator changes it mid-window
+        service._finalize_current_outcome()
+        (event,) = _events(cache)
+        assert event["window_start"] == scheduler_iso(NOW), (
+            "still the window it was, not one recomputed from the new length"
+        )
+
+
+class TestAnOrderlyStopLosesNoExplanation:
+    def test_shutdown_records_an_unresolved_window_synchronously(self, service, clock, screen, cache):
+        """An update restart or an OS shutdown never calls `stop_tracker`."""
+        service.start_tracker(SESSION)
+        screen.script = [None]
+        _fire(service, clock, NOW + 30)                   # one failed attempt, a retry pending
+        assert _events(cache) == []
+        service.on_stop(timeout_ms=1000)
+        assert [e["event_state"] for e in _events(cache)] == ["failed"]
+
+
+class TestTheStatusFollowsTheUpload:
+    def test_a_refresh_dropped_behind_one_in_flight_runs_again(
+        self, qapp, cache, cache_root, clock, screen
+    ):
+        tasks = KeyDedupTasks()
+        # The status task is held back like any other keyed work, to model a
+        # refresh that is still reading the queue when an upload is confirmed.
+        tasks.INLINE_PREFIXES = ("screenshot-event:",)
+        svc = _service(qapp, cache, tasks)
+        try:
+            svc._refresh_status()
+            svc._refresh_status()                         # dropped: one is in flight
+            assert svc._status_dirty is True
+            first = [e for e in tasks.pending if e["key"] == "screenshot-status"][0]
+            tasks.finish(first)                           # lands, then runs again
+            assert [e for e in tasks.pending if e["key"] == "screenshot-status"], (
+                "a second refresh was started"
+            )
+            assert svc._status_dirty is False
+        finally:
+            svc.stop_tracker()
+
+    def test_a_confirmed_upload_reaches_the_status_through_the_runtime(self, runtime):
+        """The uploader's signal is wired to the service by the runtime."""
+        import time as real_time
+
+        from PySide6.QtWidgets import QApplication
+
+        runtime.screenshot._tracking = True
+        runtime.cache.save_screenshot(
+            client_screenshot_id="s1", local_file_path="x.webp",
+            captured_at="2026-10-06T05:04:00+00:00", window_start="2026-10-06T05:00:00+00:00",
+            width=1000, height=1000, file_size_bytes=10, time_entry_id=7,
+        )
+        runtime.sync.screenshot_uploaded.emit()
+        deadline = real_time.time() + 5
+        while real_time.time() < deadline and runtime.screenshot._status is None:
+            QApplication.processEvents()
+            real_time.sleep(0.01)
+        assert runtime.screenshot._status is not None
+        assert runtime.screenshot._status.state == health.UPLOADING
+        runtime.screenshot._tracking = False
+
+
+class TestHeldStateDoesNotChurn:
+    def test_staying_in_an_excluded_app_does_not_recompute_the_status_every_retry(
+        self, qapp, cache, cache_root, clock, screen
+    ):
+        tasks = InlineTasks()
+        svc = _service(qapp, cache, tasks)
+        try:
+            svc.start_tracker(SESSION)
+            clock.now = NOW + 10
+            reason = "application excluded by privacy config (chrome)"
+            svc._on_captured({"excluded": True, "reason": reason})
+            before = sum(1 for s in tasks.submissions if s["key"] == "screenshot-status")
+            for _ in range(50):                       # a hundred seconds in the app
+                svc._on_captured({"excluded": True, "reason": reason})
+            after = sum(1 for s in tasks.submissions if s["key"] == "screenshot-status")
+            assert after == before, "an unchanged held state is not worth a database read"
+        finally:
+            svc.stop_tracker()
+
+    def test_a_failure_with_no_window_is_attributed_to_the_current_one_or_logged(
+        self, service, clock, cache
+    ):
+        service.start_tracker(SESSION)
+        clock.now = NOW + 20
+        service._on_due()
+        service._on_captured({"failed": "screen_unreadable"})        # no "index"
+        assert service._outcome.failures == 1
+
+        service._outcome = None
+        service._on_captured({"failed": "screen_unreadable"})        # nothing to attribute to
+        assert _events(cache) == [], "never an event for a 1970 window the server would refuse"
+
+
+class TestAnOldCacheDatabaseUpgradesInPlace:
+    """A user's cache.db from before this release must open, keep its queued
+    screenshots, and gain the new columns and table."""
+
+    def test_a_pre_release_database_keeps_its_queue_and_gains_the_new_schema(self, tmp_path):
+        import sqlite3
+
+        from storage.manager import StorageManager
+        from sync.local_cache import LocalCache
+
+        path = tmp_path / "old-cache.db"
+        legacy = sqlite3.connect(path)
+        legacy.executescript(
+            """
+            CREATE TABLE pending_screenshots (
+                id TEXT PRIMARY KEY,
+                client_screenshot_id TEXT NOT NULL UNIQUE,
+                local_file_path TEXT NOT NULL,
+                time_entry_id INTEGER,
+                client_op TEXT,
+                captured_at TEXT NOT NULL,
+                window_start TEXT NOT NULL,
+                monitor_number INTEGER NOT NULL DEFAULT 1,
+                display_count INTEGER NOT NULL DEFAULT 1,
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
+                file_size_bytes INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                next_retry_at REAL NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL DEFAULT 0
+            );
+            INSERT INTO pending_screenshots
+              (id, client_screenshot_id, local_file_path, time_entry_id, captured_at,
+               window_start, width, height, file_size_bytes, created_at)
+            VALUES ('old-1', 'old-1', 'x.webp', 42, '2026-10-05T05:04:00+00:00',
+                    '2026-10-05T05:00:00+00:00', 1000, 1000, 10, 1.0);
+            """
+        )
+        legacy.commit()
+        legacy.close()
+
+        cache = LocalCache(storage=StorageManager(str(path)))
+        (row,) = cache.get_pending_screenshots()
+        assert row["id"] == "old-1" and row["time_entry_id"] == 42
+        assert row["owner_user_id"] is None, "owner unknown, which is what it is"
+        assert row["reported_state"] is None
+        assert cache.count_screenshot_events() == 0
+        cache.save_screenshot_event("e1", "failed", "2026-10-06T05:00:00+00:00",
+                                    "2026-10-06T05:08:00+00:00", reason="store_failed")
+        assert cache.count_screenshot_events() == 1
+        # An unowned legacy row survives another user signing in.
+        assert cache.discard_screenshots_not_owned_by(9) == []
+
+
+class TestWhoseScreenItIs:
+    def test_the_owner_comes_from_the_profile_when_it_is_loaded(self, service):
+        service.start_tracker(SESSION)
+        assert service._owner_user_id == 9
+
+    def test_it_falls_back_to_the_owner_the_cache_recorded_at_sign_in(
+        self, qapp, cache, cache_root, clock, screen
+    ):
+        cache.claim_cache_for(41)
+        svc = _service(qapp, cache, InlineTasks())
+        svc.runtime.session_manager = SimpleNamespace(user_info=None)   # profile not loaded yet
+        try:
+            svc.start_tracker(SESSION)
+            assert svc._owner_user_id == 41
+        finally:
+            svc.stop_tracker()

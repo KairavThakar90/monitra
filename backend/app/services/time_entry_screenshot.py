@@ -750,7 +750,7 @@ class TimeEntryScreenshotService:
             )
             raise HTTPException(
                 status_code=status.HTTP_410_GONE,
-                detail="This screenshot's image is no longer in storage",
+                detail="This screenshot's image was not found in storage",
             )
         except GoogleDriveError as exc:
             logger.error("could not read Drive file %s: %s", drive_file_id, exc)

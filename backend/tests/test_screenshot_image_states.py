@@ -106,7 +106,7 @@ class ViewAnswersEachFailureDistinctly(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             _view(_record(), download_side_effect=GoogleDriveFileNotFound("gone"))
         self.assertEqual(raised.exception.status_code, 410)
-        self.assertIn("no longer in storage", raised.exception.detail)
+        self.assertIn("not found in storage", raised.exception.detail)
 
     def test_the_missing_object_is_logged_by_name_for_an_operator(self):
         with self.assertLogs(SVC, level="ERROR") as logs, \
@@ -164,10 +164,33 @@ class DriveClassification(unittest.TestCase):
         service = self._service()
         client = MagicMock()
         service._client = lambda: client
+        service.verify_root_access = MagicMock()          # the root is readable
         with patch("googleapiclient.http.MediaIoBaseDownload") as downloader:
             downloader.return_value.next_chunk.side_effect = _HttpError(404)
             with self.assertRaises(GoogleDriveFileNotFound):
                 service.download_file("gone")
+        service.verify_root_access.assert_called_once()
+
+    def test_a_404_while_the_root_is_not_readable_is_not_called_missing(self):
+        """A revoked share answers 404 for every object. That is an outage of
+        storage access, not the loss of every image."""
+        from app.services.google_drive_service import GoogleDriveNotAccessible
+
+        service = self._service()
+        service._client = lambda: MagicMock()
+        service.verify_root_access = MagicMock(side_effect=GoogleDriveNotAccessible("share revoked"))
+        with patch("googleapiclient.http.MediaIoBaseDownload") as downloader:
+            downloader.return_value.next_chunk.side_effect = _HttpError(404)
+            with self.assertRaises(GoogleDriveError) as raised:
+                service.download_file("x")
+        self.assertNotIsInstance(raised.exception, GoogleDriveFileNotFound)
+
+    def test_the_endpoint_answers_502_not_410_for_that_case(self):
+        from app.services.google_drive_service import GoogleDriveNotAccessible
+
+        with self.assertRaises(HTTPException) as raised:
+            _view(_record(), download_side_effect=GoogleDriveNotAccessible("share revoked"))
+        self.assertEqual(raised.exception.status_code, 502)
 
     def test_a_drive_503_on_download_is_not_reported_as_missing(self):
         service = self._service()
@@ -177,8 +200,9 @@ class DriveClassification(unittest.TestCase):
             with self.assertRaises(_HttpError):
                 service.download_file("x")
 
-    def _stat(self, response=None, error=None):
+    def _stat(self, response=None, error=None, root_error=None):
         service = self._service()
+        service.verify_root_access = MagicMock(side_effect=root_error)
         client = MagicMock()
         get = client.files.return_value.get.return_value
         if error is not None:
@@ -199,6 +223,13 @@ class DriveClassification(unittest.TestCase):
         self.assertEqual(self._stat(error=_HttpError(403))["state"], "forbidden")
         self.assertEqual(self._stat(error=_HttpError(500))["state"], "error")
         self.assertEqual(self._stat({"id": "f", "trashed": True})["state"], "trashed")
+
+    def test_stat_does_not_call_an_object_missing_when_the_root_is_unreadable(self):
+        from app.services.google_drive_service import GoogleDriveNotAccessible
+
+        result = self._stat(error=_HttpError(404), root_error=GoogleDriveNotAccessible("revoked"))
+        self.assertEqual(result["state"], "error")
+        self.assertIn("root not accessible", result["detail"])
 
     def test_the_day_listing_never_creates_a_folder(self):
         service = self._service()
