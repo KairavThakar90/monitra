@@ -41,12 +41,46 @@ IMAGE_RETRY_BASE_MS = 700
 #: the thumbnail, and with three rows it rendered compactly. Same data, two
 #: different layouts, depending only on how much the panel happened to have
 #: captured that day.
+#:
+#: The *width* is just as deliberate. The column count is the most columns that
+#: fit with every card at least `SCREENSHOT_MIN_CARD_WIDTH` wide, never more than
+#: `SCREENSHOT_COLUMNS` (see `screenshot_columns`). It is a pure function of the
+#: width the grid is given -- not of what the cards contain -- so the same width
+#: always gives the same grid. Before, four columns were demanded at every width
+#: and each column's width followed its widest card's text, so a long project
+#: name made columns unequal, pushed the grid past its viewport and overlapped
+#: the cards.
 SCREENSHOT_COLUMNS = 4
+SCREENSHOT_MIN_CARD_WIDTH = 220
+SCREENSHOT_GRID_SPACING = 12
 SCREENSHOT_THUMB_HEIGHT = 120
 #: Rows revealed at a time, matching the "Load more" behaviour of the Apps and
-#: URLs tabs. A multiple of the column count, so a page never leaves a ragged
-#: half-row above the button.
-SCREENSHOT_PAGE_SIZE = SCREENSHOT_COLUMNS * 2
+#: URLs tabs. A multiple of every column count the grid can have (1, 2, 3, 4),
+#: so a page never leaves a ragged part-row above the button.
+SCREENSHOT_PAGE_SIZE = 12
+#: The height every state of the Screenshots tab occupies at least: loading,
+#: empty, and a grid of one row of cards. Sized to hold the empty-state panel
+#: (icon, title, sentence), the tallest of them, so the tab asks for the same
+#: height whichever state it is in and the first captures arriving -- or the
+#: last being cleared -- does not resize the scroll content under the user.
+SCREENSHOT_STATE_MIN_HEIGHT = SCREENSHOT_THUMB_HEIGHT + 130
+
+
+def screenshot_columns(available_width: int) -> int:
+    """How many cards go across in `available_width` pixels.
+
+    As many as fit with each at least `SCREENSHOT_MIN_CARD_WIDTH` wide, between
+    one and `SCREENSHOT_COLUMNS`. Pure: no widget, no content, no history -- the
+    determinism the grid depends on.
+    """
+    if available_width <= 0:
+        return SCREENSHOT_COLUMNS
+    fit = (available_width + SCREENSHOT_GRID_SPACING) // (
+        SCREENSHOT_MIN_CARD_WIDTH + SCREENSHOT_GRID_SPACING
+    )
+    return max(1, min(SCREENSHOT_COLUMNS, fit))
+
+
 from ui import icons
 from ui.icon_manager import IconManager, safe_open_url
 from ui.sidebar import ElidedLabel
@@ -130,12 +164,36 @@ MODE_FUTURE = "future"
 MODE_ARCHIVED = "archived"
 
 
+class _FloorHeightWidget(QWidget):
+    """A container that asks for at least `floor` pixels of height, and never
+    less than its content needs.
+
+    `setMinimumHeight` is the wrong tool for this: an explicit minimum
+    *replaces* the layout's own minimum, so content taller than the floor is
+    squeezed to it instead of making room -- cards overlapped. Here the floor
+    only raises the hint.
+    """
+
+    def __init__(self, floor: int = 0, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._floor = floor
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt's own casing
+        hint = super().minimumSizeHint()
+        return QSize(hint.width(), max(hint.height(), self._floor))
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt's own casing
+        hint = super().sizeHint()
+        return QSize(hint.width(), max(hint.height(), self._floor))
+
+
 def _make_state_panel(
     parent: QWidget,
     icon_name: str,
     title: str,
     subtitle: str,
     button_text: Optional[str] = None,
+    min_height: int = 0,
 ):
     """Build a centred empty/loading/archived panel.
 
@@ -144,7 +202,7 @@ def _make_state_panel(
     URLs empty states cannot drift apart in spacing or wording style — they
     already look identical and are meant to stay that way.
     """
-    container = QWidget(parent)
+    container = _FloorHeightWidget(min_height, parent)
     layout = QVBoxLayout(container)
     layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
     layout.setSpacing(8)
@@ -423,7 +481,10 @@ class ScreenshotCard(QFrame):
         super().__init__(parent)
         self.screenshot = screenshot
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        # Ignored horizontally: the grid's column decides a card's width, the
+        # card's content never decides the column's. (`screenshot_columns`
+        # guarantees each cell is wide enough to read.)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         # A 2px border: at 1px the cards read as one continuous field rather
         # than as separate screenshots.
         self.setStyleSheet("""
@@ -807,6 +868,22 @@ class ScreenshotsTabView(QWidget):
         self._cards: Dict[int, "ScreenshotCard"] = {}
         self._open_dialog: Optional[ScreenshotPreviewDialog] = None
         self._visible_count = SCREENSHOT_PAGE_SIZE
+        # What is on screen. A refresh reconciles against these instead of
+        # tearing everything down: the cards, and the grid they sit in, keep
+        # their identity and geometry across it, so nothing flashes, moves or
+        # loses its scroll position (see `render_view`).
+        #: Cards in grid order.
+        self._placed: List["ScreenshotCard"] = []
+        #: Columns the grid is currently laid out in; 0 = not laid out yet.
+        self._columns = 0
+        #: The non-data panel being shown, and the mode it shows.
+        self._panel: Optional[QWidget] = None
+        self._panel_mode: Optional[str] = None
+        self._grid_host: Optional[QWidget] = None
+        self._grid_widget: Optional[QWidget] = None
+        self._grid: Optional[QGridLayout] = None
+        self._outer: Optional[QVBoxLayout] = None
+        self._more_button: Optional[QPushButton] = None
         self._build_ui()
 
     def retry_unavailable(self) -> None:
@@ -831,6 +908,9 @@ class ScreenshotsTabView(QWidget):
         """
         self._images.clear()
         self._cards.clear()
+        # The cards on screen are not forgotten: they stay in the grid, and
+        # are replaced by the next `set_data`, until then they are what the
+        # user is looking at.
 
     def deliver_image(self, screenshot_id: int, data: Optional[bytes]) -> None:
         """Hand a fetched image to its card (and to an open lightbox)."""
@@ -873,89 +953,221 @@ class ScreenshotsTabView(QWidget):
         )
         self.render_view()
 
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt's own casing
+        super().resizeEvent(event)
+        # Edge-triggered: a resize that does not change the column count
+        # moves nothing (the grid's own stretch handles the widths).
+        self._apply_columns()
+
     def render_view(self) -> None:
-        while self.layout.count():
-            item = self.layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        """Bring the screen in line with `_mode` and `_screenshots`.
+
+        Idempotent and incremental. It used to delete every widget and build
+        them again, and a refresh does that twice (`set_data`, then
+        `set_mode`): each card was destroyed and recreated at its default
+        geometry, the scroll content briefly collapsed and the scroll position
+        went with it -- the grid visibly jumped on every refresh. Now a card
+        whose screenshot is unchanged is the same widget as before, a changed
+        one is replaced in its own slot, and a state panel already showing is
+        left alone.
+        """
+        if self._mode == MODE_DATA:
+            self._show_data()
+        else:
+            self._show_state()
+
+    # ── Non-data states ───────────────────────────────────────────────────────
+
+    def _show_state(self) -> None:
+        if self._panel is not None and self._panel_mode == self._mode:
+            return
+        self._drop_grid()
+        self._drop_panel()
 
         if self._mode == MODE_LOADING:
-            lbl = QLabel("Loading screenshots...", self)
+            panel = _FloorHeightWidget(SCREENSHOT_STATE_MIN_HEIGHT, self)
+            lbl = QLabel("Loading screenshots...", panel)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 13px; padding: 40px;")
-            self.layout.addWidget(lbl)
+            QVBoxLayout(panel).addWidget(lbl)
         elif self._mode == MODE_EMPTY:
-            container, _ = _make_state_panel(
+            panel, _ = _make_state_panel(
                 self, "screenshot_monitor",
                 "No screenshots for this date",
                 "Screenshots are captured automatically while you are tracking time.",
+                min_height=SCREENSHOT_STATE_MIN_HEIGHT,
             )
-            self.layout.addWidget(container)
         elif self._mode == MODE_FUTURE:
-            container, _ = _make_state_panel(
+            panel, _ = _make_state_panel(
                 self, "screenshot_monitor",
                 "No activity available for this future date",
                 "This day has not started yet, so nothing has been captured.",
+                min_height=SCREENSHOT_STATE_MIN_HEIGHT,
             )
-            self.layout.addWidget(container)
         elif self._mode == MODE_ARCHIVED:
-            container, button = _make_state_panel(
+            panel, button = _make_state_panel(
                 self, "screenshot_monitor",
                 "This screenshot history is available in your profile",
                 f"Monitra keeps the last {SCREENSHOT_DESKTOP_DAYS} days of screenshots on this "
                 "device. Older captures are still stored against your account — "
                 "open your profile to view them for this date.",
                 button_text="View in Profile",
+                min_height=SCREENSHOT_STATE_MIN_HEIGHT,
             )
             if button is not None:
                 button.clicked.connect(self.profile_requested.emit)
-            self.layout.addWidget(container)
         else:
-            shots_to_show = self._screenshots[: self._visible_count]
-            container = QWidget(self)
-            outer = QVBoxLayout(container)
-            outer.setContentsMargins(0, 0, 0, 0)
-            outer.setSpacing(12)
+            return
+        self.layout.addWidget(panel)
+        self._panel, self._panel_mode = panel, self._mode
 
-            grid_widget = QWidget(container)
-            grid = QGridLayout(grid_widget)
-            grid.setSpacing(12)
-            grid.setContentsMargins(0, 0, 0, 0)
-            # Every column the same width, so a part-filled last row lines up
-            # with the rows above it instead of spreading to fill the space.
-            for column in range(SCREENSHOT_COLUMNS):
-                grid.setColumnStretch(column, 1)
+    def _drop_panel(self) -> None:
+        if self._panel is not None:
+            self.layout.removeWidget(self._panel)
+            self._panel.hide()
+            self._panel.deleteLater()
+        self._panel, self._panel_mode = None, None
 
-            self._cards = {}
-            for i, shot in enumerate(shots_to_show):
-                card = ScreenshotCard(shot, grid_widget)
-                card.clicked.connect(self._open_lightbox)
-                grid.addWidget(card, i // SCREENSHOT_COLUMNS, i % SCREENSHOT_COLUMNS)
+    def _drop_grid(self) -> None:
+        if self._grid_host is not None:
+            self.layout.removeWidget(self._grid_host)
+            self._grid_host.hide()
+            self._grid_host.deleteLater()
+        self._grid_host = self._grid = self._grid_widget = None
+        self._outer = self._more_button = None
+        self._placed = []
+        self._cards = {}
+        self._columns = 0
 
-                shot_id = shot.get("id")
-                if shot_id is None:
-                    continue
-                self._cards[shot_id] = card
-                cached = self._images.get(shot_id)
+    # ── The grid ──────────────────────────────────────────────────────────────
+
+    def _build_grid_host(self) -> None:
+        container = _FloorHeightWidget(SCREENSHOT_STATE_MIN_HEIGHT, self)
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(12)
+
+        grid_widget = QWidget(container)
+        grid = QGridLayout(grid_widget)
+        grid.setSpacing(SCREENSHOT_GRID_SPACING)
+        grid.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(grid_widget)
+        # Leftover height goes here, not into the cards. Without it a single
+        # row of screenshots was stretched to fill the panel, so the same card
+        # was compact on a busy day and a tall near-empty box on a quiet one.
+        outer.addStretch()
+
+        self.layout.addWidget(container)
+        self._grid_host, self._grid, self._outer = container, grid, outer
+        self._grid_widget = grid_widget
+
+    def _make_card(self, shot: Dict[str, Any]) -> "ScreenshotCard":
+        card = ScreenshotCard(shot, self._grid_widget)
+        card.clicked.connect(self._open_lightbox)
+        return card
+
+    def _retire(self, card: "ScreenshotCard") -> None:
+        if self._grid is not None:
+            self._grid.removeWidget(card)
+        card.hide()
+        card.deleteLater()
+
+    def _show_data(self) -> None:
+        self._drop_panel()
+        if self._grid_host is None:
+            self._build_grid_host()
+
+        shots = self._screenshots[: self._visible_count]
+
+        # Reconcile by screenshot id, in the order the data gives. The order is
+        # never changed here, so a new capture cannot reshuffle the others.
+        previous = {
+            card.screenshot_id: card
+            for card in self._placed if card.screenshot_id is not None
+        }
+        placed: List["ScreenshotCard"] = []
+        cards: Dict[int, "ScreenshotCard"] = {}
+        for shot in shots:
+            shot_id = shot.get("id")
+            card = previous.pop(shot_id, None) if shot_id is not None else None
+            if card is not None and card.screenshot != shot:
+                # Its content changed (the window's activity moved): replace
+                # this one card, in its own cell.
+                self._retire(card)
+                card = None
+            if card is None:
+                card = self._make_card(shot)
+                cached = self._images.get(shot_id) if shot_id is not None else None
                 if cached is not None:
                     card.set_image(cached)
-                else:
-                    self.image_requested.emit(shot)
+            placed.append(card)
+            if shot_id is not None:
+                cards[shot_id] = card
+        for card in self._placed:
+            if card not in placed:
+                self._retire(card)
 
-            outer.addWidget(grid_widget)
+        relayout = placed != self._placed
+        self._placed = placed
+        self._cards = cards
+        self._apply_columns(force=relayout)
 
-            remaining = len(self._screenshots) - len(shots_to_show)
-            if remaining > 0:
-                more = _make_load_more_button(remaining, container)
-                more.clicked.connect(self._show_more)
-                outer.addWidget(more, 0, Qt.AlignmentFlag.AlignHCenter)
+        # Ask for any image still missing. De-duplicated downstream by key, so
+        # a card whose request is already in flight costs nothing -- and a card
+        # that gave up is asked again.
+        for shot in shots:
+            shot_id = shot.get("id")
+            if shot_id is None or shot_id in self._images:
+                continue
+            self.image_requested.emit(shot)
 
-            # Leftover height goes here, not into the cards. Without it a
-            # single row of screenshots was stretched to fill the panel, so the
-            # same card was compact on a busy day and a tall near-empty box on
-            # a quiet one.
-            outer.addStretch()
-            self.layout.addWidget(container)
+        self._sync_more_button(len(self._screenshots) - len(shots))
+
+    def _apply_columns(self, force: bool = False) -> None:
+        """Lay the cards out `screenshot_columns(width)` across.
+
+        Edge-triggered: nothing is touched unless the column count (or the set
+        of cards) changed. Every used column has the same stretch and every
+        unused one has none -- an empty column that kept its stretch would
+        still be given a share of the width and make the cards narrower than
+        they should be.
+        """
+        if self._grid is None:
+            return
+        columns = screenshot_columns(self.width())
+        if columns == self._columns and not force:
+            return
+        self._columns = columns
+        for card in self._placed:
+            self._grid.removeWidget(card)
+        for index, card in enumerate(self._placed):
+            self._grid.addWidget(card, index // columns, index % columns)
+            card.show()
+        for column in range(SCREENSHOT_COLUMNS):
+            self._grid.setColumnStretch(column, 1 if column < columns else 0)
+        self._grid.invalidate()
+
+    def columns(self) -> int:
+        """Columns the grid is currently in. For tests, and for callers that
+        need to know the grid's height has changed."""
+        return self._columns
+
+    def _sync_more_button(self, remaining: int) -> None:
+        if self._outer is None:
+            return
+        if remaining <= 0:
+            if self._more_button is not None:
+                self._outer.removeWidget(self._more_button)
+                self._more_button.hide()
+                self._more_button.deleteLater()
+                self._more_button = None
+            return
+        if self._more_button is None:
+            self._more_button = _make_load_more_button(remaining, self._grid_host)
+            self._more_button.clicked.connect(self._show_more)
+            self._outer.insertWidget(1, self._more_button, 0, Qt.AlignmentFlag.AlignHCenter)
+        else:
+            self._more_button.setText(f" Load more ({remaining})")
 
     def _show_more(self) -> None:
         self._visible_count += SCREENSHOT_PAGE_SIZE
@@ -1661,6 +1873,15 @@ class ActivitySection(QWidget):
         self._scroll_area.setWidgetResizable(True)
         self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # One scrolling rule for every tab: this panel scrolls vertically and
+        # never sideways, and the vertical bar's slot is always reserved. With
+        # "as needed" the bar appeared the moment a refresh added a row and
+        # took ~6px from the grid's width, which is exactly the kind of change
+        # that moves a column boundary -- the grid reflowed under the user's
+        # cursor. The bar is a transparent 6px track (styles.py), so a
+        # reserved slot with nothing to scroll is invisible.
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self._scroll_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         scroll_content = QWidget()

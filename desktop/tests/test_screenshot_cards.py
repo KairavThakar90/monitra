@@ -389,6 +389,15 @@ class TestGridLayout:
         host.close()
 
 
+def _many() -> int:
+    from ui.activity_section import SCREENSHOT_PAGE_SIZE
+
+    return SCREENSHOT_PAGE_SIZE * 2 + 4
+
+
+MANY = _many()
+
+
 class TestPaging:
     """Overflow gets a Load more button, as the Apps and URLs tabs do."""
 
@@ -416,17 +425,17 @@ class TestPaging:
     def test_one_page_is_shown_when_there_are_more_than_fit(self, qapp):
         from ui.activity_section import SCREENSHOT_PAGE_SIZE
 
-        host, view = self._view(20)
+        host, view = self._view(MANY)
         assert len(view._cards) == SCREENSHOT_PAGE_SIZE
         host.close()
 
     def test_the_button_names_how_many_remain(self, qapp):
         from ui.activity_section import SCREENSHOT_PAGE_SIZE
 
-        host, view = self._view(20)
+        host, view = self._view(MANY)
         button = self._load_more(view)
         assert button is not None
-        assert str(20 - SCREENSHOT_PAGE_SIZE) in button.text()
+        assert str(MANY - SCREENSHOT_PAGE_SIZE) in button.text()
         host.close()
 
     def test_no_button_when_everything_already_fits(self, qapp):
@@ -437,7 +446,7 @@ class TestPaging:
     def test_clicking_it_reveals_another_page(self, qapp):
         from ui.activity_section import SCREENSHOT_PAGE_SIZE
 
-        host, view = self._view(20)
+        host, view = self._view(MANY)
         self._load_more(view).click()
         assert len(view._cards) == SCREENSHOT_PAGE_SIZE * 2
         host.close()
@@ -447,9 +456,9 @@ class TestPaging:
         # would undo the user's "Load more" faster than they could read it.
         from ui.activity_section import SCREENSHOT_PAGE_SIZE
 
-        host, view = self._view(20)
+        host, view = self._view(MANY)
         self._load_more(view).click()
-        view.set_data(_flatten_timeline(_timeline(20)))
+        view.set_data(_flatten_timeline(_timeline(MANY)))
         assert len(view._cards) == SCREENSHOT_PAGE_SIZE * 2
         host.close()
 
