@@ -227,13 +227,16 @@ class TimeTrackingService:
         if TimeTrackingService._effective_user_id(current_user, employee_id, db) != employee_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Employee not found.")
 
+        range_start = TimeTrackingService._utc_start(first_date)
+        range_end = TimeTrackingService._utc_end(last_date)
         rows = TimeTrackingRepository.detail_entries(
             db,
             current_user.organization_id,
             employee_id,
-            TimeTrackingService._utc_start(first_date),
-            TimeTrackingService._utc_end(last_date),
+            range_start,
+            range_end,
         )
+        now = datetime.now(timezone.utc)
         projects = OrderedDict()
         total_seconds = 0
         first_start = None
@@ -241,9 +244,20 @@ class TimeTrackingService:
         for entry, project, task, project_status, task_status, duration in rows:
             duration_seconds = max(0, int(duration or 0))
             total_seconds += duration_seconds
-            first_start = entry.start_time if first_start is None else min(first_start, entry.start_time)
-            if entry.end_time is not None:
-                last_end = entry.end_time if last_end is None else max(last_end, entry.end_time)
+            # The part of the entry inside the range, which is what
+            # `duration_seconds` measures. An entry that began before the range
+            # (one left running across midnight) is shown from the range's
+            # start, and one still running after it from its end -- the
+            # duration would otherwise not match the times beside it. Open
+            # (no end) only while it is running *and* the range reaches now.
+            window_start = max(entry.start_time, range_start)
+            if entry.end_time is None and now < range_end:
+                window_end = None
+            else:
+                window_end = min(entry.end_time or range_end, range_end)
+            first_start = window_start if first_start is None else min(first_start, window_start)
+            if window_end is not None:
+                last_end = window_end if last_end is None else max(last_end, window_end)
 
             project_data = projects.setdefault(project.id, {
                 "id": project.id,
@@ -267,8 +281,8 @@ class TimeTrackingService:
             task_data["total_seconds"] += duration_seconds
             task_data["entries"].append({
                 "id": entry.id,
-                "start_time": entry.start_time,
-                "end_time": entry.end_time,
+                "start_time": window_start,
+                "end_time": window_end,
                 "duration_seconds": duration_seconds,
                 "duration": format_hms(duration_seconds),
                 "is_running": entry.end_time is None,

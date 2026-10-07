@@ -128,3 +128,81 @@ def test_the_cap_takes_precedence_over_rollover_for_a_gap_spanning_midnight(qapp
         assert len(starts) == 0, "no rollover start for a session that is ending"
     finally:
         second.stop(timeout_ms=500)
+
+
+def test_a_backend_entry_from_the_previous_ist_day_is_split_when_adopted(qapp, cache, monkeypatch):
+    """A fresh sign-in finds the backend still running yesterday's entry and
+    adopts it. That path has no recovery cap, so the entry reaches the clock
+    still anchored to yesterday: it must be split at midnight like any other,
+    counting today's part from midnight -- not from yesterday's start, and
+    not from zero."""
+    started = _ist_instant(2026, 10, 5, 19, 0)
+    now = _ist_instant(2026, 10, 6, 9, 0)
+    fake = FakeClock(now)
+    monkeypatch.setattr(timer_module, "_utc_now", fake)
+
+    backend = FakeTimeEntryService(entry_id=900)
+    timer = _new_timer(cache, backend)
+    stopped_signals = []
+    timer.timer_stopped.connect(stopped_signals.append)
+    try:
+        timer.adopt_remote_session({
+            "id": 111, "client_op": "timer:7:20261005T133000Z:abcd1234",
+            "project_id": 1, "task_id": 7,
+            "start_time": started.isoformat(), "server_time": now.isoformat(),
+            "task": {"name": "Task"},
+        }, server_time=now.isoformat())
+
+        boundary = ist_day_bounds_utc(started.astimezone(IST).date())[1]
+        stops = [p for a, p, _ in timer.runtime.sync.enqueued if a == "stop_timer"]
+        starts = [p for a, p, _ in timer.runtime.sync.enqueued if a == "start_timer"]
+        assert len(stops) == 1 and stops[0]["entry_id"] == 111
+        assert parse_utc(stops[0]["stopped_at"]) == boundary
+        assert stops[0]["elapsed_seconds"] == int((boundary - started).total_seconds())
+        assert len(starts) == 1 and parse_utc(starts[0]["started_at"]) == boundary
+
+        assert timer.is_running() is True
+        assert timer.task_id == 7, "the same task carries on"
+        assert timer.active_session()["started_at_utc"] == boundary.isoformat()
+        assert timer.elapsed_seconds() == int((now - boundary).total_seconds()), (
+            "today's part counts from midnight"
+        )
+        assert [s["result"] for s in stopped_signals] == [{"rollover": True}]
+    finally:
+        timer.stop(timeout_ms=500)
+
+
+def test_switching_task_after_a_midnight_split_uses_the_instant_of_the_change(qapp, cache, monkeypatch):
+    """The machine slept through midnight and woke the next morning. Changing
+    task then closes the running half at the moment of the change and starts
+    the new task at that same moment -- the new task's clock begins at zero,
+    not at midnight and not at the previous day's start."""
+    start = _ist_instant(2026, 10, 5, 19, 0)
+    fake = FakeClock(start)
+    monkeypatch.setattr(timer_module, "_utc_now", fake)
+
+    backend = FakeTimeEntryService(entry_id=42)
+    timer = _new_timer(cache, backend)
+    try:
+        timer.start_tracking(1, 7, "Task")
+        fake.now = _ist_instant(2026, 10, 6, 9, 0)  # woke up
+        timer._emit_tick()
+        boundary = ist_day_bounds_utc(start.astimezone(IST).date())[1]
+        assert timer.active_session()["started_at_utc"] == boundary.isoformat()
+
+        fake.now = _ist_instant(2026, 10, 6, 10, 15)  # the change
+        change = fake.now
+        timer.switch_tracking(1, 8, "Another task")
+
+        stops = [p for a, p, _ in timer.runtime.sync.enqueued if a == "stop_timer"]
+        closing = stops[-1]
+        assert parse_utc(closing["stopped_at"]) == change, "closed at the actual instant of the change"
+        assert closing["elapsed_seconds"] == int((change - boundary).total_seconds())
+
+        assert timer.task_id == 8
+        assert parse_utc(timer.active_session()["started_at_utc"]) == change
+        assert timer.elapsed_seconds() == 0
+        fake.advance(minutes=5)
+        assert timer.elapsed_seconds() == 300
+    finally:
+        timer.stop(timeout_ms=500)
