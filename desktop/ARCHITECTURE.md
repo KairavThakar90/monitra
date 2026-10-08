@@ -608,6 +608,85 @@ detector or the period; both outlive it.
 > `QDialog::closeEvent` is implemented in terms of `reject()`, so a popup the
 > user had already answered could never close.
 
+### Idle reliability: nothing waits for ever
+
+Everything above describes the contract; this describes what stops it from
+silently failing for the minority of machines where something is unusual.
+
+**One held stretch, three sources.** `IdleService._interruption` holds a
+stretch of inactivity that has not become an idle period yet, whatever its
+origin: a crash/power-cut gap (`kind="interruption"`), a sleep
+(`"suspend"`), or an ordinary stretch whose report could not be delivered
+(`"held"`). All three are reported the same way -- same endpoint, same
+`client_event_id` discipline, same popup -- and leave through exactly one door,
+`_withdraw_interruption(reason)`, which logs `IDLE_INTERRUPTION_WITHDRAWN` and
+closes the provisional popup. There is no other place that may drop one.
+
+**Sleep is reported from the monitor's own clock.** `_check_suspend` compares
+consecutive ticks; a gap of `SUSPEND_STALL_SECONDS` or more is a suspend and
+becomes a `"suspend"` stretch from the last tick to the first one afterwards.
+The inactivity reading alone cannot do this: the key or lid that wakes a
+machine often counts as input, so the first reading afterwards is a few seconds.
+
+**Deadlines are the service's, not the transport's.** `REQUEST_DEADLINE_SECONDS`
+bounds REPORTING / RESOLVING / REASSIGNING. A state that outlives it is
+abandoned (`IDLE_INFLIGHT_TIMEOUT`): the attempt id is bumped so the abandoned
+call's late *failure* is ignored, while its late *success* is honoured -- the
+backend did the work. Every submission uses its own task key
+(`...:{attempt}`), because a hung task holds its key and would swallow a retry
+under a reused one, and uses `guard_generation=False` with the service's own
+`_epoch`/generation check, because the runner's guard drops a callback silently
+and a state machine that never hears back stays in that state.
+
+**Retries are paced, not per tick.** A failed report is retried with jittered
+exponential backoff (2 s doubling to 60 s, 50-150%). The stretch is kept, with
+its original identity, so the retry describes the same stretch even after the
+user is back at the keyboard. The network service's verdict is advisory: a
+report is still attempted every `UNREACHABLE_PROBE_SECONDS` whatever it says.
+
+**The provisional popup is always leavable.** It shows the service's status
+(`interruption_status`), offers **Retry now** after 5 s and **Decide later**
+after 60 s. Deciding later closes it without counting or discarding anything;
+the stretch stays held and the popup returns, as an ordinary confirmed one,
+when the backend accepts the report. A stop while a stretch is held withdraws
+it -- the gap is then part of the stopped entry (the one residual way an
+unreachable backend lets a gap go unasked).
+
+**User decisions are not auto-retried; they are made safe to repeat.** A failed
+resolve keeps the period PENDING and the buttons enabled with the choice still
+selected; the same answer (same `resolved_at`) repeated is recognised by the
+backend, so a request that did get through is confirmed rather than applied
+twice. A failed reassign -- which has no idempotency key -- is reconciled by
+reading the period back before it is called a failure.
+
+**The popup is acknowledged or raised again.** The dashboard calls
+`BackgroundApi.idle.popup_shown(id)` after building it; an unacknowledged popup
+is raised again (4 s, 8 s, ...) and from the second repeat the tray is told as
+well. The dialog is **unparented** -- an owned window is hidden by Windows when
+its owner is minimised or hidden to the tray, while Qt still reports it
+visible -- and the one tick it already owns puts it back if it is ever not
+visible and unsticks its own buttons after `BUSY_LIMIT_S`.
+
+**The loop is supervised.** `IdleService.supervised = True`; the
+`ServiceManager` (the owner of services) checks it every 15 s
+(`LoopService.check_liveness`): a dead thread is restarted, a loop that has
+stopped ticking is woken, one blocked in a tick for 5 minutes has its worker
+retired (flagged so it cannot tick again) and replaced. Only opted-in services
+are supervised; none of this is a new thread or a second timer per service.
+
+**Diagnostics.** Log codes (all greppable): `IDLE_READING_UNAVAILABLE` /
+`IDLE_READING_RECOVERED`, `IDLE_SYSTEM_RESUMED`, `IDLE_SUSPEND_GAP`,
+`IDLE_REPORT_FAILED` / `_REFUSED` / `_ALREADY_RESOLVED` / `_DISCARDED`,
+`IDLE_STRETCH_HELD`, `IDLE_INTERRUPTION_WITHDRAWN` / `_DEFERRED`,
+`IDLE_RETRY_NOW`, `IDLE_INFLIGHT_TIMEOUT`, `IDLE_RESOLVE_FAILED`,
+`IDLE_REASSIGN_FAILED` / `_RECONCILED`, `IDLE_POPUP_CREATE_FAILED` /
+`_NOT_ACKNOWLEDGED` / `_HIDDEN` / `_STALE` / `_BUSY_TIMEOUT`,
+`IDLE_MONITOR_RESTARTED`, `SERVICE_LOOP_DIED` / `_STALLED` / `_REPLACED`,
+`IDLE_HEALTH` (every 10 minutes while tracking). The notable ones are also
+sent, throttled, to `POST /idle-periods/diagnostics`, which the backend logs as
+`IDLE_CLIENT` (a closed set of bounded scalars, no user content); the runbook
+is [docs/IDLE_DIAGNOSTICS.md](../docs/IDLE_DIAGNOSTICS.md).
+
 ### Update notice and installer
 
 `UpdateService` ([background_services/update/update_service.py](background_services/update/update_service.py))

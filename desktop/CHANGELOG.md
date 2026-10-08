@@ -67,6 +67,30 @@ re-grant a permission.
 
 ### Fixed
 
+- **The idle popup can no longer get stuck on "Confirming with the server…".**
+  After a crash, a power cut or a sleep the popup could sit with every button
+  greyed out until an administrator signed you out. It now says what it is
+  waiting for ("Couldn't reach the server. Trying again in 8s…"), offers
+  **Retry now**, and after a minute offers **Decide later**, which puts it
+  away without counting or discarding anything and brings it back as soon as
+  the server can be reached. A popup for someone whose idle detection is off is
+  no longer opened at all. If the server does not answer your "Yes, keep" or
+  "No, discard", the buttons come back with your choice still selected and
+  pressing the same one again confirms the same answer - it is never applied
+  twice.
+- **The idle popup now appears for people it used to miss.** A computer whose
+  clock ran even a second ahead of the server was refused on every attempt, so
+  no popup ever came. A stretch that could not be reported while you were away
+  (the network was down) is now remembered and asked about when it can be, rather
+  than being forgotten the moment you moved the mouse. Time the computer spent
+  asleep is now asked about too, even when the key or lid that woke it counted as
+  activity. And the popup is no longer hidden by Windows when you minimise
+  Monitra or send it to the tray while it is up.
+- **Idle detection watches itself.** If the part of Monitra that watches for
+  inactivity ever stops, it is restarted automatically, and when the computer
+  cannot say how long it has been idle that is now written to the log with the
+  reason instead of being skipped silently.
+
 - **Monitra uses far less memory, and it stays there.** The desktop could be
   seen in Task Manager at 500 MB to over 1 GB after an hour on the dashboard.
   Nearly all of it was screenshot thumbnails: the Screenshots tab refreshes

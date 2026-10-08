@@ -1476,6 +1476,96 @@ short code.
 
 ---
 
+## Idle time
+
+### ❌ Do not parent the idle popup to the main window
+
+```python
+IdleAlertDialog(api, period, parent=self.window())
+```
+
+**What it caused:** a parented top-level dialog is an *owned* window, and Windows
+hides an owned window when its owner is minimised or hidden to the tray -- while
+Qt keeps reporting `isVisible() == True`, and a second `show()` does not bring it
+back. A user who minimised Monitra (or pressed Show Desktop) with the popup up had
+an application-modal app with nothing on screen to answer. Measured with the
+real window manager: owned, `IsWindowVisible` false after the owner minimised;
+unowned, true.
+
+**Instead:** build it with `parent=None` and keep the reference on the
+dashboard. `tests/e2e/test_idle_popup_real_window_e2e.py` asks the OS, not Qt,
+and keeps the owned case as a control.
+
+### ❌ Do not leave a provisional popup without a way out
+
+```python
+if not self._idle_enabled: return        # in the code that was going to report it
+self._interruption = None                # ...and nothing told the popup
+```
+
+**What it caused:** the popup opened for a crash or sleep gap says "Confirming
+with the server…" with every button disabled, and unlocks only when the backend
+confirms the gap or the service withdraws it. Nine paths did neither: idle
+detection off, a changed session, a configuration that never loaded, a network
+verdict nothing could overturn, a 401, 403/422 treated as "try again", a retry
+every two seconds that never slowed or stopped. Users stayed locked until an
+administrator signed them out.
+
+**Instead:** a held stretch ends only through `_withdraw_interruption(reason)`,
+every state that waits has a deadline and says what it is waiting for, and the
+popup always offers Retry now and, after a minute, Decide later.
+
+### ❌ Do not trust a transport timeout to be a total deadline
+
+httpx timeouts are per phase (connect, read, write, pool). A server that sends a
+byte every few seconds, a proxy that holds a connection, or a pool saturated by
+other work can keep one request alive for much longer than any of them.
+
+**What it caused:** a state machine in RESOLVING with no way out.
+
+**Instead:** the *service* owns the deadline for each waiting state
+(`REQUEST_DEADLINE_SECONDS`), abandons the attempt, honours its late success and
+ignores its late failure.
+
+### ❌ Do not reuse a task key for a retry of something that may hang
+
+`TaskRunner` drops a submit whose key is in flight, with a debug-level log. A
+hung request therefore swallowed every retry under the same key. Use a key per
+attempt (`idle-resolve:{period}:{attempt}`).
+
+### ❌ Do not retry a report on every tick
+
+**What it caused:** a 400/401/5xx answered with another identical request two
+seconds later, for ever -- load on a struggling backend, a log that scrolled,
+and no change of outcome. Pace it with jittered exponential backoff; treat a
+definitive refusal as an answer.
+
+### ❌ Do not let a stretch of inactivity die with a failed report
+
+The report was recomputed from the live reading each tick, so a stretch that
+could not be delivered while the user was away vanished the moment they moved
+the mouse. Keep the stretch (started, detected, event id) and retry *it*.
+
+### ❌ Do not rely on the inactivity reading to notice a sleep
+
+The key or lid that wakes a machine often counts as input, so the first reading
+afterwards is a few seconds and a night's sleep is counted as work. The monitor
+compares its own consecutive ticks and reports the gap.
+
+### ❌ Do not send an instant to the server without your own clock
+
+`idle_detected_at` was compared with the server's `now` with no tolerance: a
+desktop clock one second ahead was refused (400, not logged) on every retry and
+the user never saw a popup. Send `client_time` and let the server place the
+instants by age (docs/TIMING_MODEL.md); log every refusal.
+
+### ❌ Do not assume the popup you emitted is the popup on screen
+
+The service stops looking for inactivity while a period is pending, so a dialog
+whose construction raised, or that was hidden, means no popup until a restart.
+The dashboard acknowledges (`popup_shown`); an unacknowledged popup is raised
+again and the tray is told.
+
 ## Updater and release
 
 ### ❌ Do not start the update helper with `DETACHED_PROCESS` and wait on `tasklist | find`

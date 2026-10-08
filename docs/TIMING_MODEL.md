@@ -202,11 +202,25 @@ entry the backend has since finalized elsewhere ends here too.
 
 **Sleep and hibernate are inactivity, not interruptions.** The process
 survives a suspend, so the session record is untouched and the timer keeps
-its anchor. The first inactivity reading after the wake spans the whole
-suspend, so the existing idle rule applies: one idle period is reported from
-the last input before the machine went down, and the backend's keep/discard/
-stop rule decides whether it counts. Nothing stops the timer silently and
-nothing counts the sleep silently.
+its anchor. The existing idle rule applies: one idle period is reported from
+the last moment the idle monitor was running before the machine went down, and
+the backend's keep/discard/stop rule decides whether it counts. Nothing stops
+the timer silently and nothing counts the sleep silently. The desktop notices
+the suspend from its own monitor's missed ticks rather than from the
+inactivity reading, which cannot be relied on: the key or lid that wakes a
+machine often counts as input, so the first reading afterwards is only a few
+seconds. A sleep shorter than the user's threshold is not reported.
+
+**An idle report carries the client's clock.** `POST /idle-periods` takes
+`client_time` -- the desktop's clock as the request leaves -- and the server
+places `idle_started_at` and `idle_detected_at` by age
+(`now - (client_time - instant)`), exactly as start and stop do, with no cap on
+how old: an interruption gap may be hours. A client that sends none (an older
+desktop) is allowed a 5-minute lead over the server's clock, clamped to now,
+instead of a permanent 400. Every refusal is logged (`IDLE_REPORT_REJECTED`).
+`POST /idle-periods/{id}/resolve` is idempotent on the answer: the same
+`keep_idle_time` and `action` repeated returns the stored result and applies
+nothing, which is what lets a client whose reply was lost simply ask again.
 
 **The gap of an interruption is idle time, and the user decides it.** A
 session recovered after a power cut, a crash, a kill or a hang continues from
