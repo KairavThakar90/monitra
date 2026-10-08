@@ -297,6 +297,10 @@ class LoopService(BaseService):
         #: shutdown does not have to wait out work whose result is about to be
         #: discarded anyway.
         self._stop_requested = False
+        #: Workers retired because their tick never returned. See
+        #: `_retire_blocked_loop`.
+        self._retired_loops: list = []
+        self._stall_since: Optional[float] = None
 
     @property
     def stopping(self) -> bool:
@@ -327,6 +331,7 @@ class LoopService(BaseService):
         # Set before anything else so a tick already in progress can notice.
         self._stop_requested = True
         if thread is None:
+            self._reap_retired_loops(timeout_ms)
             return True
 
         stopped = False
@@ -362,8 +367,150 @@ class LoopService(BaseService):
         thread.deleteLater()
         self._thread = None
         self._worker = None
+        self._reap_retired_loops(timeout_ms)
         self.log.info("loop thread stopped (clean=%s)", stopped)
         return stopped
+
+    def _reap_retired_loops(self, timeout_ms: int) -> None:
+        retired, self._retired_loops = self._retired_loops, []
+        for old_thread, old_worker in retired:
+            if old_thread.isRunning():
+                old_thread.quit()
+                if not old_thread.wait(max(500, timeout_ms // 4)):
+                    # Still blocked inside the call that stalled it. Keep it
+                    # referenced rather than destroy a running QThread; the
+                    # process exit takes it down. Logged, not hidden.
+                    self.log.error(
+                        "retired %s worker is still blocked at shutdown; leaving it",
+                        self.name,
+                    )
+                    self._retired_loops.append((old_thread, old_worker))
+                    continue
+            old_worker.deleteLater()
+            old_thread.deleteLater()
+
+    # ── Liveness (called by ServiceManager's supervisor) ──────────────────────
+
+    #: Set True by a service whose silent death would be a product defect and
+    #: not merely a stale panel (idle detection). Only these are supervised:
+    #: supervision assumes the service's tick calls `heartbeat()`, and a
+    #: service that does not would be reported stalled for being healthy.
+    supervised = False
+
+    #: A heartbeat older than this many of the service's own intervals (and at
+    #: least `STALL_MIN_SECONDS`) means the loop has stopped ticking.
+    STALL_INTERVALS = 10
+    STALL_MIN_SECONDS = 30.0
+    #: A loop that stays stalled this long, through repeated wake-ups, is
+    #: blocked inside a tick that is not coming back; its worker is retired
+    #: and a fresh one started.
+    STALL_REPLACE_SECONDS = 300.0
+
+    def loop_alive(self) -> bool:
+        """True while the loop's thread exists and is running."""
+        thread = self._thread
+        return thread is not None and thread.isRunning()
+
+    def heartbeat_age(self) -> Optional[float]:
+        beat = self.health.last_heartbeat
+        return None if beat is None else max(0.0, time.time() - beat)
+
+    def is_stalled(self) -> bool:
+        age = self.heartbeat_age()
+        if age is None:
+            return False
+        limit = max(self.STALL_MIN_SECONDS, self.STALL_INTERVALS * self.interval_ms / 1000.0)
+        return age > limit
+
+    def check_liveness(self) -> str:
+        """Verify the loop is running and ticking; repair it if it is not.
+
+        Returns what was found: ``"ok"``, ``"restarted"`` (the thread had
+        died and a new one was started), ``"woken"`` (the loop was alive but
+        had not ticked, and was nudged), ``"replaced"`` (it had been blocked
+        for `STALL_REPLACE_SECONDS`; the old worker was retired and a new one
+        started) or ``"stopped"`` (the service is not meant to be running).
+
+        Never creates a second live loop: a dead thread is replaced only
+        after its references are dropped, and a retired worker is flagged
+        `_stopping` so it cannot tick again if it ever unblocks.
+        """
+        if self.health.state not in (
+            ServiceState.RUNNING, ServiceState.DEGRADED, ServiceState.RECOVERING,
+        ) or self._stop_requested:
+            return "stopped"
+        if self._thread is None:
+            return "stopped"
+        if not self.loop_alive():
+            self.log.error(
+                "SERVICE_LOOP_DIED %s: its thread is no longer running; restarting "
+                "(last_error=%s, restarts so far=%d)",
+                self.name, self.health.last_error, self.health.restart_count,
+            )
+            self._discard_loop()
+            self.health.restart_count += 1
+            self.on_start()
+            self.heartbeat()
+            self.on_loop_restarted("thread_died")
+            return "restarted"
+        if not self.is_stalled():
+            self._stall_since = None
+            return "ok"
+        now = time.monotonic()
+        if self._stall_since is None:
+            self._stall_since = now
+        stalled_for = now - self._stall_since
+        if stalled_for >= self.STALL_REPLACE_SECONDS:
+            self.log.error(
+                "SERVICE_LOOP_REPLACED %s: no tick for %.0fs; retiring the blocked "
+                "worker and starting a new one", self.name, stalled_for,
+            )
+            self._retire_blocked_loop()
+            self._stall_since = None
+            self.health.restart_count += 1
+            self.on_start()
+            self.heartbeat()
+            self.on_loop_restarted("tick_blocked")
+            return "replaced"
+        self.log.warning(
+            "SERVICE_LOOP_STALLED %s: no tick for %.0fs (heartbeat %.0fs old); waking it",
+            self.name, stalled_for, self.heartbeat_age() or 0.0,
+        )
+        self.wake()
+        return "woken"
+
+    def on_loop_restarted(self, reason: str) -> None:
+        """Hook: the supervisor started a fresh loop. Runs on the GUI thread."""
+
+    def _discard_loop(self) -> None:
+        """Drop references to a loop whose thread has already finished."""
+        worker, thread = self._worker, self._thread
+        self._worker = None
+        self._thread = None
+        if worker is not None:
+            worker._stopping = True
+            worker.deleteLater()
+        if thread is not None:
+            thread.deleteLater()
+
+    def _retire_blocked_loop(self) -> None:
+        """Detach a worker stuck inside a tick, without ever terminating it.
+
+        The worker is told to stand down: its flag is set directly (it is a
+        plain attribute read after each tick) and a queued `request_stop`
+        waits in its thread's event queue, so the moment the blocked call
+        returns it exits and releases its resources. Until then it is parked
+        in `_retired_loops`, still referenced, so it is not collected while
+        running; `on_stop` reaps it.
+        """
+        worker, thread = self._worker, self._thread
+        self._worker = None
+        self._thread = None
+        if worker is None or thread is None:
+            return
+        worker._stopping = True
+        QTimer.singleShot(0, worker, worker.request_stop)
+        self._retired_loops.append((thread, worker))
 
     # ── Overridable ───────────────────────────────────────────────────────────
 
@@ -400,6 +547,7 @@ class ServiceManager(QObject):
         super().__init__(parent)
         self.log = get_logger("services")
         self._services: List[BaseService] = []
+        self._supervisor: Optional[QTimer] = None
 
     def register(self, service: BaseService) -> BaseService:
         """Register a service. Ownership transfers to this manager."""
@@ -420,9 +568,49 @@ class ServiceManager(QObject):
     def services(self) -> List[BaseService]:
         return list(self._services)
 
+    #: How often supervised services are checked. Slow on purpose: the
+    #: check is a handful of attribute reads, and a loop that died is
+    #: restarted within this long, which is far inside any idle threshold.
+    SUPERVISE_INTERVAL_MS = 15_000
+
     def start_all(self) -> None:
         for service in self._services:
             service.start()
+        if any(getattr(s, "supervised", False) for s in self._services):
+            self._start_supervisor()
+
+    def _start_supervisor(self) -> None:
+        if self._supervisor is not None:
+            return
+        timer = QTimer(self)
+        timer.setInterval(self.SUPERVISE_INTERVAL_MS)
+        timer.timeout.connect(self.supervise)
+        timer.start()
+        self._supervisor = timer
+
+    def _stop_supervisor(self) -> None:
+        timer, self._supervisor = self._supervisor, None
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+
+    @Slot()
+    def supervise(self) -> None:
+        """One liveness pass over every supervised `LoopService`.
+
+        Runs on the GUI thread, never blocks, and never raises: a supervisor
+        that could throw would be one more thing to die quietly.
+        """
+        for service in self._services:
+            if not getattr(service, "supervised", False):
+                continue
+            check = getattr(service, "check_liveness", None)
+            if check is None:
+                continue
+            try:
+                check()
+            except Exception:  # noqa: BLE001
+                self.log.exception("liveness check of %s failed", service.name)
 
     def stop_all(self, timeout_ms: int = 3000) -> List[str]:
         """
@@ -431,6 +619,9 @@ class ServiceManager(QObject):
         :return: names of services that did not stop cleanly.
         """
         failed: List[str] = []
+        # First: a supervisor must never restart a service that shutdown is
+        # in the middle of stopping.
+        self._stop_supervisor()
         for service in reversed(self._services):
             # Honour a service's own minimum, so one that blocks in I/O is not
             # terminated merely because the caller's default was too short.
