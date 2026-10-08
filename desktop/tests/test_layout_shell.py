@@ -10,6 +10,7 @@ a screenshot.
 from __future__ import annotations
 
 import pytest
+from PySide6.QtWidgets import QApplication
 
 from ui.sidebar import ElidedLabel  # noqa: F401  (keeps import order stable)
 
@@ -457,14 +458,15 @@ class TestSummaryCards:
         assert row.columns() == 4 and not row.is_compact()
         assert all(card._tile.isVisible() for card in row._cards)
 
-    def test_a_laptop_gets_one_row_without_tiles(self, qapp, pump, row):
+    def test_a_laptop_gets_one_row_with_a_smaller_or_no_icon(self, qapp, pump, row):
         from ui.stat_cards import StatCardsRow
 
+        # (The small-icon band is covered in TestSmallIcon; this keeps the older
+        # guarantees that matter in all of it.)
         for width in (StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH, 1020, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH - 1):
             self._at(row, pump, width)
             assert row.columns() == 4, width
             assert row.is_compact(), width
-            assert not any(card._tile.isVisible() for card in row._cards)
             assert {card.height() for card in row._cards} == {96}, "same height as the full cards"
 
     def test_narrower_still_wraps_to_two_by_two_with_tiles(self, qapp, pump, row):
@@ -619,3 +621,341 @@ class TestDashboardAcrossScreens:
         for widget in (dashboard._topbar, dashboard._stat_cards, dashboard._task_section, dashboard._activity_section):
             right = widget.mapTo(dashboard, QPoint(widget.width(), 0)).x()
             assert right <= dashboard.width(), (name, type(widget).__name__, right)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# The small icon: between the full tile and no icon at all
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# At 125% scaling a 1920x1080 screen leaves the content area about 1196px wide --
+# not enough for four full cards (1226px), so the icon was dropped entirely and the
+# cards lost their colour cue. There is now a middle form: the same tile and glyph,
+# half the size, shown whenever the row is wide enough for it. Which form a row has
+# is a function of its width and nothing else (not of the scale factor).
+
+LONG_STATUS = "Waiting on customer sign-off for the extraordinarily long migration programme"
+LONG_TASK = "Prepare the quarterly client report for the Extraordinarily Long Customer Migration Programme"
+
+
+class TestSmallIcon:
+    @pytest.fixture
+    def row(self, qapp, pump):
+        from ui.stat_cards import StatCardsRow
+
+        row = StatCardsRow()
+        row.show()
+        pump()
+        yield row
+        row.close()
+
+    def _at(self, row, pump, width):
+        row.resize(width, row.sizeHint().height())
+        pump()
+
+    # ── thresholds ───────────────────────────────────────────────────────────
+
+    def test_the_thresholds_are_ordered_and_derived_from_the_card_floors(self, qapp):
+        from ui.stat_cards import ICON_FULL, ICON_NONE, ICON_SMALL, StatCardsRow
+
+        row = StatCardsRow()
+        spacing, extra = 14, row.active_card.minimum_width_for(ICON_NONE) - row.status_card.minimum_width_for(ICON_NONE)
+        for state, threshold in (
+            (ICON_FULL, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH),
+            (ICON_SMALL, StatCardsRow.COMPACT_ICON_ROW_MINIMUM_WIDTH),
+            (ICON_NONE, StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH),
+        ):
+            floors = [card.minimum_width_for(state) for card in row._cards]
+            assert sum(floors) + 3 * spacing == threshold, state
+        assert (StatCardsRow.TWO_COLUMN_MINIMUM_WIDTH < StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH
+                < StatCardsRow.COMPACT_ICON_ROW_MINIMUM_WIDTH < StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH)
+        assert extra == 40, "the active card's Break In / Break Out room is the same in every state"
+
+    def test_the_small_icon_costs_clearly_less_room_than_the_full_tile(self, qapp):
+        from ui.stat_cards import ICON_FULL, ICON_NONE, ICON_SMALL, StatCardsRow
+
+        card = StatCardsRow().status_card
+        full = card.minimum_width_for(ICON_FULL) - card.minimum_width_for(ICON_NONE)
+        small = card.minimum_width_for(ICON_SMALL) - card.minimum_width_for(ICON_NONE)
+        assert 0 < small < full
+        assert full - small >= 24, "it gives back at least a tile's worth of the row"
+        # The tile itself is half the size (and the gap shrinks with it).
+        row_small = StatCardsRow()
+        row_small._set_icon_state(ICON_SMALL)
+        assert row_small.status_card._tile.width() * 2 <= StatCardsRow().status_card._tile.width()
+
+    def test_a_scale_factor_is_not_an_input(self, qapp):
+        import inspect
+
+        import ui.stat_cards as module
+
+        code = inspect.getsource(module)
+        assert "devicePixelRatio" not in code and "logicalDpi" not in code and "QT_SCALE" not in code
+
+    # ── the states ───────────────────────────────────────────────────────────
+
+    def test_full_is_unchanged_at_wide_widths(self, qapp, pump, row):
+        from ui.stat_cards import ICON_FULL, StatCardsRow
+
+        for width in (StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH, 1580, 2220):
+            self._at(row, pump, width)
+            assert row.columns() == 4 and row.icon_state() == ICON_FULL
+            for card in row._cards:
+                assert (card._tile.width(), card._tile.height()) == (48, 48)
+                assert card._tile.isVisible()
+                assert "border-radius: 14px" in card._tile.styleSheet()
+
+    def test_the_small_icon_fills_the_band_between_the_full_tile_and_none(self, qapp, pump, row):
+        from ui.stat_cards import ICON_SMALL, StatCardsRow
+
+        for width in (StatCardsRow.COMPACT_ICON_ROW_MINIMUM_WIDTH, 1196, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH - 1):
+            self._at(row, pump, width)
+            assert row.columns() == 4, "the small icon never causes a wrap"
+            assert row.icon_state() == ICON_SMALL, width
+            for card in row._cards:
+                assert (card._tile.width(), card._tile.height()) == (24, 24)
+                assert card._tile.isVisible()
+                assert "border-radius: 8px" in card._tile.styleSheet()
+                assert card._tile.pixmap() is not None and not card._tile.pixmap().isNull()
+
+    def test_no_icon_is_the_last_resort(self, qapp, pump, row):
+        from ui.stat_cards import ICON_NONE, StatCardsRow
+
+        for width in (StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH, 1026, StatCardsRow.COMPACT_ICON_ROW_MINIMUM_WIDTH - 1):
+            self._at(row, pump, width)
+            assert row.columns() == 4 and row.icon_state() == ICON_NONE, width
+            assert not any(card._tile.isVisible() for card in row._cards)
+
+    def test_narrower_still_wraps_to_two_by_two_with_full_icons(self, qapp, pump, row):
+        from ui.stat_cards import ICON_FULL, StatCardsRow
+
+        self._at(row, pump, StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH - 1)
+        assert row.columns() == 2 and row.icon_state() == ICON_FULL
+
+    def test_the_state_is_a_function_of_width_alone(self, qapp, pump, row):
+        from ui.stat_cards import ICON_FULL, ICON_NONE, ICON_SMALL, StatCardsRow
+
+        widths = list(range(StatCardsRow.TWO_COLUMN_MINIMUM_WIDTH, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH + 60, 17))
+        seen = {}
+        for width in widths + widths[::-1]:
+            self._at(row, pump, width)
+            state = (row.columns(), row.icon_state())
+            assert seen.setdefault(width, state) == state, width
+            if width >= StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH:
+                assert state == (4, ICON_FULL)
+            elif width >= StatCardsRow.COMPACT_ICON_ROW_MINIMUM_WIDTH:
+                assert state == (4, ICON_SMALL)
+            elif width >= StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH:
+                assert state == (4, ICON_NONE)
+            else:
+                assert state == (2, ICON_FULL)
+
+    def test_going_through_every_state_and_back_restores_the_full_cards_exactly(self, qapp, pump, row):
+        from ui.stat_cards import StatCardsRow
+
+        def snapshot():
+            # x, width and height: the row's own height changes with its arrangement,
+            # and with it the card's offset inside it, which is not what is in question.
+            return [(c.x(), c.width(), c.height(), c.minimumWidth(), c._tile.size(), c._tile.styleSheet())
+                    for c in row._cards]
+
+        self._at(row, pump, 1580)
+        before = snapshot()
+        for width in (1196, 1026, 700, 1196, 1580):
+            self._at(row, pump, width)
+        assert snapshot() == before
+
+    # ── what must not move ───────────────────────────────────────────────────
+
+    def test_the_text_does_not_move_vertically_in_any_state(self, qapp, pump, row):
+        row.set_total_seconds(3 * 3600 + 42 * 60 + 10, False)
+        row.set_project_status("Active", "#10B981")
+        row.set_active_task("Prepare Q3 client report", "Website Redesign")
+        row.set_today_activity(68, has_measurement=True, is_tracking=False)
+        from PySide6.QtCore import QPoint
+
+        def layout():
+            out = {}
+            for name, card in (("status", row.status_card), ("hours", row.total_card),
+                               ("active", row.active_card), ("activity", row.activity_card)):
+                out[name] = [
+                    (w.mapTo(card, QPoint(0, 0)).y(), w.height())
+                    for w in (card._caption, card._value) + ((card._sub,) if card._sub.isVisible() else ())
+                ] + [card.height()]
+            return out
+
+        reference = None
+        for width in (1580, 1196, 1026):       # full, small, none
+            self._at(row, pump, width)
+            current = layout()
+            reference = reference or current
+            assert current == reference, (width, current, reference)
+
+    def test_all_four_cards_are_the_same_height_and_their_icons_line_up(self, qapp, pump, row):
+        from PySide6.QtCore import QPoint
+
+        for width in (1580, 1196):
+            self._at(row, pump, width)
+            assert {c.height() for c in row._cards} == {96}
+            centres = {c._tile.mapTo(c, QPoint(0, 0)).y() + c._tile.height() / 2 - c.height() / 2 for c in row._cards}
+            assert max(centres) - min(centres) <= 0.5, "every icon is centred on its card"
+            xs = {c._tile.mapTo(c, QPoint(0, 0)).x() for c in row._cards}
+            assert len(xs) == 1, "and starts at the same place in each"
+
+    def test_the_small_icon_does_not_change_how_wide_the_cards_are(self, qapp, pump, row):
+        from ui.stat_cards import ICON_NONE, ICON_SMALL, StatCardsRow
+
+        self._at(row, pump, 1196)
+        assert row.icon_state() == ICON_SMALL
+        for card in row._cards:
+            assert card.stretch_weight() == card.minimum_width_for(ICON_NONE), (
+                "the cards share the width exactly as they did before the small icon existed")
+        small_widths = [c.width() for c in row._cards]
+        # The same row, forced to the no-icon form at the same width, shares it identically.
+        row._set_icon_state(ICON_NONE)
+        row._arrange(4)
+        QApplication.processEvents()
+        assert [c.width() for c in row._cards] == small_widths
+
+    def test_the_text_clears_the_icon_and_stays_inside_the_card(self, qapp, pump, row):
+        from PySide6.QtCore import QPoint
+
+        for width in (1580, 1196, 1026):
+            self._at(row, pump, width)
+            for card in row._cards:
+                if card._tile.isVisible():
+                    tile_right = card._tile.mapTo(card, QPoint(card._tile.width(), 0)).x()
+                    assert card._caption.mapTo(card, QPoint(0, 0)).x() > tile_right, "no text/icon overlap"
+                for label in (card._caption, card._value):
+                    right = label.mapTo(card, QPoint(label.width(), 0)).x()
+                    assert right <= card.width(), (width, label.text())
+
+    def test_the_break_button_keeps_its_place_in_every_state(self, qapp, pump, row):
+        from PySide6.QtCore import QPoint
+
+        row.set_active_task("Prepare Q3 client report", "Website Redesign")
+        offsets = set()
+        for width in (1580, 1196, 1026):
+            self._at(row, pump, width)
+            card, button = row.active_card, row.break_button
+            assert button.isVisible()
+            right = button.mapTo(card, QPoint(button.width(), 0)).x()
+            assert right <= card.width()
+            offsets.add(card.width() - right)
+        assert len(offsets) == 1, "the control sits the same distance from the card's edge"
+
+    # ── realistic content, every state ───────────────────────────────────────
+
+    @pytest.mark.parametrize("width", [1580, 1196, 1026, 700])
+    @pytest.mark.parametrize("scenario", ["empty", "tracking", "long"])
+    def test_all_four_cards_hold_their_content_in_every_state(self, qapp, pump, row, width, scenario):
+        from PySide6.QtCore import QPoint
+
+        if scenario == "empty":
+            row.reset()
+            row.set_project_status(None)
+            row.set_today_activity(0, has_measurement=False, is_tracking=False)
+        elif scenario == "tracking":
+            row.set_project_status("Active", "#10B981")
+            row.set_total_seconds(3 * 3600 + 42 * 60 + 10, True)
+            row.set_active_task("Prepare Q3 client report", "Website Redesign")
+            row.set_today_activity(0, has_measurement=True, is_tracking=True)
+        else:
+            row.set_project_status(LONG_STATUS, "#F59E0B")
+            row.set_total_seconds(99 * 3600 + 59 * 60 + 59, True)
+            row.set_active_task(LONG_TASK, "Extraordinarily Long Customer Migration Programme " * 2)
+            row.set_today_activity(100, has_measurement=True, is_tracking=False)
+        self._at(row, pump, width)
+
+        rects = [c.geometry() for c in row._cards]
+        for rect in rects:
+            assert rect.left() >= 0 and rect.right() <= row.width()
+        for i, a in enumerate(rects):
+            for b in rects[i + 1:]:
+                assert not a.intersects(b)
+        for card in row._cards:
+            assert card.width() >= card.minimumWidth()
+            for label in (card._caption, card._value) + ((card._sub,) if card._sub.isVisible() else ()):
+                assert label.mapTo(card, QPoint(label.width(), 0)).x() <= card.width()
+        assert row.total_card._value.text() == (
+            "00:00:00" if scenario == "empty" else row.total_card._value.full_text()), "a clock is never abbreviated"
+        assert row.total_card._value.text() == row.total_card._value.full_text()
+        if scenario == "long":
+            assert row.status_card._value.full_text() == LONG_STATUS, "elided, never dropped"
+            assert row.active_card._value.toolTip() == LONG_TASK or row.active_card._value.text() == LONG_TASK
+        if scenario != "empty":
+            assert row.activity_card._progress.isVisible()
+        assert row.break_button.isVisible()
+
+    def test_a_theme_change_keeps_the_icon_form(self, qapp, pump, row):
+        self._at(row, pump, 1196)
+        card = row.activity_card
+        for percent in (10, 55, 95):        # red, amber, green
+            row.set_today_activity(percent, has_measurement=True, is_tracking=False)
+            pump(2)
+            assert (card._tile.width(), card._tile.height()) == (24, 24)
+            assert "border-radius: 8px" in card._tile.styleSheet()
+            assert card._accent in card._tile.styleSheet()
+
+    def test_the_small_icon_keeps_the_colour_identity_of_each_card(self, qapp, pump, row):
+        self._at(row, pump, 1580)
+        full = [c._accent for c in row._cards]
+        self._at(row, pump, 1196)
+        for card, accent in zip(row._cards, full):
+            assert accent in card._tile.styleSheet()
+        assert len(set(full)) == 4, "four different colours"
+
+
+class TestSmallIconOnTheRealDashboard:
+    #: (name, window, expected icon state) -- the content width is the window minus
+    #: the 300px sidebar and 40px of margins, so these are the widths the real
+    #: screens give.
+    CASES = [
+        ("1920x1080 @100%", (1920, 1000), "full", 4),
+        ("1920x1080 @125%", (1536, 816), "small", 4),
+        ("1920x1080 @150%", (1280, 688), "full", 2),
+        ("1366x768 @100%", (1366, 728), "none", 4),
+        ("1366x768 @125%", (1092, 578), "full", 2),
+        ("1536x816", (1536, 816), "small", 4),
+        ("1092x578", (1092, 578), "full", 2),
+        ("2560x1440", (2560, 1340), "full", 4),
+    ]
+
+    @pytest.mark.parametrize("name,size,state,columns", CASES)
+    def test_each_screen_gets_the_right_form_and_nothing_overflows(self, qapp, pump, dashboard, name, size, state, columns):
+        from PySide6.QtCore import QPoint
+
+        dashboard.show()
+        dashboard.resize(*size)
+        stats = dashboard._stat_cards
+        stats.set_project_status("Active", "#10B981")
+        stats.set_total_seconds(3 * 3600 + 42 * 60 + 10, False)
+        stats.set_active_task(LONG_TASK, "Website Redesign")
+        stats.set_today_activity(68, has_measurement=True, is_tracking=False)
+        pump(25)
+        assert (stats.icon_state(), stats.columns()) == (state, columns), (name, stats.width())
+        assert (dashboard.width(), dashboard.height()) == size
+        assert not dashboard._content_scroll.horizontalScrollBar().isVisible()
+        assert not dashboard._activity_section._scroll_area.horizontalScrollBar().isVisible()
+        assert stats.height() == (96 if columns == 4 else 206), "the row's height is the same as before"
+        for card in stats._cards:
+            right = card.mapTo(dashboard, QPoint(card.width(), 0)).x()
+            assert right <= dashboard.width()
+
+    def test_the_icon_form_changes_nothing_around_the_cards(self, qapp, pump, dashboard):
+        # 1196px of content is the small-icon case; a window 100px narrower (1096px
+        # of content) is the no-icon one. The task list, Activity, sidebar and top
+        # bar do not care which.
+        dashboard.show()
+        results = {}
+        for size in ((1536, 816), (1436, 816)):
+            dashboard.resize(*size)
+            pump(25)
+            results[size] = (
+                dashboard._stat_cards.icon_state(), dashboard._stat_cards.height(),
+                dashboard._sidebar.width(), dashboard._topbar.height(),
+                dashboard._content_splitter.sizes(),
+            )
+        small, none = results[(1536, 816)], results[(1436, 816)]
+        assert small[0] == "small" and none[0] == "none"
+        assert small[1:4] == none[1:4], "cards height, sidebar and top bar are the same"
+        assert abs(sum(small[4]) - sum(none[4])) == 0, "the same room for task list and Activity"

@@ -1144,7 +1144,7 @@ area is invisible; below it, a scrollbar appears instead of a clipped window.
 | What | Rule | Where |
 |---|---|---|
 | Screenshot columns | `screenshot_columns(width)`: as many as fit at >= 220px a card, 1..4, equal stretch; unused columns stretch 0 | `ui/activity_section.py` |
-| Summary cards | four full cards (icon tiles) on one row from `SINGLE_ROW_MINIMUM_WIDTH` (1202px); the same four on one row *without tiles* from `COMPACT_ROW_MINIMUM_WIDTH` (978px, derived from the card floors); 2x2 below that | `ui/stat_cards.py` |
+| Summary cards | four cards on one row in three icon forms, chosen by the row's width alone (never by the scale factor): the full 48px tile from `SINGLE_ROW_MINIMUM_WIDTH` (1226px), a 24px tile from `COMPACT_ICON_ROW_MINIMUM_WIDTH` (1114px), no icon from `COMPACT_ROW_MINIMUM_WIDTH` (978px); 2x2 of full cards below that. Each threshold is the sum of the four cards' floors in that form | `ui/stat_cards.py` |
 | Task / Activity split | opens at 60/40 (`TASK_SECTION_SHARE`/`ACTIVITY_SECTION_SHARE`); the user drags it between the task list's 200px floor and Activity's *header alone*; a chevron in the Activity header does the same by click | `ui/activity_splitter.py`, `ui/dashboard_window.py` |
 | Top bar | compact (icon-only Add Task/Request, short date, no Ctrl+K chip) below the full form's minimum width | `ui/topbar.py` |
 | Task name column | the one stretch column; its *applied* width gives way (to 160px) only while the section is narrower than the model needs | `ui/task_table.py` |
@@ -1167,6 +1167,18 @@ screenshot is unchanged is the *same widget* after a refresh, a changed one is r
 in its own cell, order is whatever the data gives, and a state panel already showing
 is left alone. Loading, empty and loaded all have the same minimum height
 (`SCREENSHOT_STATE_MIN_HEIGHT`).
+
+### The summary-card icon
+
+The icon is the first thing a card gives up when the row is short of room, and it gives it
+up in steps: the full 48px tile, then the same tile at 24px (glyph 14px, gap 10px), then
+none. The small form exists because 125% scaling on a 1920x1080 screen leaves the content
+area about 1196px wide, 30px short of four full cards, which used to drop the icons
+altogether. The thresholds are sums of the card floors, so the rule is "what fits", not
+"what scale factor". The small icon is centred on the card and the card is a fixed 96px,
+so no text, baseline or card width moves: only the text's left edge shifts by the room the
+icon takes. In the small form the columns are weighted exactly as in the no-icon form
+(`StatCard.stretch_weight`), so the icon never changes how wide the cards are.
 
 ### How the content area is divided
 

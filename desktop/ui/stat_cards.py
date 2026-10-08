@@ -22,7 +22,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QSizePolicy,
-    QVBoxLayout, QWidget
+    QSpacerItem, QVBoxLayout, QWidget
 )
 
 from background_services.public_api import BreakStatus
@@ -44,6 +44,23 @@ _CARD_CHROME_WIDTH = 48 + 16 + 18 + 14
 #: The same card without its tile: just the layout's 16/18 margins. The tile and
 #: the gap after it are the whole difference between the two forms.
 _CARD_CHROME_WIDTH_COMPACT = 16 + 18
+
+#: The three forms of a card's icon, from most space to least. Which one a card
+#: has is decided by the width its row is given (see `StatCardsRow.resizeEvent`),
+#: never by the display's scale factor: 125% scaling simply happens to leave the
+#: content area a few pixels short of four full cards.
+ICON_FULL = "full"      # the 48px gradient tile the cards are designed with
+ICON_SMALL = "small"    # the same tile, small: same colour, same glyph, a third of the room
+ICON_NONE = "none"      # no icon: the last resort, when even the small one would not fit
+
+#: Tile, glyph, corner radius and the gap to the text, per state. The small tile
+#: is half the size, with a glyph still large enough to read as the same symbol
+#: and a gap that scales down with it; its radius keeps the full tile's
+#: roundedness (14/48 is about 8/24).
+_TILE = {ICON_FULL: (48, 24, 14, 14), ICON_SMALL: (24, 14, 8, 10)}
+
+#: The small icon's chrome: the card's side margins, the tile and its gap.
+_CARD_CHROME_WIDTH_SMALL = 16 + 18 + _TILE[ICON_SMALL][0] + _TILE[ICON_SMALL][3]
 
 #: Room for the card's *value*. Measured, not guessed: "01:02:05" in the
 #: 17pt mono face the total-time card uses is 184px wide. The sub-line and the
@@ -147,8 +164,9 @@ class StatCard(QFrame):
         self._accent = STAT_TILE_GRADIENTS[tile][2]
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(96)
-        #: Without its tile (see `set_compact`).
-        self._compact = False
+        #: Which icon form the card shows (see `set_icon_state`).
+        self._icon_state = ICON_FULL
+        self._icon_name = icon_name
         #: Width a control placed beside the text adds to the floor.
         self._extra_min_width = 0
         self._build_ui(caption, icon_name)
@@ -162,17 +180,14 @@ class StatCard(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 14, 18, 14)
         layout.setSpacing(14)
+        self._layout = layout
 
         start, end, _accent = STAT_TILE_GRADIENTS[self._tile_key]
         self._tile = QLabel(self)
-        self._tile.setFixedSize(48, 48)
         self._tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._tile.setPixmap(icons.pixmap(icon_name, "#FFFFFF", 24))
-        self._tile.setStyleSheet(f"""
-            background: {self._accent};
-            border-radius: 14px;
-            border: none;
-        """)
+        self._apply_tile(ICON_FULL)
+        # Centred in the card whatever its size, so the text beside it sits in
+        # the same place in every state: only its left edge moves.
         layout.addWidget(self._tile, 0, Qt.AlignmentFlag.AlignVCenter)
 
         text_col = QVBoxLayout()
@@ -230,36 +245,96 @@ class StatCard(QFrame):
         the text, and raise the card's floor by `extra_min_width`. The text
         column, the stretchy one, gives up whatever the control takes beyond
         that; its labels elide."""
-        self._layout.addSpacing(_ACTION_SPACING - self._layout.spacing())
+        # The gap before the control is its own item, so it can stay the same
+        # width when the layout's spacing changes with the icon (see
+        # `_apply_tile`).
+        self._action_spacer = QSpacerItem(0, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._layout.addSpacerItem(self._action_spacer)
         self._layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._apply_tile(self._icon_state)
         self._extra_min_width += extra_min_width
         self._apply_floor()
 
-    def is_compact(self) -> bool:
-        return self._compact
+    def icon_state(self) -> str:
+        return self._icon_state
 
-    def set_compact(self, compact: bool) -> None:
-        """Show the card without its gradient tile, so four fit on one row in
-        the band of widths where four full cards do not.
+    def is_compact(self) -> bool:
+        """Whether the card is showing less than its full icon tile."""
+        return self._icon_state != ICON_FULL
+
+    def set_icon_state(self, state: str) -> None:
+        """Show the icon in one of its three forms, so four cards fit on one row
+        in the band of widths where four full ones do not.
 
         Everything the card says is kept -- caption, value, sub-line, progress
-        and any action; only the tile and the gap after it go, and the floor
-        drops by exactly their width. Edge-triggered: an unchanged answer
-        touches nothing.
+        and any action. Only the icon changes, and the card's floor with it, by
+        exactly the room the icon gave up. The text column's vertical position is
+        untouched: the icon is centred on the card, and the card's height is
+        fixed. Edge-triggered: an unchanged state touches nothing.
         """
-        if compact == self._compact:
+        if state == self._icon_state:
             return
-        self._compact = compact
-        self._tile.setVisible(not compact)
+        self._icon_state = state
+        self._apply_tile(state)
         self._apply_floor()
 
-    def minimum_width_for(self, compact: bool) -> int:
-        """The floor this card has in either form, whichever it is in now."""
-        chrome = _CARD_CHROME_WIDTH_COMPACT if compact else _CARD_CHROME_WIDTH
+    def set_compact(self, compact: bool) -> None:
+        """Kept for callers that only know full / not full: `True` is no icon."""
+        self.set_icon_state(ICON_NONE if compact else ICON_FULL)
+
+    def minimum_width_for(self, state) -> int:
+        """The floor this card has in a given form, whichever it is in now.
+        (`True` / `False` mean no icon / full icon, as `set_compact` does.)"""
+        if state is True:
+            state = ICON_NONE
+        elif state is False:
+            state = ICON_FULL
+        chrome = {
+            ICON_FULL: _CARD_CHROME_WIDTH,
+            ICON_SMALL: _CARD_CHROME_WIDTH_SMALL,
+            ICON_NONE: _CARD_CHROME_WIDTH_COMPACT,
+        }[state]
         return chrome + _CARD_VALUE_WIDTH + self._extra_min_width
 
+    def _apply_tile(self, state: str) -> None:
+        """Size, glyph, shape and spacing of the icon for `state`."""
+        if state == ICON_NONE:
+            self._tile.setVisible(False)
+            return
+        size, glyph, radius, gap = _TILE[state]
+        self._tile.setFixedSize(size, size)
+        self._tile.setPixmap(icons.pixmap(self._icon_name, "#FFFFFF", glyph))
+        self._tile.setStyleSheet(f"""
+            background: {self._accent};
+            border-radius: {radius}px;
+            border: none;
+        """)
+        self._tile.setVisible(True)
+        self._layout.setSpacing(gap)
+        spacer = getattr(self, "_action_spacer", None)
+        if spacer is not None:
+            # Two layout gaps plus this item add up to the same distance in
+            # every state, so the Break In / Break Out control does not move.
+            full_gap = _TILE[ICON_FULL][3]
+            spacer.changeSize(
+                (full_gap + _ACTION_SPACING) - 2 * gap, 0,
+                QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed,
+            )
+            self._layout.invalidate()
+
+    def stretch_weight(self) -> int:
+        """What this card counts for when the row shares out spare width.
+
+        The small icon is only there because it *fits*; it must not change how
+        wide the cards are. So in that state the weight is the no-icon floor,
+        exactly what the same row used before the small icon existed, and the
+        four cards keep the widths they had.
+        """
+        state = ICON_NONE if self._icon_state == ICON_SMALL else self._icon_state
+        return self.minimum_width_for(state)
+
     def _apply_floor(self) -> None:
-        self.setMinimumWidth(self.minimum_width_for(self._compact))
+        self.setMinimumWidth(self.minimum_width_for(self._icon_state))
 
     def _apply_style(self) -> None:
         self.setStyleSheet(f"""
@@ -277,11 +352,7 @@ class StatCard(QFrame):
             return
         self._tile_key = tile
         start, end, self._accent = STAT_TILE_GRADIENTS[tile]
-        self._tile.setStyleSheet(f"""
-            background: {self._accent};
-            border-radius: 14px;
-            border: none;
-        """)
+        self._apply_tile(self._icon_state)
         self._progress.setStyleSheet(f"""
             QProgressBar {{
                 background: #EEF1F7;
@@ -342,6 +413,12 @@ class StatCardsRow(QWidget):
     #: tiles* (the compact form). Between this and `SINGLE_ROW_MINIMUM_WIDTH`
     #: the cards stay on one row and lose only the gradient tile; at
     #: `SINGLE_ROW_MINIMUM_WIDTH` and wider they are exactly as designed.
+    COMPACT_ICON_ROW_MINIMUM_WIDTH = (
+        (_CARD_CHROME_WIDTH_SMALL + _CARD_VALUE_WIDTH) * 4
+        + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING * 3
+    )
+    #: The width at or above which all four fit on one line with no icon at all:
+    #: the last resort, used where even the small icon would not fit.
     COMPACT_ROW_MINIMUM_WIDTH = (
         (_CARD_CHROME_WIDTH_COMPACT + _CARD_VALUE_WIDTH) * 4
         + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING * 3
@@ -418,7 +495,7 @@ class StatCardsRow(QWidget):
         # the other cards' values -- the one thing a card may not shorten.
         for column in range(columns):
             widths = [
-                card.minimumWidth() for index, card in enumerate(self._cards)
+                card.stretch_weight() for index, card in enumerate(self._cards)
                 if index % columns == column
             ]
             self._grid.setColumnStretch(column, max(widths) if widths else 0)
@@ -431,31 +508,38 @@ class StatCardsRow(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt's own casing
         super().resizeEvent(event)
-        # Three states, chosen by the width given and nothing else:
-        #   >= SINGLE_ROW_MINIMUM_WIDTH   four full cards on one row, tiles shown
-        #   >= COMPACT_ROW_MINIMUM_WIDTH   four tile-less cards on one row
-        #   narrower                       2x2 of full cards
+        # Four states, chosen by the width given and nothing else:
+        #   >= SINGLE_ROW_MINIMUM_WIDTH        four full cards, one row, full icons
+        #   >= COMPACT_ICON_ROW_MINIMUM_WIDTH  one row, small icons
+        #   >= COMPACT_ROW_MINIMUM_WIDTH       one row, no icons
+        #   narrower                           2x2 of full cards
         # Each state's floor fits inside its own threshold, so the choice
-        # cannot oscillate.
+        # cannot oscillate, and no state asks for more than it is given.
         width = self.width()
         if width >= self.SINGLE_ROW_MINIMUM_WIDTH:
-            compact, columns = False, len(self._cards)
+            icon, columns = ICON_FULL, len(self._cards)
+        elif width >= self.COMPACT_ICON_ROW_MINIMUM_WIDTH:
+            icon, columns = ICON_SMALL, len(self._cards)
         elif width >= self.COMPACT_ROW_MINIMUM_WIDTH:
-            compact, columns = True, len(self._cards)
+            icon, columns = ICON_NONE, len(self._cards)
         else:
-            compact, columns = False, 2
-        self._set_compact(compact)
+            icon, columns = ICON_FULL, 2
+        self._set_icon_state(icon)
         self._arrange(columns)
 
+    def icon_state(self) -> str:
+        """The icon form the cards are showing."""
+        return self._cards[0].icon_state()
+
     def is_compact(self) -> bool:
-        """Whether the cards are showing without their tiles."""
+        """Whether the cards are showing less than their full icon tiles."""
         return self._cards[0].is_compact()
 
-    def _set_compact(self, compact: bool) -> None:
-        if compact == self.is_compact():
+    def _set_icon_state(self, state: str) -> None:
+        if state == self.icon_state():
             return
         for card in self._cards:
-            card.set_compact(compact)
+            card.set_icon_state(state)
         # The column stretch is proportional to each card's floor, which just
         # changed: re-apply it even though the column count did not.
         self._columns = 0
