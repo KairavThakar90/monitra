@@ -71,6 +71,11 @@ class ProjectReportItem(ReportMetrics):
     project_name: str
 
 
+class MemberReportItem(ReportMetrics):
+    member_id: int
+    member_name: str
+
+
 class TaskReportItem(ReportMetrics):
     task_id: int
     task_name: str
@@ -164,6 +169,7 @@ class Page(BaseModel, Generic[ItemT]):
 
 
 ProjectReportPage = Page[ProjectReportItem]
+MemberReportPage = Page[MemberReportItem]
 TaskReportPage = Page[TaskReportItem]
 AppReportPage = Page[AppReportItem]
 UrlReportPage = Page[UrlReportItem]

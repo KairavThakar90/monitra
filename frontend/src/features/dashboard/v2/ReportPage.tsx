@@ -14,6 +14,7 @@ import type { DateRange } from "./filters";
 import { monthByKey } from "./mockData";
 import { ExportDialog } from "./ExportDialog";
 import { MemberBreakdownAccordion, buildMemberItemBreakdown } from "./MemberBreakdownAccordion";
+import type { MemberActivity } from "./memberActivity";
 import {
   useGetReactReportsSummaryQuery,
   useGetReactReportsListQuery,
@@ -107,6 +108,18 @@ export const ReportPage: React.FC = () => {
 
   const { data: listData } = useGetReactReportsListQuery(
     { dimension: reportId as string, page: 1, limit: 100, sort_by: 'total_hours', sort_order: 'desc', ...queryParams },
+    { skip: !config }
+  );
+
+  // Each member's average activity, for the card shown when their name is hovered in the Member
+  // Breakdown. The server's own per-member figure for exactly these filters -- the same
+  // duration-weighted average as the Avg. Activity tile -- rather than anything rebuilt from rows.
+  const {
+    data: memberActivityData,
+    isLoading: isMemberActivityLoading,
+    isError: isMemberActivityError,
+  } = useGetReactReportsListQuery(
+    { dimension: "members", page: 1, limit: 200, sort_by: 'total_hours', sort_order: 'desc', ...queryParams },
     { skip: !config }
   );
 
@@ -207,6 +220,14 @@ export const ReportPage: React.FC = () => {
     () => buildMemberItemBreakdown(memberLogs, breakdownPicker, breakdownFallback),
     [memberLogs, breakdownPicker, breakdownFallback]
   );
+
+  const memberActivity = useMemo<MemberActivity>(() => {
+    const byMember: Record<number, number | null> = {};
+    for (const item of memberActivityData?.items ?? []) {
+      if (item.member_id !== undefined) byMember[item.member_id] = item.avg_activity ?? null;
+    }
+    return { isLoading: isMemberActivityLoading, isError: isMemberActivityError, byMember };
+  }, [memberActivityData, isMemberActivityLoading, isMemberActivityError]);
 
   const finalGrouped = useMemo(() => {
     return (listData?.items || []).map((item: any, i: number) => {
@@ -435,6 +456,7 @@ export const ReportPage: React.FC = () => {
             reportId === "tasks" ? "Task" : reportId === "urls" ? "Site" : reportId === "apps" ? "App" : "Project"
           }
           accentColor={config.color}
+          activity={memberActivity}
           emptyLabel={`No tracked time for any member between ${range.from} and ${range.to}.`}
         />
 

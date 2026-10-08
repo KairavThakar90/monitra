@@ -1,6 +1,8 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import type { DetailedLogItem } from "../../../store/api/reportsApi";
 import { formatHMS } from "../../../utils/duration";
+import { FloatingCard, useHoverAnchor } from "./charts";
+import { describeActivity, type MemberActivity } from "./memberActivity";
 
 export interface BreakdownItem {
   name: string;
@@ -101,7 +103,22 @@ const MemberRow: React.FC<{
   isOpen: boolean;
   onToggle: () => void;
   accentColor: string;
-}> = ({ member, isOpen, onToggle, accentColor }) => {
+  activity?: MemberActivity;
+}> = ({ member, isOpen, onToggle, accentColor, activity }) => {
+  // Drawn `fixed`, so the section's rounded, clipping edge cannot cut it off.
+  const { rect, bind } = useHoverAnchor();
+  const activityText = activity ? describeActivity(activity, member.member_id) : null;
+  // Hovering anywhere on the member's row -- avatar, name or hours -- shows the card, but the card
+  // sits on the *name*, where the eye already is, not centred across the whole row.
+  const nameRef = useRef<HTMLSpanElement>(null);
+  const rowHover = activityText
+    ? {
+        onMouseEnter: () => {
+          if (nameRef.current) bind.onMouseEnter({ currentTarget: nameRef.current } as React.MouseEvent<HTMLElement>);
+        },
+        onMouseLeave: bind.onMouseLeave,
+      }
+    : {};
   const panelId = `member-breakdown-${member.member_id}`;
   const dayCount = member.dates.length;
 
@@ -124,6 +141,7 @@ const MemberRow: React.FC<{
         aria-controls={panelId}
         onClick={onToggle}
         className="flex w-full items-center gap-3 px-5 py-3.5 text-left transition hover:bg-[#F8FAFC]"
+        {...rowHover}
       >
         <span
           className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white shadow-sm"
@@ -132,7 +150,23 @@ const MemberRow: React.FC<{
           {initials(member.member_name)}
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[14px] font-bold text-[#0F172A]">{member.member_name}</span>
+          <span
+            ref={nameRef}
+            data-testid="member-name"
+            // As wide as the name itself, not the column: the card is centred on this box.
+            className="inline-block max-w-full truncate align-top text-[14px] font-bold text-[#0F172A]"
+          >
+            {member.member_name}
+            {activityText && <span className="sr-only">, {activityText.toLowerCase()}</span>}
+            {activityText && (
+              <FloatingCard rect={rect}>
+                <div role="tooltip" className="whitespace-nowrap rounded-md border border-slate-200 bg-white px-2 py-1 text-xs shadow-sm">
+                  <span className="font-medium text-slate-800">{member.member_name}</span>
+                  <span className="ml-2 text-slate-500">{activityText}</span>
+                </div>
+              </FloatingCard>
+            )}
+          </span>
           <span className="block text-[11px] font-semibold text-[#94A3B8]">
             {dayCount} day{dayCount === 1 ? "" : "s"} tracked
           </span>
@@ -215,7 +249,9 @@ export const MemberBreakdownAccordion: React.FC<{
   itemLabel: string;
   /** Ties the section's accent to the tab it belongs to (matches REPORTS[reportId].color). */
   accentColor: string;
-}> = ({ members, isLoading, isTruncated, emptyLabel, itemLabel, accentColor }) => {
+  /** When given, hovering a member's name shows their average activity. */
+  activity?: MemberActivity;
+}> = ({ members, isLoading, isTruncated, emptyLabel, itemLabel, accentColor, activity }) => {
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const toggle = (id: number) => setExpanded((current) => ({ ...current, [id]: !current[id] }));
 
@@ -239,6 +275,7 @@ export const MemberBreakdownAccordion: React.FC<{
               isOpen={!!expanded[member.member_id]}
               onToggle={() => toggle(member.member_id)}
               accentColor={accentColor}
+              activity={activity}
             />
           ))}
         </ul>

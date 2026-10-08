@@ -1,6 +1,6 @@
 """React Reports page endpoints: /api/v1/react/reports/*.
 
-Six endpoints share one filter model -- a date range plus optional
+Seven endpoints share one filter model -- a date range plus optional
 project/task/member narrowing -- so the frontend can move between the
 Project, Task, App and URL tabs (and the common summary strip and trend
 chart above them) without changing how it builds a request.
@@ -21,6 +21,7 @@ from app.core.security import get_current_user
 from app.models.user import User
 from app.react_apis.reports_page.schemas import (
     AppReportPage,
+    MemberReportPage,
     ProjectReportPage,
     ReportSummary,
     SortField,
@@ -144,6 +145,29 @@ def projects_report(
 ):
     page, limit, sort_by, sort_order, search = paging
     return ReportsPageService.projects(db, filters, search, sort_by, sort_order, page, limit)
+
+
+@router.get(
+    "/members",
+    response_model=MemberReportPage,
+    dependencies=[_authenticated],
+    summary="Members: per-member hours and average activity, for the same filters as the tabs",
+    description="One row per member who has tracked time in range, with the member's "
+                "duration-weighted average activity -- the very definition behind the "
+                "summary strip's average, so the two always agree. ``avg_activity`` is null "
+                "for a member with nothing activity-sampled (for example manual time only), "
+                "which is not the same as 0%. A caller without ``time_entries:view_all`` "
+                "is answered with their own row only. Used for the activity percentage "
+                "shown when a member's name is hovered on the Reports page.",
+    responses={400: {"description": "start_date is after end_date."}},
+)
+def members_report(
+    filters=Depends(common_filters),
+    paging=Depends(pagination),
+    db: Session = Depends(get_db, scope="function"),
+):
+    page, limit, sort_by, sort_order, search = paging
+    return ReportsPageService.members(db, filters, search, sort_by, sort_order, page, limit)
 
 
 @router.get(

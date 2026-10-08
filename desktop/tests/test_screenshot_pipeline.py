@@ -137,6 +137,10 @@ class TestFallbackCompression:
         # The common case by far. A fallback that "helpfully" recompressed
         # every capture would quietly degrade every screenshot the app takes.
         monkeypatch.setenv("MONITRA_SCREENSHOT_FALLBACK_TRIGGER_BYTES", str(4 * 1024 * 1024))
+        # ... and the hard size limit (a separate step, tested below) is lifted too, so the
+        # fallback is the only thing in question here.
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_IMAGE_BYTES", str(4 * 1024 * 1024))
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_TARGET_BYTES", str(4 * 1024 * 1024))
         processed = image_processor.process(_noisy(1920, 1080))
         assert processed.fallback_applied is False
         assert processed.fallback_attempts == 0
@@ -230,6 +234,154 @@ class TestFallbackCompression:
         # already at or under the floor has nothing left to give.
         assert image_processor._fallback_qualities(20, 20, 5) == []
         assert image_processor._fallback_qualities(15, 20, 5) == []
+
+
+class TestQualityAndTheHardSizeLimit:
+    """The 2026-10-08 change: sharper screenshots (quality settings about 10% higher) that still
+    never exceed 60 KB per display, guaranteed by a final step that is the only one allowed to go
+    below the normal quality floors."""
+
+    def test_the_quality_settings_are_about_ten_percent_higher_than_before(self):
+        assert (config.WEBP_QUALITY_START, config.WEBP_QUALITY_MIN, config.FALLBACK_QUALITY_MIN) == (79, 50, 22)
+        # 72 / 45 / 20 before: each within 10-11% of the old value
+        for new, old in ((79, 72), (50, 45), (22, 20)):
+            assert 1.09 <= new / old <= 1.12
+
+    def test_the_limit_is_sixty_kilobytes_per_display_and_scales_with_the_displays(self):
+        assert config.MAX_IMAGE_BYTES == 60 * 1024
+        assert compositor.max_image_bytes(1) == 60 * 1024
+        assert compositor.max_image_bytes(2) == 120 * 1024
+        assert compositor.max_image_bytes(3) == 180 * 1024
+        assert compositor.max_image_bytes(500) == config.MAX_TARGET_FILE_BYTES       # a wall of screens stays storable
+        assert compositor.max_image_bytes(0) == 60 * 1024                             # nonsense counts as one
+
+    def test_the_limit_can_be_changed_by_environment(self, monkeypatch):
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_IMAGE_BYTES", str(90 * 1024))
+        assert compositor.max_image_bytes(1) == 90 * 1024
+
+    def test_an_image_within_the_limit_is_not_touched(self):
+        image = image_processor.ProcessedImage(data=b"x" * 1000, width=1000, height=1000, quality=60)
+        assert image_processor._enforce_size_limit(object(), image, 60 * 1024) is image
+
+    def test_a_dense_screen_is_brought_under_the_limit_by_going_below_the_normal_floor(self, monkeypatch):
+        # Measure what the normal passes leave, then set a limit under it that the encoder can meet.
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_IMAGE_BYTES", str(8 * 1024 * 1024))
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_TARGET_BYTES", str(8 * 1024 * 1024))
+        before = image_processor.process(_noisy(1920, 1080))
+        assert before.limit_applied is False
+        limit = int(before.size_bytes * 0.80)
+
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_IMAGE_BYTES", str(limit))
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_TARGET_BYTES", str(8 * 1024 * 1024))
+        after = image_processor.process(_noisy(1920, 1080))
+
+        assert after.limit_applied is True
+        assert after.size_bytes <= limit
+        assert after.size_bytes == len(after.data)                    # the reported size is the final image's
+        assert config.HARD_LIMIT_QUALITY_MIN <= after.quality < before.quality
+
+    def test_it_stops_at_the_highest_quality_that_fits_and_does_not_squeeze_further(self, monkeypatch):
+        from PIL import Image
+
+        monkeypatch.setenv("MONITRA_SCREENSHOT_FALLBACK", "0")                # the ladder starts at the primary quality
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_IMAGE_BYTES", str(8 * 1024 * 1024))
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_TARGET_BYTES", str(8 * 1024 * 1024))
+        before = image_processor.process(_noisy(1280, 720))
+        limit = int(before.size_bytes * 0.90)
+
+        sizes = []
+        real_save = Image.Image.save
+
+        def recording(self, fp, *args, **kwargs):
+            real_save(self, fp, *args, **kwargs)
+            if kwargs.get("method") == config.FALLBACK_WEBP_METHOD:
+                sizes.append(fp.tell())
+
+        monkeypatch.setattr(Image.Image, "save", recording)
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_IMAGE_BYTES", str(limit))
+        processed = image_processor.process(_noisy(1280, 720))
+
+        assert len(sizes) >= 2, "a 10% cut is not reached by the first, one-point-lower rung"
+        assert sizes[-1] <= limit                                              # the last encode is the one that fit
+        assert all(size > limit for size in sizes[:-1])                        # and none before it did: it stopped there
+        assert processed.size_bytes == sizes[-1]
+
+    def test_the_limit_never_goes_below_its_own_floor_and_never_loses_the_image(self, monkeypatch):
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_IMAGE_BYTES", "1024")        # impossible for a noisy screen
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_TARGET_BYTES", "1024")
+        processed = image_processor.process(_noisy(1280, 720))
+
+        assert processed is not None and processed.data
+        assert processed.quality >= config.HARD_LIMIT_QUALITY_MIN
+        assert processed.size_bytes > 1024                              # it could not fit; the smallest was kept
+
+    def test_the_number_of_encodes_it_spends_is_bounded(self, monkeypatch):
+        from PIL import Image
+
+        calls = {"n": 0}
+        real_save = Image.Image.save
+
+        def counting(self, fp, *args, **kwargs):
+            if kwargs.get("method") == config.FALLBACK_WEBP_METHOD:
+                calls["n"] += 1
+            return real_save(self, fp, *args, **kwargs)
+
+        monkeypatch.setattr(Image.Image, "save", counting)
+        monkeypatch.setenv("MONITRA_SCREENSHOT_FALLBACK", "0")                # so only the limit uses that method
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_IMAGE_BYTES", "1024")
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_TARGET_BYTES", "1024")
+        image_processor.process(_noisy(1280, 720))
+
+        assert 0 < calls["n"] <= config.HARD_LIMIT_MAX_ATTEMPTS
+
+    def test_an_encoder_failure_keeps_the_image_it_was_given(self, monkeypatch):
+        from PIL import Image
+
+        canvas = Image.new("RGB", (64, 64), (1, 2, 3))
+        image = image_processor.ProcessedImage(data=b"x" * 5000, width=64, height=64, quality=60)
+
+        def broken(*args, **kwargs):
+            raise OSError("encoder exploded")
+
+        monkeypatch.setattr(Image.Image, "save", broken)
+
+        assert image_processor._enforce_size_limit(canvas, image, 1024) is image
+
+    def test_the_limit_handed_to_the_enforcer_is_sixty_kilobytes_per_display(self, monkeypatch):
+        handed = []
+        monkeypatch.setattr(
+            image_processor, "_enforce_size_limit",
+            lambda canvas, image, max_bytes: handed.append(max_bytes) or image,
+        )
+
+        def merge(count):
+            displays, placements = [], []
+            for index in range(count):
+                display = Display(number=index + 1, left=index * 64, top=0, width=64, height=36, is_primary=(index == 0))
+                displays.append(display)
+                placements.append(Placement(display=display, pixels=bytes([40, 80, 120, 255] * (64 * 36)), width=64, height=36))
+            return MergedCapture(placements=placements, bounds=compositor.canvas_bounds(displays), displays=displays)
+
+        for count in (1, 2, 3):
+            image_processor.process_merged(merge(count))
+
+        assert handed == [60 * 1024, 120 * 1024, 180 * 1024]
+
+    def test_a_two_display_image_keeps_its_display_count_when_the_limit_acts(self, monkeypatch):
+        rng = random.Random(20261008)
+        displays, placements = [], []
+        for index, left in enumerate((0, 960), start=1):
+            display = Display(number=index, left=left, top=0, width=960, height=540, is_primary=(index == 1))
+            displays.append(display)
+            placements.append(Placement(display=display, pixels=rng.randbytes(960 * 540 * 4), width=960, height=540))
+        merged = MergedCapture(placements=placements, bounds=compositor.canvas_bounds(displays), displays=displays)
+
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_IMAGE_BYTES", "1024")
+        monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_TARGET_BYTES", "1024")
+        limited = image_processor.process_merged(merged)
+
+        assert limited.limit_applied is True
+        assert limited.display_count == 2                                     # the metadata survives the rebuild
 
 
 def _close(a, b, tolerance: int = 12) -> bool:

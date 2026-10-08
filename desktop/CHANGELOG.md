@@ -22,6 +22,11 @@ re-grant a permission.
 
 ### Added
 
+- **Sharper screenshots, still small.** Screenshots are encoded at about 10% higher quality
+  than before, and no screenshot is ever larger than 60 KB per screen (two monitors, 120 KB,
+  and so on). Most screens are well under that. A very dense screen that would not fit is
+  compressed a little harder rather than stored larger. Nothing else about screenshots
+  changes: the same schedule, size and format.
 - **Mark a task Non billable when you create it.** Add Task has an optional
   "Non billable" tick under Description. Ticked, " - Non billable" is added to
   the end of the task name (once, even if you typed it yourself); unticked, the

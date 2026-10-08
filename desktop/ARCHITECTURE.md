@@ -889,6 +889,15 @@ single-shot `QTimer` on the GUI thread and every capture runs on the
 `TaskRunner`. [docs/SCREENSHOT_PERSISTENCE.md](../docs/SCREENSHOT_PERSISTENCE.md)
 is authoritative for everything after the capture.
 
+**Image quality and size** (`screenshot/config.py`, `image_processor.py`): the capture is scaled
+to fit a 1000x1000 canvas and encoded as WebP at quality 79, stepping down to a floor of 50 to reach
+about 120 KB; a second pass for anything over 60 KB may go down to 22; and a **hard limit of 60 KB
+per display** (`MAX_IMAGE_BYTES`; two monitors may use 120 KB) is enforced last by
+`_enforce_size_limit`, the only step allowed below those floors (down to quality 10, at most six
+encodes). An image already inside the limit is stored byte for byte as encoded. The qualities were
+raised about 10% on 2026-10-08 (from 72 / 45 / 20); the limit is what keeps the larger quality from
+becoming larger files.
+
 Two rules about the capture itself, each learned in production:
 
 - **Every expected capture ends in an image, a retry still inside its window,
