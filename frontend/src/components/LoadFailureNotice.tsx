@@ -101,7 +101,7 @@ export const LoadFailureNotice: React.FC<{ enabled?: boolean }> = ({ enabled = t
     >
       <span>
         {kind === "network"
-          ? "Connection temporarily unavailable — some information could not be refreshed."
+          ? "Some information could not be refreshed. Retrying automatically."
           : "Some information could not be loaded."}
       </span>
       <button

@@ -155,7 +155,7 @@ describe('<LoadFailureNotice />', () => {
     const { sub } = await mount(async () => { throw new TypeError('Failed to fetch'); });
     const notice = container.querySelector('[data-testid="load-failure-notice"]')!;
     expect(notice).toBeTruthy();
-    expect(notice.textContent).toMatch(/Connection temporarily unavailable/);
+    expect(notice.textContent).toMatch(/could not be refreshed\. Retrying automatically/);
     expect(notice.querySelector('button')!.textContent).toBe('Retry');
     sub.unsubscribe();
   });

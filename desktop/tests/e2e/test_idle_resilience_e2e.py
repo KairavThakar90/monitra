@@ -76,8 +76,11 @@ class FaultProxy:
                 path = self.path
                 with outer._lock:
                     outer.seen.append((self.command, path))
+                    # A CORS preflight is never faulted: the browser would report the
+                    # injected error as a network failure instead of the status.
                     rule = next((r for r in outer.rules
-                                 if (r["match"] == path if r["exact"] else r["match"] in path)
+                                 if self.command != "OPTIONS"
+                                 and (r["match"] == path if r["exact"] else r["match"] in path)
                                  and (r["method"] in (None, self.command))
                                  and r["times"] != 0), None)
                     if rule is not None and rule["times"] is not None:
@@ -87,6 +90,13 @@ class FaultProxy:
                     payload = b'{"detail":"injected fault"}'
                     self.send_response(action[1])
                     self.send_header("Content-Type", "application/json")
+                    # As a real error from the app behaves (it passes through CORS);
+                    # a response without these headers is invisible to a browser,
+                    # which reports it as a network failure.
+                    origin = self.headers.get("Origin")
+                    if origin:
+                        self.send_header("Access-Control-Allow-Origin", origin)
+                        self.send_header("Access-Control-Allow-Credentials", "true")
                     self.send_header("Content-Length", str(len(payload)))
                     self.end_headers()
                     self.wfile.write(payload)
@@ -120,7 +130,7 @@ class FaultProxy:
                 except OSError:
                     pass
 
-            do_GET = do_POST = do_PATCH = do_PUT = do_DELETE = _serve
+            do_GET = do_POST = do_PATCH = do_PUT = do_DELETE = do_OPTIONS = _serve
 
         self.port = _free_port()
         self.server = ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
