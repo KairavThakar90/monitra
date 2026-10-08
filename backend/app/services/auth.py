@@ -196,8 +196,13 @@ class AuthService:
         db: Session,
         user_id: int,
         session_started_at: datetime | None = None,
+        commit: bool = True,
     ) -> tuple[str, datetime, datetime]:
         """Mint and store one refresh token, returning (plaintext, started, expires).
+
+        `commit=False` stages the row and leaves the transaction to the caller;
+        rotation uses it so that revoking the old token and issuing the new one
+        are one commit (see `refresh_session`).
 
         `session_started_at` is passed only when rotating an existing session.
         Carrying it forward -- rather than restarting it -- is what keeps the
@@ -214,7 +219,10 @@ class AuthService:
                 session_started_at=started_at,
                 expires_at=expires_at,
             ))
-            db.commit()
+            if commit:
+                db.commit()
+            else:
+                db.flush()
         except Exception:
             db.rollback()
             logger.exception("Failed to persist authentication session for local user %s", user_id)
@@ -250,17 +258,20 @@ class AuthService:
             refuse_if_login_disabled(user, 401)
 
         started_at = _as_utc(row.session_started_at) or _as_utc(row.created_at) or now
+        # Revoking the presented token and issuing its successor are ONE commit.
+        # They were two: a failure between them (a dropped connection, a restart)
+        # left the old token revoked and no new one, and the user -- who had done
+        # nothing wrong -- was signed out for good at their next refresh.
         row.revoked_at = now
+        refresh_token_plain, started_at, expires_at = AuthService._persist_session_token(
+            db, user.id, session_started_at=started_at, commit=False
+        )
         try:
             db.commit()
         except Exception:
             db.rollback()
             logger.exception("Failed to rotate authentication session for user %s", user.id)
             raise HTTPException(status_code=500, detail="Unable to refresh authentication session")
-
-        refresh_token_plain, started_at, expires_at = AuthService._persist_session_token(
-            db, user.id, session_started_at=started_at
-        )
         logger.info("AUTH_REFRESH_SUCCESS: access token renewed for user %s", user.id)
         return TokenPair(
             access_token=create_access_token(AuthService._access_claims(user)),

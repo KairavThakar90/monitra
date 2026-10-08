@@ -84,6 +84,9 @@ def get_current_user(
     # Excluded from signing in by an administrator: 401 so every client takes
     # its ordinary "session over" path, with a detail that says why.
     refuse_if_login_disabled(user, status.HTTP_401_UNAUTHORIZED)
+    from app.core.request_log import note_user
+
+    note_user(user.id)
     return user
 
 def forbid_service_principal(current_user: User = Depends(get_current_user)) -> User:

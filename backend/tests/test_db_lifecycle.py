@@ -297,13 +297,36 @@ class TestEngineConfiguration(unittest.TestCase):
 
     def test_postgres_connections_are_named_and_the_idle_timeout_is_opt_in(self):
         url = "postgresql://u:p@db.example.test/monitra"
-        with patch.object(settings, "DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", 0):
-            self.assertEqual(database._connect_args(url), {"application_name": "monitra-api"})
+        with patch.object(settings, "DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", 0),              patch.object(settings, "DB_STATEMENT_TIMEOUT_MS", 0):
+            args = database._connect_args(url)
+            self.assertEqual(args["application_name"], "monitra-api")
+            # Off means off: no server-side option is sent at all.
+            self.assertNotIn("options", args)
         with patch.object(settings, "DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", 60000):
             self.assertEqual(
                 database._connect_args(url)["options"],
                 "-c idle_in_transaction_session_timeout=60000",
             )
+
+    def test_opening_a_connection_is_bounded_and_dead_ones_are_found(self):
+        """`pool_timeout` bounds the wait for a pooled connection; opening a new
+        one had no limit, so an unreachable database held a worker for the OS's
+        TCP timeout."""
+        url = "postgresql://u:p@db.example.test/monitra"
+        args = database._connect_args(url)
+        self.assertEqual(args["connect_timeout"], settings.DB_CONNECT_TIMEOUT_SECONDS)
+        self.assertGreater(args["connect_timeout"], 0)
+        self.assertEqual(args["keepalives"], 1)
+        with patch.object(settings, "DB_TCP_KEEPALIVES", False):
+            self.assertNotIn("keepalives", database._connect_args(url))
+
+    def test_a_statement_timeout_is_opt_in_and_combines_with_the_idle_timeout(self):
+        url = "postgresql://u:p@db.example.test/monitra"
+        with patch.object(settings, "DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", 60000),              patch.object(settings, "DB_STATEMENT_TIMEOUT_MS", 20000):
+            options = database._connect_args(url)["options"]
+        self.assertIn("-c idle_in_transaction_session_timeout=60000", options)
+        self.assertIn("-c statement_timeout=20000", options)
+        self.assertEqual(settings.__class__.model_fields["DB_STATEMENT_TIMEOUT_MS"].default, 0)
 
     def test_other_backends_get_no_postgres_options(self):
         with patch.object(settings, "DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", 60000):

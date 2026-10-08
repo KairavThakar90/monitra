@@ -74,6 +74,9 @@ class _FakeSession:
     def commit(self):
         self.commits += 1
 
+    def flush(self):
+        pass
+
     def rollback(self):
         pass
 

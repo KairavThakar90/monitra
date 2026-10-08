@@ -34,6 +34,21 @@ class Settings(BaseSettings):
     # the server ends the session after this many milliseconds. 0 leaves it off. It is
     # a safety net, not the fix -- see docs/DB_CONNECTION_LIFECYCLE.md before enabling.
     DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: int = 0
+    # How long opening a *new* database connection may take. `DB_POOL_TIMEOUT_SECONDS`
+    # only bounds the wait for a free pooled connection; connecting had no limit, so a
+    # database that was restarting, failing over or unreachable held a worker thread for
+    # the operating system's TCP timeout (minutes). 0 leaves it to the OS.
+    DB_CONNECT_TIMEOUT_SECONDS: int = 10
+    # TCP keepalives on database connections, so a connection a firewall or NAT dropped
+    # silently is found in about a minute instead of on the first query that hangs on it.
+    DB_TCP_KEEPALIVES: bool = True
+    # PostgreSQL cancels any statement running longer than this many milliseconds. 0 (the
+    # default) leaves it off: the heaviest reports and the scheduled jobs share this engine
+    # and have never been timed against a ceiling. Enable it deliberately, after reading
+    # the SLOW_REQUEST log -- see docs/API_FAILURES.md.
+    DB_STATEMENT_TIMEOUT_MS: int = 0
+    # A request slower than this is logged (SLOW_REQUEST) with its id, path and user.
+    REQUEST_SLOW_SECONDS: float = 2.0
     EXTERNAL_AUTH_BASE_URL: str = "https://nothing.peakworkos.com"
     EXTERNAL_AUTH_LOGIN_PATH: str = "/wp-json/st-performance/v1/auth/hubstaff/login"
     # Single sign-on: the provider signs its own JWT for the browser handoff, so the

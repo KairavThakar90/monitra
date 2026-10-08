@@ -103,10 +103,19 @@ def _connect_args(db_url: str) -> dict:
         # connections can be told apart from psql, migrations and other services.
         "application_name": "monitra-api",
     }
+    if settings.DB_CONNECT_TIMEOUT_SECONDS > 0:
+        args["connect_timeout"] = int(settings.DB_CONNECT_TIMEOUT_SECONDS)
+    if settings.DB_TCP_KEEPALIVES:
+        args.update(keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3)
+    options = []
     if settings.DB_IDLE_IN_TRANSACTION_TIMEOUT_MS > 0:
-        args["options"] = (
+        options.append(
             f"-c idle_in_transaction_session_timeout={int(settings.DB_IDLE_IN_TRANSACTION_TIMEOUT_MS)}"
         )
+    if settings.DB_STATEMENT_TIMEOUT_MS > 0:
+        options.append(f"-c statement_timeout={int(settings.DB_STATEMENT_TIMEOUT_MS)}")
+    if options:
+        args["options"] = " ".join(options)
     return args
 
 
@@ -122,6 +131,7 @@ def _install_pool_monitoring(engine) -> None:
     """
     from app.core.config import settings
     from app.core.request_context import current_request_context
+    from app.core.request_log import current_request_id
 
     warn_after = float(settings.DB_CHECKOUT_WARN_SECONDS)
 
@@ -130,18 +140,20 @@ def _install_pool_monitoring(engine) -> None:
         connection_record.info["monitra_checked_out_at"] = time.monotonic()
         context = current_request_context()
         connection_record.info["monitra_path"] = context.path if context and context.path else "-"
+        connection_record.info["monitra_req"] = current_request_id() or "-"
 
     @event.listens_for(engine, "checkin")
     def _on_checkin(dbapi_connection, connection_record):
         started = connection_record.info.pop("monitra_checked_out_at", None)
         path = connection_record.info.pop("monitra_path", "-")
+        request_id = connection_record.info.pop("monitra_req", "-")
         if started is None or warn_after <= 0:
             return
         held = time.monotonic() - started
         if held >= warn_after:
             logger.warning(
-                "DB_CONNECTION_HELD_LONG: held=%.1fs path=%s pool=%s",
-                held, path, engine.pool.status(),
+                "DB_CONNECTION_HELD_LONG: held=%.1fs path=%s req=%s pool=%s",
+                held, path, request_id, engine.pool.status(),
             )
 
     @event.listens_for(engine, "invalidate")
@@ -251,7 +263,8 @@ def get_db():
     except Exception as e:
         logger.error(f"Failed to initialize database session: {str(e)}")
         from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail=f"Database connection error: {str(e)}")
+        # The exception text can name the database host; it belongs in the log.
+        raise HTTPException(status_code=500, detail="Database connection error.")
     try:
         yield db
     except Exception as e:

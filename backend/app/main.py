@@ -1,5 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import InterfaceError as SQLAlchemyInterfaceError
+from sqlalchemy.exc import OperationalError as SQLAlchemyOperationalError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from app.api.auth import router as auth_router
 from app.api.project import router as project_router
@@ -32,6 +34,7 @@ from app.react_apis.member_usage import router as member_usage_router
 from app.react_apis.member_activity_log import router as member_activity_log_router
 from app.react_apis.activity_logs import router as activity_logs_router
 from app.core.request_context import request_context_middleware
+from app.core.request_log import RequestLogMiddleware
 from app.react_apis.reports_page.router import router as reports_page_router
 from app.react_apis.dashboard.router import router as dashboard_router
 from fastapi.middleware.cors import CORSMiddleware
@@ -212,7 +215,7 @@ def read_root():
     return {"message": "Staff Management System API is running.", "environment": settings.ENV}
 
 @app.get("/health")
-def health_check():
+def health_check(deep: bool = False):
     """Liveness, plus whether this deployment can actually store screenshots.
 
     A desktop client keeps captures on disk and retries when upload answers
@@ -274,7 +277,34 @@ def health_check():
     if pool is not None:
         payload["database_pool"] = pool
 
+    if deep:
+        # Opt-in: the plain check stays free of the database, because a probe that
+        # opens connections is itself a load. `?deep=1` is what a monitor should
+        # call -- it answers "can this process reach the database, and how fast?",
+        # which the plain check cannot (it is healthy while every request fails).
+        payload["database"] = _probe_database()
+        if payload["database"]["status"] != "ok":
+            payload["status"] = "degraded"
+
     return payload
+
+
+def _probe_database() -> dict:
+    import time as _time
+
+    from sqlalchemy import text
+
+    from app.core.database import get_engine
+
+    started = _time.perf_counter()
+    try:
+        with get_engine().connect() as connection:
+            connection.execute(text("SELECT 1"))
+        return {"status": "ok", "latency_ms": int((_time.perf_counter() - started) * 1000)}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("HEALTH_DB_PROBE_FAILED: %s", type(exc).__name__)
+        return {"status": "unreachable", "error": type(exc).__name__,
+                "latency_ms": int((_time.perf_counter() - started) * 1000)}
 
 
 # Configure CORS to always allow both local and production frontends
@@ -291,6 +321,12 @@ cors_origins = [
     "https://www.stafftrack.io"
 ]
 
+# Added BEFORE CORS so it sits inside it: an exception that escapes a route is
+# answered here with a JSON 500 that CORS then decorates. Left to Starlette's
+# last-resort handler the 500 has no Access-Control-Allow-Origin and the browser
+# reports a server error as a network failure. See app/core/request_log.py.
+app.add_middleware(RequestLogMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
@@ -303,6 +339,48 @@ app.add_middleware(
 # of one request so the activity trail can record it without every service
 # taking a Request. See app/core/request_context.py.
 app.middleware("http")(request_context_middleware)
+
+
+def _db_unavailable_response(request: Request, exc: Exception, *, state: str) -> JSONResponse:
+    from app.core.request_log import current_request_id
+
+    request_id = current_request_id()
+    logger.error(
+        "DB_UNAVAILABLE: path=%s req=%s kind=%s error=%s",
+        request.url.path, request_id, state, type(exc).__name__,
+    )
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "The service is temporarily unavailable; please retry shortly.",
+                 "request_id": request_id},
+        headers={"Retry-After": "2"},
+    )
+
+
+@app.exception_handler(SQLAlchemyOperationalError)
+@app.exception_handler(SQLAlchemyInterfaceError)
+async def database_unavailable_handler(request: Request, exc: Exception):
+    """The database could not be reached, or dropped the connection mid-request.
+
+    These used to escape as a plain-text 500 with no CORS headers. A server that
+    lost its database for a moment is *unavailable*, not broken: 503 with
+    `Retry-After` tells every client to ask again, and the log names the path
+    and the request id. A statement the database cancelled for running too long
+    (`DB_STATEMENT_TIMEOUT_MS`) is different -- asking again repeats the work --
+    so it is a 504 with a long `Retry-After`, which clients do not retry.
+    """
+    original = getattr(exc, "orig", None)
+    if original is not None and type(original).__name__ == "QueryCanceled":
+        from app.core.request_log import current_request_id
+
+        request_id = current_request_id()
+        logger.error("DB_STATEMENT_TIMEOUT: path=%s req=%s", request.url.path, request_id)
+        return JSONResponse(
+            status_code=504,
+            content={"detail": "The request took too long to complete.", "request_id": request_id},
+            headers={"Retry-After": "30"},
+        )
+    return _db_unavailable_response(request, exc, state="connection")
 
 
 @app.exception_handler(SQLAlchemyTimeoutError)
@@ -320,7 +398,11 @@ async def database_pool_exhausted_handler(request: Request, exc: SQLAlchemyTimeo
         state = get_engine().pool.status()
     except Exception:  # noqa: BLE001
         state = "unavailable"
-    logger.error("DB_POOL_EXHAUSTED: path=%s pool=%s", request.url.path, state)
+    from app.core.request_log import current_request_id
+
+    logger.error(
+        "DB_POOL_EXHAUSTED: path=%s req=%s pool=%s", request.url.path, current_request_id(), state
+    )
     return JSONResponse(
         status_code=503,
         content={"detail": "The service is busy; please retry shortly."},
