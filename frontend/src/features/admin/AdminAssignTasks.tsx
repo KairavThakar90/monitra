@@ -17,8 +17,8 @@ import { useAuth } from '../auth/authContext';
 import { formatApiError } from '../../api/utils';
 import { SEARCH_MAX_LENGTH } from '../../validation';
 import { AssignTaskDialog, type AssignTaskSubmit } from './AssignTaskDialog';
-import { filterByCreated, filterByProjectIds, filterProjects, holdersOf } from './assignTasks';
-import { DEFAULT_RANGE, DateRangeFilter, ProjectMultiSelect, type DateRange } from '../dashboard/v2/filters';
+import { filterByCreated, filterByHolders, filterByProjectIds, filterProjects, holdersOf, taskHolderOptions } from './assignTasks';
+import { DEFAULT_RANGE, DateRangeFilter, MemberMultiSelect, ProjectMultiSelect, type DateRange } from '../dashboard/v2/filters';
 
 /** Page sizes the footer offers; the first is the default. */
 const PAGE_SIZES = [10, 20, 50];
@@ -109,15 +109,18 @@ export const AdminAssignTasks: React.FC = () => {
   // one click away in the picker for tasks created earlier.
   const [dateRange, setDateRange] = useState<DateRange>(DEFAULT_RANGE);
   const [projectIds, setProjectIds] = useState<string[]>([]);
+  // The Reports page's member filter: empty is everyone; picked members narrow the page to the tasks they hold.
+  const [memberIds, setMemberIds] = useState<string[]>([]);
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
   const [dialog, setDialog] = useState<DialogState>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  const holderChoices = useMemo(() => taskHolderOptions(projects), [projects]);
   const visible = useMemo(
-    () => filterProjects(filterByCreated(filterByProjectIds(projects, projectIds), dateRange), query),
-    [projects, projectIds, dateRange, query],
+    () => filterProjects(filterByCreated(filterByHolders(filterByProjectIds(projects, projectIds), memberIds), dateRange), query),
+    [projects, projectIds, memberIds, dateRange, query],
   );
-  const filtering = query.trim() !== '' || projectIds.length > 0 || dateRange.preset !== 'all';
+  const filtering = query.trim() !== '' || projectIds.length > 0 || memberIds.length > 0 || dateRange.preset !== 'all';
   const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
   const currentPage = Math.min(page, totalPages);
   const pageProjects = visible.slice((currentPage - 1) * pageSize, currentPage * pageSize);
@@ -195,6 +198,11 @@ export const AdminAssignTasks: React.FC = () => {
             className="w-full max-w-sm rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-[#3B82F6]"
           />
           <div className="flex flex-wrap items-center gap-3">
+            <MemberMultiSelect
+              members={holderChoices}
+              selected={memberIds}
+              onChange={(ids) => { setMemberIds(ids); setPage(1); }}
+            />
             <ProjectMultiSelect
               projects={projects}
               selected={projectIds}
@@ -244,7 +252,7 @@ export const AdminAssignTasks: React.FC = () => {
             </h3>
             <p className="mt-1 text-xs font-medium text-slate-500">
               {filtering
-                ? 'Nothing matches the current search, project and date filters. Widen them or choose All Time.'
+                ? 'Nothing matches the current search, member, project and date filters. Widen them or choose All Time.'
                 : 'Projects and their tasks appear here once they are created in Project Management.'}
             </p>
           </div>

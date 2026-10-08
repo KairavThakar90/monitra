@@ -66,6 +66,46 @@ export const filterProjects = (projects: Project[], query: string): Project[] =>
   return result;
 };
 
+/**
+ * The people the Assign Tasks member filter offers: everyone who holds a task or could be given one --
+ * the `employee` members of the projects, the same people the Assign dialog offers (see `memberOptions`)
+ * -- plus anyone holding a task who has since left their project, so a filter on them still works.
+ * Someone who cannot hold a task and holds none is not listed: choosing them could only ever show an
+ * empty page. Each person once, by name.
+ */
+export const taskHolderOptions = (projects: Project[]): ProjectUser[] => {
+  const people = new Map<number, ProjectUser>();
+  for (const project of projects) {
+    for (const member of project.employees ?? []) {
+      if (member.role === 'employee') people.set(member.id, member);
+    }
+    for (const task of project.tasks ?? []) {
+      for (const holder of holdersOf(task)) {
+        if (!people.has(holder.id)) people.set(holder.id, holder);
+      }
+    }
+  }
+  return [...people.values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+};
+
+/**
+ * The projects with only the tasks held by one of the members in `ids`, dropping a project left with
+ * none. An empty selection means "everyone" and filters nothing, as in every other member filter.
+ *
+ * "Held by" is meant strictly: a task nobody is assigned to is shared by the whole project but is
+ * not held by any one member, so it is not shown while a member is chosen. A task held by several
+ * members is shown when any of them is chosen.
+ */
+export const filterByHolders = (projects: Project[], ids: string[]): Project[] => {
+  if (ids.length === 0) return projects;
+  const result: Project[] = [];
+  for (const project of projects) {
+    const tasks = (project.tasks ?? []).filter((task) => holdersOf(task).some((holder) => ids.includes(String(holder.id))));
+    if (tasks.length > 0) result.push({ ...project, tasks });
+  }
+  return result;
+};
+
 /** Two lists of ids name the same people, whatever the order. */
 export const sameMembers = (a: number[], b: number[]): boolean =>
   a.length === b.length && a.every((id) => b.includes(id));
