@@ -1,5 +1,8 @@
+import errno
 import json
 import re
+import socket
+import ssl
 from typing import Optional
 
 
@@ -84,6 +87,162 @@ def redact_urls(text: str, placeholder: str = URL_PLACEHOLDER) -> str:
     return _URL_PATTERN.sub(_swap, text)
 
 
+class FailureCode:
+    """Why a request failed, as precisely as the client can tell.
+
+    The user is shown one calm sentence; the log and the diagnostics need the
+    cause. Every transport failure and every HTTP error is given one of these,
+    so "Network connection error" is never the whole story again -- it used to
+    cover a refused connection, a reset, a dropped keep-alive, a DNS failure
+    and any unexpected exception alike.
+
+    Mapping to the incident taxonomy (docs/API_FAILURES.md):
+    DNS=A, UNREACHABLE=A, REFUSED=B, CONNECT_TIMEOUT=C, READ_TIMEOUT=D,
+    HTTP_401=E/S, HTTP_403=F, HTTP_404=G, HTTP_409=H, HTTP_429=I,
+    HTTP_500=J, HTTP_502=K, HTTP_503=L, HTTP_504=M, MALFORMED=N,
+    CANCELLED=O, CLIENT=P, HTTP_5XX covers Q/R when the body says so, and
+    UNKNOWN=T.
+    """
+
+    DNS = "dns"
+    UNREACHABLE = "unreachable"
+    REFUSED = "refused"
+    CONNECT = "connect"
+    CONNECT_TIMEOUT = "connect_timeout"
+    READ_TIMEOUT = "read_timeout"
+    WRITE_TIMEOUT = "write_timeout"
+    POOL_TIMEOUT = "pool_timeout"
+    #: The connection was dropped mid-request (reset, aborted, broken pipe).
+    RESET = "reset"
+    #: The server hung up without answering ("Server disconnected").
+    PROTOCOL = "protocol"
+    TLS = "tls"
+    PROXY = "proxy"
+    CLOSED = "closed"
+    MALFORMED = "malformed"
+    CANCELLED = "cancelled"
+    CLIENT = "client"
+    UNKNOWN = "unknown"
+
+    #: Failures that happen before or instead of an answer, and fail fast. A
+    #: GET that fails this way can be repeated: nothing was applied and
+    #: nobody was kept waiting. Timeouts are deliberately absent -- a slow
+    #: backend is made slower by being asked again.
+    RETRYABLE_TRANSPORT = frozenset({DNS, UNREACHABLE, REFUSED, CONNECT, RESET, PROTOCOL})
+
+    #: Gateway statuses that mean "try again", not "no".
+    RETRYABLE_STATUS = frozenset({502, 503, 504})
+
+
+def http_failure_code(status_code: int) -> str:
+    return f"http_{int(status_code)}"
+
+
+def _cause_chain(exc: BaseException):
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        yield exc
+        exc = exc.__cause__ or exc.__context__
+
+
+#: errno values for "the network or host cannot be reached", POSIX and Windows.
+_UNREACHABLE_ERRNOS = {
+    errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN,
+    10050, 10051, 10065,  # WSAENETDOWN, WSAENETUNREACH, WSAEHOSTUNREACH
+}
+
+
+def classify_transport_error(exc: BaseException) -> str:
+    """The `FailureCode` for an exception raised by the HTTP transport.
+
+    Reads the exception's own type first (httpx names the phase), then its
+    cause chain for the OS-level reason, because httpx reports a failed DNS
+    lookup, a refused connection and an unreachable network all as the same
+    `ConnectError`.
+    """
+    import httpx
+
+    if isinstance(exc, httpx.ConnectTimeout):
+        return FailureCode.CONNECT_TIMEOUT
+    if isinstance(exc, httpx.ReadTimeout):
+        return FailureCode.READ_TIMEOUT
+    if isinstance(exc, httpx.WriteTimeout):
+        return FailureCode.WRITE_TIMEOUT
+    if isinstance(exc, httpx.PoolTimeout):
+        return FailureCode.POOL_TIMEOUT
+    if isinstance(exc, httpx.TimeoutException):
+        return FailureCode.READ_TIMEOUT
+    if isinstance(exc, httpx.ProxyError):
+        return FailureCode.PROXY
+    if isinstance(exc, httpx.RemoteProtocolError):
+        return FailureCode.PROTOCOL
+    if isinstance(exc, (httpx.LocalProtocolError, httpx.UnsupportedProtocol, httpx.InvalidURL)):
+        return FailureCode.CLIENT
+    if isinstance(exc, httpx.CloseError):
+        return FailureCode.RESET
+    if isinstance(exc, (httpx.ReadError, httpx.WriteError)):
+        return FailureCode.RESET
+    if isinstance(exc, (httpx.ConnectError, httpx.NetworkError)):
+        for link in _cause_chain(exc):
+            if isinstance(link, ssl.SSLError):
+                return FailureCode.TLS
+            if isinstance(link, socket.gaierror):
+                return FailureCode.DNS
+            if isinstance(link, ConnectionRefusedError):
+                return FailureCode.REFUSED
+            if isinstance(link, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+                return FailureCode.RESET
+            if isinstance(link, OSError) and link.errno in _UNREACHABLE_ERRNOS:
+                return FailureCode.UNREACHABLE
+            if isinstance(link, OSError) and getattr(link, "winerror", None) in _UNREACHABLE_ERRNOS:
+                return FailureCode.UNREACHABLE
+        return FailureCode.CONNECT
+    return FailureCode.CLIENT
+
+
+def describe_failure(exc: BaseException) -> dict:
+    """The diagnosis an error carries, found through the services that wrap it.
+
+    Domain services re-raise a transport failure as their own `ApiError` with
+    a sentence the user can read ("Failed to load projects: Network connection
+    error."). The original is still on `__cause__`/`__context__`; this walks to
+    it, so a screen's handler can log *why* without every service learning to
+    copy fields. Never raises. Keys: `code` (a `FailureCode` or None), `status`,
+    `request_id`, `attempts`, `elapsed_ms`.
+    """
+    for link in _cause_chain(exc):
+        code = getattr(link, "failure_code", None)
+        if code:
+            return {
+                "code": code,
+                "status": getattr(link, "status_code", None),
+                "request_id": getattr(link, "request_id", None),
+                "attempts": getattr(link, "attempts", 1),
+                "elapsed_ms": getattr(link, "elapsed_ms", None),
+            }
+    return {
+        "code": None, "status": getattr(exc, "status_code", None),
+        "request_id": None, "attempts": 1, "elapsed_ms": None,
+    }
+
+
+def is_session_failure(exc: BaseException) -> bool:
+    """True when the failure is the session ending -- never a network problem.
+
+    A 401 (or the client's own `SessionExpiredError`), found anywhere in the
+    chain. The dashboards used to infer this from the words "session expired"
+    in a message; a status code does not change when someone rewrites a
+    sentence.
+    """
+    for link in _cause_chain(exc):
+        if isinstance(link, SessionExpiredError):
+            return True
+        if getattr(link, "status_code", None) == 401:
+            return True
+    return False
+
+
 class ApiError(Exception):
     """Base exception class for all SMS Desktop API client errors.
 
@@ -99,6 +258,15 @@ class ApiError(Exception):
         self.message = message
         self.status_code = status_code
         self.url = url
+        #: Diagnostics, filled in by `ApiClient` (None when an error did not
+        #: come from a request): a `FailureCode`, how long the failing attempt
+        #: took, the `X-Request-ID` it carried, and how many attempts were made.
+        self.failure_code: Optional[str] = None
+        self.elapsed_ms: Optional[int] = None
+        self.request_id: Optional[str] = None
+        self.attempts: int = 1
+        #: Seconds the server asked us to wait (`Retry-After`), when it did.
+        self.retry_after: Optional[float] = None
 
 
 class ApiConnectionError(ApiError):

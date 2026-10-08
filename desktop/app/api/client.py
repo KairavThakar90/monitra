@@ -1,14 +1,18 @@
 import httpx
 import logging
 import platform
+import random
 import sys
+import time
 import uuid
 import threading
+from urllib.parse import urlsplit
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from app.config import settings
 from app.api.exceptions import (
     ApiConnectionError, ApiError, ApiTimeoutError, ApiHttpError, SessionExpiredError,
-    LOGIN_DISABLED_CODE, is_login_disabled,
+    FailureCode, LOGIN_DISABLED_CODE, classify_transport_error, http_failure_code,
+    is_login_disabled,
 )
 from version import user_agent
 
@@ -18,6 +22,32 @@ log = logging.getLogger(__name__)
 TIMEOUT_FAST = 5.0      # Start/Stop timer
 TIMEOUT_NORMAL = 10.0   # Data loading
 TIMEOUT_SLOW = 30.0     # Uploads, large queries
+
+# ── Transient-failure retry (idempotent reads only) ───────────────────────────
+#
+# A connection that was reset, a server that hung up without answering, a
+# gateway that answered 502/503/504: for a GET these say "nothing happened,
+# ask again", and asking again is what turns a one-off blip -- a keep-alive
+# the other end had already closed, a gateway restarting -- into a request
+# that simply succeeded. Without it one dropped socket failed the whole load
+# and the user saw "Network connection error" on an otherwise healthy link.
+#
+# Bounded on every axis: two extra attempts at most, a total ceiling on the
+# time spent waiting, never after a slow failure, never for a timeout (a slow
+# backend is made slower by being asked again), never for anything that is not
+# a GET. A write is retried only by the durable queue, which has an idempotency
+# key for it; repeating a POST here would not.
+RETRY_MAX_ATTEMPTS = 3
+RETRY_BASE_SECONDS = 0.3
+#: Total time the retries may spend waiting between attempts.
+RETRY_WAIT_CEILING_SECONDS = 4.0
+#: A failure that took this long is a slow failure, not a transient one.
+RETRY_FAST_FAILURE_SECONDS = 5.0
+#: The longest `Retry-After` honoured; a server asking for longer is not asked.
+RETRY_AFTER_CEILING_SECONDS = 5.0
+IDEMPOTENT_METHODS = frozenset({"GET", "HEAD"})
+#: The pool is replaced after a reset at most this often.
+POOL_RECYCLE_MIN_INTERVAL_SECONDS = 5.0
 
 #: This machine's CPU architecture, resolved once at import.
 #:
@@ -91,21 +121,32 @@ class ApiClient:
 
         # Persistent connection pool — reuses TCP connections across requests
         self._client: Optional[httpx.Client] = None
+        #: Pools replaced after a reset, kept (not closed) so a request still
+        #: running on one finishes; closed when newer ones displace them.
+        self._retired_clients: List[httpx.Client] = []
+        self._last_recycle = 0.0
+        #: Set by `close()` so a retry waiting out its backoff ends at once.
+        self._closing = threading.Event()
         self._ensure_client()
+
+    def _new_http_client(self) -> httpx.Client:
+        """One pooled client. A method so a replacement pool is built exactly
+        like the first (and so a test can build it over a fake transport)."""
+        return httpx.Client(
+            timeout=self.timeout,
+            limits=httpx.Limits(
+                max_connections=10,
+                max_keepalive_connections=5,
+                keepalive_expiry=30.0,
+            ),
+        )
 
     def _ensure_client(self) -> None:
         """Create the persistent HTTP client if it does not exist."""
         with self._lock:
             if self._closed or self._client is not None:
                 return
-            self._client = httpx.Client(
-                timeout=self.timeout,
-                limits=httpx.Limits(
-                    max_connections=10,
-                    max_keepalive_connections=5,
-                    keepalive_expiry=30.0,
-                ),
-            )
+            self._client = self._new_http_client()
 
     @property
     def access_token(self) -> Optional[str]:
@@ -173,9 +214,16 @@ class ApiClient:
         headers: Optional[Dict[str, str]] = None,
         timeout: Optional[float] = None,
         skip_auth_refresh: bool = False,
+        retry: bool = True,
     ) -> httpx.Response:
         """
         Execute an HTTP request using the persistent connection pool.
+
+        A GET that fails in a way that says "nothing happened" (see
+        `FailureCode.RETRYABLE_TRANSPORT`, and 502/503/504) is repeated up to
+        twice, after a short jittered pause; nothing else is ever repeated here.
+        `retry=False` opts a caller out -- the network probe, whose whole job
+        is to report the first failure.
 
         A 401 is retried exactly once, after a silent token refresh. The retry
         is deliberately capped at one attempt: if the renewed token is also
@@ -205,7 +253,7 @@ class ApiClient:
         """
         token_used = self._access_token
         try:
-            return self._execute(method, path, json_data, params, headers, timeout)
+            return self._execute(method, path, json_data, params, headers, timeout, retry)
         except ApiHttpError as e:
             if e.status_code in (401, 403) and is_login_disabled(e.response_body):
                 # Excluded by an administrator. A refresh would be refused the
@@ -231,7 +279,7 @@ class ApiClient:
                     SESSION_RENEWAL_MESSAGE, original_exception=e, url=self._build_url(path)
                 )
         # One retry, now carrying the renewed token.
-        return self._execute(method, path, json_data, params, headers, timeout)
+        return self._execute(method, path, json_data, params, headers, timeout, retry)
 
     def _refresh_once(self, token_used: Optional[str]) -> str:
         """Renew the access token, at most one refresh at a time.
@@ -279,16 +327,164 @@ class ApiClient:
         params: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         timeout: Optional[float] = None,
+        retry: bool = True,
     ) -> httpx.Response:
-        """Perform one HTTP round trip. No retry, no auth handling."""
-        return self._send(
-            method,
-            self._build_url(path),
-            json_data=json_data,
-            params=params,
-            req_headers=self._prepare_headers(headers),
-            req_timeout=timeout or self.timeout,
+        """Perform a request, repeating an idempotent read through a transient failure.
+
+        One `X-Request-ID` covers every attempt, so the backend's log and the
+        desktop's log describe the same request under the same id; the
+        attempt number travels in `X-Monitra-Attempt` from the second on.
+        Auth is not handled here -- a 401 is not a transient failure.
+        """
+        url = self._build_url(path)
+        req_headers = self._prepare_headers(headers)
+        request_id = req_headers.get("X-Request-ID")
+        may_retry = retry and method.upper() in IDEMPOTENT_METHODS
+        started = time.monotonic()
+        waited = 0.0
+        attempt = 1
+        while True:
+            if attempt > 1:
+                req_headers["X-Monitra-Attempt"] = str(attempt)
+            try:
+                response = self._send(
+                    method, url, json_data=json_data, params=params,
+                    req_headers=req_headers, req_timeout=timeout or self.timeout,
+                )
+            except ApiError as exc:
+                exc.attempts = attempt
+                delay = self._retry_delay(exc, attempt, waited) if may_retry else None
+                self._log_failure(method, url, exc, attempt, delay)
+                if delay is None:
+                    raise
+                if exc.failure_code in (FailureCode.RESET, FailureCode.PROTOCOL):
+                    self._recycle_pool(exc.failure_code)
+                if self._closing.wait(delay):
+                    raise
+                waited += delay
+                attempt += 1
+                continue
+            if attempt > 1:
+                log.info(
+                    "API_RECOVERED %s %s after %d attempts in %d ms req=%s",
+                    method, urlsplit(url).path, attempt,
+                    int((time.monotonic() - started) * 1000), request_id,
+                )
+            return response
+
+    def _retry_delay(self, exc: ApiError, attempt: int, waited: float) -> Optional[float]:
+        """Seconds to wait before the next attempt, or None to give up."""
+        if attempt >= RETRY_MAX_ATTEMPTS:
+            return None
+        if (exc.elapsed_ms or 0) / 1000.0 >= RETRY_FAST_FAILURE_SECONDS:
+            return None
+        code = exc.failure_code
+        if isinstance(exc, ApiHttpError):
+            if exc.status_code not in FailureCode.RETRYABLE_STATUS and exc.status_code != 429:
+                return None
+            if exc.retry_after is not None and exc.retry_after > RETRY_AFTER_CEILING_SECONDS:
+                return None
+            if exc.status_code == 429 and exc.retry_after is None:
+                return None  # rate limited with no hint: asking again is the problem
+        elif code not in FailureCode.RETRYABLE_TRANSPORT:
+            return None
+        delay = RETRY_BASE_SECONDS * (3 ** (attempt - 1)) * random.uniform(0.5, 1.5)
+        if exc.retry_after:
+            delay = max(delay, float(exc.retry_after))
+        if waited + delay > RETRY_WAIT_CEILING_SECONDS:
+            return None
+        return delay
+
+    def _log_failure(self, method: str, url: str, exc: ApiError, attempt: int, delay: Optional[float]) -> None:
+        """One structured line per failed attempt: what, which, how long, what next.
+
+        The path only (never the query: a search box can put what a user typed
+        there), no headers, no body. `req` is the id the backend logs too.
+        """
+        # An ordinary business answer (404, 409, 422 ...) is not a fault.
+        expected = (
+            isinstance(exc, ApiHttpError) and exc.status_code is not None
+            and exc.status_code < 500 and exc.status_code != 429
         )
+        log.log(
+            logging.INFO if (delay is not None or expected) else logging.WARNING,
+            "API_FAIL %s %s code=%s status=%s attempt=%d/%d elapsed_ms=%s req=%s %s",
+            method, urlsplit(url).path, exc.failure_code,
+            exc.status_code if exc.status_code is not None else "-",
+            attempt, RETRY_MAX_ATTEMPTS, exc.elapsed_ms, exc.request_id,
+            f"retry_in={delay:.2f}s" if delay is not None else "final",
+        )
+
+    def _recycle_pool(self, reason: str) -> None:
+        """Replace the connection pool after a connection was reset under us.
+
+        A reset or a hang-up with no answer is the signature of a pooled
+        keep-alive the other side (or a NAT in between) had already dropped,
+        and its neighbours in the pool were opened at the same time. Retrying
+        on the same pool can pick another dead one; a fresh pool cannot. The
+        old pool is retired, not closed, so a request still running on it
+        finishes.
+        """
+        now = time.monotonic()
+        with self._lock:
+            if self._closed or self._client is None:
+                return
+            if now - self._last_recycle < POOL_RECYCLE_MIN_INTERVAL_SECONDS:
+                return
+            self._last_recycle = now
+            old, self._client = self._client, None
+        self._ensure_client()
+        log.info("API_POOL_RECYCLED after %s; idle connections discarded", reason)
+        self._retired_clients.append(old)
+        while len(self._retired_clients) > 2:
+            try:
+                self._retired_clients.pop(0).close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _translate(
+        self, exc: BaseException, method: str, url: str,
+        req_headers: Optional[Dict[str, str]], started: float, *, upload: bool = False,
+    ) -> ApiError:
+        """Turn an httpx exception into this app's, carrying the diagnosis.
+
+        The type and the user-facing message are exactly what they were; what
+        is new is `failure_code`, `elapsed_ms` and `request_id`, which is what
+        lets one "Network connection error" on a screen be traced to a reset
+        socket, a DNS failure or a gateway 502 -- and to the request the
+        backend logged.
+        """
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            err: ApiError = ApiHttpError(
+                status_code=status,
+                response_body=exc.response.text,
+                message=f"API responded with status code {status}",
+            )
+            err.failure_code = http_failure_code(status)
+            headers = getattr(exc.response, "headers", None)
+            err.retry_after = _parse_retry_after(
+                headers.get("Retry-After") if hasattr(headers, "get") else None
+            )
+        else:
+            code = classify_transport_error(exc)
+            if isinstance(exc, httpx.TimeoutException):
+                log.warning("%s timed out: %s %s", "upload" if upload else "request", method, url)
+                err = ApiTimeoutError(
+                    UPLOAD_TIMEOUT_MESSAGE if upload else TIMEOUT_MESSAGE,
+                    original_exception=exc, url=url,
+                )
+            elif isinstance(exc, (httpx.ConnectError, httpx.NetworkError)):
+                log.warning("network error: %s %s (%s)", method, url, exc)
+                err = ApiConnectionError(NETWORK_MESSAGE, original_exception=exc, url=url)
+            else:
+                log.warning("unexpected request failure: %s %s (%s)", method, url, exc)
+                err = ApiConnectionError(UNEXPECTED_MESSAGE, original_exception=exc, url=url)
+            err.failure_code = code
+        err.elapsed_ms = elapsed_ms
+        err.request_id = (req_headers or {}).get("X-Request-ID")
+        return err
 
     def _send(
         self,
@@ -307,16 +503,23 @@ class ApiClient:
         """
         req_timeout = req_timeout or self.timeout
 
+        def refused() -> ApiConnectionError:
+            err = ApiConnectionError(CLIENT_CLOSED_MESSAGE, url=url)
+            err.failure_code = FailureCode.CLOSED
+            err.request_id = (req_headers or {}).get("X-Request-ID")
+            return err
+
         if self._closed:
-            raise ApiConnectionError(CLIENT_CLOSED_MESSAGE, url=url)
+            raise refused()
 
         client = self._client
         if client is None:
             self._ensure_client()
             client = self._client
         if client is None:
-            raise ApiConnectionError(CLIENT_CLOSED_MESSAGE, url=url)
+            raise refused()
 
+        started = time.monotonic()
         try:
             # NOTE: deliberately NOT holding a lock here. httpx.Client is
             # thread-safe and pools connections internally. The previous
@@ -335,26 +538,8 @@ class ApiClient:
             # Triggers httpx.HTTPStatusError if response is 4xx or 5xx
             response.raise_for_status()
             return response
-
-        except httpx.TimeoutException as e:
-            log.warning("request timed out: %s %s", method, url)
-            raise ApiTimeoutError(TIMEOUT_MESSAGE, original_exception=e, url=url)
-
-        except (httpx.ConnectError, httpx.NetworkError) as e:
-            log.warning("network error: %s %s (%s)", method, url, e)
-            raise ApiConnectionError(NETWORK_MESSAGE, original_exception=e, url=url)
-            
-        except httpx.HTTPStatusError as e:
-            raise ApiHttpError(
-                status_code=e.response.status_code,
-                response_body=e.response.text,
-                message=f"API responded with status code {e.response.status_code}"
-            )
-            
-        except Exception as e:
-            # Fallback for unexpected failures (e.g. malformed responses)
-            log.warning("unexpected request failure: %s %s (%s)", method, url, e)
-            raise ApiConnectionError(UNEXPECTED_MESSAGE, original_exception=e, url=url)
+        except Exception as e:  # noqa: BLE001 - classified by _translate
+            raise self._translate(e, method, url, req_headers, started) from e
 
     def post_external(
         self,
@@ -446,6 +631,7 @@ class ApiClient:
         if client is None:
             raise ApiConnectionError(CLIENT_CLOSED_MESSAGE, url=url)
 
+        started = time.monotonic()
         try:
             response = client.post(
                 url,
@@ -456,25 +642,12 @@ class ApiClient:
             )
             response.raise_for_status()
             return response
-        except httpx.TimeoutException as e:
-            log.warning("upload timed out: %s", url)
-            raise ApiTimeoutError(UPLOAD_TIMEOUT_MESSAGE, original_exception=e, url=url)
-        except (httpx.ConnectError, httpx.NetworkError) as e:
-            log.warning("network error during upload: %s (%s)", url, e)
-            raise ApiConnectionError(NETWORK_MESSAGE, original_exception=e, url=url)
-        except httpx.HTTPStatusError as e:
-            raise ApiHttpError(
-                status_code=e.response.status_code,
-                response_body=e.response.text,
-                message=f"API responded with status code {e.response.status_code}",
-            )
-        except Exception as e:
-            log.warning("unexpected upload failure: %s (%s)", url, e)
-            raise ApiConnectionError(UNEXPECTED_MESSAGE, original_exception=e, url=url)
+        except Exception as e:  # noqa: BLE001 - classified by _translate
+            raise self._translate(e, "POST", url, headers, started, upload=True) from e
 
-    def get(self, path: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[float] = None, skip_auth_refresh: bool = False) -> httpx.Response:
-        """Execute a GET request."""
-        return self.request("GET", path, params=params, headers=headers, timeout=timeout, skip_auth_refresh=skip_auth_refresh)
+    def get(self, path: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[float] = None, skip_auth_refresh: bool = False, retry: bool = True) -> httpx.Response:
+        """Execute a GET request (repeated through a transient failure unless `retry=False`)."""
+        return self.request("GET", path, params=params, headers=headers, timeout=timeout, skip_auth_refresh=skip_auth_refresh, retry=retry)
 
     def post(self, path: str, json_data: Optional[Any] = None, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[float] = None, skip_auth_refresh: bool = False) -> httpx.Response:
         """Execute a POST request."""
@@ -501,13 +674,26 @@ class ApiClient:
         The runtime calls this only after every service thread has stopped, so
         no request can be in flight at this point.
         """
+        self._closing.set()
         with self._lock:
             if self._closed:
                 return
             self._closed = True
             client, self._client = self._client, None
-        if client is not None:
+            retired, self._retired_clients = self._retired_clients, []
+        for stale in ([client] if client is not None else []) + retired:
             try:
-                client.close()
+                stale.close()
             except Exception:
                 pass
+
+
+def _parse_retry_after(value: Optional[str]) -> Optional[float]:
+    """`Retry-After` as seconds, or None. Only the delta-seconds form is read."""
+    if not value:
+        return None
+    try:
+        seconds = float(value.strip())
+    except ValueError:
+        return None
+    return seconds if seconds >= 0 else None

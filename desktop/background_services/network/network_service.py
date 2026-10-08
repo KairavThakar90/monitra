@@ -249,7 +249,8 @@ class NetworkService(LoopService):
             pool=self.PROBE_CONNECT_TIMEOUT_S,
         )
         try:
-            self._api_client.get("/auth/me", timeout=timeout)
+            # No retry: the probe reports the first failure, which is its job.
+            self._api_client.get("/auth/me", timeout=timeout, retry=False)
         except (ApiConnectionError, ApiTimeoutError):
             # Could be no network, or the backend being down. Ask the OS —
             # unless we are shutting down, in which case skip the extra

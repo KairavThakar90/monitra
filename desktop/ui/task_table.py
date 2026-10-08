@@ -1718,6 +1718,8 @@ class TaskSection(QWidget):
     HEADER_RIGHT_MARGIN = 12 + ROW_BORDER_WIDTH
     timer_state_changed = Signal(bool)   # True = timer started, False = stopped
     error_occurred = Signal(str)
+    #: The user pressed "Retry" on a failed task load.
+    retry_requested = Signal()
     active_timer_conflict = Signal()
     task_action_succeeded = Signal(str)  # Success notification message
     #: A task CRUD call succeeded: (kind, project_id, server payload), where
@@ -2146,6 +2148,8 @@ class TaskSection(QWidget):
         self._status_label = QLabel("Select a project to see tasks.", self)
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status_label.setStyleSheet(f"color: {TEXT_MUTED}; padding: 40px; font-size: 13px;")
+        self._status_label.setOpenExternalLinks(False)
+        self._status_label.linkActivated.connect(lambda _href: self.retry_requested.emit())
         self._rows_layout.insertWidget(0, self._status_label)
 
         layout.addWidget(card)
@@ -2213,9 +2217,10 @@ class TaskSection(QWidget):
                 row._time_label.setText(_fmt_seconds(base_elapsed))
 
 
-    def set_error(self, message: str) -> None:
+    def set_error(self, message: str, *, retry: bool = False) -> None:
         self._clear_rows()
-        self._status_label.setText(f"{icons.img_tag('warning', ERROR)} {message}")
+        link = ' <a href="retry">Retry</a>' if retry else ""
+        self._status_label.setText(f"{icons.img_tag('warning', ERROR)} {message}{link}")
         self._status_label.show()
         self._has_loaded_tasks = False
 

@@ -374,6 +374,8 @@ class SidebarWidget(QWidget):
     Emits collapse_toggled(bool) when collapse state changes.
     """
     project_selected = Signal(dict)
+    #: The user pressed "Retry now" on a failed project load.
+    retry_requested = Signal()
     logout_requested = Signal()
     collapse_toggled = Signal(bool)
     #: The circular Play / Pause control under the day's total. Intent only:
@@ -777,6 +779,10 @@ class SidebarWidget(QWidget):
         self._empty_label.setStyleSheet(
             f"color: {SIDEBAR_MUTED}; font-size: 12px; background: transparent;"
         )
+        # The failed-load message carries a "Retry now" link. The only markup
+        # this label is ever given is the link written in `set_projects_message`.
+        self._empty_label.setOpenExternalLinks(False)
+        self._empty_label.linkActivated.connect(lambda _href: self.retry_requested.emit())
         empty_layout.addWidget(self._empty_label)
         empty_layout.addStretch(1)
         self._projects_area.addWidget(self._empty_page)           # page 1: empty
@@ -982,7 +988,7 @@ class SidebarWidget(QWidget):
         self._user_info_widget.setVisible(not self._collapsed)
         self._chevron_label.setVisible(not self._collapsed)
 
-    def set_projects_message(self, message: str) -> None:
+    def set_projects_message(self, message: str, *, retry: bool = False) -> None:
         """
         Show a message where the project list would be.
 
@@ -992,7 +998,15 @@ class SidebarWidget(QWidget):
         footer still: the message occupies the same rectangle the list does,
         so nothing below it can be displaced by the text's own height.
         """
-        self._empty_label.setText(message)
+        if retry:
+            # A link, not a button: the message already occupies the rectangle
+            # the list does, and a link adds no height of its own to displace
+            # the account card below it.
+            self._empty_label.setText(
+                f'{message}<br><a href="retry" style="color:{SIDEBAR_TEXT};">Retry now</a>'
+            )
+        else:
+            self._empty_label.setText(message)
         self._projects_area.setCurrentWidget(self._empty_page)
         self._pagination_widget.hide()
 

@@ -28,7 +28,7 @@ class StubApiClient:
         self.outcomes = list(outcomes)
         self.calls = 0
 
-    def get(self, path, params=None, headers=None, timeout=None):
+    def get(self, path, params=None, headers=None, timeout=None, retry=True):
         self.calls += 1
         outcome = self.outcomes.pop(0) if self.outcomes else self.outcomes_default
         if isinstance(outcome, Exception):

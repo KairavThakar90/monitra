@@ -28,9 +28,13 @@ from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QMessageBox, QScrollArea, QVBoxLayout, QWidget,
 )
 
+import random
+
 import version
 from app.api.client import ApiClient
-from app.api.exceptions import ApiHttpError
+from app.api.exceptions import (
+    ApiHttpError, FailureCode, describe_failure, is_session_failure,
+)
 from app.auth.session import SessionManager
 from app.portal.service import build_web_url
 from app.projects.service import ProjectService
@@ -343,6 +347,13 @@ class DashboardWindow(QWidget):
         self._project_retry_timer = QTimer(self)
         self._project_retry_timer.setSingleShot(True)
         self._project_retry_timer.timeout.connect(self.load_projects)
+        #: The same bounded backoff for the task list of the selected project
+        #: when nothing is on screen to show instead. Reset on success and
+        #: whenever the selection moves.
+        self._task_load_retries = 0
+        self._task_retry_timer = QTimer(self)
+        self._task_retry_timer.setSingleShot(True)
+        self._task_retry_timer.timeout.connect(self._retry_tasks_for_selection)
 
         #: The backend's change fingerprint as last seen, and whether the
         #: backend offers one at all (None until the first probe answers).
@@ -428,6 +439,7 @@ class DashboardWindow(QWidget):
 
         self._sidebar = SidebarWidget(self)
         self._sidebar.project_selected.connect(self._on_project_selected)
+        self._sidebar.retry_requested.connect(self._retry_projects_now)
         self._sidebar.logout_requested.connect(self._handle_logout)
         # The circular Play / Pause. The sidebar reports the click; the
         # request becomes the *task section's* existing Start/Stop -- the
@@ -561,6 +573,7 @@ class DashboardWindow(QWidget):
         )
         self._task_section.timer_state_changed.connect(self._on_timer_state_changed)
         self._task_section.error_occurred.connect(self._on_error)
+        self._task_section.retry_requested.connect(self._retry_tasks_now)
         self._task_section.active_timer_conflict.connect(self._reconcile_active_timer)
         self._task_section.task_action_succeeded.connect(self._on_task_action_succeeded)
         self._task_section.task_mutated.connect(self._on_task_mutated)
@@ -1251,6 +1264,8 @@ class DashboardWindow(QWidget):
         self._sync_probe_timer.stop()
         self._project_retry_timer.stop()
         self._empty_project_load_retries = 0
+        self._task_retry_timer.stop()
+        self._task_load_retries = 0
         self._activity_section.set_enabled(False)
         self.api.cancel_key("load-projects")
         # Parameterised families: `load-tasks:{project_id}`, `load-today:{date}`.
@@ -1489,7 +1504,11 @@ class DashboardWindow(QWidget):
         # It must not touch the connectivity pill either: one failed request is
         # not a connectivity measurement. Ask NetworkService to probe now and
         # let it decide -- it owns that state.
-        self._sync_log("refresh.failed", resource="projects", error=str(exc))
+        failure = describe_failure(exc)
+        self._sync_log(
+            "refresh.failed", resource="projects", error=str(exc), code=failure["code"],
+            status=failure["status"], req=failure["request_id"], attempts=failure["attempts"],
+        )
         if self._projects:
             self.api.network.check_now()
             age = self._cache_age_for_log()
@@ -1497,17 +1516,27 @@ class DashboardWindow(QWidget):
                 f"Showing projects from {self._describe_age(age)} — retrying.", WARNING
             )
             return
-        self._sidebar.set_projects_message("Unable to load projects")
         self._status_bar.set_message(f"Could not load projects: {exc}", ERROR)
-        if "session expired" in str(exc).lower():
+        if is_session_failure(exc) or "session expired" in str(exc).lower():
+            # The session ending is not a network problem and is not retried:
+            # the normal sign-in path takes over.
+            self._sidebar.set_projects_message("Unable to load projects")
             self.unauthorized_error.emit()
             return
+        # Everything else is treated as temporary: logged in, so stay logged
+        # in; say it is being retried, and give the user the button as well.
+        self._sidebar.set_projects_message(
+            "Connection temporarily unavailable. Retrying…", retry=True
+        )
         self._schedule_empty_project_retry()
 
     #: Backoff between automatic retries of an empty-state project load,
     #: capped well under REFRESH_INTERVAL_MS so a genuinely transient failure
     #: is not left on screen for the full periodic-refresh interval.
     _EMPTY_PROJECT_RETRY_DELAYS_MS = (3_000, 6_000, 12_000, 24_000)
+    #: Retries after the first are spread by up to this fraction, so a fleet
+    #: that lost the backend together does not return together.
+    _RETRY_JITTER = 0.25
 
     def _schedule_empty_project_retry(self) -> None:
         """One more attempt at the first project load, on a short backoff.
@@ -1521,9 +1550,48 @@ class DashboardWindow(QWidget):
         if self._projects or not self._active:
             return
         index = min(self._empty_project_load_retries, len(self._EMPTY_PROJECT_RETRY_DELAYS_MS) - 1)
-        delay = self._EMPTY_PROJECT_RETRY_DELAYS_MS[index]
+        delay = self._jittered_delay(self._EMPTY_PROJECT_RETRY_DELAYS_MS[index], index)
         self._empty_project_load_retries += 1
         self._project_retry_timer.start(delay)
+
+    def _jittered_delay(self, delay_ms: int, index: int) -> int:
+        """`delay_ms`, spread upward after the first retry (never below the base)."""
+        if index == 0:
+            return delay_ms
+        return int(delay_ms * (1.0 + random.uniform(0.0, self._RETRY_JITTER)))
+
+    def _retry_projects_now(self) -> None:
+        """The "Retry now" link: ask again immediately, from a clean backoff."""
+        self._project_retry_timer.stop()
+        self._empty_project_load_retries = 0
+        self._sidebar.set_projects_message("Loading projects…")
+        self._sync_log("retry.manual", resource="projects")
+        self.load_projects()
+
+    def _retry_tasks_now(self) -> None:
+        self._task_retry_timer.stop()
+        self._task_load_retries = 0
+        project = self._current_project
+        if project:
+            self._sync_log("retry.manual", resource="tasks", project=project.get("id"))
+            self._task_section.set_loading(project.get("project_name", "Project"))
+            self._load_tasks(project.get("id"))
+
+    def _retry_tasks_for_selection(self) -> None:
+        """Timer slot: the automatic retry of the selected project's task list."""
+        project = self._current_project
+        if not self._active or not project or getattr(self._task_section, "_has_loaded_tasks", False):
+            return
+        self._load_tasks(project.get("id"))
+
+    def _schedule_task_retry(self) -> None:
+        if not self._active or not self._current_project:
+            return
+        index = min(self._task_load_retries, len(self._EMPTY_PROJECT_RETRY_DELAYS_MS) - 1)
+        self._task_load_retries += 1
+        self._task_retry_timer.start(
+            self._jittered_delay(self._EMPTY_PROJECT_RETRY_DELAYS_MS[index], index)
+        )
 
     def _cache_age_for_log(self) -> Optional[int]:
         try:
@@ -1597,6 +1665,8 @@ class DashboardWindow(QWidget):
         self._on_project_selected(project or self._projects[0])
 
     def _on_project_selected(self, project: Dict[str, Any]) -> None:
+        self._task_retry_timer.stop()
+        self._task_load_retries = 0
         self._current_project = project
         project_id = project.get("id")
         self._remember_project_id(project_id)
@@ -1655,6 +1725,8 @@ class DashboardWindow(QWidget):
             self._load_tasks(project_id)
             return
         self._sync_log("server.received", resource="tasks", project=project_id, count=len(tasks))
+        self._task_load_retries = 0
+        self._task_retry_timer.stop()
         self.api.cache.cache_tasks(project_id, tasks)
         self._render_tasks(tasks, from_cache=False)
 
@@ -1729,10 +1801,20 @@ class DashboardWindow(QWidget):
             self.api.network.check_now()
             self._status_bar.set_message("Showing cached tasks — retrying.", WARNING)
             return
-        self._task_section.set_error(str(exc))
+        failure = describe_failure(exc)
+        self._sync_log(
+            "refresh.failed", resource="tasks", error=str(exc), code=failure["code"],
+            status=failure["status"], req=failure["request_id"], attempts=failure["attempts"],
+        )
         self._status_bar.set_message(f"Could not load tasks: {exc}", ERROR)
-        if "session expired" in str(exc).lower():
+        if is_session_failure(exc) or "session expired" in str(exc).lower():
+            self._task_section.set_error(str(exc))
             self.unauthorized_error.emit()
+            return
+        self._task_section.set_error(
+            "Connection temporarily unavailable. Retrying…", retry=True
+        )
+        self._schedule_task_retry()
 
     def _render_tasks(self, tasks: list, from_cache: bool) -> None:
         for task in tasks:
