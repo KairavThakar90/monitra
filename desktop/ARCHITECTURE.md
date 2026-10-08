@@ -698,7 +698,7 @@ one place that names the failure and decides whether to repeat it. Every `ApiErr
 `is_session_failure()` read it back, so no screen infers a 401 from the words in a message.
 
 * **Only a GET is repeated, only after a fast failure that says "nothing happened"** (a reset, a
-  hang-up with no answer, DNS, refused, a 502/503/504, a 429 with a short `Retry-After`): two extra
+  hang-up with no answer -- the signature of a dropped pooled keep-alive --, a 502/503/504, a 429 with a short `Retry-After`; a failure to *connect* -- DNS, unreachable, refused -- is reported at once, since a second try changes nothing and Windows takes ~2 s to fail a refused connection): two extra
   attempts, 0.3 s then 0.9 s with jitter, 4 s in total. Never after a timeout (a slow backend is made
   slower), a slow failure, a definitive 4xx, or a long `Retry-After`; never for a POST/PUT/PATCH/DELETE
   -- those reach the backend again only through the durable queue, whose idempotency keys make that

@@ -47,7 +47,7 @@ the screen.
 ## What each client does
 
 **Desktop (`app/api/client.py`).** GET only; at most two re-sends; after a *fast* connection-level
-failure (`dns`, `unreachable`, `refused`, `connect`, `reset`, `protocol`) or a 502/503/504 or a
+failure that says the *connection* broke (`reset`, `protocol` -- a dropped keep-alive) or a 502/503/504 or a
 429 with a short `Retry-After`; waits 0.3 s then 0.9 s (×50–150 %), 4 s in total; a reset also replaces
 the connection pool. Never after a timeout, a slow failure, a definitive 4xx, a long `Retry-After`
 (the backend's statement-timeout 504 sends 30 s precisely so it is not repeated), or for any write.

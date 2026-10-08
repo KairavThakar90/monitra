@@ -27,7 +27,9 @@ TIMEOUT_SLOW = 30.0     # Uploads, large queries
 #
 # A connection that was reset, a server that hung up without answering, a
 # gateway that answered 502/503/504: for a GET these say "nothing happened,
-# ask again", and asking again is what turns a one-off blip -- a keep-alive
+# ask again" (a failure to *connect* -- DNS, unreachable, refused -- is not
+# retried: the machine is offline or nothing is listening, and Windows takes
+# about two seconds to fail a refused connection), and asking again is what turns a one-off blip -- a keep-alive
 # the other end had already closed, a gateway restarting -- into a request
 # that simply succeeded. Without it one dropped socket failed the whole load
 # and the user saw "Network connection error" on an otherwise healthy link.

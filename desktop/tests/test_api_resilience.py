@@ -153,6 +153,27 @@ def test_a_reset_connection_is_retried_and_succeeds(make_client, caplog):
     assert "API_FAIL" in text and "code=reset" in text and "API_RECOVERED" in text
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [
+        _connect_error(socket.gaierror(11001, "getaddrinfo failed")),
+        _connect_error(ConnectionRefusedError(10061, "refused")),
+        _connect_error(OSError(10051, "network unreachable")),
+        _connect_error(),
+        httpx.ConnectTimeout("t"),
+    ],
+    ids=["dns", "refused", "unreachable", "connect", "connect_timeout"],
+)
+def test_failing_to_connect_is_reported_at_once_not_repeated(make_client, exc):
+    """Offline, or nothing listening: a second try a moment later changes nothing,
+    and on Windows a refused connection takes ~2 s to fail, so repeating it made
+    "the backend is down" take three times as long to say so."""
+    api, script = make_client(exc)
+    with pytest.raises(ApiError):
+        api.get("/api/v1/projects")
+    assert len(script.requests) == 1
+
+
 def test_a_server_that_hung_up_is_retried(make_client):
     api, script = make_client(httpx.RemoteProtocolError("Server disconnected without sending a response."))
     assert api.get("/api/v1/projects").status_code == 200

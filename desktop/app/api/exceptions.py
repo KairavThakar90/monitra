@@ -124,11 +124,20 @@ class FailureCode:
     CLIENT = "client"
     UNKNOWN = "unknown"
 
-    #: Failures that happen before or instead of an answer, and fail fast. A
-    #: GET that fails this way can be repeated: nothing was applied and
-    #: nobody was kept waiting. Timeouts are deliberately absent -- a slow
-    #: backend is made slower by being asked again.
-    RETRYABLE_TRANSPORT = frozenset({DNS, UNREACHABLE, REFUSED, CONNECT, RESET, PROTOCOL})
+    #: Failures that say "the connection broke, not the server": a pooled
+    #: keep-alive the other end (or a NAT in between) had already dropped
+    #: surfaces as a reset or a hang-up with no answer, fails in milliseconds,
+    #: and is gone on the next, fresh connection. A GET that fails this way can
+    #: be repeated: nothing was applied and nobody was kept waiting.
+    #:
+    #: Deliberately absent: timeouts (a slow backend is made slower by being
+    #: asked again) and the *could not connect* family -- DNS, unreachable,
+    #: refused. Those mean the machine is offline or nothing is listening; a
+    #: second attempt a moment later does not change that, and on Windows a
+    #: refused connection takes about two seconds to fail, so repeating it
+    #: tripled the time to report a backend that was down (found when a test
+    #: that expects an unreachable backend started taking three times as long).
+    RETRYABLE_TRANSPORT = frozenset({RESET, PROTOCOL})
 
     #: Gateway statuses that mean "try again", not "no".
     RETRYABLE_STATUS = frozenset({502, 503, 504})
