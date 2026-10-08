@@ -111,3 +111,27 @@ def test_every_description_is_the_desktops_own_wording(backend, desktop):
         assert backend.BUILTIN_BY_KEY[key].description == reminder.body, (
             f"{key}: the backend's description is not the desktop's body"
         )
+
+
+def test_the_default_hourly_limit_agrees(backend, desktop):
+    assert backend.DEFAULT_MAX_PER_HOUR == desktop.DEFAULT_MAX_PER_HOUR, (
+        f"desktop defaults to {desktop.DEFAULT_MAX_PER_HOUR} notifications an hour, "
+        f"backend to {backend.DEFAULT_MAX_PER_HOUR}"
+    )
+
+
+def test_every_limit_an_administrator_may_choose_is_one_the_desktop_accepts(backend, desktop):
+    low, high = desktop.MAX_PER_HOUR_RANGE
+    assert low <= backend.MIN_MAX_PER_HOUR <= backend.DEFAULT_MAX_PER_HOUR <= backend.MAX_MAX_PER_HOUR <= high, (
+        f"the backend offers {backend.MIN_MAX_PER_HOUR}-{backend.MAX_MAX_PER_HOUR} (default "
+        f"{backend.DEFAULT_MAX_PER_HOUR}) but the desktop only accepts {low}-{high}: a number it would "
+        f"ignore is one the administrator could set"
+    )
+
+
+def test_a_pushed_message_lives_as_long_on_both_sides(backend, desktop):
+    assert backend.PUSH_TTL_SECONDS == desktop.PUSH_TTL_SECONDS, (
+        f"the backend keeps a push in the schedule for {backend.PUSH_TTL_SECONDS} s but the desktop "
+        f"accepts one for {desktop.PUSH_TTL_SECONDS} s: the longer side would show (or drop) what the "
+        f"other did not"
+    )

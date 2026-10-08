@@ -25,6 +25,28 @@ KIND_DAILY = "daily"
 #: Monday = 0 ... Sunday = 6, the same numbering as ``datetime.weekday()``.
 ALL_WEEKDAYS: Tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6)
 
+#: How many notifications a desktop shows in any rolling hour unless an
+#: administrator chose another number. A copy of ``DEFAULT_MAX_PER_HOUR`` in
+#: ``desktop/background_services/wellbeing/reminders.py``; the contract test
+#: compares the two, and checks the range below sits inside what the desktop
+#: accepts.
+DEFAULT_MAX_PER_HOUR = 2
+#: What an administrator may choose.
+MIN_MAX_PER_HOUR = 1
+MAX_MAX_PER_HOUR = 6
+
+#: How long a pushed message stays worth showing, in seconds. The schedule
+#: carries a push only this long after it was sent, and a desktop that was off
+#: or signed out for longer never shows it -- the same judgement as the grace
+#: window of a time-of-day notification: a message that says "now" is wrong ten
+#: minutes later. A copy of ``PUSH_TTL_SECONDS`` in
+#: ``desktop/background_services/wellbeing/reminders.py``; the contract test
+#: compares the two.
+PUSH_TTL_SECONDS = 10 * 60
+#: How many pushes the row remembers. Older ones are dropped as new ones arrive;
+#: they have long expired by then.
+MAX_STORED_PUSHES = 20
+
 
 @dataclass(frozen=True)
 class BuiltinNotification:

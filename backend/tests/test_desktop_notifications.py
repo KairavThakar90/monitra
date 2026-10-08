@@ -42,8 +42,15 @@ from app.schemas.desktop_notifications import (
     BuiltinNotificationUpdate,
     CustomNotificationCreate,
     CustomNotificationUpdate,
+    DesktopLimitUpdate,
 )
-from app.services.desktop_notification_catalogue import ALL_WEEKDAYS, BUILTIN_NOTIFICATIONS
+from app.services.desktop_notification_catalogue import (
+    ALL_WEEKDAYS,
+    BUILTIN_NOTIFICATIONS,
+    DEFAULT_MAX_PER_HOUR,
+    MAX_MAX_PER_HOUR,
+    MIN_MAX_PER_HOUR,
+)
 from app.services.desktop_notifications import (
     DESKTOP_NOTIFICATION_MANAGE_ROLES,
     MAX_CUSTOM_NOTIFICATIONS,
@@ -119,7 +126,7 @@ class DefaultScheduleTests(unittest.TestCase):
             with self.subTest(key=spec.key):
                 self.assertTrue(row["enabled"])
                 self.assertEqual(row["weekdays"], list(ALL_WEEKDAYS))
-                # Interval reminders have no time of day; daily ones carry the default.
+                # Untouched, a repeating reminder has no time (it repeats); a daily one carries its default.
                 self.assertEqual(row["time"], spec.default_time)
 
     def test_the_admin_view_names_and_describes_each_reminder(self):
@@ -185,11 +192,56 @@ class BuiltinChangeTests(unittest.TestCase):
         self.assertEqual(stored["builtin"], {})
         self.assertEqual(stored["version"], 2)  # two real changes; the second restored the default
 
-    def test_an_interval_reminder_has_no_time_of_day(self):
+    def test_a_repeating_reminder_can_be_fixed_to_a_time_of_day(self):
+        Service.update_builtin(self.db, self.admin, "hydrate", BuiltinNotificationUpdate(time="12:40"))
+
+        schedule = Service.get_schedule(self.db)
+        self.assertEqual(_builtin(schedule, "hydrate")["time"], "12:40")   # what the desktop polls
+        row = _builtin(Service.get_admin(self.db, self.admin), "hydrate")
+        self.assertEqual((row["kind"], row["every_minutes"], row["default_time"], row["time"]), ("interval", 60, None, "12:40"))
+        self.assertIsNone(_builtin(schedule, "posture")["time"])           # nothing else moved
+        self.assertIn("only at 12:40", self._audit()[0].description)
+
+    def test_a_repeating_reminder_fixed_to_a_time_keeps_its_days_and_switch(self):
+        Service.update_builtin(
+            self.db, self.admin, "hydrate", BuiltinNotificationUpdate(enabled=False, time="12:40", weekdays=[0, 1, 2, 3, 4]),
+        )
+
+        row = _builtin(Service.get_schedule(self.db), "hydrate")
+        self.assertEqual((row["enabled"], row["time"], row["weekdays"]), (False, "12:40", [0, 1, 2, 3, 4]))
+
+    def test_repeat_puts_a_fixed_reminder_back_on_its_cadence_and_leaves_no_override(self):
+        Service.update_builtin(self.db, self.admin, "hydrate", BuiltinNotificationUpdate(time="12:40"))
+        Service.update_builtin(self.db, self.admin, "hydrate", BuiltinNotificationUpdate(repeat=True))
+
+        self.assertIsNone(_builtin(Service.get_schedule(self.db), "hydrate")["time"])
+        stored = self.db.get(SystemSetting, SystemSettingKey.DESKTOP_NOTIFICATIONS).value
+        self.assertEqual(stored["builtin"], {})
+        self.assertEqual(stored["version"], 2)
+        self.assertIn("repeats every 60 minutes", self._audit()[-1].description)
+
+    def test_repeat_keeps_the_other_changes_made_to_the_reminder(self):
+        Service.update_builtin(self.db, self.admin, "hydrate", BuiltinNotificationUpdate(enabled=False, time="12:40"))
+        Service.update_builtin(self.db, self.admin, "hydrate", BuiltinNotificationUpdate(repeat=True))
+
+        row = _builtin(Service.get_schedule(self.db), "hydrate")
+        self.assertEqual((row["enabled"], row["time"]), (False, None))
+
+    def test_repeat_on_a_reminder_that_already_repeats_changes_and_audits_nothing(self):
+        Service.update_builtin(self.db, self.admin, "hydrate", BuiltinNotificationUpdate(repeat=True))
+
+        self.assertEqual(Service.get_schedule(self.db)["version"], 0)
+        self.assertEqual(self._audit(), [])
+
+    def test_a_daily_reminder_cannot_be_told_to_repeat(self):
         with self.assertRaises(HTTPException) as caught:
-            Service.update_builtin(self.db, self.admin, "hydrate", BuiltinNotificationUpdate(time="10:00"))
+            Service.update_builtin(self.db, self.admin, "lunch", BuiltinNotificationUpdate(repeat=True))
         self.assertEqual(caught.exception.status_code, 400)
         self.assertEqual(Service.get_schedule(self.db)["version"], 0)
+
+    def test_a_time_and_repeat_together_contradict_each_other(self):
+        with self.assertRaises(ValueError):
+            BuiltinNotificationUpdate(time="12:40", repeat=True)
 
     def test_an_interval_reminder_may_still_be_restricted_to_weekdays(self):
         Service.update_builtin(self.db, self.admin, "hydrate", BuiltinNotificationUpdate(weekdays=[0, 1, 2, 3, 4]))
@@ -356,6 +408,14 @@ class DamagedRowTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in schedule["custom"]], ["g"])
         self.assertEqual(schedule["version"], 3)
 
+    def test_a_damaged_time_on_a_repeating_reminder_reads_as_repeating_not_as_an_error(self):
+        db = self._db_with({"version": 2, "builtin": {"hydrate": {"time": 1240}, "lunch": {"time": ["x"]}}, "custom": []})
+
+        schedule = Service.get_schedule(db)
+
+        self.assertIsNone(_builtin(schedule, "hydrate")["time"])
+        self.assertEqual(_builtin(schedule, "lunch")["time"], "13:30")   # a daily one falls back to its default
+
 
 # ── Validation and the routes, through the real dependency chain ────────────
 
@@ -432,9 +492,13 @@ class RouteTests(unittest.TestCase):
             "blank time": {"time": ""},
             "bad time": {"time": "25:00"},
             "no days": {"weekdays": []},
+            "null repeat": {"repeat": None},
+            "repeat false": {"repeat": False},
+            "repeat and a time": {"repeat": True, "time": "12:40"},
         }.items():
             with self.subTest(builtin=name):
                 self.assertEqual(self.client.put("/desktop-notifications/builtin/lunch", json=body).status_code, 422)
+                self.assertEqual(self.client.put("/desktop-notifications/builtin/hydrate", json=body).status_code, 422)
 
         for name, body in {"empty body": {}, "null title": {"title": None}, "blank message": {"message": " "}}.items():
             with self.subTest(patch=name):
@@ -442,8 +506,19 @@ class RouteTests(unittest.TestCase):
 
         self.assertEqual(Service.get_schedule(self.db)["version"], 0)
 
-    def test_an_interval_reminder_given_a_time_is_a_400_and_an_unknown_one_a_404(self):
-        self.assertEqual(self.client.put("/desktop-notifications/builtin/hydrate", json={"time": "10:00"}).status_code, 400)
+    def test_a_repeating_reminder_is_fixed_to_a_time_and_put_back_over_http(self):
+        fixed = self.client.put("/desktop-notifications/builtin/hydrate", json={"time": "12:40"})
+        self.assertEqual(fixed.status_code, 200, fixed.text)
+        self.assertEqual(next(r for r in fixed.json()["builtin"] if r["key"] == "hydrate")["time"], "12:40")
+        polled = self.client.get("/desktop-notifications/schedule").json()
+        self.assertEqual(next(r for r in polled["builtin"] if r["key"] == "hydrate")["time"], "12:40")
+
+        back = self.client.put("/desktop-notifications/builtin/hydrate", json={"repeat": True})
+        self.assertEqual(back.status_code, 200, back.text)
+        self.assertIsNone(next(r for r in back.json()["builtin"] if r["key"] == "hydrate")["time"])
+
+    def test_a_daily_reminder_told_to_repeat_is_a_400_and_an_unknown_one_a_404(self):
+        self.assertEqual(self.client.put("/desktop-notifications/builtin/lunch", json={"repeat": True}).status_code, 400)
         self.assertEqual(self.client.put("/desktop-notifications/builtin/zzz", json={"enabled": False}).status_code, 404)
 
     def test_unicode_and_ordinary_punctuation_are_accepted(self):
@@ -483,6 +558,169 @@ class TimeOfDayAndWeekdayRuleTests(unittest.TestCase):
         self.assertEqual(days_label(list(ALL_WEEKDAYS)), "every day")
         self.assertEqual(days_label([0, 1, 2, 3, 4]), "Mon-Fri")
         self.assertEqual(days_label([5, 6]), "Sat, Sun")
+
+
+# ── The hourly limit ────────────────────────────────────────────────────────
+
+
+class LimitTests(unittest.TestCase):
+    """How many notifications a desktop may show in a rolling hour: 2 unless an
+    administrator chose another number. Stored in the same row as everything
+    else (no migration), only when it differs from the default."""
+
+    def setUp(self):
+        self.db = _sqlite_session()
+        self.admin = _user("administrator", user_id=5, username="grace")
+
+    def _audit(self):
+        return list(self.db.execute(select(ActivityLog).order_by(ActivityLog.id)).scalars())
+
+    def _stored(self):
+        return self.db.get(SystemSetting, SystemSettingKey.DESKTOP_NOTIFICATIONS).value
+
+    def test_the_default_is_two_an_hour_and_every_desktop_is_told(self):
+        self.assertEqual((DEFAULT_MAX_PER_HOUR, MIN_MAX_PER_HOUR, MAX_MAX_PER_HOUR), (2, 1, 6))
+        self.assertEqual(Service.get_schedule(self.db)["max_per_hour"], 2)
+        admin = Service.get_admin(self.db, self.admin)
+        self.assertEqual(
+            (admin["max_per_hour"], admin["default_max_per_hour"], admin["min_max_per_hour"], admin["max_max_per_hour"]),
+            (2, 2, 1, 6),
+        )
+
+    def test_a_chosen_limit_reaches_the_desktops_schedule_and_the_admin_view(self):
+        result = Service.update_limit(self.db, self.admin, DesktopLimitUpdate(max_per_hour=4))
+
+        self.assertEqual(result["max_per_hour"], 4)
+        schedule = Service.get_schedule(self.db)
+        self.assertEqual(schedule["max_per_hour"], 4)
+        self.assertEqual(schedule["version"], 1, "the version rises, so every desktop applies it on its next poll")
+
+    def test_a_change_stamps_who_and_when_and_writes_one_audit_row(self):
+        result = Service.update_limit(self.db, self.admin, DesktopLimitUpdate(max_per_hour=3))
+
+        self.assertEqual(result["updated_by_username"], "grace")
+        self.assertIsNotNone(result["updated_at"])
+        (row,) = self._audit()
+        self.assertEqual(row.action, ActivityLogAction.DESKTOP_NOTIFICATION_UPDATED)
+        self.assertEqual(row.description, "Set the desktop notification limit (3 per hour)")
+
+    def test_the_default_is_not_stored_so_choosing_it_again_leaves_nothing_behind(self):
+        Service.update_limit(self.db, self.admin, DesktopLimitUpdate(max_per_hour=5))
+        self.assertEqual(self._stored()["max_per_hour"], 5)
+
+        Service.update_limit(self.db, self.admin, DesktopLimitUpdate(max_per_hour=DEFAULT_MAX_PER_HOUR))
+
+        self.assertNotIn("max_per_hour", self._stored())
+        self.assertEqual(Service.get_schedule(self.db)["max_per_hour"], 2)
+        self.assertEqual(self._stored()["version"], 2)
+
+    def test_asking_for_the_number_already_in_force_changes_and_audits_nothing(self):
+        Service.update_limit(self.db, self.admin, DesktopLimitUpdate(max_per_hour=4))
+        Service.update_limit(self.db, self.admin, DesktopLimitUpdate(max_per_hour=4))
+        self.assertEqual((Service.get_schedule(self.db)["version"], len(self._audit())), (1, 1))
+
+        fresh = _sqlite_session()
+        Service.update_limit(fresh, self.admin, DesktopLimitUpdate(max_per_hour=DEFAULT_MAX_PER_HOUR))
+        self.assertEqual(Service.get_schedule(fresh)["version"], 0, "an untouched row asked for its default stays untouched")
+
+    def test_the_limit_and_the_notifications_do_not_disturb_each_other(self):
+        Service.update_limit(self.db, self.admin, DesktopLimitUpdate(max_per_hour=3))
+        Service.update_builtin(self.db, self.admin, "hydrate", BuiltinNotificationUpdate(enabled=False))
+        Service.create_custom(self.db, self.admin, _custom())
+
+        schedule = Service.get_schedule(self.db)
+        self.assertEqual(schedule["max_per_hour"], 3)
+        self.assertFalse(_builtin(schedule, "hydrate")["enabled"])
+        self.assertEqual(len(schedule["custom"]), 1)
+
+        Service.update_limit(self.db, self.admin, DesktopLimitUpdate(max_per_hour=6))
+        schedule = Service.get_schedule(self.db)
+        self.assertFalse(_builtin(schedule, "hydrate")["enabled"])
+        self.assertEqual(len(schedule["custom"]), 1)
+
+    def test_a_damaged_stored_limit_reads_as_the_default_and_a_good_one_is_kept(self):
+        for bad in (0, 7, -1, "x", "3", True, 2.5, None, [2], {"n": 2}):
+            with self.subTest(stored=bad):
+                db = _sqlite_session()
+                db.add(SystemSetting(key=SystemSettingKey.DESKTOP_NOTIFICATIONS, value={"version": 1, "max_per_hour": bad}))
+                db.commit()
+                self.assertEqual(Service.get_schedule(db)["max_per_hour"], DEFAULT_MAX_PER_HOUR)
+        good = _sqlite_session()
+        good.add(SystemSetting(key=SystemSettingKey.DESKTOP_NOTIFICATIONS, value={"version": 1, "max_per_hour": 3}))
+        good.commit()
+        self.assertEqual(Service.get_schedule(good)["max_per_hour"], 3)
+
+    def test_everyone_but_an_administrator_is_refused_and_nothing_is_written(self):
+        service_principal = _user("release_bot")
+        service_principal.is_service_principal = True
+        for who in (_user("hr"), _user("leader"), _user("manager"), _user("employee"), _user("client"), service_principal):
+            with self.subTest(role=who.role_name):
+                with self.assertRaises(HTTPException) as caught:
+                    Service.update_limit(self.db, who, DesktopLimitUpdate(max_per_hour=6))
+                self.assertEqual(caught.exception.status_code, 403)
+        self.assertEqual(Service.get_schedule(self.db)["version"], 0)
+
+    def test_every_administrator_spelling_may_set_it(self):
+        for role in sorted(DESKTOP_NOTIFICATION_MANAGE_ROLES):
+            with self.subTest(role=role):
+                Service.update_limit(self.db, _user(role), DesktopLimitUpdate(max_per_hour=3))
+                Service.update_limit(self.db, _user(role), DesktopLimitUpdate(max_per_hour=2))
+
+
+class LimitRouteTests(unittest.TestCase):
+
+    def setUp(self):
+        self.db = _sqlite_session()
+        self.user = _user("administrator", user_id=5, username="grace")
+        app.dependency_overrides[get_db] = lambda: self.db
+        app.dependency_overrides[get_current_user] = lambda: self.user
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        app.dependency_overrides.clear()
+
+    def test_setting_and_polling_it_over_http_under_both_prefixes(self):
+        for prefix, value in (("", 4), ("/api/v1", 5)):
+            with self.subTest(prefix=prefix):
+                set_ = self.client.put(f"{prefix}/desktop-notifications/limit", json={"max_per_hour": value})
+                self.assertEqual(set_.status_code, 200, set_.text)
+                self.assertEqual(set_.json()["max_per_hour"], value)
+                polled = self.client.get(f"{prefix}/desktop-notifications/schedule")
+                self.assertEqual(polled.json()["max_per_hour"], value)
+
+    def test_an_employee_may_poll_it_but_not_change_it(self):
+        self.user = _user("employee", user_id=9, username="eve")
+
+        self.assertEqual(self.client.get("/desktop-notifications/schedule").json()["max_per_hour"], 2)
+        self.assertEqual(self.client.put("/desktop-notifications/limit", json={"max_per_hour": 6}).status_code, 403)
+
+    def test_it_needs_a_signed_in_client(self):
+        app.dependency_overrides.pop(get_current_user)
+        self.assertEqual(self.client.put("/desktop-notifications/limit", json={"max_per_hour": 3}).status_code, 401)
+
+    def test_anything_outside_one_to_six_is_refused_and_nothing_is_written(self):
+        for name, body in {
+            "zero": {"max_per_hour": 0},
+            "seven": {"max_per_hour": 7},
+            "negative": {"max_per_hour": -2},
+            "text": {"max_per_hour": "many"},
+            "a decimal": {"max_per_hour": 2.5},
+            "a boolean": {"max_per_hour": True},
+            "null": {"max_per_hour": None},
+            "a list": {"max_per_hour": [2]},
+            "missing": {},
+            "wrong name": {"limit": 3},
+        }.items():
+            with self.subTest(body=name):
+                self.assertEqual(self.client.put("/desktop-notifications/limit", json=body).status_code, 422)
+        self.assertEqual(Service.get_schedule(self.db)["version"], 0)
+
+    def test_every_allowed_number_is_accepted(self):
+        for number in range(MIN_MAX_PER_HOUR, MAX_MAX_PER_HOUR + 1):
+            with self.subTest(number=number):
+                response = self.client.put("/desktop-notifications/limit", json={"max_per_hour": number})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(self.client.get("/desktop-notifications/schedule").json()["max_per_hour"], number)
 
 
 if __name__ == "__main__":

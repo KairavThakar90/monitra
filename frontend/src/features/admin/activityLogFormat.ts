@@ -87,6 +87,7 @@ const ACTION_LABELS: Record<string, string> = {
   desktop_notification_created: 'Created desktop notification',
   desktop_notification_updated: 'Updated desktop notification',
   desktop_notification_deleted: 'Deleted desktop notification',
+  desktop_notification_pushed: 'Pushed desktop notification',
 };
 
 /**

@@ -30,13 +30,16 @@ from background_services.wellbeing import (
     WellbeingService,
 )
 from background_services.wellbeing.reminders import MIN_SEPARATION_MINUTES
-from background_services.wellbeing.wellbeing_service import DAILY_STATE_KEY
+from background_services.wellbeing.wellbeing_service import DAILY_STATE_KEY, PUSH_STATE_KEY
 from core.time_format import IST
 
 TICK_SECONDS = WellbeingService.interval_ms / 1000
 #: Where the simulated monotonic clock starts. Arbitrary, and not zero so a
 #: deadline computed from the clock cannot pass for one computed from nothing.
 CLOCK_START = 1000.0
+#: These tests are about the cadence, the spacing and the times of day, not the hourly limit, so the
+#: services they build are not limited (the limit has its own tests in test_notification_hourly_limit.py).
+UNCAPPED = 1000
 
 
 class FakeNotifications:
@@ -47,7 +50,7 @@ class FakeNotifications:
         #: with the instant it was shown. Set by `make_service`.
         self.clock = lambda: 0.0
 
-    def notify(self, message, level=None, title=None, key=None, link=None):
+    def notify(self, message, level=None, title=None, key=None, link=None, native=False):
         if self.fail:
             raise RuntimeError("tray exploded")
         self.shown.append({"body": message, "title": title, "key": key, "at": self.clock()})
@@ -76,7 +79,7 @@ class FakeCache:
         self.store[key] = json.dumps(value)
 
 
-def make_service(*, signed_in=True, cache=None, start_ist=None, fail_notify=False):
+def make_service(*, signed_in=True, cache=None, start_ist=None, fail_notify=False, max_per_hour=UNCAPPED):
     notifications = FakeNotifications(fail=fail_notify)
     runtime = SimpleNamespace(
         api_client=SimpleNamespace(access_token="token" if signed_in else None),
@@ -85,6 +88,7 @@ def make_service(*, signed_in=True, cache=None, start_ist=None, fail_notify=Fals
         storage=None,
     )
     service = WellbeingService(runtime, cache)
+    service.DEFAULT_MAX_PER_HOUR = max_per_hour
     service._clock = CLOCK_START
     service._ist = start_ist or datetime(2026, 9, 11, 9, 0, tzinfo=IST)
     service._now_monotonic = lambda: service._clock
@@ -638,9 +642,10 @@ def test_the_daily_record_is_read_when_the_cadence_starts():
 
     service.tick()                              # the tick that starts the cadence
 
-    assert reads == [DAILY_STATE_KEY]
+    # Both records -- the daily reminders' and the pushed messages' -- on this quiet tick.
+    assert reads == [DAILY_STATE_KEY, PUSH_STATE_KEY]
     run_for(service, 5)
-    assert reads == [DAILY_STATE_KEY], "it is read once per process"
+    assert reads == [DAILY_STATE_KEY, PUSH_STATE_KEY], "each record is read once per process"
 
 
 def test_a_daily_reminder_does_not_fire_twice_in_one_day():
@@ -666,7 +671,7 @@ def test_a_daily_reminder_is_not_repeated_after_a_restart():
     run_for(second, 10)
 
     assert second_notifications.shown == []
-    assert json.loads(cache.store[DAILY_STATE_KEY])["tea_morning"] == "2026-09-11"
+    assert json.loads(cache.store[DAILY_STATE_KEY])["tea_morning"] == "2026-09-11@10:30"
 
 
 def test_a_daily_reminder_missed_by_hours_is_not_shown_late():

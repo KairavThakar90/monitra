@@ -191,6 +191,11 @@ class ReportsPageService:
         return ReportsPageService._entity_page(rows, total, seconds, page, limit, "project_id", "project_name")
 
     @staticmethod
+    def members(db, filters, search, sort_by, sort_order, page, limit) -> dict:
+        rows, total, seconds = ReportsPageRepository.members(db, filters, search, sort_by, sort_order, page, limit)
+        return ReportsPageService._entity_page(rows, total, seconds, page, limit, "member_id", "member_name")
+
+    @staticmethod
     def tasks(db, filters, search, sort_by, sort_order, page, limit) -> dict:
         rows, total, seconds = ReportsPageRepository.tasks(db, filters, search, sort_by, sort_order, page, limit)
         # total_tasks is COUNT(DISTINCT task_id) grouped by task_id, so it is

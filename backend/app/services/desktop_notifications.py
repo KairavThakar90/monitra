@@ -5,9 +5,13 @@ What it is
 A schedule an administrator controls from the web and every desktop follows:
 
 * the desktop's **built-in reminders** (20-20-20, water, posture, tea, lunch...)
-  can each be switched off, and the daily ones moved to another time;
+  can each be switched off and limited to chosen weekdays; the daily ones can
+  be moved to another time, and a repeating one ("every 60 minutes") can be
+  fixed to a time of day, when it is shown once instead of repeating;
 * **custom notifications** -- a title and a message the administrator writes --
-  are shown at a time of day, on chosen weekdays.
+  are shown at a time of day, on chosen weekdays;
+* a **pushed message** is shown on every signed-in desktop now (``push_now``);
+  the desktops hear about it through ``desktop_notification_push``.
 
 Every time is ``HH:MM`` in IST and every weekday is ``0`` (Monday) to ``6``
 (Sunday). A notification that is switched off is never sent: the desktop reads
@@ -23,10 +27,11 @@ desktop. The value is::
     {"version": 7,
      "builtin": {"lunch": {"enabled": false, "time": "13:45", "weekdays": [0,1,2,3,4]}},
      "custom":  [{"id": "...", "title": "...", "message": "...", "time": "15:00",
-                  "weekdays": [0,1,2,3,4], "enabled": true, ...}]}
+                  "weekdays": [0,1,2,3,4], "enabled": true, ...}],
+     "pushes":  [{"id": "...", "title": "...", "message": "...", "sent_at": "...", "sent_by": "..."}]}
 
 ``builtin`` holds only what an administrator has *changed*; a reminder with no
-entry is on, at its default time, every day. So an untouched deployment behaves
+entry is on, at its default time (a repeating one: repeating), every day. So an untouched deployment behaves
 exactly as the desktop did before this existed, and a new built-in reminder
 added to the desktop arrives switched on.
 
@@ -62,14 +67,22 @@ from app.schemas.desktop_notifications import (
     BuiltinNotificationUpdate,
     CustomNotificationCreate,
     CustomNotificationUpdate,
+    DesktopLimitUpdate,
+    DesktopPushCreate,
 )
 from app.services.activity_log import ActivityLogService
 from app.services.desktop_notification_catalogue import (
     ALL_WEEKDAYS,
     BUILTIN_BY_KEY,
     BUILTIN_NOTIFICATIONS,
+    DEFAULT_MAX_PER_HOUR,
     KIND_DAILY,
+    MAX_MAX_PER_HOUR,
+    MAX_STORED_PUSHES,
+    MIN_MAX_PER_HOUR,
+    PUSH_TTL_SECONDS,
 )
+from app.services.desktop_notification_push import notify_changed
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -108,10 +121,12 @@ class DesktopNotificationService:
         """What every desktop polls. Open to any signed-in client."""
         setting = SystemSettingRepository.get(db, SystemSettingKey.DESKTOP_NOTIFICATIONS)
         value = DesktopNotificationService._value(setting)
+        now = datetime.now(timezone.utc)
         return {
             "version": value["version"],
             "updated_at": getattr(setting, "updated_at", None) if value["version"] else None,
-            "server_time": datetime.now(timezone.utc),
+            "server_time": now,
+            "max_per_hour": DesktopNotificationService._max_per_hour(value),
             "builtin": [
                 {"key": row["key"], "enabled": row["enabled"], "time": row["time"], "weekdays": row["weekdays"]}
                 for row in DesktopNotificationService._resolved_builtin(value)
@@ -121,7 +136,15 @@ class DesktopNotificationService:
                 {key: item[key] for key in ("id", "title", "message", "time", "weekdays")}
                 for item in value["custom"] if item["enabled"]
             ],
+            "pushes": DesktopNotificationService._live_pushes(value, now),
         }
+
+    @staticmethod
+    def current_version(db: Session) -> int:
+        """The stored version, and nothing else: what the push stream's watcher
+        reads every couple of seconds while any desktop is connected."""
+        setting = SystemSettingRepository.get(db, SystemSettingKey.DESKTOP_NOTIFICATIONS)
+        return DesktopNotificationService._value(setting)["version"]
 
     @staticmethod
     def get_admin(db: Session, current_user: User) -> Dict[str, Any]:
@@ -137,10 +160,10 @@ class DesktopNotificationService:
         spec = BUILTIN_BY_KEY.get(key)
         if spec is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown built-in notification.")
-        if payload.time is not None and spec.kind != KIND_DAILY:
+        if payload.repeat and spec.kind == KIND_DAILY:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                f"'{spec.label}' repeats every {spec.every_minutes} minutes and has no time of day.",
+                f"'{spec.label}' is shown at a time of day and does not repeat. Choose another time instead.",
             )
 
         def change(value: Dict[str, Any]) -> List[str]:
@@ -153,11 +176,19 @@ class DesktopNotificationService:
                     override["enabled"] = False
                 notes.append("turned on" if payload.enabled else "turned off")
             if payload.time is not None:
+                # A daily reminder's default time is not stored. A repeating one
+                # has no default time (it repeats), so any time is a choice to
+                # show it once a day at that time.
                 if payload.time == spec.default_time:
                     override.pop("time", None)
                 else:
                     override["time"] = payload.time
-                notes.append(f"time {payload.time}")
+                notes.append(
+                    f"time {payload.time}" if spec.kind == KIND_DAILY else f"only at {payload.time}"
+                )
+            if payload.repeat:
+                override.pop("time", None)  # back on its cadence: nothing to remember
+                notes.append(f"repeats every {spec.every_minutes} minutes")
             if payload.weekdays is not None:
                 if list(payload.weekdays) == list(ALL_WEEKDAYS):
                     override.pop("weekdays", None)
@@ -174,6 +205,61 @@ class DesktopNotificationService:
             db, current_user, change,
             action=ActivityLogAction.DESKTOP_NOTIFICATION_UPDATED,
             describe=lambda notes: f"Updated the desktop reminder '{spec.label}' ({', '.join(notes)})",
+            entity_id=None,
+        )
+
+    @staticmethod
+    def update_limit(db: Session, current_user: User, payload: DesktopLimitUpdate) -> Dict[str, Any]:
+        """Set how many notifications a desktop may show in a rolling hour.
+
+        The default is not stored (like a built-in reminder's default): choosing
+        it again puts the row back as if nobody had touched it.
+        """
+        DesktopNotificationService._require_manage(current_user)
+
+        def change(value: Dict[str, Any]) -> List[str]:
+            if payload.max_per_hour == DEFAULT_MAX_PER_HOUR:
+                value.pop("max_per_hour", None)
+            else:
+                value["max_per_hour"] = payload.max_per_hour
+            return [f"{payload.max_per_hour} per hour"]
+
+        return DesktopNotificationService._apply(
+            db, current_user, change,
+            action=ActivityLogAction.DESKTOP_NOTIFICATION_UPDATED,
+            describe=lambda notes: f"Set the desktop notification limit ({notes[0]})",
+            entity_id=None,
+        )
+
+    @staticmethod
+    def push_now(db: Session, current_user: User, payload: DesktopPushCreate) -> Dict[str, Any]:
+        """Show a message on every signed-in desktop now.
+
+        Recorded on the schedule row like any other change, so it bumps the
+        version -- which is what tells every connected desktop (see
+        ``desktop_notification_push``). It stays in the schedule for
+        ``PUSH_TTL_SECONDS``: a desktop that was busy, briefly offline or just
+        starting still gets it, and one that is away longer does not -- a
+        message that says "now" is wrong ten minutes later. Two pushes are two
+        pushes, even with the same words.
+        """
+        DesktopNotificationService._require_manage(current_user)
+        item = {
+            "id": uuid.uuid4().hex[:12],
+            "title": payload.title,
+            "message": payload.message,
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "sent_by": current_user.username,
+        }
+
+        def change(value: Dict[str, Any]) -> List[str]:
+            value["pushes"] = [*value.get("pushes", []), item][-MAX_STORED_PUSHES:]
+            return ["to every desktop"]
+
+        return DesktopNotificationService._apply(
+            db, current_user, change,
+            action=ActivityLogAction.DESKTOP_NOTIFICATION_PUSHED,
+            describe=lambda notes: f"Pushed the desktop notification '{payload.title}' ({notes[0]})",
             entity_id=None,
         )
 
@@ -292,6 +378,9 @@ class DesktopNotificationService:
         setting.updated_by_username = current_user.username
         db.commit()
         db.refresh(setting)
+        # Tell the desktops connected to *this* process now; those on another
+        # worker hear within the watcher's interval.
+        notify_changed()
 
         description = describe(notes)
         ActivityLogService.capture(db, lambda: {
@@ -353,7 +442,58 @@ class DesktopNotificationService:
                 })
             except (KeyError, TypeError, ValueError):
                 continue
-        return {"version": version if isinstance(version, int) and version >= 0 else 0, "builtin": builtin, "custom": custom}
+        value: Dict[str, Any] = {
+            "version": version if isinstance(version, int) and version >= 0 else 0,
+            "builtin": builtin,
+            "custom": custom,
+        }
+        # Present only when an administrator chose one: an untouched row has no key
+        # and reads as the default, so existing rows need no migration.
+        limit = raw.get("max_per_hour")
+        if isinstance(limit, int) and not isinstance(limit, bool) and MIN_MAX_PER_HOUR <= limit <= MAX_MAX_PER_HOUR:
+            value["max_per_hour"] = limit
+        # Likewise only when there are any.
+        pushes = []
+        for item in raw.get("pushes") if isinstance(raw.get("pushes"), list) else []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                pushes.append({
+                    "id": str(item["id"]),
+                    "title": str(item["title"]),
+                    "message": str(item["message"]),
+                    "sent_at": str(item["sent_at"]),
+                    "sent_by": item.get("sent_by"),
+                })
+            except (KeyError, TypeError, ValueError):
+                continue
+        if pushes:
+            value["pushes"] = pushes[-MAX_STORED_PUSHES:]
+        return value
+
+    @staticmethod
+    def _live_pushes(value: Dict[str, Any], now: datetime) -> List[Dict[str, Any]]:
+        """The pushes still worth showing, oldest first, each with its age
+        measured here -- so a desktop never has to compare its clock with ours."""
+        live = []
+        for item in value.get("pushes", []):
+            try:
+                sent = datetime.fromisoformat(item["sent_at"])
+            except ValueError:
+                continue
+            if sent.tzinfo is None:
+                sent = sent.replace(tzinfo=timezone.utc)
+            age = max(0, int((now - sent).total_seconds()))
+            if age <= PUSH_TTL_SECONDS:
+                live.append({
+                    "id": item["id"], "title": item["title"], "message": item["message"],
+                    "seconds_ago": age,
+                })
+        return live
+
+    @staticmethod
+    def _max_per_hour(value: Dict[str, Any]) -> int:
+        return value.get("max_per_hour", DEFAULT_MAX_PER_HOUR)
 
     @staticmethod
     def _resolved_builtin(value: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -362,11 +502,14 @@ class DesktopNotificationService:
         for spec in BUILTIN_NOTIFICATIONS:
             override = value["builtin"].get(spec.key, {})
             weekdays = override.get("weekdays")
+            chosen = override.get("time")
             rows.append({
                 "key": spec.key,
                 "spec": spec,
                 "enabled": override.get("enabled", True) is not False,
-                "time": override.get("time", spec.default_time) if spec.kind == KIND_DAILY else None,
+                # A daily reminder always has a time. A repeating one has one only
+                # while an administrator has fixed it to a time of day.
+                "time": chosen if isinstance(chosen, str) else spec.default_time,
                 "weekdays": sorted(set(weekdays)) if isinstance(weekdays, list) and weekdays else list(ALL_WEEKDAYS),
             })
         return rows
@@ -378,6 +521,10 @@ class DesktopNotificationService:
             "version": value["version"],
             "updated_at": getattr(setting, "updated_at", None) if value["version"] else None,
             "updated_by_username": getattr(setting, "updated_by_username", None) if value["version"] else None,
+            "max_per_hour": DesktopNotificationService._max_per_hour(value),
+            "default_max_per_hour": DEFAULT_MAX_PER_HOUR,
+            "min_max_per_hour": MIN_MAX_PER_HOUR,
+            "max_max_per_hour": MAX_MAX_PER_HOUR,
             "builtin": [
                 {
                     "key": row["key"], "label": row["spec"].label, "description": row["spec"].description,

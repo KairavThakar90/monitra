@@ -493,3 +493,15 @@ def test_the_macos_bundle_names_every_native_module_the_app_imports_lazily():
     line = next(l for l in spec.splitlines() if "HIDDEN_IMPORTS +=" in l and "AppKit" in l)
     for module in ("AppKit", "Foundation", "Quartz", "objc"):
         assert f'"{module}"' in line, f"{module} is not a hidden import of the macOS bundle"
+
+
+def test_the_executables_file_description_is_the_notification_header_name():
+    """Windows prints a program's file description at the top of every notification it
+    raises, so this is what staff read above each Monitra notification, beside the
+    Monitra logo: "Monitra — Staff Management"."""
+    spec = (DESKTOP_ROOT / "packaging" / "monitra.spec").read_text(encoding="utf-8")
+    assert "StringStruct('FileDescription', '{_version_ns[\"NOTIFICATION_HEADER_NAME\"]}')" in spec
+    assert "APP_DISPLAY_NAME" not in spec.split("FileDescription")[1].split("\n")[0]
+    version = (DESKTOP_ROOT / "version.py").read_text(encoding="utf-8")
+    assert "NOTIFICATION_HEADER_NAME = APP_DISPLAY_NAME" in version
+    assert 'APP_DISPLAY_NAME = "Monitra — Staff Management"' in version

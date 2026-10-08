@@ -120,7 +120,7 @@ the images, in batches of 50 -- to `POST /time-entry-screenshots/capture-events`
 | Stage | Owner | Durable record |
 |---|---|---|
 | Capture (one image per capture event, however many displays) | `desktop/background_services/screenshot/screenshot_service.py` on the `TaskRunner` pool | — |
-| Optimise (WebP, 1000px reference, adaptive quality) | `screenshot/image_processor.py` | — |
+| Optimise (WebP, 1000px reference, adaptive quality, **60 KB per display hard limit**) | `screenshot/image_processor.py` | `MAX_IMAGE_BYTES`, `WEBP_QUALITY_*`, `FALLBACK_*` in `screenshot/config.py`; the log line `screenshot size limit:` appears only when the limit had to lower the quality |
 | Local persistence | `screenshot/store.py` → `<data dir>/screenshot-cache/<YYYY-MM-DD>/ss_<uuid>.webp`, written to a temp name and renamed | the file |
 | Queue | `desktop/sync/local_cache.py` → `pending_screenshots` (SQLite, WAL) | the row: `status`, `retry_count`, `next_retry_at`, `last_error`, `time_entry_id`, `client_op` |
 | Upload | `desktop/background_services/sync/sync_service.py::_upload_one_screenshot`, one multipart `POST /time-entries/{id}/screenshots` per capture, timeout 30 s | the row moves `pending → uploading → (deleted)` |

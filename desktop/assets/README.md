@@ -13,6 +13,11 @@ Accepted filenames (first match wins), see `core/branding.py`:
     logo.svg
     logo.png
 
+`store_transform_mark.png` is different: it is the publisher's mark (the globe), not
+Monitra's. It is **not used at the moment** (the system-tray icon, which Windows also
+draws at the top of every notification, is the Monitra mark again). It is not one of
+the names above and does not replace the Monitra mark.
+
 Use a square, transparent-background file — SVG for the crispest result at
 every size, otherwise a PNG of at least 256×256.
 

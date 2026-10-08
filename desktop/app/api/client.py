@@ -6,8 +6,9 @@ import sys
 import time
 import uuid
 import threading
+from contextlib import contextmanager
 from urllib.parse import urlsplit
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 from app.config import settings
 from app.api.exceptions import (
     ApiConnectionError, ApiError, ApiTimeoutError, ApiHttpError, SessionExpiredError,
@@ -76,6 +77,30 @@ NETWORK_MESSAGE = "Could not reach the server. Please check your connection."
 UNEXPECTED_MESSAGE = "An unexpected connection error occurred. Please try again."
 CLIENT_CLOSED_MESSAGE = "The connection is closing; the request was not sent."
 SESSION_RENEWAL_MESSAGE = "Could not renew the session right now. Please try again."
+
+
+class ApiStream:
+    """The open response of `ApiClient.stream_get`, read a line at a time.
+
+    Failures while reading are raised as this application's own exception
+    types, exactly as a plain request's are, so a caller has one set of
+    exceptions to handle whichever way it talks to the backend.
+    """
+
+    def __init__(self, response: httpx.Response, url: str) -> None:
+        self._response = response
+        self._url = url
+
+    def lines(self) -> Iterator[str]:
+        try:
+            yield from self._response.iter_lines()
+        except httpx.TimeoutException as e:
+            log.warning("stream read timed out: %s", self._url)
+            raise ApiTimeoutError(TIMEOUT_MESSAGE, original_exception=e, url=self._url)
+        except httpx.HTTPError as e:
+            # The server went away, or the connection was cut, mid-stream.
+            log.warning("stream broken: %s (%s)", self._url, e)
+            raise ApiConnectionError(NETWORK_MESSAGE, original_exception=e, url=self._url)
 
 
 class RefreshOutcome:
@@ -542,6 +567,77 @@ class ApiClient:
             return response
         except Exception as e:  # noqa: BLE001 - classified by _translate
             raise self._translate(e, method, url, req_headers, started) from e
+
+    @contextmanager
+    def stream_get(
+        self,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        *,
+        read_timeout: float,
+    ) -> Iterator[ApiStream]:
+        """Open a GET whose response is read as it arrives, until the block ends.
+
+        For a response that stays open and says something now and then (the
+        notification schedule's change stream). `read_timeout` is how long the
+        server may say *nothing* before the stream counts as dead; a server
+        that pings more often than that never trips it, and the caller gets
+        control back at every ping, which is how it notices it has been asked
+        to stop. The same connection pool, headers and exception types as
+        every other call -- a second HTTP path would be a second set of each.
+
+        There is no silent token refresh here: a 401 is raised as it is. The
+        caller always fetches with a plain request first, which does refresh.
+
+        :raises ApiHttpError: when the server answers with a 4xx/5xx instead
+            of opening the stream.
+        :raises ApiConnectionError: when it cannot be reached.
+        :raises ApiTimeoutError: when connecting takes too long.
+        """
+        url = self._build_url(path)
+        if self._closed:
+            raise ApiConnectionError(CLIENT_CLOSED_MESSAGE, url=url)
+        client = self._client
+        if client is None:
+            self._ensure_client()
+            client = self._client
+        if client is None:
+            raise ApiConnectionError(CLIENT_CLOSED_MESSAGE, url=url)
+
+        # `identity`: a compressor in front of the server would hold the pings
+        # back until it had enough to compress.
+        headers = self._prepare_headers({
+            "Accept": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Accept-Encoding": "identity",
+        })
+        timeout = httpx.Timeout(connect=TIMEOUT_FAST, read=read_timeout, write=TIMEOUT_FAST, pool=TIMEOUT_FAST)
+        opened = client.stream("GET", url, params=params, headers=headers, timeout=timeout)
+        try:
+            response = opened.__enter__()
+        except httpx.TimeoutException as e:
+            log.warning("request timed out: GET %s", url)
+            raise ApiTimeoutError(TIMEOUT_MESSAGE, original_exception=e, url=url)
+        except httpx.HTTPError as e:
+            log.warning("network error: GET %s (%s)", url, e)
+            raise ApiConnectionError(NETWORK_MESSAGE, original_exception=e, url=url)
+        except Exception as e:
+            log.warning("unexpected request failure: GET %s (%s)", url, e)
+            raise ApiConnectionError(UNEXPECTED_MESSAGE, original_exception=e, url=url)
+        try:
+            if response.status_code >= 400:
+                try:
+                    response.read()
+                except httpx.HTTPError:
+                    pass
+                raise ApiHttpError(
+                    status_code=response.status_code,
+                    response_body=response.text,
+                    message=f"API responded with status code {response.status_code}",
+                )
+            yield ApiStream(response, url)
+        finally:
+            opened.__exit__(None, None, None)
 
     def post_external(
         self,

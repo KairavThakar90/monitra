@@ -250,6 +250,18 @@ def target_file_bytes(display_count: int) -> int:
     return min(config.TARGET_FILE_BYTES * displays, config.max_target_file_bytes())
 
 
+def max_image_bytes(display_count: int) -> int:
+    """
+    The most bytes a finished image may have, given how many displays are in it.
+
+    The hard limit (`config.MAX_IMAGE_BYTES`, 60 KB) is per display, for the same reason the
+    compression target is: a two-monitor image carries twice the desktop. Never above
+    `MAX_TARGET_FILE_BYTES`, so a wall of screens stays storable.
+    """
+    displays = max(1, int(display_count or 1))
+    return min(config.max_image_bytes() * displays, config.max_target_file_bytes())
+
+
 def fallback_trigger_bytes(display_count: int) -> int:
     """
     The size above which a merged image gets a second compression pass.

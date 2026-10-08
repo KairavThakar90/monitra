@@ -66,8 +66,10 @@ DISPLAY_CAPTURE_RETRIES = 1
 #: image is larger than `TARGET_FILE_BYTES`, never going below
 #: `WEBP_QUALITY_MIN` — the floor is what keeps "aggressive" from becoming
 #: "unreadable", which would make the feature worthless for its actual purpose.
-WEBP_QUALITY_START = 72
-WEBP_QUALITY_MIN = 45
+#: Raised about 10% (72 / 45 / 20 -> 79 / 50 / 22, 2026-10-08) for sharper screenshots; the
+#: size is still bounded by `MAX_IMAGE_BYTES` below, which is what decides the file in the end.
+WEBP_QUALITY_START = 79
+WEBP_QUALITY_MIN = 50
 WEBP_QUALITY_STEP = 9
 WEBP_METHOD = 5  # 0 (fast) .. 6 (slowest, smallest)
 
@@ -110,7 +112,20 @@ FALLBACK_MAX_ATTEMPTS = 5
 #: The floor the fallback may compress to. Below `WEBP_QUALITY_MIN` by design —
 #: that is the point of a fallback — but still a floor, because an unreadable
 #: screenshot is a lost screenshot no matter how small it is.
-FALLBACK_QUALITY_MIN = 20
+FALLBACK_QUALITY_MIN = 22
+
+#: --- The hard size limit -------------------------------------------------
+#:
+#: The largest a stored screenshot may be, per display (a two-monitor image is allowed two
+#: of these, up to `MAX_TARGET_FILE_BYTES`). Unlike the targets above this is a limit, not a
+#: hope: after the normal passes, an image still over it is re-encoded at lower and lower
+#: quality -- below `FALLBACK_QUALITY_MIN`, down to `HARD_LIMIT_QUALITY_MIN` -- until it fits.
+#: Only a dense screen ever gets there; the readable-quality floors above protect everything else.
+MAX_IMAGE_BYTES = 60 * 1024
+
+#: The lowest quality the hard limit may use, and the most re-encodes it may spend on one image.
+HARD_LIMIT_QUALITY_MIN = 10
+HARD_LIMIT_MAX_ATTEMPTS = 6
 
 #: Fallback encodes use the slowest, smallest setting. It costs more CPU than
 #: `WEBP_METHOD`, which is affordable precisely because this path is rare.
@@ -234,6 +249,11 @@ def max_canvas_long_edge() -> int:
     """Long-edge cap for a merged multi-display image."""
     return _int_env("MONITRA_SCREENSHOT_MAX_LONG_EDGE",
                     MAX_CANVAS_LONG_EDGE, minimum=IMAGE_SIZE)
+
+
+def max_image_bytes() -> int:
+    """The hard size limit for one display's worth of screenshot."""
+    return _int_env("MONITRA_SCREENSHOT_MAX_IMAGE_BYTES", MAX_IMAGE_BYTES, minimum=1024)
 
 
 def max_target_file_bytes() -> int:

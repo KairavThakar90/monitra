@@ -92,6 +92,8 @@ export const ENDPOINTS = {
     CREATE: `${API_BASE_URL}/projects`,
     UPDATE: (id: string | number) => `${API_BASE_URL}/projects/${id}`,
     DELETE: (id: string | number) => `${API_BASE_URL}/projects/${id}`,
+    // Sets the organization (`category`) of several projects at once.
+    ASSIGN_CATEGORY: `${API_BASE_URL}/projects/category`,
     HOURS_SUMMARY: `${API_BASE_URL}/projects/hours-summary`,
     ASSIGNABLE_LEADERS: `${API_BASE_URL}/projects/assignable-leaders`,
     ASSIGNABLE_OWNERS: `${API_BASE_URL}/projects/assignable-owners`,
@@ -212,6 +214,8 @@ export const ENDPOINTS = {
   DESKTOP_NOTIFICATIONS: {
     BASE: `${API_BASE_URL}/desktop-notifications`,
     BUILTIN: (key: string) => `${API_BASE_URL}/desktop-notifications/builtin/${encodeURIComponent(key)}`,
+    // How many notifications a desktop may show in a rolling hour.
+    LIMIT: `${API_BASE_URL}/desktop-notifications/limit`,
     CUSTOM: `${API_BASE_URL}/desktop-notifications/custom`,
     CUSTOM_BY_ID: (id: string) => `${API_BASE_URL}/desktop-notifications/custom/${encodeURIComponent(id)}`,
   },

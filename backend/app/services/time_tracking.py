@@ -11,8 +11,10 @@ from app.models.task import Task
 from app.models.time_entry import TimeEntry
 from app.models.user import User
 from app.core.time_format import format_hms, ist_day_end_utc, ist_day_start_utc, ist_today
+from app.repositories.time_entry_activity import TimeEntryActivityRepository
 from app.repositories.time_tracking import TimeTrackingRepository
 from app.services.member_scope import may_view_member, visible_member_ids
+from app.services.time_entry_activity import weighted_activity_percentage
 
 
 class TimeTrackingService:
@@ -186,9 +188,25 @@ class TimeTrackingService:
         """
         user_ids = TimeTrackingService._effective_user_ids(current_user, None, db)
         rows = TimeTrackingRepository.list_active(db, current_user.organization_id, user_ids)
+        # Today's activity per listed member, in one grouped query -- not one
+        # per row. Skipped when nobody is running.
+        day_totals = {}
+        if rows:
+            today = ist_today()
+            day_totals = TimeEntryActivityRepository.get_day_totals_for_users(
+                db,
+                current_user.organization_id,
+                sorted({member.id for _, member, _, _, _ in rows}),
+                ist_day_start_utc(today),
+                ist_day_end_utc(today),
+            )
         items = []
         for entry, member, project, task, elapsed in rows:
             elapsed_seconds = max(0, int(elapsed or 0))
+            weighted, measured = day_totals.get(member.id, (0.0, 0))
+            activity = (
+                int(round(weighted_activity_percentage(weighted, measured))) if measured > 0 else None
+            )
             items.append({
                 "time_entry_id": entry.id,
                 "employee_id": member.id,
@@ -202,6 +220,7 @@ class TimeTrackingService:
                 "start_time": entry.start_time,
                 "elapsed_seconds": elapsed_seconds,
                 "elapsed_time": format_hms(elapsed_seconds),
+                "activity_percentage": activity,
             })
         return {
             "items": items,

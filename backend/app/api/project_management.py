@@ -10,7 +10,7 @@ from app.core.security import get_current_user, require_permission, require_task
 from app.core.permissions import LEADER_ROLE_NAMES
 from app.models.user import User
 from app.repositories.status_catalog import StatusCatalog
-from app.schemas.project_management import BillingType, ProjectCategory, ProjectCreate, ProjectHoursSummaryResponse, ProjectListResponse, ProjectManagementMetadata, ProjectMetadataStatusRead, ProjectRead, ProjectUpdate, RoleRead, StatusRead, SyncRevisionRead, TaskAssigneesSet, TaskCreate, TaskMetadataStatusRead, TaskRead, TaskUpdate
+from app.schemas.project_management import BillingType, ProjectCategory, ProjectCategoryAssign, ProjectCategoryAssignResult, ProjectCreate, ProjectHoursSummaryResponse, ProjectListResponse, ProjectManagementMetadata, ProjectMetadataStatusRead, ProjectRead, ProjectUpdate, RoleRead, StatusRead, SyncRevisionRead, TaskAssigneesSet, TaskCreate, TaskMetadataStatusRead, TaskRead, TaskUpdate
 from app.schemas.project_member import ProjectMembersAddRequest, ProjectMembersAddResponse, ProjectMemberRead, ProjectMemberUpdate, ProjectMembersListResponse
 from app.services.member_scope import is_team_scoped
 from app.services import project_ownership
@@ -139,6 +139,12 @@ def assignable_employees(search: Optional[str] = Query(None, max_length=100), us
             User.name.ilike(like_pattern(search), escape=LIKE_ESCAPE_CHARACTER)
         )
     return [{"id": item.id, "name": item.name, "email": item.email, "role": item.role_name} for item in db.scalars(query).all()]
+
+
+# Declared before `/projects/{project_id}` so "category" is never read as an id.
+@router.patch("/projects/category", response_model=ProjectCategoryAssignResult, dependencies=[Depends(require_permission("projects:update"))], summary="Set the organization of several projects at once")
+def assign_projects_category(payload: ProjectCategoryAssign, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
+    return ProjectManagementService.assign_category(db, user, payload.project_ids, payload.category)
 
 
 @router.get("/projects/{project_id}", response_model=ProjectRead, dependencies=[Depends(require_permission("projects:view"))], summary="Get a project")

@@ -11,8 +11,11 @@
  *   `{enabled}`, shows the new state at once, and rolls back if refused;
  * - a custom notification is created, switched, edited and deleted;
  * - a bad title / message / time / no day is refused before any request;
- * - editing a built-in sends only what changed, and an interval reminder has
- *   no time field.
+ * - editing a built-in sends only what changed;
+ * - a repeating reminder shows no time until "Only at a set time" is chosen, is
+ *   fixed with exactly `{time}` and put back on its cadence with `{repeat:true}`;
+ * - the hourly limit is shown with its default marked, changed with one PUT
+ *   `{max_per_hour}`, shown at once, and put back when the server refuses.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -51,15 +54,32 @@ const json = (body: unknown, status = 200) =>
 describe('AdminDesktopNotifications', () => {
   let container: HTMLDivElement;
   let root: Root;
-  let state: { version: number; updated_at: string | null; updated_by_username: string | null; builtin: any[]; custom: any[] };
+  let state: {
+    version: number; updated_at: string | null; updated_by_username: string | null;
+    max_per_hour: number; default_max_per_hour: number; min_max_per_hour: number; max_max_per_hour: number;
+    builtin: any[]; custom: any[];
+  };
   let calls: { method: string; path: string; body: Body | null }[];
   let refuseNext: { status: number; detail: string } | null;
+  // While set, a write is held until it resolves, so a test can look at the page before the server answers.
+  let gate: Promise<void> | null;
 
   const settle = async () => {
     for (let i = 0; i < 6; i += 1) {
       // eslint-disable-next-line no-await-in-loop
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     }
+  };
+  // After mounting: wait until the page has its data (it shows "Built-in reminders" only then),
+  // however long the machine takes to start and answer the first request. A fixed number of
+  // ticks is only enough when nothing else is running.
+  const mounted = async () => {
+    await settle();
+    for (let i = 0; i < 400 && !container.textContent?.includes('Built-in reminders'); i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    await settle();
   };
   const click = async (el: Element | null | undefined) => {
     expect(el).toBeTruthy();
@@ -77,6 +97,9 @@ describe('AdminDesktopNotifications', () => {
     Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === text) as HTMLButtonElement | undefined;
   const rowOf = (label: string) => box(label)!.closest('tr, [data-testid="custom-card"]') as HTMLElement;
   const dialog = () => container.querySelector('[role="dialog"]') as HTMLElement | null;
+  const radio = (label: string) =>
+    Array.from(dialog()!.querySelectorAll('label')).find((l) => l.textContent?.includes(label))!
+      .querySelector('input[type="radio"]') as HTMLInputElement;
   const writes = () => calls.filter((c) => c.method !== 'GET');
 
   const bump = () => { state.version += 1; state.updated_by_username = 'grace'; state.updated_at = '2026-10-01T09:00:00Z'; };
@@ -87,21 +110,25 @@ describe('AdminDesktopNotifications', () => {
     confirmAnswer = true;
     calls = [];
     refuseNext = null;
+    gate = null;
     state = {
       version: 0, updated_at: null, updated_by_username: null,
+      max_per_hour: 2, default_max_per_hour: 2, min_max_per_hour: 1, max_max_per_hour: 6,
       builtin: [
         builtin('hydrate', 'Drink water', 'interval'),
         builtin('lunch', 'Lunch break', 'daily'),
       ],
       custom: [],
     };
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => answer(input, init)));
+    const answer = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const request = input instanceof Request ? input : null;
       const url = new URL(request ? request.url : String(input), 'http://localhost');
       const method = (request?.method ?? init?.method ?? 'GET').toUpperCase();
       const raw = request ? await request.text() : (init?.body as string | undefined);
       const body = raw ? (JSON.parse(raw) as Body) : null;
       calls.push({ method, path: url.pathname, body });
+      if (gate && method !== 'GET') await gate;
       if (!url.pathname.includes('/desktop-notifications')) return json({}, 404);
       if (method === 'GET') return json(state);
       if (refuseNext) {
@@ -111,8 +138,12 @@ describe('AdminDesktopNotifications', () => {
       }
       const builtinMatch = url.pathname.match(/\/builtin\/([^/]+)$/);
       const customMatch = url.pathname.match(/\/custom\/([^/]+)$/);
-      if (builtinMatch && method === 'PUT') {
-        Object.assign(state.builtin.find((b) => b.key === builtinMatch[1])!, body);
+      if (url.pathname.endsWith('/limit') && method === 'PUT') {
+        state.max_per_hour = (body as { max_per_hour: number }).max_per_hour;
+      } else if (builtinMatch && method === 'PUT') {
+        // The backend's rule: `repeat` removes a repeating reminder's time.
+        const { repeat, ...change } = body as Body;
+        Object.assign(state.builtin.find((b) => b.key === builtinMatch[1])!, change, repeat ? { time: null } : {});
       } else if (url.pathname.endsWith('/custom') && method === 'POST') {
         state.custom.push({ id: `c${state.custom.length + 1}`, created_at: null, updated_at: null, created_by: 'grace', ...body });
       } else if (customMatch && method === 'PATCH') {
@@ -122,7 +153,7 @@ describe('AdminDesktopNotifications', () => {
       }
       bump();
       return json(state);
-    }));
+    };
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -131,7 +162,7 @@ describe('AdminDesktopNotifications', () => {
       middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(baseApi.middleware),
     });
     await act(async () => { root.render(<Provider store={store}><AdminDesktopNotifications /></Provider>); });
-    await settle();
+    await mounted();
   });
 
   afterEach(async () => {
@@ -168,7 +199,7 @@ describe('AdminDesktopNotifications', () => {
       middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(baseApi.middleware),
     });
     await act(async () => { root.render(<Provider store={store}><AdminDesktopNotifications /></Provider>); });
-    await settle();
+    await mounted();
 
     const text = container.textContent!;
     expect(text.indexOf('Custom notifications (1 of 1 on)')).toBeGreaterThan(-1);
@@ -256,7 +287,7 @@ describe('AdminDesktopNotifications', () => {
       middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(baseApi.middleware),
     });
     await act(async () => { root.render(<Provider store={store}><AdminDesktopNotifications /></Provider>); });
-    await settle();
+    await mounted();
 
     await click(box('Standup'));
     expect(writes()[0]).toEqual({ method: 'PATCH', path: expect.stringMatching(/\/custom\/c1$/), body: { enabled: false } });
@@ -280,7 +311,7 @@ describe('AdminDesktopNotifications', () => {
     expect(container.textContent).toContain('No custom notifications yet.');
   });
 
-  it('edits a daily built-in sending only what changed, and an interval one has no time field', async () => {
+  it('edits a daily built-in sending only what changed, and an interval one repeats until it is given a time', async () => {
     await click(Array.from(rowOf('Lunch break').querySelectorAll('button')).find((b) => b.textContent === 'Edit'));
     expect(dialog()!.querySelector('#notification-time')).not.toBeNull();
     await type(dialog()!.querySelector('#notification-time') as HTMLInputElement, '13:45');
@@ -289,8 +320,8 @@ describe('AdminDesktopNotifications', () => {
     expect(rowOf('Lunch break').textContent).toContain('13:45 IST');
 
     await click(Array.from(rowOf('Drink water').querySelectorAll('button')).find((b) => b.textContent === 'Edit'));
-    expect(dialog()!.querySelector('#notification-time')).toBeNull();
-    expect(dialog()!.textContent).toContain('no fixed');
+    expect(dialog()!.querySelector('#notification-time')).toBeNull();     // repeating: no time to set
+    expect(radio('Repeat every 60 minutes').checked).toBe(true);
     await click(button('Sat'));
     await click(button('Sun'));
     await click(button('Save'));
@@ -314,12 +345,195 @@ describe('AdminDesktopNotifications', () => {
       middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(baseApi.middleware),
     });
     await act(async () => { root.render(<Provider store={store}><AdminDesktopNotifications /></Provider>); });
-    await settle();
+    await mounted();
 
     await click(Array.from(rowOf('Lunch break').querySelectorAll('button')).find((b) => b.textContent === 'Edit'));
     await click(button('Reset to default'));
     await click(button('Save'));
 
     expect(writes()[0].body).toEqual({ time: '13:30', weekdays: [0, 1, 2, 3, 4, 5, 6] });
+  });
+
+  describe('a repeating reminder given a time', () => {
+    const editWater = () =>
+      click(Array.from(rowOf('Drink water').querySelectorAll('button')).find((b) => b.textContent === 'Edit'));
+    const fixedTo = async (time: string) => {
+      state.builtin[0] = builtin('hydrate', 'Drink water', 'interval', { time });
+      await act(async () => { root.unmount(); });
+      root = createRoot(container);
+      const store = configureStore({
+        reducer: { [baseApi.reducerPath]: baseApi.reducer },
+        middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(baseApi.middleware),
+      });
+      await act(async () => { root.render(<Provider store={store}><AdminDesktopNotifications /></Provider>); });
+      await mounted();
+    };
+
+    it('offers a time only once "Only at a set time" is chosen, and sends exactly {time}', async () => {
+      await editWater();
+      expect(dialog()!.querySelector('#notification-time')).toBeNull();
+      await click(radio('Only at a set time'));
+      expect(dialog()!.querySelector('#notification-time')).not.toBeNull();
+
+      await type(dialog()!.querySelector('#notification-time') as HTMLInputElement, '12:40');
+      await click(button('Save'));
+
+      expect(writes()).toEqual([{ method: 'PUT', path: expect.stringMatching(/\/builtin\/hydrate$/), body: { time: '12:40' } }]);
+      expect(rowOf('Drink water').textContent).toContain('Only at 12:40 IST');
+      expect(rowOf('Drink water').textContent).not.toContain('while working');
+    });
+
+    it('opens on "Only at a set time" with its time, and sends nothing when saved untouched', async () => {
+      await fixedTo('12:40');
+      expect(rowOf('Drink water').textContent).toContain('Only at 12:40 IST');
+
+      await editWater();
+      expect(radio('Only at a set time').checked).toBe(true);
+      expect((dialog()!.querySelector('#notification-time') as HTMLInputElement).value).toBe('12:40');
+      await click(button('Save'));
+
+      expect(writes()).toEqual([]);
+    });
+
+    it('puts it back on its cadence with exactly {repeat:true}', async () => {
+      await fixedTo('12:40');
+      await editWater();
+      await click(radio('Repeat every 60 minutes'));
+      expect(dialog()!.querySelector('#notification-time')).toBeNull();
+      await click(button('Save'));
+
+      expect(writes()).toEqual([{ method: 'PUT', path: expect.stringMatching(/\/builtin\/hydrate$/), body: { repeat: true } }]);
+      expect(rowOf('Drink water').textContent).toContain('Every 60 min while working');
+    });
+
+    it('shows the reminder as repeating the moment it is saved, before the server has answered', async () => {
+      await fixedTo('12:40');
+      expect(rowOf('Drink water').textContent).toContain('Only at 12:40 IST');
+      let release!: () => void;
+      gate = new Promise<void>((resolve) => { release = resolve; });
+
+      await editWater();
+      await click(radio('Repeat every 60 minutes'));
+      await click(button('Save'));
+
+      expect(writes()).toHaveLength(1);                                   // sent, and still unanswered
+      expect(rowOf('Drink water').textContent).toContain('Every 60 min while working');
+      expect(rowOf('Drink water').textContent).not.toContain('Only at');
+
+      release();
+      await settle();
+      expect(rowOf('Drink water').textContent).toContain('Every 60 min while working');   // and the server agrees
+    });
+
+    it('moves it to another time sending only {time}, never {repeat}', async () => {
+      await fixedTo('12:40');
+      await editWater();
+      await type(dialog()!.querySelector('#notification-time') as HTMLInputElement, '15:05');
+      await click(button('Save'));
+
+      expect(writes()).toEqual([{ method: 'PUT', path: expect.stringMatching(/\/builtin\/hydrate$/), body: { time: '15:05' } }]);
+    });
+
+    it('refuses a missing time before anything is sent', async () => {
+      await editWater();
+      await click(radio('Only at a set time'));
+      await type(dialog()!.querySelector('#notification-time') as HTMLInputElement, '');
+      await click(button('Save'));
+
+      expect(writes()).toEqual([]);
+      expect(dialog()).not.toBeNull();
+      expect(dialog()!.querySelector('#notification-time')!.getAttribute('aria-invalid')).toBe('true');
+    });
+
+    it('does not touch a reminder that repeats when only its days change', async () => {
+      await editWater();
+      await click(button('Sat'));
+      await click(button('Save'));
+
+      expect(writes()[0].body).toEqual({ weekdays: [0, 1, 2, 3, 4, 6] });   // no time, no repeat
+    });
+
+    it('Reset to default puts a fixed reminder back to repeating on every day', async () => {
+      await fixedTo('12:40');
+      await editWater();
+      await click(button('Sat'));                       // an unrelated change, undone by the reset below
+      await click(button('Reset to default'));
+      expect(radio('Repeat every 60 minutes').checked).toBe(true);
+      await click(button('Save'));
+
+      expect(writes()[0].body).toEqual({ repeat: true });
+    });
+
+    it('can change the days and the time in one save', async () => {
+      await editWater();
+      await click(radio('Only at a set time'));
+      await type(dialog()!.querySelector('#notification-time') as HTMLInputElement, '09:15');
+      await click(button('Sat'));
+      await click(button('Sun'));
+      await click(button('Save'));
+
+      expect(writes()[0].body).toEqual({ time: '09:15', weekdays: [0, 1, 2, 3, 4] });
+    });
+
+    it('tells the administrator that a reminder given a time is not held back by the hourly limit', () => {
+      expect(container.textContent).toContain('and so is any reminder you give a set time');
+    });
+  });
+
+  describe('the hourly limit', () => {
+    const limitSelect = () => container.querySelector('select[aria-label="Maximum notifications per hour"]') as HTMLSelectElement;
+    const choose = async (value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(limitSelect(), value);
+      await act(async () => { limitSelect().dispatchEvent(new Event('change', { bubbles: true })); });
+      await settle();
+    };
+
+    it('shows the limit in force, with the default marked, and offers exactly the range the API accepts', () => {
+      expect(limitSelect().value).toBe('2');
+      expect(Array.from(limitSelect().options).map((o) => [o.value, o.textContent])).toEqual([
+        ['1', '1'], ['2', '2 (default)'], ['3', '3'], ['4', '4'], ['5', '5'], ['6', '6'],
+      ]);
+      expect(container.textContent).toContain('Notifications per hour');
+    });
+
+    it('says what the limit does and what it does not hold back', () => {
+      const text = container.textContent!;
+      expect(text).toContain('A desktop shows at most this many notifications in any hour.');
+      expect(text).toContain('Your own notifications and the daily break times are always shown at their time');
+    });
+
+    it('sends exactly one PUT {max_per_hour}, shows the new number at once and says so', async () => {
+      await choose('4');
+
+      expect(writes()).toEqual([{ method: 'PUT', path: expect.stringMatching(/\/desktop-notifications\/limit$/), body: { max_per_hour: 4 } }]);
+      expect(limitSelect().value).toBe('4');
+      expect(showToast).toHaveBeenCalledWith('The desktop will show at most 4 notifications an hour.', 'success');
+      expect(container.textContent).toContain('Last changed by grace');
+    });
+
+    it('says one notification in the singular', async () => {
+      await choose('1');
+
+      expect(showToast).toHaveBeenCalledWith('The desktop will show at most 1 notification an hour.', 'success');
+    });
+
+    it('puts the number back and says why when the server refuses', async () => {
+      refuseNext = { status: 403, detail: 'Insufficient permissions for this action' };
+
+      await choose('5');
+
+      expect(limitSelect().value).toBe('2');
+      expect(showToast).toHaveBeenCalledWith('Insufficient permissions for this action', 'error');
+      expect(showToast).not.toHaveBeenCalledWith(expect.stringContaining('at most 5'), 'success');
+    });
+
+    it('leaves the notifications alone when the limit is changed', async () => {
+      await click(box('Drink water'));          // switch one off
+      await choose('3');
+
+      expect(box('Drink water')!.checked).toBe(false);
+      expect(box('Lunch break')!.checked).toBe(true);
+      expect(writes().map((w) => w.path.split('/').slice(-1)[0])).toEqual(['hydrate', 'limit']);
+    });
   });
 });

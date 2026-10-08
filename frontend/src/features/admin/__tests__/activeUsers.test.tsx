@@ -44,6 +44,7 @@ const item = (over: Record<string, unknown> = {}) => ({
   start_time: '2026-10-01T04:30:00Z', // 10:00 am IST
   elapsed_seconds: 3725,
   elapsed_time: '01:02:05',
+  activity_percentage: 74,
   ...over,
 });
 
@@ -190,6 +191,35 @@ describe('AdminActiveUsers', () => {
       await mount();
       await click();
       expect(requests).toHaveLength(1);
+    });
+  });
+
+  describe('Activity column', () => {
+    const activityOf = (name: string) =>
+      rows().find((row) => row.textContent!.includes(name))!.querySelector('[data-testid="active-user-activity"]')!.textContent;
+
+    it("shows each member's activity percentage from the server", async () => {
+      respond = () =>
+        json({
+          items: [
+            item({ name: 'Asha Patel', activity_percentage: 74 }),
+            item({ time_entry_id: 502, employee_id: 12, name: 'Ravi Shah', activity_percentage: 0 }),
+          ],
+          total: 2,
+          server_time: '2026-10-01T05:00:00Z',
+        });
+      await mount();
+      expect(container.textContent).toContain('Activity');
+      expect(activityOf('Asha Patel')).toBe('74%');
+      // A measured zero is a real figure and is shown as one.
+      expect(activityOf('Ravi Shah')).toBe('0%');
+    });
+
+    it('shows a dash, never 0%, when no activity has been measured yet', async () => {
+      respond = () =>
+        json({ items: [item({ activity_percentage: null })], total: 1, server_time: '2026-10-01T05:00:00Z' });
+      await mount();
+      expect(activityOf('Asha Patel')).toBe('—');
     });
   });
 

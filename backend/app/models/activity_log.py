@@ -116,6 +116,7 @@ class ActivityLogAction:
     DESKTOP_NOTIFICATION_CREATED = "desktop_notification_created"
     DESKTOP_NOTIFICATION_UPDATED = "desktop_notification_updated"
     DESKTOP_NOTIFICATION_DELETED = "desktop_notification_deleted"
+    DESKTOP_NOTIFICATION_PUSHED = "desktop_notification_pushed"
 
     APP_OPENED = "app_opened"
     APP_CLOSED = "app_closed"

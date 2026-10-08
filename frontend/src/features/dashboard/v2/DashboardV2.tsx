@@ -3,8 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { V2Shell } from "./V2Shell";
 import { Sparkline, TrendAreaChart, RankedBars, Donut, Legend, FloatingCard, useHoverAnchor } from "./charts";
 import { AppIcon } from "../../../components/AppIcon";
-import { DateRangeFilter, DEFAULT_RANGE, ProjectMultiSelect } from "./filters";
+import { DateRangeFilter, DEFAULT_RANGE, MemberMultiSelect, ProjectMultiSelect } from "./filters";
 import { useGetAllProjectsQuery } from "../../../store/api/projectsApi";
+import { useGetAllMembersQuery } from "../../../store/api/membersApi";
 import type { DateRange } from "./filters";
 import { brand, series, usageColor } from "./theme";
 import { useGetReactDashboardQuery } from "../../../store/api/dashboardApi";
@@ -146,6 +147,10 @@ export const DashboardV2: React.FC = () => {
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
   const { data: allProjects } = useGetAllProjectsQuery();
   const projectIds = selectedProjects.length ? selectedProjects.map(Number) : undefined;
+  /** Empty means every member -- the same member filter the Reports page uses. */
+  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const { data: allMembers } = useGetAllMembersQuery();
+  const memberIds = selectedMembers.length ? selectedMembers.map(Number) : undefined;
 
   const {
     data: latest, currentData, isFetching, isError, error, refetch,
@@ -153,6 +158,7 @@ export const DashboardV2: React.FC = () => {
     start_date: range.from,
     end_date: range.to,
     project_id: projectIds,
+    member_id: memberIds,
     top_n: TOP_N,
   });
   // `data` is the last result for ANY arguments: after a failed range change it
@@ -160,10 +166,11 @@ export const DashboardV2: React.FC = () => {
   // failure only the answer to THIS request counts.
   const data = isError ? currentData : latest;
   const failedWithNothingToShow = isError && !data;
-  // Same endpoint, previous window and same projects -- only used for the delta badges.
+  // Same endpoint, previous window and same projects and members -- only used for the delta badges.
   const { data: previous } = useGetReactDashboardQuery({
     ...previousRange(range),
     project_id: projectIds,
+    member_id: memberIds,
     top_n: TOP_N,
   });
 
@@ -329,6 +336,12 @@ export const DashboardV2: React.FC = () => {
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E2E8F0] bg-white p-2 pl-4 shadow-sm">
           <div className="flex flex-wrap items-center gap-3">
             <DateRangeFilter value={range} onChange={setRange} />
+            <MemberMultiSelect
+              members={allMembers ?? []}
+              selected={selectedMembers}
+              onChange={setSelectedMembers}
+              align="left"
+            />
             <ProjectMultiSelect
               projects={allProjects ?? []}
               selected={selectedProjects}
@@ -336,7 +349,7 @@ export const DashboardV2: React.FC = () => {
             />
           </div>
           <button
-            onClick={() => { setRange(DEFAULT_RANGE); setSelectedProjects([]); }}
+            onClick={() => { setRange(DEFAULT_RANGE); setSelectedProjects([]); setSelectedMembers([]); }}
             className="rounded-lg border border-[#E2E8F0] px-4 py-2 text-[13px] font-bold text-[#64748B] transition hover:bg-[#F8FAFC] hover:text-[#0F172A]"
           >
             Reset

@@ -5,7 +5,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.core.validation import OptionalDescription, OptionalIdempotencyKey
+from app.core.validation import IdentifierList, OptionalDescription, OptionalIdempotencyKey
 
 
 class BillingType(str, Enum):
@@ -120,6 +120,51 @@ class ProjectCreate(BaseModel):
         if self.billing_type == BillingType.non_billing and self.fixed_hours is not None:
             raise ValueError("Fixed hours must be empty for non-billing projects")
         return self
+
+
+class ProjectCategoryAssign(BaseModel):
+    """Set the organization (`category`) of several projects at once.
+
+    Only the organization is written through this body -- not the leader, the
+    owner, the team or anything else a full edit revalidates -- so a project with
+    an unrelated stale field can still be given its organization. There is no
+    way to clear one here: clearing stays an explicit edit of one project.
+    """
+
+    #: At least one, at most the catalogue's cap; duplicates are refused.
+    project_ids: IdentifierList
+    category: ProjectCategory
+
+    @model_validator(mode="after")
+    def at_least_one_project(self):
+        if not self.project_ids:
+            raise ValueError("Choose at least one project.")
+        return self
+
+
+class ProjectCategoryAssigned(BaseModel):
+    id: int
+    project_name: str
+    category: Optional[str] = None
+
+
+class ProjectCategoryAssignFailure(BaseModel):
+    id: int
+    detail: str
+
+
+class ProjectCategoryAssignResult(BaseModel):
+    """What happened to each project, so the screen can say so.
+
+    `updated` were changed; `unchanged` already had that organization (nothing
+    was written for them); `failed` could not be changed -- not found, archived
+    or not this caller's to see -- and did not stop the others.
+    """
+
+    category: ProjectCategory
+    updated: list[ProjectCategoryAssigned]
+    unchanged: list[int]
+    failed: list[ProjectCategoryAssignFailure]
 
 
 class ProjectUpdate(BaseModel):

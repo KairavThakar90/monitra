@@ -30,6 +30,17 @@ re-grant a permission.
   not allowed see the top bar exactly as before, and the button works even if
   Add Task itself has been switched off for you. The Add Task, Add Non Billable Task
   and Request buttons now share a light highlighted border.
+- **Sharper screenshots, still small.** Screenshots are encoded at about 10% higher quality
+  than before, and no screenshot is ever larger than 60 KB per screen (two monitors, 120 KB,
+  and so on). Most screens are well under that. A very dense screen that would not fit is
+  compressed a little harder rather than stored larger. Nothing else about screenshots
+  changes: the same schedule, size and format.
+- **Mark a task Non billable when you create it.** Add Task has an optional
+  "Non billable" tick under Description. Ticked, " - Non billable" is added to
+  the end of the task name (once, even if you typed it yourself); unticked, the
+  task is created exactly as before. In Edit Task the marker of such a task
+  stays fixed beside the name: you can rename the task, but not remove or change
+  the marker.
 - **Attach a screenshot to your feedback.** The Feedback & Help form now has an
   optional **Attach file** button: add up to three images (PNG, JPG or WEBP, 10 MB
   in all) to show us what you are seeing. Each file is listed with a preview, its
@@ -37,7 +48,35 @@ re-grant a permission.
   refused with a clear message. Sending feedback without an attachment works
   exactly as before, and if a send fails your message and files are kept so you
   can try again without creating a duplicate.
+- **Notifications your administrator chooses.** An administrator can now decide
+  which of Monitra's reminders you see, on which days, and at what time — a
+  daily break can be moved, and a repeating reminder (water, posture, the
+  20-20-20 rule...) can be set to appear only at one time of day instead of
+  repeating — and can send you their own messages at a set time of day. Times are India time (IST). A change reaches Monitra within about half a
+  minute while you are signed in, and nothing is shown while you are signed out.
+  A message that could not be shown within ten minutes of its time (the computer
+  was asleep, or offline) is skipped for that day rather than arriving late.
+  Without a schedule from your administrator every reminder behaves exactly as
+  before. **Versions before this one never ask for the schedule, so they will not
+  show an administrator's own messages or follow their changes.**
 
+- **Notifications now appear as Windows notifications.** Everything Monitra tells
+  you — health reminders, messages your administrator schedules,
+  timer and screenshot messages, errors, updates — now shows as a normal Windows
+  notification headed with the Monitra logo and "Monitra — Staff Management", showing
+  the blue information icon, the notification's own title and its text, with the time, and stays in the notification
+  centre (the speech bubble at the right of the taskbar) after it has gone from
+  the screen, so you can read one you missed. Windows decides how long one stays
+  on screen (five seconds unless you changed it in Settings → Accessibility →
+  Visual effects). Where Windows cannot show one, Monitra still shows its own
+  card.
+- **Changes from your administrator arrive at once.** A change your
+  administrator makes to the notification schedule now reaches Monitra within a
+  second or two while you are
+  signed in, instead of at its next half-minute check. Monitra keeps a light
+  connection open to hear about it; if that connection cannot be kept (an older
+  server, a network that drops it) it quietly goes back to checking every half
+  minute, so nothing is lost.
 - **Monitra tells you what is happening to your screenshots.** A quiet line
   beside "ACTIVITY" says **Uploading screenshot** while one is on its way,
   **Screenshot uploaded 10:34 AM** once it is confirmed in the cloud (never
@@ -64,6 +103,14 @@ re-grant a permission.
   rather than being left to find out.
 - **Your timer survives an update**, as before — it is not stopped, and
   Monitra picks it up again after it restarts.
+- **No more than two reminders an hour.** Monitra's health reminders (water,
+  posture, blinking, the 20-20-20 rule and the rest) used to arrive about every
+  five minutes; it now shows at most two notifications in any hour, and your
+  administrator can change that number (one to six). A reminder that has to wait
+  is not lost — the one that has waited longest comes next. Your administrator's
+  own messages and the daily break times (tea, lunch) are always shown at their
+  time and are never held back by the limit. Monitra's own messages — an error,
+  an update, "Screenshot captured" — are not part of this and are unchanged.
 
 ### Fixed
 
@@ -108,6 +155,11 @@ re-grant a permission.
   it is replaced, and keeps only the small version it actually draws. Nothing
   about what is captured, uploaded or shown has changed; the thumbnails look
   the same.
+- **A notification your administrator moves to a later time now shows at the
+  new time.** If a message had already been shown today and the administrator
+  then changed its time to later in the day, Monitra considered it done for
+  today and showed nothing at the time they had just set. It now shows at the
+  new time (once), and editing only the wording still does not repeat it.
 
 - **A screenshot that fails to capture is retried, not skipped.** If the screen
   could not be read at the planned moment (a locked screen, a monitor asleep, a

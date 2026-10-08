@@ -21,7 +21,7 @@ import sys
 from typing import Optional
 
 from PySide6.QtCore import QByteArray, Qt
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPixmap
+from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
 def _assets_dir() -> str:
@@ -83,6 +83,29 @@ _logo_path_cache: Optional[str] = None
 _logo_path_resolved = False
 _pixmap_cache: dict[int, QPixmap] = {}
 _badge_cache: dict[int, QPixmap] = {}
+
+
+#: The Store Transform mark (the globe), square and transparent-backed. It is the
+#: publisher's, not Monitra's, so it is not one of the names above that replace the
+#: Monitra mark. Not used at the moment: the system-tray icon (and so the small icon
+#: Windows puts at the top of every notification) is the Monitra mark.
+STORE_TRANSFORM_MARK_FILENAME = "store_transform_mark.png"
+
+
+def store_transform_mark_icon() -> Optional[QIcon]:
+    """The Store Transform mark as an icon, or None if the file is not bundled."""
+    path = os.path.join(ASSETS_DIR, STORE_TRANSFORM_MARK_FILENAME)
+    if not os.path.isfile(path):
+        return None
+    source = QPixmap(path)
+    if source.isNull():
+        return None
+    icon = QIcon()
+    for size in (16, 20, 24, 32, 48, 64, 128):
+        icon.addPixmap(source.scaled(
+            size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+        ))
+    return icon
 
 
 def logo_file_path() -> Optional[str]:

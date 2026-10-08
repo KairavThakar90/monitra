@@ -22,7 +22,10 @@ export interface BuiltinNotification {
   every_minutes: number | null;
   default_time: string | null;
   enabled: boolean;
-  /** `HH:MM` IST for a daily reminder; null for an interval one. */
+  /**
+   * `HH:MM` IST for a daily reminder. For an interval reminder, null while it
+   * repeats, or the time an administrator fixed it to (shown once a day then).
+   */
   time: string | null;
   weekdays: number[];
 }
@@ -43,14 +46,22 @@ export interface DesktopNotifications {
   version: number;
   updated_at: string | null;
   updated_by_username: string | null;
+  /** How many notifications a desktop may show in a rolling hour, and what the page may offer. */
+  max_per_hour: number;
+  default_max_per_hour: number;
+  min_max_per_hour: number;
+  max_max_per_hour: number;
   builtin: BuiltinNotification[];
   custom: CustomNotification[];
 }
 
 export interface BuiltinNotificationChange {
   enabled?: boolean;
+  /** Moves a daily reminder, or fixes an interval one to a time of day. */
   time?: string;
   weekdays?: number[];
+  /** Puts an interval reminder back on its cadence (removes its time). Never with `time`. */
+  repeat?: true;
 }
 
 export interface CustomNotificationDraft {
@@ -98,7 +109,29 @@ export const desktopNotificationsApi = baseApi.injectEndpoints({
           const optimistic = dispatch(
             desktopNotificationsApi.util.updateQueryData(QUERY, undefined, (draft) => {
               const row = draft.builtin.find((item) => item.key === key);
-              if (row) Object.assign(row, body);
+              if (row) {
+                // `repeat` is an instruction, not a field: it removes a repeating reminder's time.
+                const { repeat, ...change } = body;
+                Object.assign(row, change);
+                if (repeat) row.time = null;
+              }
+            }),
+          );
+          try {
+            const { data } = await queryFulfilled;
+            replaceCache(dispatch as never, data);
+          } catch {
+            optimistic.undo();
+          }
+        },
+      }),
+
+      updateDesktopNotificationLimit: builder.mutation<DesktopNotifications, { max_per_hour: number }>({
+        query: (body) => ({ url: ENDPOINTS.DESKTOP_NOTIFICATIONS.LIMIT, method: 'PUT', body }),
+        async onQueryStarted({ max_per_hour }, { dispatch, queryFulfilled }) {
+          const optimistic = dispatch(
+            desktopNotificationsApi.util.updateQueryData(QUERY, undefined, (draft) => {
+              draft.max_per_hour = max_per_hour;
             }),
           );
           try {
@@ -166,6 +199,7 @@ export const desktopNotificationsApi = baseApi.injectEndpoints({
 export const {
   useGetDesktopNotificationsQuery,
   useUpdateBuiltinNotificationMutation,
+  useUpdateDesktopNotificationLimitMutation,
   useCreateCustomNotificationMutation,
   useUpdateCustomNotificationMutation,
   useDeleteCustomNotificationMutation,

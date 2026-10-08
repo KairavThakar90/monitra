@@ -887,6 +887,20 @@ The timing rules, each one a defect that reached users:
   clock so a corrected system clock cannot release a backlog, but that clock
   stands still through a sleep on macOS and Linux, so the wall clock is read
   as well to notice one.
+- **"Shown today" names the time it was shown for.** The daily record is
+  `2026-10-08@12:40`, not the date. Recorded by date alone, a notification
+  that had fired at 11:13 and was then moved to 12:40 never fired at 12:40.
+  A different time is a different turn; the same time is still shown once; a
+  date-only record from before is honoured for today.
+- **An hourly limit that never holds back an administrator's notification.** At
+  most `max_per_hour` (the schedule's number; 2 by default) notifications are
+  shown in any rolling hour. The daily breaks and an administrator's own
+  notifications are shown at their time regardless and count toward the hour;
+  the repeating reminders share what is left, with a place held for each
+  scheduled one still to come in the next hour. A reminder the limit holds back
+  stays due -- it is not advanced -- so the one that has waited longest goes
+  first when room opens, and the loop does not wake for a deadline it cannot
+  act on. The count is in memory; a restart starts the hour afresh.
 
 ### Notification schedule
 
@@ -903,14 +917,34 @@ still does no network work; it reads the snapshot
 
 ```
 tick()  ->  first tick: read the persisted schedule, mark ready, wake Wellbeing
-        ->  hold while signed out / offline / endpoint absent
-        ->  GET /desktop-notifications/schedule   (slow, jittered: ~5 min)
+        ->  hold while signed out / offline
+        ->  GET /desktop-notifications/schedule   (on an event; at least every 5 min;
+                                                   and as the ~30 s poll, jittered, whenever
+                                                   the stream is not in use; a 404 waits ~5 min)
         ->  parse defensively  ->  version changed?  ->  swap snapshot, persist, wake
+        ->  GET /desktop-notifications/stream?since=<version>   (held open <= ~22 s on this
+                                                   same thread; a ping every 2 s; one event
+                                                   -> return, fetch 300 ms later)
 ```
 
+* **The change stream is an accelerator, never the only path.** A desktop
+  hears about an administrator's change (or a pushed message) within a second
+  or two instead of at the next poll. The listen runs *inside* `tick()` on the
+  service's own loop thread -- no new thread, no second owner of the schedule
+  -- and blocks only until the server's next ping (2 s), at which point it
+  checks `stopping`, sign-out and the network and leaves, so `stop_timeout_ms`
+  (12 s) is never approached (silence for 7 s is a dead stream). A failing
+  stream backs off with doubling, jittered waits (5 s to 5 min) while the poll
+  carries on; a 404 is not retried for five minutes; a stream that ends within
+  5 s without an event, and the same version signalled twice with no progress,
+  both count as failing. The stream carries a signal, never the schedule.
+  `NOTIFICATION_STREAM_UP` / `_EVENT` / `_FAILED` / `_UNAVAILABLE` are logged on
+  the edge, never per listen. `ApiClient.stream_get` is the one streaming
+  path, on the same connection pool, headers and exception types as every
+  other call.
 * **Edge-triggered.** The backend answers the same `version` on every poll.
   The snapshot is replaced, persisted and logged
-  (`NOTIFICATION_SCHEDULE_APPLIED version=… builtin_off=… custom=…`, one line
+  (`NOTIFICATION_SCHEDULE_APPLIED version=… builtin_off=… custom=… max_per_hour=…`, one line
   per change, no payload) and Wellbeing is woken only when the version
   differs.
 * **Failure is silence; the last good schedule stands.** A failed poll, a 404
@@ -933,7 +967,21 @@ tick()  ->  first tick: read the persisted schedule, mark ready, wake Wellbeing
   Wellbeing's rules are unchanged: a suppressed interval reminder advances its
   grid exactly as a shown one would; a custom notification is a daily reminder
   keyed `custom:<id>`, once per IST day, with the same grace window and
-  spacing; the daily record is pruned of keys that no longer exist.
+  spacing; the daily record is pruned of keys that no longer exist. An interval
+  reminder the schedule gives a time (`BuiltinSetting.at`) is not a second
+  mechanism: it is counted as suppressed on the repeating grid and enters
+  `_daily_entries_today` instead, so it follows every daily rule (once per IST
+  day, `date@HH:MM` record, grace, exempt from and reserved against the hourly
+  limit). Its key is in the daily record's allowed keys.
+* **A pushed message** (`schedule.pushes`, its lifetime anchored to this
+  machine's monotonic clock from the server-measured `seconds_ago`, never
+  persisted and never part of what two snapshots are compared on) is shown by
+  Wellbeing once, on the first tick that finds it, before the daily and
+  repeating reminders, and recorded by id in `app_state`
+  (`wellbeing.pushes_seen`), so a restart or a re-fetch never shows it again.
+  It is never held back by the hourly limit, is counted toward it, keeps the
+  60-second spacing, and is dropped if its lifetime ran out before it could be
+  shown.
 
 ### Screenshots
 
@@ -943,6 +991,15 @@ while -- and only while -- a timer runs. It owns no thread: the schedule is a
 single-shot `QTimer` on the GUI thread and every capture runs on the
 `TaskRunner`. [docs/SCREENSHOT_PERSISTENCE.md](../docs/SCREENSHOT_PERSISTENCE.md)
 is authoritative for everything after the capture.
+
+**Image quality and size** (`screenshot/config.py`, `image_processor.py`): the capture is scaled
+to fit a 1000x1000 canvas and encoded as WebP at quality 79, stepping down to a floor of 50 to reach
+about 120 KB; a second pass for anything over 60 KB may go down to 22; and a **hard limit of 60 KB
+per display** (`MAX_IMAGE_BYTES`; two monitors may use 120 KB) is enforced last by
+`_enforce_size_limit`, the only step allowed below those floors (down to quality 10, at most six
+encodes). An image already inside the limit is stored byte for byte as encoded. The qualities were
+raised about 10% on 2026-10-08 (from 72 / 45 / 20); the limit is what keeps the larger quality from
+becoming larger files.
 
 Two rules about the capture itself, each learned in production:
 
@@ -972,16 +1029,40 @@ tabs show honest empty states.
 
 - One owned dismissal timer — a dismissal timer can no longer be orphaned by a
   widget being destroyed.
-- **The application draws its own notification**
+- **The card: the application's own notification** (the fallback, and what
+  `native=False` draws -- see the next point for what is shown by default)
   ([toast_popup.py](background_services/notifications/toast_popup.py)), because
   a platform toast will not stay up for as long as it is asked to: Windows has
   ignored `Shell_NotifyIcon`'s `uTimeout` since Vista and uses the user's
   accessibility setting instead (five seconds by default, about twenty-five for
   a long toast). `DISPLAY_MS` is thirty seconds, for every notification, and
-  the in-app card is what makes that a real thirty seconds. The platform toast
-  is the fallback for a machine the card cannot be placed on — never both at
-  once, or one event notifies twice. A card owns no timer and never takes
+  the in-app card is what makes that a real thirty seconds. One surface per
+  notification — never both at once, or one event notifies twice. A card owns no
+  timer and never takes
   focus (`WA_ShowWithoutActivating`).
+- **Every notification is the platform's own by default** (owner's decision,
+  2026-10-08: "like Hubstaff"). A notification is handed to the platform
+  instead of being drawn as a card -- on Windows a toast with the standard
+  information icon, the title, the message and the time, which stays in the
+  Action Center after it has left the screen. That covers the administrator's
+  notifications and the application's own messages alike
+  (`NotificationService.NATIVE_BY_DEFAULT`); a caller that needs the card passes
+  `native=False`. It is one surface or the other for a given notification, never
+  both; a machine with no tray, or a platform that refuses the toast, gets the
+  card instead of nothing -- so the card below is the fallback and the opt-out,
+  not the usual surface. The trade-off is the one in DO_NOT_DO: the platform
+  decides how long a toast stays on screen (the user's accessibility setting,
+  five seconds by default), so a native notification is not on screen for
+  `DISPLAY_MS`. The name at the top of the toast is the running program's file
+  description: the installed build is stamped `version.NOTIFICATION_HEADER_NAME`,
+  "Monitra — Staff Management" (`monitra.spec`), and beside it Windows draws the tray
+  icon, the Monitra logo; run from source it would read "Python", so
+  `main.py`, first thing and before its heavy imports, hands over to a copy of the
+  interpreter stamped the same (`core/dev_identity.py`; Windows, from source only --
+  never an installed build -- and `MONITRA_NO_DEV_RELAUNCH=1` opts out; if the copy
+  cannot be prepared the app simply runs in place; the parent only waits, so a second
+  Ctrl+C cannot cut the child's shutdown short; the
+  registry has no say in it -- tried, and it changed nothing).
 - **Each notification gets its own card.** One that arrives while another is
   still up is stacked above it, for its own thirty seconds, and closing one
   (its ×) leaves the others. There used to be a single card whose text was

@@ -10,12 +10,38 @@ held here on each of its ticks, so it stays free of network work.
 
 Design constraints, all from DO_NOT_DO.md:
 
-**A slow poll, not a connection.** A `LoopService` that asks every few
-minutes (jittered, so a fleet does not arrive in lockstep). It holds while
-signed out, while the network service says the backend is not worth trying, and
-against a backend that does not have the endpoint (404). It has no retry loop
-of its own: a failed poll is silence, and the next one is simply the next
-interval.
+**A light poll, and a stream to hear sooner.** A `LoopService` that asks about
+every half minute (jittered, so a fleet does not arrive in lockstep) -- the
+cadence of the maintenance notice and the dashboard's sync probe, and for the
+same reason: an administrator who sets a notification for a minute from now
+expects it at that minute, and a desktop can only honour that if it has heard of
+it by then. At the five-minute cadence this had, a notification saved at
+11:12:13 for 11:13 was shown at 11:15:17. The request is one small read; nothing
+is written unless the version changed. It holds while signed out, while the
+network service says the backend is not worth trying, and waits much longer
+against a backend that does not have the endpoint (404).
+
+On top of that sits the **change stream** (`_listen`): while signed in and
+online, the rest of the time is spent reading `GET /desktop-notifications/stream`,
+which the backend keeps open and writes a comment line to every two seconds
+until the schedule's `version` moves. The first event ends the listening and the
+next tick fetches the schedule -- an administrator's change, or a message they
+pushed, is on the screen within a second or two instead of at the next poll. It
+is the same loop thread, so there is no second owner of the schedule and no new
+thread. The stream is an accelerator and never the only path:
+
+  * the schedule is still fetched with the plain request (on every event, at
+    least every `LEVEL_CHECK_MS`, and as the poll whenever the stream is not
+    working), so a missed event costs minutes, not correctness;
+  * it ends within a ping of being asked to stop (`stopping`), of signing out,
+    or of the network going -- the loop checks each time the server speaks,
+    which is why the server pings (a request held open and silent could not be
+    abandoned);
+  * a failing stream is retried with doubling, jittered backoff, a server
+    without the route (404) is not asked again for minutes, and a stream that
+    ends again at once counts as failing -- never a reconnect loop;
+  * an event is edge-triggered: one per change of version, and the same version
+    signalled twice with no progress in between is a failure, not a trigger.
 
 **Failure keeps the last good schedule.** A poll that fails, or answers
 something that does not parse, changes nothing. The schedule is never cleared
@@ -50,8 +76,10 @@ import each other.
 """
 from __future__ import annotations
 
+import json
 import random
-from dataclasses import dataclass
+import time as _time
+from dataclasses import dataclass, field
 from datetime import time as dtime
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -59,7 +87,12 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 from app.api.exceptions import ApiError
 from app.desktop_notifications.service import NotificationScheduleApiService
 from background_services.network import NetworkState
-from background_services.wellbeing.reminders import DAILY_REMINDERS, INTERVAL_REMINDERS
+from background_services.wellbeing.reminders import (
+    DAILY_REMINDERS,
+    INTERVAL_REMINDERS,
+    MAX_PER_HOUR_RANGE,
+    PUSH_TTL_SECONDS,
+)
 from core.service import LoopService, ServiceState
 from core.validation import validate_time_of_day
 
@@ -83,8 +116,9 @@ KNOWN_BUILTIN_KEYS = frozenset(
 class BuiltinSetting:
     """What an administrator set for one built-in reminder.
 
-    `at` is the daily reminder's time of day (IST) or None to keep the
-    catalogue's own; it is always None for an interval reminder.
+    `at` is a time of day (IST), or None. A daily reminder with None keeps the
+    catalogue's own time. An interval reminder with None repeats on its
+    cadence; one with a time is shown once a day at that time instead.
     """
 
     key: str
@@ -105,12 +139,37 @@ class CustomNotification:
 
 
 @dataclass(frozen=True)
+class PushedNotification:
+    """A message an administrator pushed to every desktop, to show once, now.
+
+    `expires_at_mono` is a `time.monotonic()` instant: the push's age was
+    measured by the server (`seconds_ago`), and this desktop turns that into its
+    own clock once, when it parses the response, so it never compares its wall
+    clock with the server's. Past it, the push is not shown.
+    """
+
+    id: str
+    title: str
+    message: str
+    expires_at_mono: float
+
+
+@dataclass(frozen=True)
 class NotificationSchedule:
     """One complete, immutable reading of the administrator's schedule."""
 
     version: int
     builtin: Mapping[str, BuiltinSetting]
     custom: Tuple[CustomNotification, ...]
+    #: How many notifications the desktop may show in a rolling hour, as the
+    #: administrator set it. None when the response did not carry a usable
+    #: number (an older backend, or one this desktop does not understand): the
+    #: scheduler then uses its own default. Never fabricated here.
+    max_per_hour: Optional[int] = None
+    #: Messages pushed in the last few minutes, oldest first. Not part of what is
+    #: persisted or compared: a push is shown once, soon after it is sent, and a
+    #: restart must never replay one.
+    pushes: Tuple[PushedNotification, ...] = field(default=(), compare=False)
 
     @property
     def builtin_off(self) -> int:
@@ -121,6 +180,7 @@ class NotificationSchedule:
         schedule). Never contains anything but the contract's own fields."""
         return {
             "version": self.version,
+            "max_per_hour": self.max_per_hour,
             "builtin": [
                 {
                     "key": s.key,
@@ -195,13 +255,28 @@ def _parse_custom(item: Any) -> Optional[CustomNotification]:
     return CustomNotification(id=ident, title=title, message=message, at=at, weekdays=weekdays)
 
 
-def parse_schedule(raw: Any) -> Optional[NotificationSchedule]:
+def _parse_push(item: Any, now_mono: float) -> Optional[PushedNotification]:
+    if not isinstance(item, dict):
+        return None
+    ident, title, message = item.get("id"), item.get("title"), item.get("message")
+    if not all(isinstance(v, str) and v.strip() for v in (ident, title, message)):
+        return None
+    age = item.get("seconds_ago")
+    if isinstance(age, bool) or not isinstance(age, (int, float)) or age < 0 or age > PUSH_TTL_SECONDS:
+        return None  # too old to be worth showing, or not a usable age
+    return PushedNotification(
+        id=ident, title=title, message=message, expires_at_mono=now_mono + (PUSH_TTL_SECONDS - age),
+    )
+
+
+def parse_schedule(raw: Any, now_mono: Optional[float] = None) -> Optional[NotificationSchedule]:
     """Parse a response (or a persisted record) into a snapshot.
 
     Returns None for anything that is not usable as a whole -- not a mapping,
     no integer `version`, or `builtin`/`custom` present but not lists. Items
     inside that are malformed are dropped one by one; a dropped built-in entry
-    means that reminder keeps its default (on, every day). Never raises.
+    means that reminder keeps its default (on, every day). `now_mono` is the
+    monotonic clock a pushed message's age is anchored to. Never raises.
     """
     try:
         if not isinstance(raw, dict):
@@ -228,10 +303,30 @@ def parse_schedule(raw: Any) -> Optional[NotificationSchedule]:
                 seen.add(notification.id)
                 custom.append(notification)
 
+        # An unusable limit does not spoil the rest of the schedule: it is
+        # simply not applied, and the scheduler keeps its own default.
+        low, high = MAX_PER_HOUR_RANGE
+        max_per_hour = raw.get("max_per_hour")
+        if isinstance(max_per_hour, bool) or not isinstance(max_per_hour, int) or not low <= max_per_hour <= high:
+            max_per_hour = None
+
+        pushes = []
+        pushed_raw = raw.get("pushes", [])
+        if isinstance(pushed_raw, list):
+            now = _time.monotonic() if now_mono is None else now_mono
+            seen_pushes = set()
+            for item in pushed_raw:
+                pushed = _parse_push(item, now)
+                if pushed is not None and pushed.id not in seen_pushes:
+                    seen_pushes.add(pushed.id)
+                    pushes.append(pushed)
+
         return NotificationSchedule(
             version=version,
             builtin=MappingProxyType(builtin),
             custom=tuple(custom),
+            max_per_hour=max_per_hour,
+            pushes=tuple(pushes),
         )
     except Exception:  # noqa: BLE001 -- a malformed payload must never raise out
         return None
@@ -245,17 +340,47 @@ class NotificationScheduleService(LoopService):
 
     name = "notification_schedule"
 
-    #: Administrators change this rarely and a desktop picking a change up in
-    #: a few minutes is what the contract promises, so the poll is slow.
-    POLL_INTERVAL_MS = 5 * 60 * 1000
-    #: After a failed poll (and against a backend without the endpoint).
-    RETRY_INTERVAL_MS = 5 * 60 * 1000
+    #: A change an administrator makes reaches an open desktop within about
+    #: half a minute (at worst this plus the jitter), so a notification set a
+    #: minute ahead is known before its time. The same cadence as
+    #: `MaintenanceService.CHECK_INTERVAL_MS`.
+    POLL_INTERVAL_MS = 30 * 1000
+    #: After a failed poll. Not longer than a poll: one lost request must not
+    #: leave the desktop deaf to a change for minutes.
+    RETRY_INTERVAL_MS = 30 * 1000
+    #: Against a backend without the endpoint (404) -- an older deployment,
+    #: a normal state during a rollout. Nothing to hear about for a long time,
+    #: so a fleet does not ask a missing route every half minute.
+    ABSENT_INTERVAL_MS = 5 * 60 * 1000
     #: While signed out or offline. No request is made; it is a cheap check
     #: for the moment the hold ends (login and the network's recovery edge
     #: also wake the loop directly).
     HOLD_INTERVAL_MS = 30 * 1000
     #: Soon after sign-in, but not on top of startup.
     FIRST_POLL_DELAY_MS = 5 * 1000
+    #: The change stream (see `_listen`). The server writes a ping every two
+    #: seconds; silence for this long means the stream is dead -- a connection
+    #: that dropped without saying so, or a proxy holding the pings back.
+    STREAM_READ_TIMEOUT_S = 7.0
+    #: How long one tick listens before it comes back to check on things (the
+    #: server ends a stream after about 25 seconds on its own).
+    STREAM_LISTEN_S = 22.0
+    #: A stream that ends sooner than this without an event has not worked: the
+    #: server is shutting down, or something in between is cutting it. Counted as
+    #: a failure so that it backs off rather than reconnecting in a loop.
+    STREAM_HEALTHY_AFTER_S = 5.0
+    #: Fetch the whole schedule at least this often even while the stream is
+    #: quiet -- insurance against a missed event, not the way changes arrive.
+    LEVEL_CHECK_MS = 5 * 60 * 1000
+    #: After an event, before fetching, so a burst of saves lands as one fetch.
+    EVENT_FETCH_DELAY_MS = 300
+    #: A stream that fails is not retried for this long, doubling per consecutive
+    #: failure up to the cap, jittered. The poll carries on meanwhile.
+    STREAM_RETRY_BASE_MS = 5 * 1000
+    STREAM_RETRY_MAX_MS = 5 * 60 * 1000
+    #: Against a backend without the route (404): an older deployment, a normal
+    #: state during a rollout.
+    STREAM_ABSENT_MS = 5 * 60 * 1000
     interval_ms = POLL_INTERVAL_MS
     error_interval_ms = 60 * 1000
     #: One TIMEOUT_FAST request is the whole blocking budget of a tick; the
@@ -281,6 +406,18 @@ class NotificationScheduleService(LoopService):
         #: Set once the persisted schedule has been read (or found absent),
         #: so the scheduler knows whether it is working from the real thing.
         self._loaded = False
+        # The change stream. All of it is touched only on this service's thread
+        # (`check_now` sets one flag from outside, which is safe).
+        #: The newest `version` a fetch reported, as the server wrote it -- even
+        #: when the rest of that response was unusable, so a response this
+        #: desktop cannot parse is not signalled again and again.
+        self._since = 0
+        self._need_fetch = True
+        self._last_fetch_at: Optional[float] = None
+        self._stream_blocked_until = 0.0
+        self._stream_failures = 0
+        self._last_event_version: Optional[int] = None
+        self._stream_up = False
 
     # ── Read side ─────────────────────────────────────────────────────────────
 
@@ -306,6 +443,7 @@ class NotificationScheduleService(LoopService):
 
     def check_now(self) -> None:
         """Poll now rather than at the next interval (safe from any thread)."""
+        self._need_fetch = True
         self.wake()
 
     def reset_session(self) -> None:
@@ -325,6 +463,10 @@ class NotificationScheduleService(LoopService):
             return f"network {network.network_state}"
         return None
 
+    def _monotonic(self) -> float:
+        """The clock the stream's timings run on (a seam for tests)."""
+        return _time.monotonic()
+
     def tick(self) -> Optional[int]:
         if not self._first_tick_done:
             self._first_tick_done = True
@@ -339,19 +481,129 @@ class NotificationScheduleService(LoopService):
             self.log.debug("notification schedule poll held: %s", hold_reason)
             return self.HOLD_INTERVAL_MS
 
-        try:
-            payload = self._api.get_schedule()
-        except ApiError as exc:
-            # Quietly: the last good schedule stands. 404 is an older
-            # deployment without the endpoint -- the same wait.
-            self.log.debug("notification schedule poll failed: %s", exc)
-            self.heartbeat(success=False)
-            return self._jittered(self.RETRY_INTERVAL_MS)
+        now = self._monotonic()
+        streaming = now >= self._stream_blocked_until
+        if (
+            self._need_fetch
+            or not streaming
+            or self._last_fetch_at is None
+            or (now - self._last_fetch_at) * 1000 >= self.LEVEL_CHECK_MS
+        ):
+            try:
+                payload = self._api.get_schedule()
+            except ApiError as exc:
+                # Quietly: the last good schedule stands. 404 is an older
+                # deployment without the endpoint -- a long wait; anything else
+                # is a blip, and the next poll is soon.
+                self.log.debug("notification schedule poll failed: %s", exc)
+                self.heartbeat(success=False)
+                absent = getattr(exc, "status_code", None) == 404
+                return self._jittered(self.ABSENT_INTERVAL_MS if absent else self.RETRY_INTERVAL_MS)
 
-        self.heartbeat()
-        if self.state == ServiceState.DEGRADED:
-            self._set_state(ServiceState.RUNNING)
-        self._apply(payload, source="fetched")
+            self._last_fetch_at = now
+            self._need_fetch = False
+            self.heartbeat()
+            if self.state == ServiceState.DEGRADED:
+                self._set_state(ServiceState.RUNNING)
+            self._note_version(payload)
+            self._apply(payload, source="fetched")
+            if not streaming:
+                return self._jittered(self.POLL_INTERVAL_MS)
+
+        return self._listen()
+
+    # ── The change stream ─────────────────────────────────────────────────────
+
+    def _note_version(self, payload: Any) -> None:
+        version = payload.get("version") if isinstance(payload, dict) else None
+        if isinstance(version, int) and not isinstance(version, bool) and version >= 0:
+            self._since = version
+
+    @staticmethod
+    def _event_version(line: str) -> Optional[int]:
+        """The version in a `data:` line of the stream, or None for anything
+        else (pings, blank separators, the `event:` line, a line this desktop
+        does not understand)."""
+        if not isinstance(line, str) or not line.startswith("data:"):
+            return None
+        try:
+            version = json.loads(line[5:].strip()).get("version")
+        except (ValueError, AttributeError):
+            return None
+        if isinstance(version, int) and not isinstance(version, bool) and version >= 0:
+            return version
+        return None
+
+    def _listen(self) -> int:
+        """Read the change stream until something happens. Returns the delay
+        before the next tick.
+
+        Blocks this service's thread -- which has nothing else to do -- for up to
+        `STREAM_LISTEN_S`, but only ever until the server's next ping (two
+        seconds): between lines it checks whether it has been asked to stop,
+        whether the user signed out and whether the network went, and leaves.
+        """
+        started = self._monotonic()
+        deadline = started + self.STREAM_LISTEN_S
+        spoke = False
+        try:
+            with self._api.open_stream(self._since, read_timeout=self.STREAM_READ_TIMEOUT_S) as stream:
+                for line in stream.lines():
+                    spoke = True
+                    self.heartbeat()
+                    version = self._event_version(line)
+                    if version is not None:
+                        return self._on_event(version)
+                    if self.stopping:
+                        return self.POLL_INTERVAL_MS
+                    if self._should_hold() is not None:
+                        return self.HOLD_INTERVAL_MS
+                    if self._monotonic() >= deadline:
+                        break
+        except ApiError as exc:
+            return self._stream_failed(f"{exc}", getattr(exc, "status_code", None))
+
+        if not spoke or self._monotonic() - started < self.STREAM_HEALTHY_AFTER_S:
+            # Opened and closed with nothing, or cut short: not a stream that works.
+            return self._stream_failed("the stream ended at once", None)
+        self._stream_working()
+        return 0
+
+    def _stream_working(self) -> None:
+        self._stream_failures = 0
+        if not self._stream_up:
+            self._stream_up = True
+            self.log.info("NOTIFICATION_STREAM_UP: changes arrive as they are made")
+
+    def _on_event(self, version: int) -> int:
+        """The server said the schedule's version moved. Fetch it -- once."""
+        if version == self._last_event_version:
+            # The same change signalled again although the fetch since then
+            # should have caught up with it: the response is not getting
+            # through, and signalling it again would be a loop.
+            return self._stream_failed(f"version {version} signalled again with no progress", None)
+        self._last_event_version = version
+        self._stream_working()
+        self._need_fetch = True
+        self.log.info("NOTIFICATION_STREAM_EVENT: the schedule moved to version %d", version)
+        return self.EVENT_FETCH_DELAY_MS
+
+    def _stream_failed(self, reason: str, status: Optional[int]) -> int:
+        """Stop using the stream for a while and carry on with the poll."""
+        now = self._monotonic()
+        was_up, self._stream_up = self._stream_up, False
+        if status in (404, 405, 501):
+            self._stream_blocked_until = now + self._jittered(self.STREAM_ABSENT_MS) / 1000.0
+            self.log.info("NOTIFICATION_STREAM_UNAVAILABLE: the backend has no change stream; polling instead")
+        else:
+            self._stream_failures += 1
+            wait_ms = min(self.STREAM_RETRY_MAX_MS, self.STREAM_RETRY_BASE_MS * 2 ** (self._stream_failures - 1))
+            self._stream_blocked_until = now + self._jittered(wait_ms) / 1000.0
+            (self.log.warning if was_up or self._stream_failures == 1 else self.log.info)(
+                "NOTIFICATION_STREAM_FAILED: %s; polling, next try in about %d s (failure %d)",
+                reason, wait_ms // 1000, self._stream_failures,
+            )
+        self._need_fetch = True
         return self._jittered(self.POLL_INTERVAL_MS)
 
     # ── Applying ──────────────────────────────────────────────────────────────
@@ -359,7 +611,7 @@ class NotificationScheduleService(LoopService):
     def _apply(self, payload: Any, *, source: str) -> bool:
         """Adopt `payload` if it parses and its version is new. Returns
         whether the snapshot changed. Never raises."""
-        parsed = parse_schedule(payload)
+        parsed = parse_schedule(payload, now_mono=self._monotonic())
         if parsed is None:
             self.log.warning("notification schedule ignored: the response was not usable")
             return False
@@ -374,8 +626,8 @@ class NotificationScheduleService(LoopService):
 
         self._schedule = parsed
         self.log.info(
-            "NOTIFICATION_SCHEDULE_APPLIED version=%d builtin_off=%d custom=%d source=%s",
-            parsed.version, parsed.builtin_off, len(parsed.custom), source,
+            "NOTIFICATION_SCHEDULE_APPLIED version=%d builtin_off=%d custom=%d max_per_hour=%s source=%s",
+            parsed.version, parsed.builtin_off, len(parsed.custom), parsed.max_per_hour, source,
         )
         if source == "fetched":
             self._persist(parsed)
@@ -399,8 +651,8 @@ class NotificationScheduleService(LoopService):
         self._schedule = parsed
         self._persisted = True
         self.log.info(
-            "NOTIFICATION_SCHEDULE_APPLIED version=%d builtin_off=%d custom=%d source=persisted",
-            parsed.version, parsed.builtin_off, len(parsed.custom),
+            "NOTIFICATION_SCHEDULE_APPLIED version=%d builtin_off=%d custom=%d max_per_hour=%s source=persisted",
+            parsed.version, parsed.builtin_off, len(parsed.custom), parsed.max_per_hour,
         )
 
     def _persist(self, schedule: NotificationSchedule) -> None:
@@ -437,6 +689,7 @@ __all__ = [
     "CustomNotification",
     "NotificationSchedule",
     "NotificationScheduleService",
+    "PushedNotification",
     "SCHEDULE_STATE_KEY",
     "parse_schedule",
 ]

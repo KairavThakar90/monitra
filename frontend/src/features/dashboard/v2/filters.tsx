@@ -180,7 +180,8 @@ const ProjectIcon = (
  * a button that sits at the left of a form.
  */
 export const MemberMultiSelect: React.FC<{
-  members: Member[];
+  /** Only the id, name and role are read, so any list of people with those fits. */
+  members: Array<Pick<Member, "id" | "name" | "role">>;
   selected: string[];
   onChange: (ids: string[]) => void;
   single?: boolean;

@@ -84,6 +84,8 @@ class ProcessedImage:
     fallback_target_bytes: int = 0
     #: How many re-encodes the fallback spent.
     fallback_attempts: int = 0
+    #: Whether the hard size limit had to lower the quality further, below the normal floors.
+    limit_applied: bool = False
 
     @property
     def size_bytes(self) -> int:
@@ -142,7 +144,8 @@ def process(raw: RawCapture, size: Optional[int] = None) -> Optional[ProcessedIm
         canvas.paste(frame, ((edge - target[0]) // 2, (edge - target[1]) // 2))
 
         primary = _encode(canvas, edge, edge, config.TARGET_FILE_BYTES)
-        return _apply_fallback(canvas, primary)
+        finished = _apply_fallback(canvas, primary)
+        return _enforce_size_limit(canvas, finished, compositor.max_image_bytes(1))
     except Exception:  # noqa: BLE001
         log.exception("could not process a %dx%d capture", raw.width, raw.height)
         return None
@@ -225,6 +228,9 @@ def process_merged(
             canvas, primary,
             trigger_bytes=compositor.fallback_trigger_bytes(merged.display_count),
         )
+        finished = _enforce_size_limit(
+            canvas, finished, compositor.max_image_bytes(merged.display_count),
+        )
         return ProcessedImage(
             data=finished.data,
             width=finished.width,
@@ -234,6 +240,7 @@ def process_merged(
             fallback_applied=finished.fallback_applied,
             fallback_target_bytes=finished.fallback_target_bytes,
             fallback_attempts=finished.fallback_attempts,
+            limit_applied=finished.limit_applied,
             display_count=merged.display_count,
         )
     except Exception:  # noqa: BLE001
@@ -272,6 +279,52 @@ def _encode(canvas, width: int, height: int, target_bytes: int) -> ProcessedImag
     return ProcessedImage(
         data=data, width=width, height=height, quality=best_quality,
         primary_size_bytes=len(data),
+    )
+
+
+def _enforce_size_limit(canvas, image: ProcessedImage, max_bytes: int) -> ProcessedImage:
+    """
+    Guarantee the hard size limit (`config.MAX_IMAGE_BYTES`, 60 KB per display).
+
+    The normal passes aim for sizes and protect readability with quality floors, so a very dense
+    screen can leave them still over the limit. This is the last step, and the only one allowed
+    below those floors: it re-encodes from the pristine canvas at lower and lower quality (down to
+    `HARD_LIMIT_QUALITY_MIN`, at most `HARD_LIMIT_MAX_ATTEMPTS` encodes) and keeps the first that
+    fits -- or, if none does, the smallest. An image already within the limit is returned untouched,
+    byte for byte, so an ordinary screen never reaches the encoder here. Never raises and never
+    loses the image: any failure keeps what it was given.
+    """
+    if image.size_bytes <= max_bytes:
+        return image
+    ladder = _fallback_qualities(
+        image.quality, config.HARD_LIMIT_QUALITY_MIN, config.HARD_LIMIT_MAX_ATTEMPTS
+    )
+    best, best_quality = image.data, image.quality
+    try:
+        for quality in ladder:
+            buffer = io.BytesIO()
+            canvas.save(buffer, format="WEBP", quality=quality, method=config.FALLBACK_WEBP_METHOD)
+            data = buffer.getvalue()
+            if len(data) < len(best):
+                best, best_quality = data, quality
+            if len(data) <= max_bytes:
+                break
+    except Exception:  # noqa: BLE001 - a size limit must never cost the capture
+        log.warning("the screenshot size limit could not be applied; keeping the %d-byte image",
+                    image.size_bytes, exc_info=True)
+        return image
+    if len(best) >= image.size_bytes:
+        return image
+    log.info(
+        "screenshot size limit: %d bytes was over %d; now %d bytes at quality %d (was %d)%s",
+        image.size_bytes, max_bytes, len(best), best_quality, image.quality,
+        "" if len(best) <= max_bytes else " -- still over the limit at the lowest quality allowed",
+    )
+    return ProcessedImage(
+        data=best, width=image.width, height=image.height, quality=best_quality,
+        primary_size_bytes=image.primary_size_bytes, fallback_applied=image.fallback_applied,
+        fallback_target_bytes=image.fallback_target_bytes, fallback_attempts=image.fallback_attempts,
+        limit_applied=True, display_count=image.display_count,
     )
 
 

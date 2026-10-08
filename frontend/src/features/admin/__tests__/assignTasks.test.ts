@@ -2,7 +2,16 @@ import { describe, expect, it } from 'vitest';
 
 import type { Project, ProjectTask, ProjectUser } from '../../../store/api/projectsApi';
 import { ALL_TIME_RANGE, rangeFor } from '../../dashboard/v2/filters';
-import { filterByCreated, filterByProjectIds, filterProjects, holdersOf, memberOptions, sameMembers } from '../assignTasks';
+import {
+  filterByCreated,
+  filterByHolders,
+  filterByProjectIds,
+  filterProjects,
+  holdersOf,
+  memberOptions,
+  sameMembers,
+  taskHolderOptions,
+} from '../assignTasks';
 
 const person = (id: number, name: string, role = 'employee'): ProjectUser => ({
   id, name, email: `${name.toLowerCase()}@example.com`, role,
@@ -175,5 +184,87 @@ describe('filterByCreated', () => {
   it('does not mutate the projects it was given', () => {
     filterByCreated(projects, span('2026-10-01', '2026-10-01'));
     expect(projects[0].tasks).toHaveLength(2);
+  });
+});
+
+describe('filterByHolders', () => {
+  const alpha = project(1, 'Alpha', [
+    task(1, 'Wire up login', { assignees: [ana] }),
+    task(2, 'Write the docs', { assignees: [ben] }),
+    task(3, 'Fix the build', { assignees: [ana, ben] }),
+    task(4, 'Triage the backlog'),                                   // unassigned: shared by the whole project
+  ]);
+  const beta = project(2, 'Beta', [task(5, 'Design the logo', { assignees: [cal] })]);
+
+  it('changes nothing for an empty selection', () => {
+    const projects = [alpha, beta];
+    expect(filterByHolders(projects, [])).toBe(projects);
+  });
+
+  it('keeps only the tasks the chosen member holds, and drops a project left with none', () => {
+    const result = filterByHolders([alpha, beta], ['1']);
+
+    expect(result.map((p) => p.project_name)).toEqual(['Alpha']);
+    expect(result[0].tasks!.map((t) => t.name)).toEqual(['Wire up login', 'Fix the build']);
+  });
+
+  it('shows a task held by several members when any one of them is chosen', () => {
+    const result = filterByHolders([alpha, beta], ['2']);
+    expect(result[0].tasks!.map((t) => t.name)).toEqual(['Write the docs', 'Fix the build']);
+  });
+
+  it('is the union of everyone chosen', () => {
+    const result = filterByHolders([alpha, beta], ['1', '3']);
+
+    expect(result.map((p) => p.project_name)).toEqual(['Alpha', 'Beta']);
+    expect(result[0].tasks!.map((t) => t.name)).toEqual(['Wire up login', 'Fix the build']);
+    expect(result[1].tasks!.map((t) => t.name)).toEqual(['Design the logo']);
+  });
+
+  it('does not show an unassigned task, which no one member holds', () => {
+    const names = filterByHolders([alpha], ['1', '2']).flatMap((p) => p.tasks!.map((t) => t.name));
+    expect(names).not.toContain('Triage the backlog');
+  });
+
+  it('finds the holder of a task from a backend that sends only the lone assignee', () => {
+    const old = project(3, 'Old', [task(6, 'Legacy task', { assignee: cal })]);
+    expect(filterByHolders([old], ['3'])[0].tasks!.map((t) => t.name)).toEqual(['Legacy task']);
+  });
+
+  it('answers with nothing for a member who holds nothing, and does not change the input', () => {
+    const before = JSON.stringify([alpha, beta]);
+    expect(filterByHolders([alpha, beta], ['99'])).toEqual([]);
+    expect(JSON.stringify([alpha, beta])).toBe(before);
+  });
+
+  it('does not match an id that merely contains the chosen one', () => {
+    const eleven = person(11, 'Eve');
+    const p = project(4, 'Gamma', [task(7, 'Eleven task', { assignees: [eleven] })]);
+    expect(filterByHolders([p], ['1'])).toEqual([]);
+  });
+});
+
+describe('taskHolderOptions', () => {
+  it('offers the employees of the projects and whoever holds a task, each once, by name', () => {
+    const manager = person(9, 'Zed', 'manager');
+    const left = person(7, 'Gus');                                   // holds a task but is no longer on the project
+    const projects = [
+      project(1, 'Alpha', [task(1, 't', { assignees: [left] })], [cal, ana, manager]),
+      project(2, 'Beta', [], [ana, ben]),
+    ];
+
+    expect(taskHolderOptions(projects).map((p) => p.name)).toEqual(['Ana', 'Ben', 'Cal', 'Gus']);
+  });
+
+  it('leaves out someone who cannot hold a task and holds none', () => {
+    const client = person(8, 'Client Co', 'client');
+    const manager = person(9, 'Zed', 'manager');
+    const projects = [project(1, 'Alpha', [task(1, 't', { assignees: [ana] })], [ana, client, manager])];
+
+    expect(taskHolderOptions(projects).map((p) => p.id)).toEqual([1]);
+  });
+
+  it('is empty when there are no projects', () => {
+    expect(taskHolderOptions([])).toEqual([]);
   });
 });

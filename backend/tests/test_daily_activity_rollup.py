@@ -169,6 +169,36 @@ class WeightedAverageTests(unittest.TestCase):
         overview = TimeEntryActivityRepository.get_overview(db=db, organization_id=ORG, user_id=5)
         self.assertEqual(overview["average_activity_percentage"], round(expected))
 
+    def test_active_users_batch_query_agrees_and_separates_members(self):
+        from app.repositories.time_entry_activity import (
+            TimeEntryActivityRepository as DayTotals,
+        )
+
+        db = _session()
+        day = _yesterday()
+        start, end = day_bounds_utc(day)
+        mine = _entry(db, user_id=5, day=day, entry_id=100)
+        _window(db, mine, 0, 80, 60)
+        _window(db, mine, 1, 80, 60)
+        _window(db, mine, 2, 0, 10)
+        other = _entry(db, user_id=6, day=day, entry_id=101)
+        _window(db, other, 0, 40, 60)
+        _entry(db, user_id=7, day=day, entry_id=102)  # tracked, but no window measured
+        db.commit()
+
+        totals = DayTotals.get_day_totals_for_users(db, ORG, [5, 6, 7], start, end)
+
+        # Same weighted sum / seconds as the single-user query the desktop uses.
+        self.assertEqual(totals[5], DayTotals.get_day_totals(db, ORG, 5, start, end))
+        self.assertEqual(totals[5], (80 * 60 + 80 * 60, 130))
+        self.assertEqual(totals[6], (40 * 60, 60))
+        # Nothing measured is absent -- unknown, not a measured 0%.
+        self.assertNotIn(7, totals)
+        # Outside the range, and in another organisation, nothing is counted.
+        self.assertEqual(DayTotals.get_day_totals_for_users(db, ORG, [5], end, end + timedelta(days=1)), {})
+        self.assertEqual(DayTotals.get_day_totals_for_users(db, ORG + 1, [5], start, end), {})
+        self.assertEqual(DayTotals.get_day_totals_for_users(db, ORG, [], start, end), {})
+
 
 # ── The roll-up ─────────────────────────────────────────────────────────
 

@@ -67,6 +67,9 @@ export interface ReactReportsItem {
   app_name?: string;
   url_id?: number;
   url_name?: string;
+  /** Rows of the `members` dimension. */
+  member_id?: number;
+  member_name?: string;
 }
 
 export interface ReactReportsListResponse {
