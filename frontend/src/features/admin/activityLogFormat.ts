@@ -73,6 +73,8 @@ const ACTION_LABELS: Record<string, string> = {
   login_allowed: 'Allowed to sign in',
   add_tasks_excluded: 'Excluded from adding tasks',
   add_tasks_allowed: 'Allowed to add tasks',
+  add_nonbillable_tasks_excluded: 'Excluded from adding Non billable tasks',
+  add_nonbillable_tasks_allowed: 'Allowed to add Non billable tasks',
   feedback_status_changed: 'Updated feedback',
   screenshot_notice_sent: 'Sent screenshot notice',
   screenshot_deleted: 'Deleted screenshot',

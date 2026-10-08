@@ -16,6 +16,12 @@ export interface Member {
   capture_frequency?: number;
   /** The Members directory's Allow / Not allow switch for adding tasks. Absent on an older backend means allowed. */
   can_add_tasks?: boolean;
+  /**
+   * The Members directory's Allow / Exclude switch for creating Non billable
+   * tasks (the desktop's second Add button). Unlike the two beside it this one
+   * is off until granted, so absent on an older backend means *not* allowed.
+   */
+  can_add_nonbillable_tasks?: boolean;
   /** The Members directory's Allow / Exclude switch for signing in. Absent on an older backend means allowed. */
   can_login?: boolean;
   created_at?: string;
@@ -46,17 +52,21 @@ export type GetMembersArgs = {
   search?: string;
   can_login?: AccessFilter;
   can_add_tasks?: AccessFilter;
+  can_add_nonbillable_tasks?: AccessFilter;
 };
 
 export interface MemberAccessArgs {
   member_ids: number[];
   can_login?: boolean;
   can_add_tasks?: boolean;
+  can_add_nonbillable_tasks?: boolean;
 }
 
 /** Headcounts of active members, for the numbers beside the Add Task and Login columns. */
 export interface MemberAccessSummary {
   add_task_allowed: number;
+  /** Optional: an older backend does not send it, and the page then shows no number. */
+  add_nonbillable_task_allowed?: number;
   login_allowed: number;
   active_members: number;
 }
@@ -80,6 +90,16 @@ const matchesAccess = (switchValue: boolean | undefined, filter: AccessFilter | 
   return filter === 'allowed' ? allowed : !allowed;
 };
 
+/**
+ * The same, for a switch that is off until granted: only an explicit `true` is
+ * "allowed", so a row without the field is excluded.
+ */
+const matchesGrant = (switchValue: boolean | undefined, filter: AccessFilter | undefined) => {
+  if (!filter || filter === 'All') return true;
+  const allowed = switchValue === true;
+  return filter === 'allowed' ? allowed : !allowed;
+};
+
 /** True when a member still belongs in a list fetched with `arg`'s filters. */
 const matchesFilters = (member: Member, arg: GetMembersArgs | undefined) => {
   const role = arg?.role;
@@ -88,6 +108,7 @@ const matchesFilters = (member: Member, arg: GetMembersArgs | undefined) => {
   if (status && status !== 'All' && (member.status || '').toLowerCase() !== status.toLowerCase()) return false;
   if (!matchesAccess(member.can_login, arg?.can_login)) return false;
   if (!matchesAccess(member.can_add_tasks, arg?.can_add_tasks)) return false;
+  if (!matchesGrant(member.can_add_nonbillable_tasks, arg?.can_add_nonbillable_tasks)) return false;
   return true;
 };
 
@@ -180,6 +201,8 @@ export const membersApi = baseApi.injectEndpoints({
         else if (params.can_login === 'not_allowed') queryParams.append('can_login', 'false');
         if (params.can_add_tasks === 'allowed') queryParams.append('can_add_tasks', 'true');
         else if (params.can_add_tasks === 'not_allowed') queryParams.append('can_add_tasks', 'false');
+        if (params.can_add_nonbillable_tasks === 'allowed') queryParams.append('can_add_nonbillable_tasks', 'true');
+        else if (params.can_add_nonbillable_tasks === 'not_allowed') queryParams.append('can_add_nonbillable_tasks', 'false');
 
         return { url: `${ENDPOINTS.MEMBERS.GET_ALL}?${queryParams.toString()}` };
       },

@@ -31,6 +31,13 @@ import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } 
  */
 const ACCESS_SUMMARY_POLL_MS = 15_000;
 
+/**
+ * What the Non billable switch is called on this page. It governs the
+ * desktop's second Add button, whose tasks are created with " - Non billable"
+ * on the end of their name. One string, so renaming it is one edit.
+ */
+const BILLABLE_TASK_LABEL = 'Add Billable Task';
+
 const GRADIENT_CYAN_PURPLE = 'bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[#8b5cf6]';
 
 /** "(20)" beside a column title: how many active members hold that permission. */
@@ -133,7 +140,7 @@ const AddTaskSwitch: React.FC<{
     : <span className="inline-flex items-center rounded-md bg-rose-50 px-2.5 py-1 text-[11px] font-bold tracking-wider text-rose-500 border border-rose-200">Excluded</span>;
   if (!editable) return pill;
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex items-center gap-2">
       {pill}
       <button
         type="button"
@@ -477,6 +484,7 @@ export const AdminMembers: React.FC = () => {
   // Who is allowed to add tasks / to log in -- the two switches the columns show.
   const [filterAddTask, setFilterAddTask] = useState<AccessFilter>('All');
   const [filterLogin, setFilterLogin] = useState<AccessFilter>('All');
+  const [filterBillableTask, setFilterBillableTask] = useState<AccessFilter>('All');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
@@ -505,6 +513,7 @@ export const AdminMembers: React.FC = () => {
     search: searchTerm,
     can_add_tasks: filterAddTask,
     can_login: filterLogin,
+    can_add_nonbillable_tasks: filterBillableTask,
   });
 
   // The headcounts beside Add Task and Login. Deliberately not derived from
@@ -656,6 +665,30 @@ export const AdminMembers: React.FC = () => {
     }
   };
 
+  // The Add Billable Task switch. Off until granted, and no email goes out when
+  // it moves (the backend sends none), so there is nothing to confirm: the row
+  // flips optimistically and is rolled back with a toast if the server refuses.
+  const [pendingBillableTaskId, setPendingBillableTaskId] = useState<number | null>(null);
+  const handleSetBillableTask = async (member: Member, allowed: boolean) => {
+    if ((member.can_add_nonbillable_tasks === true) === allowed) return;
+    setPendingBillableTaskId(member.id);
+    try {
+      const result = await updateMemberAccess({ member_ids: [member.id], can_add_nonbillable_tasks: allowed }).unwrap();
+      if (result.failed.length) throw new Error(result.failed[0].detail);
+      showToast(
+        allowed
+          ? `${member.name} is now allowed to add billable tasks.`
+          : `${member.name} is now excluded from adding billable tasks.`,
+        'success',
+      );
+    } catch (err) {
+      console.error('Failed to update the add-billable-task permission', err);
+      showToast(accessErrorMessage(err, 'Unable to update the add-billable-task permission. Please try again.'), 'error');
+    } finally {
+      setPendingBillableTaskId(null);
+    }
+  };
+
   // The Login switch. Excluding signs the member out of the desktop and the
   // web within seconds and stops a running timer, so it asks first; allowing
   // them back is harmless and immediate. The row flips optimistically.
@@ -731,6 +764,7 @@ export const AdminMembers: React.FC = () => {
           {
             page: pageNumber, limit: 100, role: filterRole, status: 'All', search: searchTerm,
             can_add_tasks: filterAddTask, can_login: filterLogin,
+            can_add_nonbillable_tasks: filterBillableTask,
           },
           true,
         ).unwrap();
@@ -752,7 +786,7 @@ export const AdminMembers: React.FC = () => {
   // own and reports the ones it refused (your own login, an administrator's
   // access when you are HR, someone outside your scope); those stay selected
   // so the choice is visible and can be retried or cleared.
-  const handleBulkAccess = async (switches: { can_login?: boolean; can_add_tasks?: boolean }) => {
+  const handleBulkAccess = async (switches: { can_login?: boolean; can_add_tasks?: boolean; can_add_nonbillable_tasks?: boolean }) => {
     const ids = Array.from(selectedIds);
     if (!ids.length) return;
     if (
@@ -829,13 +863,16 @@ export const AdminMembers: React.FC = () => {
   // this switch would change at least one selected member. A member whose state
   // is not known counts as a change, so the button is never wrongly dead.
   const rowsOnPage = new Map(filteredItems.map((m) => [m.id, m]));
-  const wouldChange = (key: 'can_login' | 'can_add_tasks', target: boolean) =>
+  const wouldChange = (key: 'can_login' | 'can_add_tasks' | 'can_add_nonbillable_tasks', target: boolean) =>
     Array.from(selectedIds).some((id) => {
       const member = rowsOnPage.get(id) ?? knownMembers[id];
-      return !member || (member[key] !== false) !== target;
+      if (!member) return true;
+      // Non billable is off until granted: only an explicit true is "on".
+      const on = key === 'can_add_nonbillable_tasks' ? member[key] === true : member[key] !== false;
+      return on !== target;
     });
   // Placeholder rows span every column, including the optional ones.
-  const columnCount = 8 + (canManageAccess ? 1 : 0) + (canManageMembers ? 1 : 0);
+  const columnCount = 9 + (canManageAccess ? 1 : 0) + (canManageMembers ? 1 : 0);
 
 
   const selectedMember = selectedProfileId ? data?.items?.find(m => m.id === selectedProfileId) : null;
@@ -955,6 +992,11 @@ export const AdminMembers: React.FC = () => {
               value={filterLogin}
               onChange={(value) => { setFilterLogin(value); setPage(1); }}
             />
+            <AccessFilterSelect
+              label={BILLABLE_TASK_LABEL}
+              value={filterBillableTask}
+              onChange={(value) => { setFilterBillableTask(value); setPage(1); }}
+            />
           </div>
         </div>
 
@@ -985,6 +1027,7 @@ export const AdminMembers: React.FC = () => {
             {([
               { label: 'Login', key: 'can_login' as const, noun: 'allowed to log in' },
               { label: 'Add Task', key: 'can_add_tasks' as const, noun: 'allowed to add tasks' },
+              { label: BILLABLE_TASK_LABEL, key: 'can_add_nonbillable_tasks' as const, noun: 'allowed to add billable tasks' },
             ]).map(({ label, key, noun }) => {
               const canAllow = wouldChange(key, true);
               const canExclude = wouldChange(key, false);
@@ -1031,7 +1074,7 @@ export const AdminMembers: React.FC = () => {
               <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
                 <tr>
                   {canManageAccess && (
-                    <th className="w-10 pl-6 py-4">
+                    <th className="w-10 pl-4 py-4">
                       <input
                         type="checkbox"
                         aria-label="Select all members"
@@ -1044,20 +1087,23 @@ export const AdminMembers: React.FC = () => {
                       />
                     </th>
                   )}
-                  <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Employee</th>
-                  <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Role</th>
-                  <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Status</th>
-                  <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Designation</th>
-                  <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Date of Joining</th>
-                  <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Date of Birth</th>
-                  <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">
+                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Employee</th>
+                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Role</th>
+                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Status</th>
+                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Designation</th>
+                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Date of Joining</th>
+                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Date of Birth</th>
+                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">
                     Add Task<HeaderCount value={accessSummary?.add_task_allowed} meaning="allowed to add tasks" />
                   </th>
-                  <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">
+                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">
                     Login<HeaderCount value={accessSummary?.login_allowed} meaning="allowed to log in" />
                   </th>
+                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">
+                    {BILLABLE_TASK_LABEL}<HeaderCount value={accessSummary?.add_nonbillable_task_allowed} meaning="allowed to add billable tasks" />
+                  </th>
                   {canManageMembers && (
-                    <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px] text-right">Action</th>
+                    <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px] text-right">Action</th>
                   )}
                 </tr>
               </thead>
@@ -1078,7 +1124,7 @@ export const AdminMembers: React.FC = () => {
                   filteredItems.map(member => (
                     <tr key={member.id} className={`transition hover:bg-slate-50/50 ${selectedIds.has(member.id) ? 'bg-blue-50/40' : ''}`}>
                       {canManageAccess && (
-                        <td className="w-10 pl-6 py-4">
+                        <td className="w-10 pl-4 py-4">
                           <input
                             type="checkbox"
                             aria-label={`Select ${member.name || 'member'}`}
@@ -1088,7 +1134,7 @@ export const AdminMembers: React.FC = () => {
                           />
                         </td>
                       )}
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-4">
                         <div className="flex items-center gap-3">
                           <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white shadow-sm ${GRADIENT_CYAN_PURPLE}`}>
                             {(member.name || 'U').substring(0, 2).toUpperCase()}
@@ -1099,7 +1145,7 @@ export const AdminMembers: React.FC = () => {
                           </div>
                         </div>
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-4">
                         <span className={`inline-flex items-center rounded bg-slate-100 px-2 py-0.5 text-xs font-semibold ${
                           ROLE_TONES[(member.role || '').toLowerCase()] || 'text-slate-600'
                         }`}>
@@ -1108,13 +1154,13 @@ export const AdminMembers: React.FC = () => {
                             || '-'}
                         </span>
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-4">
                         <StatusBadge status={member.status} />
                       </td>
-                      <td className="px-6 py-4 font-medium text-slate-600">{member.designation || '-'}</td>
-                      <td className="px-6 py-4 font-medium text-slate-600">{formatDate(member.date_of_joining)}</td>
-                      <td className="px-6 py-4 font-medium text-slate-600">{formatDate(member.date_of_birth)}</td>
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-4 font-medium text-slate-600">{member.designation || '-'}</td>
+                      <td className="px-4 py-4 font-medium text-slate-600">{formatDate(member.date_of_joining)}</td>
+                      <td className="px-4 py-4 font-medium text-slate-600">{formatDate(member.date_of_birth)}</td>
+                      <td className="px-4 py-4">
                         <AddTaskSwitch
                           allowed={member.can_add_tasks !== false}
                           editable={canManageAccess}
@@ -1122,7 +1168,7 @@ export const AdminMembers: React.FC = () => {
                           onChange={(allowed) => handleSetAddTask(member, allowed)}
                         />
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-4">
                         <AddTaskSwitch
                           allowed={member.can_login !== false}
                           editable={canManageAccess}
@@ -1133,8 +1179,18 @@ export const AdminMembers: React.FC = () => {
                           onChange={(allowed) => handleSetLogin(member, allowed)}
                         />
                       </td>
+                      <td className="px-4 py-4">
+                        <AddTaskSwitch
+                          allowed={member.can_add_nonbillable_tasks === true}
+                          editable={canManageAccess}
+                          busy={pendingBillableTaskId === member.id}
+                          subject="adding billable tasks"
+                          allowPhrase="to add billable tasks"
+                          onChange={(allowed) => handleSetBillableTask(member, allowed)}
+                        />
+                      </td>
                       {canManageMembers && (
-                        <td className="px-6 py-4 text-right">
+                        <td className="px-4 py-4 text-right">
                           <div className="flex items-center justify-end gap-2">
                             <button
                               onClick={() => setLogMember({ id: member.id, name: member.name || 'Member' })}
