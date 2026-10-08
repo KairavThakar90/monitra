@@ -799,6 +799,56 @@ on the divider after every drag. **Instead:** draw it only for `TabFocusReason`,
 
 ---
 
+## Memory
+
+### ❌ Do not assign a bound method of a parent to a child widget's event handler
+
+```python
+self.thumbnail = ScreenshotThumbnail(SCREENSHOT_THUMB_HEIGHT, self)
+self.thumbnail.mousePressEvent = self._on_thumbnail_clicked   # a bound method of the card
+```
+
+**What it caused:** the Task Manager figures this project was audited for --
+~700 MB after an hour on the dashboard, 1 GB+ reported, 1.18 GB on a Mac.
+The card references its child, and the child now holds a bound method whose
+`__self__` is the card: a reference cycle. `deleteLater()` destroys the Qt
+side, but the Python wrappers -- and the 4 MB decoded `QPixmap` the thumbnail
+held -- live until the *cyclic* garbage collector runs, which on an idle
+application is rarely: the collector is triggered by allocation counts, and an
+idle dashboard allocates little. Every minute the Screenshots tab refreshed,
+every card whose window activity had moved was replaced, and the old one was
+kept whole. A walk of the installed process's private memory found **111
+regions of 3.82 MB -- 424 MB of retired thumbnails** in a dashboard showing
+twelve. Measured on the real `ScreenshotsTabView`: 12 cards, 20 refreshes,
+collector off -- **987 MB**; one `gc.collect()` -- 115 MB. That is the
+sawtooth the screenshots in the audit showed, and why it looked like a leak
+on some machines and not others.
+
+The same shape appears wherever a widget holds a closure or bound method that
+refers back up the tree (`enterEvent = lambda e: self._underline_link(True)`
+on `UsageActivityRow`): harmless on a widget that holds a few KB, fatal on one
+that holds a picture.
+
+**Instead:** a `Signal` on the child, connected to the parent's slot (Qt's
+connection does not keep the Python wrapper alive the same way), *and* release
+anything large explicitly when a widget is retired (`ScreenshotCard.release`),
+so the pixels never depend on the collector at all. Keep a bounded master
+(`SCREENSHOT_CARD_MASTER_EDGE`) and the pixmap actually drawn, not the full
+decoded image, for a card that paints a 300x120 strip.
+`tests/test_screenshot_cards.py::TestCardsAreNotKeptAliveByGarbage` runs the
+real view with the collector disabled and fails on either regression.
+
+### ❌ Do not measure memory with `tracemalloc` and call the result the footprint
+
+`tracemalloc` counts Python allocations. The thumbnails above were 4 MB each
+of native Qt memory behind a 56-byte Python wrapper, so the soak that used it
+reported ~8 MB while Task Manager showed 700 MB. Read what the OS reports
+(`tools/resource_probe.py`, or `MONITRA_RESOURCE_LOG=1` for the running
+application), and read it over time: a number that climbs and then falls off a
+cliff is a collector dependency, not a leak, and is fixed differently.
+
+---
+
 ## Naming
 
 ### ❌ Do not overload `start()`, `stop()` or `state()` on a service

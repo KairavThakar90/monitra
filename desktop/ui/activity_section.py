@@ -6,8 +6,8 @@ from typing import Optional, List, Dict, Any
 
 import random
 
-from PySide6.QtCore import Qt, QRectF, QSize, QTimer, Signal
-from PySide6.QtGui import QFont, QColor, QPainter, QPainterPath, QPixmap
+from PySide6.QtCore import QRect, Qt, QRectF, QSize, QTimer, Signal
+from PySide6.QtGui import QFont, QColor, QImage, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QLineEdit,
     QScrollArea, QGridLayout, QPushButton, QSizePolicy, QStackedWidget,
@@ -58,6 +58,12 @@ SCREENSHOT_THUMB_HEIGHT = 120
 #: URLs tabs. A multiple of every column count the grid can have (1, 2, 3, 4),
 #: so a page never leaves a ragged part-row above the button.
 SCREENSHOT_PAGE_SIZE = 12
+#: The longest edge a card keeps of the stored image. The image is 1000px, and
+#: holding it decoded costs 4 MB a card -- 48 MB for a page of twelve, rebuilt
+#: whenever a card is -- to draw a strip about 300x120 logical pixels. Cards
+#: keep a 640px master (1.6 MB) and a cached pixmap of what is on screen; the
+#: lightbox, which shows the whole picture, keeps it at full size.
+SCREENSHOT_CARD_MASTER_EDGE = 640
 #: The height every state of the Screenshots tab occupies at least: loading,
 #: empty, and a grid of one row of cards. Sized to hold the empty-state panel
 #: (icon, title, sentence), the tallest of them, so the tab asks for the same
@@ -275,23 +281,73 @@ class ScreenshotThumbnail(QWidget):
     image, this says so in words.
     """
 
-    def __init__(self, height: int = 120, parent: Optional[QWidget] = None) -> None:
+    #: The picture was pressed. A signal, not an assigned handler: the card used
+    #: to set `thumbnail.mousePressEvent = self._on_thumbnail_clicked`, which
+    #: stores a bound method of the card on its own child -- a reference cycle
+    #: that kept every retired card, and the 4 MB picture it held, alive until
+    #: the cyclic garbage collector happened to run (see DO_NOT_DO.md).
+    clicked = Signal()
+
+    def __init__(
+        self,
+        height: int = 120,
+        parent: Optional[QWidget] = None,
+        master_edge: Optional[int] = None,
+    ) -> None:
+        """
+        :param master_edge: the longest edge of the image this widget keeps, or
+            None to keep it as stored. Only a widget that draws the picture
+            small has any use for the difference.
+        """
         super().__init__(parent)
         self.setFixedHeight(height)
-        self._pixmap: Optional[QPixmap] = None
+        self._master_edge = master_edge
+        #: The decoded image, at most `master_edge` on its longest side.
+        self._image: Optional[QImage] = None
+        #: What is actually drawn: the image scaled to fill this widget and
+        #: cropped to it, with the size it was made for. Rebuilt only when the
+        #: widget's size changes, so a repaint is a blit rather than a smooth
+        #: rescale of the whole picture.
+        self._drawn: Optional[QPixmap] = None
+        self._drawn_for: Optional[QSize] = None
         self._state = "loading"
 
     def set_image(self, data: bytes) -> None:
-        pixmap = QPixmap()
-        if not data or not pixmap.loadFromData(data):
+        image = QImage()
+        if not data or not image.loadFromData(data) or image.isNull():
             self.set_unavailable()
             return
-        self._pixmap = pixmap
+        edge = self._master_edge
+        if edge and max(image.width(), image.height()) > edge:
+            image = image.scaled(
+                edge, edge,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        self._image = image
+        self._drawn = None
+        self._drawn_for = None
         self._state = "ready"
         self.update()
 
+    def release(self) -> None:
+        """Drop the decoded picture now.
+
+        Called when a card is retired. Qt deletes the widget on the next turn
+        of the event loop, but the Python object wrapping it -- and everything
+        it references -- lives as long as anything references *it*, and a
+        widget with a signal connected to a closure or a parent's bound method
+        is easily part of a cycle. The pixels must not depend on that.
+        """
+        self._image = None
+        self._drawn = None
+        self._drawn_for = None
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        self.clicked.emit()
+
     def set_unavailable(self) -> None:
-        self._pixmap = None
+        self.release()
         self._state = "unavailable"
         self.update()
 
@@ -313,21 +369,11 @@ class ScreenshotThumbnail(QWidget):
         painter.setClipPath(path)
         painter.fillRect(self.rect(), QColor("#0F172A"))
 
-        if self._state == "ready" and self._pixmap is not None:
-            # Scale to fill and centre. The stored image is square and the card
-            # is not, so fitting it inside would show more of the padding the
-            # capture already carries than of the screen itself.
-            scaled = self._pixmap.scaled(
-                self.size(),
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            painter.drawPixmap(
-                (self.width() - scaled.width()) // 2,
-                (self.height() - scaled.height()) // 2,
-                scaled,
-            )
-            return
+        if self._state == "ready" and self._image is not None:
+            drawn = self._drawn_pixmap()
+            if drawn is not None:
+                painter.drawPixmap(0, 0, drawn)
+                return
 
         painter.setPen(QColor("#64748B"))
         painter.setFont(QFont("Segoe UI", 8))
@@ -336,6 +382,34 @@ class ScreenshotThumbnail(QWidget):
             Qt.AlignmentFlag.AlignCenter,
             "Loading preview" if self._state == "loading" else "Preview unavailable",
         )
+
+
+    def _drawn_pixmap(self) -> Optional[QPixmap]:
+        """The picture scaled to fill this widget and cropped to it, cached.
+
+        Scale to fill and centre. The stored image is square and the card is
+        not, so fitting it inside would show more of the padding the capture
+        already carries than of the screen itself.
+        """
+        size = self.size()
+        if self._drawn is not None and self._drawn_for == size:
+            return self._drawn
+        image = self._image
+        if image is None or size.isEmpty():
+            return None
+        scaled = image.scaled(
+            size,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        left = (size.width() - scaled.width()) // 2
+        top = (size.height() - scaled.height()) // 2
+        # The part of the scaled picture that is inside the widget, which is
+        # exactly what centring it and clipping to the widget leaves visible.
+        cropped = scaled.copy(QRect(-left, -top, size.width(), size.height()))
+        self._drawn = QPixmap.fromImage(cropped)
+        self._drawn_for = size
+        return self._drawn
 
 
 class ScreenshotPreviewDialog(QDialog):
@@ -536,6 +610,10 @@ class ScreenshotCard(QFrame):
     def set_loading(self) -> None:
         self.thumbnail.set_loading()
 
+    def release(self) -> None:
+        """Let go of the picture; the card is being retired."""
+        self.thumbnail.release()
+
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -572,9 +650,11 @@ class ScreenshotCard(QFrame):
 
         layout.addWidget(context_col)
 
-        self.thumbnail = ScreenshotThumbnail(SCREENSHOT_THUMB_HEIGHT, self)
+        self.thumbnail = ScreenshotThumbnail(
+            SCREENSHOT_THUMB_HEIGHT, self, master_edge=SCREENSHOT_CARD_MASTER_EDGE
+        )
         self.thumbnail.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.thumbnail.mousePressEvent = self._on_thumbnail_clicked
+        self.thumbnail.clicked.connect(self._on_thumbnail_clicked)
         layout.addWidget(self.thumbnail)
 
         info_row = QWidget(self)
@@ -650,7 +730,7 @@ class ScreenshotCard(QFrame):
         meta_layout.addWidget(act_lbl)
         thumb_layout.addWidget(meta_row)
 
-    def _on_thumbnail_clicked(self, event) -> None:
+    def _on_thumbnail_clicked(self) -> None:
         self.clicked.emit(self.screenshot)
 
 
@@ -1057,6 +1137,8 @@ class ScreenshotsTabView(QWidget):
             self._grid_host.deleteLater()
         self._grid_host = self._grid = self._grid_widget = None
         self._outer = self._more_button = None
+        for card in self._placed:
+            card.release()
         self._placed = []
         self._cards = {}
         self._columns = 0
@@ -1092,6 +1174,7 @@ class ScreenshotsTabView(QWidget):
         if self._grid is not None:
             self._grid.removeWidget(card)
         card.hide()
+        card.release()
         card.deleteLater()
 
     def _show_data(self) -> None:

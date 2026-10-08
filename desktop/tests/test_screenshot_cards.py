@@ -171,6 +171,240 @@ class TestThumbnail:
         assert thumb.state == "unavailable"
 
 
+def _detailed_webp(edge: int = 1000) -> bytes:
+    """A 1000px image with real detail, encoded as the capture pipeline does."""
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (edge, edge), (24, 24, 27))
+    draw = ImageDraw.Draw(image)
+    for i in range(0, edge, 25):
+        draw.rectangle([i, (i * 7) % edge, i + 60, ((i * 7) % edge) + 40],
+                       fill=((i * 3) % 255, (i * 5) % 255, (i * 11) % 255))
+        draw.line([0, i, edge, edge - i], fill=(200, 200, 210), width=2)
+    buffer = io.BytesIO()
+    image.save(buffer, format="WEBP", quality=72)
+    return buffer.getvalue()
+
+
+def _reference_render(data: bytes, width: int, height: int):
+    """What the thumbnail drew before it kept a bounded master: the whole
+    decoded image, scaled to fill and centred on every paint."""
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPixmap
+
+    pixmap = QPixmap()
+    assert pixmap.loadFromData(data)
+    out = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+    out.fill(QColor("#0F172A"))
+    painter = QPainter(out)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0, 0, width, height), 8, 8)
+    painter.setClipPath(path)
+    painter.fillRect(0, 0, width, height, QColor("#0F172A"))
+    scaled = pixmap.scaled(
+        out.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    painter.drawPixmap((width - scaled.width()) // 2, (height - scaled.height()) // 2, scaled)
+    painter.end()
+    return out
+
+
+def _mean_abs_difference(a, b) -> float:
+    assert a.size() == b.size()
+    total = 0
+    for y in range(a.height()):
+        for x in range(a.width()):
+            pa, pb = a.pixelColor(x, y), b.pixelColor(x, y)
+            total += abs(pa.red() - pb.red()) + abs(pa.green() - pb.green()) + abs(pa.blue() - pb.blue())
+    return total / (a.width() * a.height() * 3)
+
+
+class TestThumbnailMemory:
+    """A card drew a 120px strip from a 4 MB decoded pixmap it re-scaled on
+    every paint. Twelve to twenty-four of them were most of the memory the
+    dashboard held, and a rebuilt card decoded its image all over again."""
+
+    WIDTH, HEIGHT = 300, 120
+
+    def _render(self, thumb):
+        thumb.resize(self.WIDTH, self.HEIGHT)
+        return thumb.grab().toImage()
+
+    def test_at_full_size_it_draws_exactly_what_it_drew_before(self, qapp):
+        data = _detailed_webp()
+        thumb = ScreenshotThumbnail(self.HEIGHT)          # no master cap
+        thumb.set_image(data)
+        drawn = self._render(thumb)
+        expected = _reference_render(data, self.WIDTH, self.HEIGHT)
+        assert _mean_abs_difference(drawn.convertToFormat(expected.format()), expected) < 0.5
+
+    def test_the_card_keeps_a_bounded_master_and_draws_nearly_the_same(self, qapp):
+        data = _detailed_webp()
+        thumb = ScreenshotThumbnail(self.HEIGHT, master_edge=640)
+        thumb.set_image(data)
+        drawn = self._render(thumb)
+        assert max(thumb._image.width(), thumb._image.height()) == 640
+        expected = _reference_render(data, self.WIDTH, self.HEIGHT)
+        # Two resamples instead of one: visible only to a pixel diff.
+        assert _mean_abs_difference(drawn.convertToFormat(expected.format()), expected) < 4.0
+
+    def test_what_a_card_holds_is_a_fraction_of_the_decoded_picture(self, qapp):
+        thumb = ScreenshotThumbnail(self.HEIGHT, master_edge=640)
+        thumb.set_image(_detailed_webp())
+        self._render(thumb)
+        held = thumb._image.sizeInBytes() + thumb._drawn.width() * thumb._drawn.height() * 4
+        assert held < 2 * 1024 * 1024        # was 4 MB for the pixmap alone
+
+    def test_a_repaint_at_the_same_size_does_not_rescale(self, qapp):
+        thumb = ScreenshotThumbnail(self.HEIGHT, master_edge=640)
+        thumb.set_image(_detailed_webp())
+        self._render(thumb)
+        first = thumb._drawn
+        thumb.grab()
+        thumb.grab()
+        assert thumb._drawn is first
+
+    def test_a_new_size_rebuilds_the_drawn_pixmap_and_nothing_else(self, qapp):
+        thumb = ScreenshotThumbnail(self.HEIGHT, master_edge=640)
+        thumb.set_image(_detailed_webp())
+        self._render(thumb)
+        master = thumb._image
+        thumb.resize(420, self.HEIGHT)
+        image = thumb.grab().toImage()
+        assert image.width() == 420
+        assert thumb._image is master
+        assert thumb._drawn.width() == 420
+
+    def test_unavailable_releases_the_picture(self, qapp):
+        thumb = ScreenshotThumbnail(self.HEIGHT, master_edge=640)
+        thumb.set_image(_detailed_webp())
+        self._render(thumb)
+        thumb.set_unavailable()
+        assert thumb._image is None and thumb._drawn is None
+
+    def test_cards_use_the_bounded_master_and_the_lightbox_does_not(self, qapp):
+        from ui.activity_section import SCREENSHOT_CARD_MASTER_EDGE, ScreenshotPreviewDialog
+
+        card = ScreenshotCard(dict(_flatten_timeline(TIMELINE)[-1]))
+        assert card.thumbnail._master_edge == SCREENSHOT_CARD_MASTER_EDGE
+        dialog = ScreenshotPreviewDialog(dict(_flatten_timeline(TIMELINE)[-1]))
+        assert dialog.large_preview._master_edge is None
+
+
+class TestCardsAreNotKeptAliveByGarbage:
+    """Every refresh re-rendered the grid, and every retired card stayed alive
+    -- with its 4 MB decoded picture -- until the cyclic garbage collector ran,
+    because the card stored a bound method of itself on its own child
+    (`thumbnail.mousePressEvent = self._on_thumbnail_clicked`). On an idle
+    application the collector runs rarely, so memory climbed by a page of
+    twelve cards a minute and then fell off a cliff: 424 MB of an idle
+    installed process was such pictures. Measured on the real dashboard:
+    12 cards -> 987 MB after 20 refreshes with the collector off; flat now."""
+
+    def _view(self, qapp):
+        from ui.activity_section import MODE_DATA, ScreenshotsTabView
+
+        view = ScreenshotsTabView()
+        view.resize(1100, 700)
+        view.show()
+        data = _detailed_webp()
+        view.image_requested.connect(lambda shot: view.deliver_image(shot["id"], data))
+        return view, MODE_DATA
+
+    @staticmethod
+    def _shots(revision, count=12):
+        return [
+            {"id": i, "captured_at": "2026-10-08T05:00:00+00:00", "view_url": f"/x/{i}",
+             "window_label": "w", "activity_percent": (i + revision) % 100,
+             "activity_measured_seconds": 60, "window_screenshot_count": 1,
+             "task_name": "t", "project_name": "p"}
+            for i in range(count)
+        ]
+
+    @staticmethod
+    def _flush(qapp):
+        from PySide6.QtCore import QCoreApplication, QEvent
+
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+        qapp.processEvents()
+
+    @staticmethod
+    def _live(cls):
+        import gc
+
+        return sum(1 for o in gc.get_objects() if type(o) is cls)
+
+    def test_a_retired_card_is_freed_without_the_garbage_collector(self, qapp):
+        import gc
+        import weakref
+
+        view, mode = self._view(qapp)
+        view.set_data(self._shots(0))
+        view.set_mode(mode)
+        card = view._placed[0]
+        ref = weakref.ref(card)
+        del card
+        gc.collect()
+        gc.disable()
+        try:
+            view.set_data(self._shots(1))      # every card's data changed: all rebuilt
+            view.set_mode(mode)
+            self._flush(qapp)
+            assert ref() is None, "a retired card is still referenced -- a reference cycle"
+        finally:
+            gc.enable()
+
+    def test_repeated_refreshes_do_not_accumulate_cards(self, qapp):
+        import gc
+
+        view, mode = self._view(qapp)
+        view.set_data(self._shots(0))
+        view.set_mode(mode)
+        gc.collect()
+        gc.disable()
+        try:
+            on_screen = self._live(ScreenshotThumbnail)
+            for revision in range(1, 11):
+                view.set_data(self._shots(revision))
+                view.set_mode(mode)
+                self._flush(qapp)
+            assert self._live(ScreenshotThumbnail) == on_screen
+            # And nothing is holding a decoded picture but the cards on screen.
+            held = [c.thumbnail._image for c in view._placed]
+            assert all(image is not None for image in held)
+        finally:
+            gc.enable()
+
+    def test_dropping_the_grid_releases_every_picture(self, qapp):
+        view, mode = self._view(qapp)
+        view.set_data(self._shots(0))
+        view.set_mode(mode)
+        cards = list(view._placed)
+        assert cards and all(c.thumbnail._image is not None for c in cards)
+        view.set_data([])
+        view.set_mode("empty")
+        assert all(c.thumbnail._image is None for c in cards)
+
+    def test_pressing_the_thumbnail_still_reports_the_screenshot(self, qapp):
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication
+
+        data = dict(_flatten_timeline(TIMELINE)[-1])
+        card = ScreenshotCard(data)
+        seen = []
+        card.clicked.connect(seen.append)
+        press = QMouseEvent(
+            QEvent.Type.MouseButtonPress, QPointF(5, 5), QPointF(5, 5),
+            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+        )
+        QApplication.sendEvent(card.thumbnail, press)
+        assert seen == [data]
+
+
 class TestCard:
     def _card(self, **overrides):
         data = dict(_flatten_timeline(TIMELINE)[-1])  # the 62% window

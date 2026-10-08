@@ -67,6 +67,17 @@ re-grant a permission.
 
 ### Fixed
 
+- **Monitra uses far less memory, and it stays there.** The desktop could be
+  seen in Task Manager at 500 MB to over 1 GB after an hour on the dashboard.
+  Nearly all of it was screenshot thumbnails: the Screenshots tab refreshes
+  every minute, each refresh rebuilt its cards, and every replaced card kept
+  its full-size decoded picture (4 MB each) until Python's garbage collector
+  happened to run -- so memory climbed by a page of cards a minute and then
+  dropped suddenly, over and over. A card now releases its picture the moment
+  it is replaced, and keeps only the small version it actually draws. Nothing
+  about what is captured, uploaded or shown has changed; the thumbnails look
+  the same.
+
 - **A screenshot that fails to capture is retried, not skipped.** If the screen
   could not be read at the planned moment (a locked screen, a monitor asleep, a
   remote-desktop reconnect), Monitra used to give up on that ten-minute slot and
