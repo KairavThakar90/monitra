@@ -229,7 +229,13 @@ class PostgresDaySegmentsTests(unittest.TestCase):
             # running for thirty hours: open on the day it is still running on
             (6, 15, now - timedelta(hours=30), None, 0, None),
         ]
-        got = self._run(rows, ist(2026, 10, 1), ist(2026, 10, 8))
+        # The range must reach past the day the running entry (row 6) is
+        # still open on: it is anchored to *now*, so a bound fixed at the day
+        # this test was written would leave its current day outside the range
+        # -- correctly apportioned by the SQL, and wrongly missing from the
+        # 30-hour sum below -- from the next day onward.
+        today = now.astimezone(IST).date()
+        got = self._run(rows, ist(2026, 10, 1), ist_day_end_utc(max(today, date(2026, 10, 7))))
 
         self.assertEqual(got[(10, date(2026, 10, 5))][0], 7200.0)
         self.assertEqual(got[(11, date(2026, 10, 5))][0], 5 * 3600.0)
