@@ -210,12 +210,20 @@ export const AdminUserManagement: React.FC = () => {
   }, [drawerTargets, form, isBulk]);
 
   const handleSave = async () => {
-    if (!drawerTargets || drawerTargets.length === 0 || !form || !captureValid || !idleValid) return;
+    // The minutes box is disabled while idle monitoring is off, so its value
+    // can only be invalid there if it was already; switching monitoring off
+    // must still save (this used to return silently, leaving the switch
+    // looking saved and the member's setting unchanged).
+    if (
+      !drawerTargets || drawerTargets.length === 0 || !form || !captureValid ||
+      (form.idleEnabled && !idleValid)
+    ) return;
     setError(null);
     const body = {
       capture_frequency: captureMinutesNum,
       idle_enabled: form.idleEnabled,
-      idle_minutes: idleMinutesNum,
+      // Omitted (left as stored) when monitoring is off and the box is unusable.
+      ...(idleValid ? { idle_minutes: idleMinutesNum } : {}),
     };
     const results = await Promise.allSettled(
       drawerTargets.map((member) => updateMember({ id: member.id, body }).unwrap()),
