@@ -20,7 +20,9 @@ Same opt-in and fixtures as the other E2E suites:
 """
 from __future__ import annotations
 
+import os
 import socket
+import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -402,13 +404,24 @@ def test_the_real_popup_survives_a_lost_reply_and_closes_on_the_second_press(qap
     dialog = IdleAlertDialog(BackgroundApi(desktop), period)
     dialog.show()
     _settle(qapp, 0.2)
+
+    def on_screen() -> bool:
+        """What the window manager says, where there is one."""
+        if qapp.platformName() != "windows":
+            return dialog.isVisible()
+        import ctypes
+        user32 = ctypes.windll.user32
+        user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        return bool(user32.IsWindowVisible(int(dialog.winId())))
+
     try:
+        assert on_screen()
         dialog.discard_radio.setChecked(True)
         proxy.fault("/resolve", ("drop_after",), times=1)
         dialog.resume_btn.click()
         assert not dialog.resume_btn.isEnabled(), "no feedback that the request is in flight"
         _pump(qapp, lambda: dialog.resume_btn.isEnabled(), 30, "the buttons to come back")
-        assert dialog.isVisible(), "the popup vanished on a failure"
+        assert dialog.isVisible() and on_screen(), "the popup vanished on a failure"
         assert "retry" in dialog.status_label.text().lower() or "again" in dialog.status_label.text().lower()
         assert dialog.discard_radio.isChecked(), "the user's choice was lost"
 
@@ -424,3 +437,122 @@ def test_the_real_popup_survives_a_lost_reply_and_closes_on_the_second_press(qap
         dialog.force_close()
         dialog.deleteLater()
         _stop_quietly(qapp, desktop)
+
+
+# ── 6. Nothing can be duplicated, over real HTTP and a real database ─────────
+
+def _idle_rows(db, entry_id: int) -> int:
+    from sqlalchemy import text
+
+    with db.connect() as conn:
+        return int(conn.execute(
+            text("SELECT count(*) FROM time_entry_idle_periods WHERE time_entry_id = :id"),
+            {"id": entry_id},
+        ).scalar())
+
+
+@pytest.mark.usefixtures("clean_slate")
+def test_concurrent_reports_and_resolves_never_duplicate_anything(api, db, principal):
+    """Eight simultaneous reports for one stretch, then six simultaneous
+    identical answers, then a different answer: one period, one deduction, one 409.
+
+    This is the race the IntegrityError handler exists for, against the real
+    partial unique index rather than a mock."""
+    now = datetime.now(UTC)
+    started = api.post("/time-entries/start", json={
+        "project_id": principal["project_id"], "task_id": principal["task_id"],
+        "client_op": f"timer:e2e:dup:{int(time.time() * 1000)}",
+        "started_at": (now - timedelta(seconds=ENTRY_AGE_SECONDS)).isoformat(),
+        "client_time": now.isoformat(),
+    })
+    assert started.status_code == 201, started.text
+    entry_id = started.json()["id"]
+    headers = api.headers
+
+    def run(n, fn):
+        out = [None] * n
+        gate = threading.Barrier(n)
+
+        def worker(i):
+            with httpx.Client(base_url=str(api.base_url), headers=headers, timeout=60) as client:
+                gate.wait()
+                out[i] = fn(client, i)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        return out
+
+    stamp = datetime.now(UTC)
+    reports = run(8, lambda c, i: c.post("/idle-periods", json={
+        "time_entry_id": entry_id,
+        "idle_started_at": (stamp - timedelta(seconds=IDLE_SECONDS)).isoformat(),
+        "idle_detected_at": stamp.isoformat(),
+        "client_event_id": f"e2e:race:{entry_id}:{i}",       # distinct keys: only the index can stop them
+        "client_time": datetime.now(UTC).isoformat(),
+    }))
+    assert {r.status_code for r in reports} <= {200, 201}, [r.text for r in reports]
+    ids = {r.json()["id"] for r in reports}
+    assert len(ids) == 1, f"two periods were opened: {ids}"
+    assert _idle_rows(db, entry_id) == 1
+    period_id = ids.pop()
+
+    answers = run(6, lambda c, i: c.post(f"/idle-periods/{period_id}/resolve", json={
+        "keep_idle_time": False, "action": "resume", "resolved_at": datetime.now(UTC).isoformat(),
+    }))
+    assert {r.status_code for r in answers} == {200}, [r.text for r in answers]
+    count, total = _adjustments(db, entry_id)
+    assert count == 1 and total < 0, f"the deduction was applied {count} times"
+    assert len({r.json()["time_entry_adjustment_seconds"] for r in answers}) == 1
+
+    different = api.post(f"/idle-periods/{period_id}/resolve", json={
+        "keep_idle_time": True, "action": "resume", "resolved_at": datetime.now(UTC).isoformat(),
+    })
+    assert different.status_code == 409, "a different answer to a resolved period must be refused"
+    assert _adjustments(db, entry_id) == (count, total)
+    api.post(f"/time-entries/{entry_id}/stop", json={})
+
+
+# ── 7. Real inactivity, no faked reading (opt-in: hands off for ~2 minutes) ──
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or os.environ.get("MONITRA_REAL_IDLE") != "1",
+    reason="needs a real Windows desktop and nobody touching it: MONITRA_REAL_IDLE=1",
+)
+@pytest.mark.usefixtures("clean_slate")
+def test_real_inactivity_opens_the_popup_and_the_answer_is_exact(qapp, desktop, api, db, principal):
+    """GetLastInputInfo, the real one. The only configuration change is the
+    threshold (one minute, the admin form's minimum) so the wait is bearable."""
+    from sqlalchemy import text
+
+    with db.begin() as conn:
+        conn.execute(text("UPDATE users SET idle_minutes = 1 WHERE id = :u"), {"u": principal["user_id"]})
+    idle, timer = desktop.idle, desktop.timer
+    idle.apply_user_profile({"idle_enabled": True, "idle_minutes": 1})
+    assert desktop.activity.idle_seconds() is not None, "the OS gave no inactivity reading"
+
+    entry_id = _start_aged(qapp, desktop, api, principal, "real-idle")
+    idle._monitoring_since = time.monotonic() - 600           # the window bound only
+    deadline = time.monotonic() + 240
+    last_input = None
+    while time.monotonic() < deadline and idle.pending_period() is None:
+        _settle(qapp, 1.0)
+        reading = desktop.activity.idle_seconds()
+        last_input = datetime.now(UTC) - timedelta(seconds=reading)
+    period = idle.pending_period()
+    assert period is not None, f"no popup after {240}s; last reading {desktop.activity.idle_seconds()}s"
+    started = datetime.fromisoformat(period["idle_started_at"].replace("Z", "+00:00"))
+    assert abs((started - last_input).total_seconds()) < 15, (started, last_input)
+    assert desktop.activity.idle_seconds() >= 60 - 2
+
+    resolved = []
+    idle.resolve_succeeded.connect(resolved.append)
+    idle.resolve(False, "resume")
+    _pump(qapp, lambda: bool(resolved), 30, "the answer")
+    count, total = _adjustments(db, entry_id)
+    row = api.get(f"/idle-periods/{period['id']}").json()
+    assert count == 1 and total == -row["idle_duration_seconds"] and row["status"] == "resolved"
+    assert 60 <= row["idle_duration_seconds"] <= 200, row
+    assert timer.adjustment_seconds() == total
+    print(f"\n[real idle] stretch={row['idle_duration_seconds']}s deduction={total}s")
+    _stop_quietly(qapp, desktop)
