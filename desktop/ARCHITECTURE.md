@@ -801,7 +801,7 @@ still does no network work; it reads the snapshot
 ```
 tick()  ->  first tick: read the persisted schedule, mark ready, wake Wellbeing
         ->  hold while signed out / offline / endpoint absent
-        ->  GET /desktop-notifications/schedule   (slow, jittered: ~5 min)
+        ->  GET /desktop-notifications/schedule   (~30 s, jittered; a 404 waits ~5 min)
         ->  parse defensively  ->  version changed?  ->  swap snapshot, persist, wake
 ```
 

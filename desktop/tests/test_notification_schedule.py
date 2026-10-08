@@ -354,8 +354,26 @@ def test_an_absent_endpoint_waits_quietly_and_keeps_what_it_has():
     delay = service.tick()
 
     assert service.schedule is good
-    assert delay >= service.RETRY_INTERVAL_MS * 0.85
+    assert delay >= service.ABSENT_INTERVAL_MS * 0.85, "a missing route is not asked every half minute"
     assert not [m for m in log.messages if "ERROR" in m]
+
+
+@pytest.mark.parametrize("error", [
+    ApiConnectionError("offline"),
+    ApiError("boom", status_code=500),
+    ApiError("bad gateway", status_code=502),
+])
+def test_a_failed_poll_is_retried_soon_not_after_minutes(error):
+    service, api, *_ = make_service(payload(version=2))
+    service.tick()
+
+    api.error = error
+    delay = service.tick()
+
+    assert delay <= service.RETRY_INTERVAL_MS * 1.15
+    assert service.RETRY_INTERVAL_MS <= 60_000, (
+        "one lost request must not leave a desktop deaf to a change for minutes"
+    )
 
 
 def test_it_holds_while_signed_out_without_asking():
@@ -385,7 +403,7 @@ def test_it_does_try_while_the_network_state_is_merely_unknown():
     assert api.calls == 1
 
 
-def test_the_poll_interval_is_slow_and_jittered():
+def test_the_poll_is_prompt_but_bounded_and_jittered():
     service, *_ = make_service(payload())
 
     delays = {service.tick() for _ in range(40)}
@@ -393,7 +411,11 @@ def test_the_poll_interval_is_slow_and_jittered():
     assert len(delays) > 1, "a fleet must not poll in lockstep"
     assert all(service.POLL_INTERVAL_MS * 0.85 <= d <= service.POLL_INTERVAL_MS * 1.15
                for d in delays)
-    assert service.POLL_INTERVAL_MS >= 60_000
+    # Prompt enough that a notification saved a minute ahead is known before its
+    # time (the cadence of the maintenance notice) ...
+    assert service.POLL_INTERVAL_MS * 1.15 <= 40_000
+    # ... and never a hammer: one small read per desktop, no faster than this.
+    assert service.POLL_INTERVAL_MS >= 15_000
 
 
 def test_the_last_good_schedule_is_persisted_and_an_offline_start_uses_it():
@@ -786,6 +808,152 @@ def test_nothing_is_shown_until_the_schedule_has_been_loaded():
     source.ready = True
     run_for(service, 3)
     assert notifications.of("lunch") == [], "and the loaded schedule is the one honoured"
+
+
+# ── Both services together: an administrator adds one while the desktop is running ──
+#
+# Every test above starts the scheduler with the notification already in the
+# schedule. The case that matters to an administrator is the other one: the
+# desktop has been up and signed in for hours, and *then* a notification is
+# added. It reaches the desktop only through the schedule service's poll, which
+# swaps the snapshot and wakes the scheduler -- so these run the two real
+# services on one runtime, the way `ApplicationRuntime` wires them, and let the
+# poll land at a chosen moment.
+
+def make_running_desktop(start):
+    notifications = FakeNotifications()
+    cache = FakeCache()
+    api = FakeScheduleApi(payload(version=0))   # nothing configured yet
+    runtime = SimpleNamespace(
+        api_client=SimpleNamespace(access_token="token"),
+        network=SimpleNamespace(network_state=NetworkState.BACKEND_REACHABLE),
+        notifications=notifications, cache=cache, storage=None,
+    )
+    wellbeing = WellbeingService(runtime, cache)
+    wellbeing._clock = CLOCK_START
+    wellbeing._ist = start
+    wellbeing._now_monotonic = lambda: wellbeing._clock
+    wellbeing._now_ist = lambda: wellbeing._ist
+    notifications.ist = lambda: wellbeing._ist
+    schedule = NotificationScheduleService(runtime, api, cache)
+    runtime.notification_schedule = schedule
+    # What `LoopService.wake()` does: run the next iteration now.
+    runtime.wellbeing = SimpleNamespace(wake=wellbeing.tick)
+    schedule.tick()   # the first tick reads the persisted record and asks nothing
+    return wellbeing, schedule, api, notifications
+
+
+def run_with_polls(wellbeing, schedule, minutes, polls_at):
+    """Drive the scheduler on its own returned delays, and the schedule service's
+    poll at each of `polls_at` (seconds from now)."""
+    begin = wellbeing._clock
+    end = begin + minutes * 60
+    polls = sorted(begin + p for p in polls_at)
+    while wellbeing._clock < end:
+        delay_ms = wellbeing.tick()
+        step = max(0.2, (wellbeing.interval_ms if delay_ms is None else delay_ms) / 1000.0)
+        if polls and wellbeing._clock + step >= polls[0]:
+            jump = max(0.0, polls.pop(0) - wellbeing._clock)
+            wellbeing._clock += jump
+            wellbeing._ist += timedelta(seconds=jump)
+            schedule.tick()
+            continue
+        wellbeing._clock += step
+        wellbeing._ist += timedelta(seconds=step)
+
+
+def run_both_loops(wellbeing, schedule, seconds, admin=()):
+    """Drive both services on the delays they return themselves -- the way the
+    runtime does -- with nothing scripted about *when* the poll lands.
+
+    `admin` is `[(seconds_from_now, action)]`: things the administrator does
+    on the web, which the desktop only learns of through its own next poll.
+    """
+    begin = wellbeing._clock
+    end = begin + seconds
+    next_wellbeing = begin
+    # `make_running_desktop` has made the schedule service's first tick, which
+    # reads the persisted record and answers with the delay to its first poll.
+    next_schedule = begin + schedule.FIRST_POLL_DELAY_MS / 1000.0
+    actions = sorted(((begin + at, act) for at, act in admin), key=lambda item: item[0])
+    while True:
+        due = [next_wellbeing, next_schedule] + [t for t, _ in actions[:1]]
+        now = min(due)
+        if now >= end:
+            return
+        jump = max(0.0, now - wellbeing._clock)
+        wellbeing._clock += jump
+        wellbeing._ist += timedelta(seconds=jump)
+        if actions and actions[0][0] <= now:
+            actions.pop(0)[1]()
+        if next_schedule <= now:
+            delay = schedule.tick()
+            next_schedule = now + (schedule.interval_ms if delay is None else delay) / 1000.0
+        if next_wellbeing <= now:
+            delay = wellbeing.tick()
+            step = max(0.2, (wellbeing.interval_ms if delay is None else delay) / 1000.0)
+            next_wellbeing = now + step
+
+
+def test_a_notification_saved_a_minute_ahead_is_shown_on_time(monkeypatch):
+    """The reported case: saved at 11:12:13 for 11:13, it was shown at 11:15.
+
+    Worst case for the desktop: the poll jitter at its longest, and the
+    administrator saves just after one poll has gone by.
+    """
+    import random
+    monkeypatch.setattr(random, "random", lambda: 0.999)   # the longest jittered wait
+    wellbeing, schedule, api, notifications = make_running_desktop(at(FRIDAY, 10, 20, 30))
+
+    def administrator_adds_it():
+        api.response = payload(version=1, custom=[custom(time="10:22")])
+
+    # Polls land at +5s, then every ~34.5s (+39.5s, +74s...). Saving at +40s --
+    # 0.5s after a poll -- is the unluckiest moment: 10:21:10 for 10:22:00.
+    run_both_loops(wellbeing, schedule, 3 * 60, admin=[(40, administrator_adds_it)])
+
+    (shown,) = notifications.of("custom:abc123")
+    late = (shown["ist"] - at(FRIDAY, 10, 22)).total_seconds()
+    assert 0 <= late <= 2, f"shown {late}s after its time"
+
+
+def test_a_custom_notification_added_while_the_desktop_runs_is_shown_when_the_poll_brings_it():
+    wellbeing, schedule, api, notifications = make_running_desktop(at(FRIDAY, 10, 20, 30))
+    run_with_polls(wellbeing, schedule, 1, polls_at=[5])
+    assert schedule.schedule.version == 0 and not schedule.schedule.custom
+
+    # The administrator adds it for 10:23. The desktop's next poll lands at
+    # 10:24:30 -- inside the five-minute poll the contract promises.
+    api.response = payload(version=1, custom=[custom(time="10:23")])
+    run_with_polls(wellbeing, schedule, 3.5, polls_at=[3 * 60])
+    assert schedule.schedule.version == 1
+
+    (shown,) = notifications.of("custom:abc123")
+    assert (shown["title"], shown["body"]) == ("Standup", "Daily standup in 5 minutes.")
+    late = (shown["ist"] - at(FRIDAY, 10, 23)).total_seconds()
+    assert 0 < late <= WellbeingService.DAILY_GRACE_SECONDS, f"shown {late}s after its time"
+
+    # ...and the next polls, which answer the same version, do not show it again.
+    run_with_polls(wellbeing, schedule, 12, polls_at=[60, 6 * 60, 11 * 60])
+    assert len(notifications.of("custom:abc123")) == 1
+
+
+def test_a_poll_that_arrives_after_the_grace_window_misses_today_but_not_tomorrow():
+    wellbeing, schedule, api, notifications = make_running_desktop(at(FRIDAY, 10, 20, 30))
+    run_with_polls(wellbeing, schedule, 1, polls_at=[5])
+
+    # Added for 10:23, but the poll that would carry it is more than the grace
+    # window late (a machine asleep, a run of failed polls). A reminder that
+    # arrives that long after its time is worse than none: it is spent for today.
+    api.response = payload(version=1, custom=[custom(time="10:23", weekdays=ALL_DAYS)])
+    late_poll = (WellbeingService.DAILY_GRACE_SECONDS + 3 * 60) + 90
+    run_with_polls(wellbeing, schedule, late_poll / 60 + 1, polls_at=[late_poll])
+    assert notifications.of("custom:abc123") == []
+
+    # It is still on the schedule, so it is shown at its time the next day.
+    wellbeing._ist = at(FRIDAY + timedelta(days=1), 10, 22, 30)
+    run_with_polls(wellbeing, schedule, 3, polls_at=[30])
+    assert len(notifications.of("custom:abc123")) == 1
 
 
 def test_the_wellbeing_service_does_no_network_work():

@@ -94,10 +94,13 @@ A field that is sent is validated in full — an explicit `null` or a blank is
 
 ## What the desktop does with it
 
-* **`NotificationScheduleService`** (a `LoopService`) polls the schedule on a
-  slow, jittered loop, holds while signed out, offline or against a backend
-  that does not have the endpoint, keeps the last good schedule when a poll
-  fails, and persists the last good one so a start while offline uses it.
+* **`NotificationScheduleService`** (a `LoopService`) polls the schedule about
+  every 30 seconds (jittered; the cadence of the maintenance notice), holds
+  while signed out or offline, asks a backend that does not have the endpoint
+  (404) only every five minutes, keeps the last good schedule when a poll
+  fails (and tries again at the next 30-second poll), and persists the last
+  good one so a start while offline uses it. A poll is one small read, and
+  nothing is written unless the version changed.
 * **`WellbeingService`** stays the scheduler and stays free of network work. It
   reads the current schedule on every tick:
   * an **interval** reminder is shown only if it is on **and** today's IST
@@ -121,7 +124,13 @@ Consequences worth knowing:
   fire it again today (one per IST day, per reminder key).
 * Changing a time to **earlier than now** is "missed" if it is more than the
   grace window ago, and is not shown late.
-* A desktop picks a change up on its next poll — minutes, not instantly.
+* A desktop picks a change up on its next poll: within about 30 seconds (35 at
+  the longest jitter), not instantly. A notification saved for a time less than
+  that ahead is shown a little after its time -- still inside the grace window
+  -- never silently dropped; to see one on the minute, save it at least a minute
+  ahead. (It used to poll every five minutes: a notification saved at 11:12:13
+  for 11:13 was shown at 11:15:17, because the desktop had last asked at
+  11:09:54 and next asked at 11:15:16.)
 
 ## Audit
 

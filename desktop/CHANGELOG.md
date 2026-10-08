@@ -35,6 +35,16 @@ re-grant a permission.
   refused with a clear message. Sending feedback without an attachment works
   exactly as before, and if a send fails your message and files are kept so you
   can try again without creating a duplicate.
+- **Notifications your administrator chooses.** An administrator can now decide
+  which of Monitra's reminders you see, on which days, and — for the daily
+  breaks — at what time, and can send you their own messages at a set time of
+  day. Times are India time (IST). A change reaches Monitra within about half a
+  minute while you are signed in, and nothing is shown while you are signed out.
+  A message that could not be shown within ten minutes of its time (the computer
+  was asleep, or offline) is skipped for that day rather than arriving late.
+  Without a schedule from your administrator every reminder behaves exactly as
+  before. **Versions before this one never ask for the schedule, so they will not
+  show an administrator's own messages or follow their changes.**
 
 ### Changed
 

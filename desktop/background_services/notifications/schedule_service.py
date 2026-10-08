@@ -10,12 +10,18 @@ held here on each of its ticks, so it stays free of network work.
 
 Design constraints, all from DO_NOT_DO.md:
 
-**A slow poll, not a connection.** A `LoopService` that asks every few
-minutes (jittered, so a fleet does not arrive in lockstep). It holds while
-signed out, while the network service says the backend is not worth trying, and
-against a backend that does not have the endpoint (404). It has no retry loop
-of its own: a failed poll is silence, and the next one is simply the next
-interval.
+**A light poll, not a connection.** A `LoopService` that asks about every half
+minute (jittered, so a fleet does not arrive in lockstep) -- the cadence of the
+maintenance notice and the dashboard's sync probe, and for the same reason: an
+administrator who sets a notification for a minute from now expects it at that
+minute, and a desktop can only honour that if it has heard of it by then. At
+the five-minute cadence this had, a notification saved at 11:12:13 for 11:13
+was shown at 11:15:17 (the desktop had polled at 11:09:54, and its next poll
+was 11:15:16). The request is one small read; nothing is written unless the
+version changed. It holds while signed out, while the network service says the
+backend is not worth trying, and waits much longer against a backend that does
+not have the endpoint (404). It has no retry loop of its own: a failed poll is
+silence, and the next one is simply the next interval.
 
 **Failure keeps the last good schedule.** A poll that fails, or answers
 something that does not parse, changes nothing. The schedule is never cleared
@@ -245,11 +251,18 @@ class NotificationScheduleService(LoopService):
 
     name = "notification_schedule"
 
-    #: Administrators change this rarely and a desktop picking a change up in
-    #: a few minutes is what the contract promises, so the poll is slow.
-    POLL_INTERVAL_MS = 5 * 60 * 1000
-    #: After a failed poll (and against a backend without the endpoint).
-    RETRY_INTERVAL_MS = 5 * 60 * 1000
+    #: A change an administrator makes reaches an open desktop within about
+    #: half a minute (at worst this plus the jitter), so a notification set a
+    #: minute ahead is known before its time. The same cadence as
+    #: `MaintenanceService.CHECK_INTERVAL_MS`.
+    POLL_INTERVAL_MS = 30 * 1000
+    #: After a failed poll. Not longer than a poll: one lost request must not
+    #: leave the desktop deaf to a change for minutes.
+    RETRY_INTERVAL_MS = 30 * 1000
+    #: Against a backend without the endpoint (404) -- an older deployment,
+    #: a normal state during a rollout. Nothing to hear about for a long time,
+    #: so a fleet does not ask a missing route every half minute.
+    ABSENT_INTERVAL_MS = 5 * 60 * 1000
     #: While signed out or offline. No request is made; it is a cheap check
     #: for the moment the hold ends (login and the network's recovery edge
     #: also wake the loop directly).
@@ -343,10 +356,12 @@ class NotificationScheduleService(LoopService):
             payload = self._api.get_schedule()
         except ApiError as exc:
             # Quietly: the last good schedule stands. 404 is an older
-            # deployment without the endpoint -- the same wait.
+            # deployment without the endpoint -- a long wait; anything else
+            # is a blip, and the next poll is soon.
             self.log.debug("notification schedule poll failed: %s", exc)
             self.heartbeat(success=False)
-            return self._jittered(self.RETRY_INTERVAL_MS)
+            absent = getattr(exc, "status_code", None) == 404
+            return self._jittered(self.ABSENT_INTERVAL_MS if absent else self.RETRY_INTERVAL_MS)
 
         self.heartbeat()
         if self.state == ServiceState.DEGRADED:

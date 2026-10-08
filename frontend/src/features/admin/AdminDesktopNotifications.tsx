@@ -401,7 +401,8 @@ export const AdminDesktopNotifications: React.FC = () => {
           <p>
             Tick <span className="font-semibold">Send</span> to have a notification shown on every desktop at its
             time, on its days. Untick it and it is never sent. All times are{" "}
-            <span className="font-semibold">IST</span>. A desktop picks up a change within a few minutes.
+            <span className="font-semibold">IST</span>. A desktop picks up a change within about half a minute, so
+            save a notification at least a minute before its time to see it on the minute.
           </p>
           {data && data.version > 0 && data.updated_by_username && (
             <p className="mt-1 text-xs text-slate-500">
