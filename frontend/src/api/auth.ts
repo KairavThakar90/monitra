@@ -130,17 +130,53 @@ export async function ssoLoginAPI(
   return { ...data, user: normalizeUserProfile(data.user) };
 }
 
+/** The server answered, and the answer is that this session is over (401/403). */
+export class SessionEndedError extends Error {
+  constructor(message = "Session expired") {
+    super(message);
+    this.name = "SessionEndedError";
+  }
+}
+
+/**
+ * The session could not be renewed *right now* -- the network failed, the
+ * request timed out, or the server answered 5xx/429. Nothing says the session
+ * is over, so nothing may end it: this used to be indistinguishable from a
+ * rejected token, and a dropped packet signed the user out.
+ */
+export class RefreshUnavailableError extends Error {
+  constructor(message = "The session could not be renewed right now.") {
+    super(message);
+    this.name = "RefreshUnavailableError";
+  }
+}
+
+/** Longest a refresh may take before it is abandoned. Without a limit a hung
+ * refresh held every query that had met a 401, for ever. */
+export const REFRESH_TIMEOUT_MS = 15_000;
+
 export async function refreshSessionAPI(refreshToken: string): Promise<TokenPair> {
-  const response = await fetch(ENDPOINTS.AUTH.REFRESH, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refresh_token: refreshToken }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(ENDPOINTS.AUTH.REFRESH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+      signal: typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
+        ? AbortSignal.timeout(REFRESH_TIMEOUT_MS)
+        : undefined,
+    });
+  } catch {
+    throw new RefreshUnavailableError();
+  }
 
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     if (isLoginDisabledBody(body)) throw new LoginDisabledError();
-    throw new Error("Session expired");
+    // Only the server's own "no" ends a session. A gateway error, a rate
+    // limit or an overloaded backend says nothing about the token.
+    if (response.status === 401 || response.status === 403) throw new SessionEndedError();
+    throw new RefreshUnavailableError(`The session could not be renewed (HTTP ${response.status}).`);
   }
 
   const data = (await response.json()) as TokenPair;
@@ -395,21 +431,30 @@ export const normalizeUserProfile = (user: UserRead): UserRead => ({
 });
 
 export async function getMeAPI(token: string): Promise<UserRead> {
-  const response = await fetch(ENDPOINTS.AUTH.ME, {
-    method: "GET",
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(ENDPOINTS.AUTH.ME, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      signal: typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
+        ? AbortSignal.timeout(REFRESH_TIMEOUT_MS)
+        : undefined,
+    });
+  } catch {
+    // Offline, DNS, a reset, a timeout: nothing was said about the token.
+    throw new RefreshUnavailableError("The profile could not be read right now.");
+  }
 
   if (!response.ok) {
     if (response.status === 401) {
       const body = await response.json().catch(() => null);
       if (isLoginDisabledBody(body)) throw new LoginDisabledError();
-      throw new Error("Unauthorized");
+      throw new SessionEndedError("Unauthorized");
     }
-    throw new Error("Failed to fetch user profile");
+    throw new RefreshUnavailableError("Failed to fetch user profile");
   }
 
   return normalizeUserProfile((await response.json()) as UserRead);

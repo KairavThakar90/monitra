@@ -22,6 +22,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import storeSource from '../../index.ts?raw';
+import focusListenerSource from '../../focusListeners.ts?raw';
 import { baseApi } from '../baseApi';
 import { dashboardApi } from '../dashboardApi';
 import { manualTimeEntryApi } from '../manualTimeEntryApi';
@@ -192,6 +193,13 @@ describe('tracked-time cache synchronization', () => {
     // Without this call the two `refetchOn*` options are inert. It cannot be
     // exercised here (importing the store starts cache persistence against
     // the browser), so the wiring is pinned at the source.
-    expect(storeSource).toMatch(/setupListeners\(store\.dispatch\)/);
+    // (It may be given a custom handler -- the focus listener is throttled so an
+    // alt-tab is not a storm -- so the call is matched with or without one.)
+    expect(storeSource).toMatch(/setupListeners\(store\.dispatch[,)]/);
+    // Whatever the handler does, it must still dispatch the slice's own
+    // focus / online actions: those are what `refetchOn*` act on.
+    expect(storeSource).toMatch(/throttledFocusListeners/);
+    expect(focusListenerSource).toMatch(/dispatch\(onFocus\(\)\)/);
+    expect(focusListenerSource).toMatch(/dispatch\(onOnline\(\)\)/);
   });
 });

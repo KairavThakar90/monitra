@@ -1,6 +1,9 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import type { ReactNode } from "react";
-import { clientDirectLoginAPI, getMeAPI, logoutAPI, refreshSessionAPI, signInAPI, ssoLoginAPI } from "../../api/auth";
+import {
+  SessionEndedError, clientDirectLoginAPI, getMeAPI, logoutAPI, signInAPI, ssoLoginAPI,
+} from "../../api/auth";
+import { renewSession } from "../../auth/renewSession";
 import { clearSessionStorage, ensureSessionExpiry, getSessionExpiresAt, storeSessionTokens } from "../../auth/session";
 import { store } from "../../store";
 import { baseApi } from "../../store/api/baseApi";
@@ -171,15 +174,44 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             setRefreshToken(storedRefresh);
             setCurrentUser(user);
             writeCachedProfile(user);
-          } catch {
-            const refreshed = await refreshSessionAPI(storedRefresh);
-            storeSessionTokens(refreshed, true);
-            setAccessToken(refreshed.access_token);
-            setRefreshToken(refreshed.refresh_token);
-            setCurrentUser(refreshed.user);
-            writeCachedProfile(refreshed.user);
+          } catch (meError) {
+            if (!(meError instanceof SessionEndedError) && !isLoginDisabledError(meError)) {
+              // The profile could not be *read* (offline, a timeout, a 5xx).
+              // That says nothing about the session, and the old code went on to
+              // spend the refresh token on it -- and, if that failed too,
+              // signed the user out. Keep the session; the screens retry, and
+              // the tab keeps showing the cached profile it already has.
+              setAccessToken(storedAccess);
+              setRefreshToken(storedRefresh);
+              // With no cached profile there is nothing to draw the app from, so
+              // the sign-in screen shows -- but the stored tokens are NOT
+              // cleared: they are still good, and a reload when the network is
+              // back picks them up.
+              setIsLoading(false);
+              return;
+            }
+            if (isLoginDisabledError(meError)) throw meError;
+            // The token itself was refused: renew it, through the same
+            // single-flight path every request uses, so a second tab or an
+            // in-flight query cannot spend the single-use refresh token twice.
+            await renewSession(storedAccess);
+            const access = localStorage.getItem("accessToken") ?? storedAccess;
+            const refresh = localStorage.getItem("refreshToken") ?? storedRefresh;
+            const user = await getMeAPI(access);
+            setAccessToken(access);
+            setRefreshToken(refresh);
+            setCurrentUser(user);
+            writeCachedProfile(user);
           }
         } catch (err) {
+          if (!(err instanceof SessionEndedError) && !isLoginDisabledError(err) && !(err instanceof Error && err.message === "Session expired")) {
+            // Could not ask (renewal unavailable): not a reason to sign out.
+            console.warn("Could not verify the stored session right now; keeping it:", err);
+            setAccessToken(localStorage.getItem("accessToken"));
+            setRefreshToken(localStorage.getItem("refreshToken"));
+            setIsLoading(false);
+            return;
+          }
           console.error("Failed to restore session, clearing invalid tokens:", err);
           if (isLoginDisabledError(err)) markLoginDisabled();
           clearSessionStorage();

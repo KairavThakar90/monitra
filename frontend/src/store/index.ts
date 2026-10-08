@@ -2,6 +2,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import { setupListeners } from '@reduxjs/toolkit/query';
 import { baseApi, rehydrateApiCache } from './api/baseApi';
 import { loadPersistedApiCache, startApiCachePersistence } from './persist';
+import { throttledFocusListeners } from './focusListeners';
 
 // Importing the domain files registers their endpoints on `baseApi`.
 import './api/membersApi';
@@ -30,7 +31,7 @@ startApiCachePersistence(store);
 // it last mounted -- a timer stopped on the desktop only appeared after a
 // manual reload. With the listeners installed, returning to the tab or
 // regaining the network revalidates every stale query in the background.
-setupListeners(store.dispatch);
+setupListeners(store.dispatch, throttledFocusListeners);
 
 export type RootState = ReturnType<typeof store.getState>;
 export type AppDispatch = typeof store.dispatch;

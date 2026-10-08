@@ -21,6 +21,7 @@ import { AdminDesktopNotifications } from './features/admin/AdminDesktopNotifica
 import { AdminUserManagement } from './features/admin/AdminUserManagement';
 import { AdminScreenshotPrivacy } from './features/admin/AdminScreenshotPrivacy';
 import { MaintenanceToast } from './components/MaintenanceToast'
+import { LoadFailureNotice } from './components/LoadFailureNotice'
 import { MemberFeedback } from './features/member/MemberFeedback'
 import { canManageClients, canManageSystem, canViewAllFeedback, isClientAccount } from './features/auth/roles'
 import { AdminClients } from './features/admin/AdminClients'
@@ -576,6 +577,9 @@ function App() {
         {/* The maintenance notice: one card for the signed-in session, over
             every route, and never in the way of any of them. */}
         <MaintenanceToast />
+        {/* A read that fails is announced and retryable on every route, including
+            the many screens that never looked at `isError`. */}
+        <LoadFailureNotice />
       </BrowserRouter>
     </AuthProvider>
   )

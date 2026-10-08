@@ -1,4 +1,6 @@
 import React from "react";
+import { store } from "../../store";
+import { retryFailedQueries } from "../../store/retryFailed";
 
 /**
  * The handful of presentational pieces every member page repeats.
@@ -49,9 +51,27 @@ export const Spinner: React.FC<{ label?: string }> = ({ label = "Loading…" }) 
   </div>
 );
 
-export const ErrorNote: React.FC<{ message: string }> = ({ message }) => (
-  <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-[13px] font-semibold text-rose-700">
-    {message}
+/**
+ * A failed load. Its "Retry" re-sends every query that is currently in the
+ * failed state (`retryFailedQueries`) -- one shot, never a loop -- so the many
+ * screens that show this need no wiring of their own to offer a way out.
+ * Pass `onRetry={null}` where a retry makes no sense (a missing record).
+ */
+export const ErrorNote: React.FC<{ message: string; onRetry?: (() => void) | null }> = ({ message, onRetry }) => (
+  <div
+    role="alert"
+    className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-[13px] font-semibold text-rose-700"
+  >
+    <span>{message}</span>
+    {onRetry !== null && (
+      <button
+        type="button"
+        onClick={onRetry ?? (() => void retryFailedQueries(store.dispatch, store.getState))}
+        className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-[12px] font-bold text-rose-700 transition hover:bg-rose-100"
+      >
+        Retry
+      </button>
+    )}
   </div>
 );
 

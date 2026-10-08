@@ -1,9 +1,10 @@
 import { isLoginDisabledBody, isLoginDisabledError, markLoginDisabled } from '../../auth/loginAccess';
-import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
+import { createApi, fetchBaseQuery, retry } from '@reduxjs/toolkit/query/react';
 import type { FetchArgs, FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import { createAction } from '@reduxjs/toolkit';
-import { refreshSessionAPI } from '../../api/auth';
-import { clearSessionStorage, ensureSessionExpiry, storeSessionTokens } from '../../auth/session';
+import { SessionEndedError } from '../../api/auth';
+import { renewSession } from '../../auth/renewSession';
+import { clearSessionStorage, ensureSessionExpiry } from '../../auth/session';
 
 /**
  * Dispatched once at start-up with the cache we persisted during the previous
@@ -20,25 +21,47 @@ export const rehydrateApiCache = createAction<Record<string, unknown> | undefine
  * A single cache also means a tag invalidated by one domain is seen by all the
  * others — updating a project can refresh the Teams screens.
  */
+/**
+ * Longest a data request may take before it is abandoned (`TIMEOUT_ERROR`).
+ * There was none: a request the network swallowed left its page loading for
+ * ever, and -- because every 401 waits on the same refresh -- one hung refresh
+ * held every query that had met one. Generous on purpose: this is the ceiling
+ * for the heaviest report, not a target.
+ */
+export const REQUEST_TIMEOUT_MS = 45_000;
+
+const newRequestId = (): string =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
 const rawBaseQuery = fetchBaseQuery({
   baseUrl: '',
+  timeout: REQUEST_TIMEOUT_MS,
   prepareHeaders: (headers) => {
     const token = localStorage.getItem('accessToken');
     if (token) headers.set('Authorization', `Bearer ${token}`);
+    // The backend returns and logs this id, so "it failed at 10:32" can be
+    // answered with the request itself. No token, no body, no user content.
+    headers.set('X-Request-ID', newRequestId());
+    headers.set('X-Client-Platform', 'web');
     return headers;
   },
 });
 
-let refreshPromise: Promise<import('../../api/auth').TokenPair> | null = null;
+const endSession = () => {
+  clearSessionStorage();
+  window.dispatchEvent(new Event('auth:session-expired'));
+};
 
 const baseQueryWithRefresh = async (args: string | FetchArgs, api: any, extraOptions: any) => {
   const expiresAt = ensureSessionExpiry();
   if (expiresAt !== null && expiresAt <= Date.now()) {
-    clearSessionStorage();
-    window.dispatchEvent(new Event('auth:session-expired'));
+    endSession();
     return { error: { status: 401, data: 'Session expired' } as FetchBaseQueryError };
   }
 
+  const tokenUsed = localStorage.getItem('accessToken');
   let result = await rawBaseQuery(args, api, extraOptions);
   if (result.error?.status !== 401) return result;
 
@@ -51,25 +74,53 @@ const baseQueryWithRefresh = async (args: string | FetchArgs, api: any, extraOpt
     return result;
   }
 
-  const refreshToken = localStorage.getItem('refreshToken');
-  if (!refreshToken) return result;
-
-  refreshPromise ??= refreshSessionAPI(refreshToken).finally(() => {
-    refreshPromise = null;
-  });
-
-  try {
-    const session = await refreshPromise;
-    storeSessionTokens(session, true);
-    result = await rawBaseQuery(args, api, extraOptions);
-  } catch (err) {
-    if (isLoginDisabledError(err)) markLoginDisabled();
-    clearSessionStorage();
-    window.dispatchEvent(new Event('auth:session-expired'));
+  // 401 with nothing to renew it from: the session is over. It used to be
+  // returned as a plain error, leaving the app "signed in" while every request
+  // failed until the user signed out by hand.
+  if (!localStorage.getItem('refreshToken')) {
+    endSession();
+    return result;
   }
 
-  return result;
+  try {
+    await renewSession(tokenUsed);
+  } catch (err) {
+    if (isLoginDisabledError(err)) markLoginDisabled();
+    if (isLoginDisabledError(err) || err instanceof SessionEndedError) {
+      // The server's own verdict: this session is over.
+      endSession();
+      return result;
+    }
+    // Anything else -- the network, a timeout, a 5xx/429, something unexpected --
+    // means the session could not be *asked*. That says nothing about whether
+    // it is over, so it is not ended: the request fails as a network error,
+    // which is retried and which the screen offers to retry, with the tokens
+    // still there for it.
+    return { error: { status: 'FETCH_ERROR', error: 'The session could not be renewed right now.' } as FetchBaseQueryError };
+  }
+
+  // One re-send with the renewed (or already-renewed-by-someone-else) token.
+  return rawBaseQuery(args, api, extraOptions);
 };
+
+const isRead = (args: string | FetchArgs): boolean =>
+  typeof args === 'string' || (args.method ?? 'GET').toUpperCase() === 'GET';
+
+/** Failures that say "nothing happened, ask again" -- never a timeout (a slow
+ * server is made slower by being asked again), a 4xx, or a refusal. */
+const isTransient = (error: FetchBaseQueryError | undefined): boolean =>
+  !!error && (error.status === 'FETCH_ERROR' || error.status === 502 || error.status === 503 || error.status === 504);
+
+/** Two re-sends at most, reads only, after RTK's jittered exponential backoff
+ * (~0.1-0.4 s, then ~0.2-0.8 s). Writes are never re-sent here. */
+export const MAX_READ_RETRIES = 2;
+
+// (RTK types `maxRetries` and `retryCondition` as alternatives, so the bound is
+// part of the condition.)
+const baseQueryWithRetry = retry(baseQueryWithRefresh, {
+  retryCondition: (error, args, { attempt }) =>
+    attempt <= MAX_READ_RETRIES && isTransient(error as FetchBaseQueryError) && isRead(args as string | FetchArgs),
+});
 
 export const baseApi = createApi({
   reducerPath: 'api',
@@ -85,7 +136,7 @@ export const baseApi = createApi({
   // is re-read then, so the day's total is current without a page reload.
   refetchOnFocus: true,
   refetchOnReconnect: true,
-  baseQuery: baseQueryWithRefresh,
+  baseQuery: baseQueryWithRetry,
   extractRehydrationInfo(action, { reducerPath }) {
     if (rehydrateApiCache.match(action)) {
       return action.payload?.[reducerPath] as any;

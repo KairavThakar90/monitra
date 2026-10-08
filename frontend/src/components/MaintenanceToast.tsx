@@ -78,6 +78,8 @@ export const MaintenanceNotice: React.FC<{ enabled: boolean }> = ({ enabled }) =
   const { data } = useGetMaintenanceStatusQuery(undefined, {
     skip: !enabled,
     pollingInterval: enabled ? MAINTENANCE_POLL_INTERVAL_MS : 0,
+    // A tab nobody is looking at has no use for the answer and was polling anyway.
+    skipPollingIfUnfocused: true,
   });
   const [visible, setVisible] = useState(false);
   const noticeRef = useRef(INITIAL_MAINTENANCE_NOTICE);

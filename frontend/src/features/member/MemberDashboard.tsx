@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { MemberShell } from "./MemberShell";
-import { Card, EmptyState, ErrorNote } from "./MemberUi";
+import { Card, EmptyState } from "./MemberUi";
+import { QueryErrorBanner } from "../../components/QueryErrorBanner";
 import { Sparkline, TrendAreaChart, RankedBars, Donut, Legend, SliceRow, SliceTooltip } from "../dashboard/v2/charts";
 import { AppIcon } from "../../components/AppIcon";
 import { DateRangeFilter, DEFAULT_RANGE } from "../dashboard/v2/filters";
@@ -58,11 +59,17 @@ export const MemberDashboard: React.FC = () => {
   // The donut arc currently highlighted, from the arc or from its list row.
   const [activeApp, setActiveApp] = useState<string | null>(null);
 
-  const { data, isFetching, isError } = useGetReactDashboardQuery({
+  const {
+    data: latest, currentData, isFetching, isError, error, refetch,
+  } = useGetReactDashboardQuery({
     start_date: range.from,
     end_date: range.to,
     top_n: TOP_N,
   });
+  // After a failure only the answer to THIS request counts, not the previous
+  // range's numbers under this range's heading (see DashboardV2).
+  const data = isError ? currentData : latest;
+  const failedWithNothingToShow = isError && !data;
   const { data: previous } = useGetReactDashboardQuery({ ...previousRange(range), top_n: TOP_N });
 
   // The day-by-day timesheet strip. `/time-tracking` is self-scoped for a
@@ -200,9 +207,17 @@ export const MemberDashboard: React.FC = () => {
           </button>
         </div>
 
-        {isError && <ErrorNote message="Your dashboard could not be loaded for this range. Please try again." />}
+        {isError && (
+          <QueryErrorBanner
+            error={error}
+            what="Your dashboard for this range"
+            onRetry={() => void refetch()}
+            retrying={isFetching}
+            showingLastData={!!data}
+          />
+        )}
 
-        {showSkeleton ? (
+        {failedWithNothingToShow ? null : showSkeleton ? (
           <DashboardSkeleton />
         ) : (
           <div

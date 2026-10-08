@@ -11,6 +11,7 @@ import { useGetReactDashboardQuery } from "../../../store/api/dashboardApi";
 import type { ReactDashboardProjectBilling } from "../../../store/api/dashboardApi";
 import { formatHMS, formatHoursAsHMS, secondsOf } from "../../../utils/duration";
 import { DashboardSkeleton } from "./skeletons";
+import { QueryErrorBanner } from "../../../components/QueryErrorBanner";
 
 /** `YYYY-MM-DD` -> local Date, without the UTC shift `new Date(iso)` applies. */
 const parseIso = (iso: string) => {
@@ -146,12 +147,19 @@ export const DashboardV2: React.FC = () => {
   const { data: allProjects } = useGetAllProjectsQuery();
   const projectIds = selectedProjects.length ? selectedProjects.map(Number) : undefined;
 
-  const { data, isFetching, isError } = useGetReactDashboardQuery({
+  const {
+    data: latest, currentData, isFetching, isError, error, refetch,
+  } = useGetReactDashboardQuery({
     start_date: range.from,
     end_date: range.to,
     project_id: projectIds,
     top_n: TOP_N,
   });
+  // `data` is the last result for ANY arguments: after a failed range change it
+  // is the previous range's numbers, shown under this range's heading. After a
+  // failure only the answer to THIS request counts.
+  const data = isError ? currentData : latest;
+  const failedWithNothingToShow = isError && !data;
   // Same endpoint, previous window and same projects -- only used for the delta badges.
   const { data: previous } = useGetReactDashboardQuery({
     ...previousRange(range),
@@ -336,12 +344,16 @@ export const DashboardV2: React.FC = () => {
         </div>
 
         {isError && (
-          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-[13px] font-semibold text-rose-700">
-            The dashboard could not be loaded for this range. Please try again.
-          </div>
+          <QueryErrorBanner
+            error={error}
+            what="The dashboard for this range"
+            onRetry={() => void refetch()}
+            retrying={isFetching}
+            showingLastData={!!data}
+          />
         )}
 
-        {showSkeleton ? (
+        {failedWithNothingToShow ? null : showSkeleton ? (
           <DashboardSkeleton />
         ) : (
         <div
