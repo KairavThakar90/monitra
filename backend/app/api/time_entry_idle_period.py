@@ -7,7 +7,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
 from app.schemas.time_entry_idle_period import (
-    IdleConfigResponse, IdlePeriodCreate, IdlePeriodReassign,
+    IdleClientDiagnostics, IdleConfigResponse, IdlePeriodCreate, IdlePeriodReassign,
     IdlePeriodReassignResponse, IdlePeriodResolve, IdlePeriodResponse,
 )
 from app.services.time_entry_idle_period import TimeEntryIdlePeriodService
@@ -23,6 +23,23 @@ def get_idle_config(current_user: User = Depends(get_current_user)):
     this is the narrow projection the desktop's idle detector polls.
     """
     return TimeEntryIdlePeriodService.get_idle_config(current_user)
+
+
+@router.post("/diagnostics", status_code=status.HTTP_204_NO_CONTENT)
+def report_idle_diagnostics(
+    payload: IdleClientDiagnostics,
+    current_user: User = Depends(get_current_user),
+):
+    """Record a health report from the desktop's idle monitor in the log.
+
+    Nothing is stored and nothing is returned: the point is that "why did this
+    user's popup not appear?" can be answered from the server log, for one
+    account, without access to the machine. The body is a closed set of
+    bounded scalars (see `IdleClientDiagnostics`), so it cannot carry what a
+    user was doing, and it is logged under the authenticated user's id rather
+    than anything the client names.
+    """
+    TimeEntryIdlePeriodService.log_client_diagnostics(payload, current_user)
 
 
 @router.post("", response_model=IdlePeriodResponse, status_code=status.HTTP_201_CREATED)

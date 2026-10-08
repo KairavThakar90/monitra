@@ -382,6 +382,13 @@ class AuthService:
         hubstaff_designation = wp_user.get("hubstaff_designation")
         idle_enabled = wp_user.get("idle_enabled", True)
         idle_minutes = wp_user.get("idle_minutes", 5)
+        # Provisioning values only (an existing account keeps its own; see
+        # the sync below). An unusable one used to be written raw, and a zero
+        # or negative threshold makes GET /idle-periods/config and
+        # POST /idle-periods answer 500 for that user for good.
+        idle_enabled = idle_enabled if isinstance(idle_enabled, bool) else True
+        if isinstance(idle_minutes, bool) or not isinstance(idle_minutes, int) or not 1 <= idle_minutes <= 120:
+            idle_minutes = 5
         # Plain minutes, matching the convention capture_frequency actually
         # uses (see app/schemas/member.py) -- not 300, which was a "seconds"
         # default that disagreed with every account created any other way.
@@ -449,9 +456,14 @@ class AuthService:
             user.name = name
             if hubstaff_designation:
                 user.designation = hubstaff_designation
-            user.idle_enabled = idle_enabled
-            user.idle_minutes = idle_minutes
-            user.capture_frequency = capture_frequency
+            # NOT synced from the provider. They are per-member settings an
+            # administrator edits in Monitra (Settings > User Management); the
+            # provider's value -- or this function's fallback of True / 5 / 10
+            # when it sends none -- used to be written back on every login,
+            # silently undoing the administrator's choice (a member with idle
+            # detection switched off had it switched back on at their next
+            # sign-in). They are provisioned once, when the account is
+            # created below.
             user.wp_capabilities = wp_capabilities
             user.role_name = role_name
             user.permissions = resolved_permissions

@@ -31,6 +31,47 @@ class IdlePeriodCreate(BaseModel):
     idle_detected_at: Optional[datetime] = None
     #: Idempotency key for the desktop's durable offline queue.
     client_event_id: Optional[str] = Field(None, max_length=255)
+    #: The client's own clock at the moment it sent this request. With it the
+    #: server places both instants by *age* (`now - (client_time - instant)`),
+    #: so a desktop whose clock is seconds or minutes off the server's is not
+    #: refused for "future" timestamps. The same contract start and stop use
+    #: (docs/TIMING_MODEL.md). Omitted by older desktops, which get a bounded
+    #: tolerance instead.
+    client_time: Optional[datetime] = None
+
+
+class IdleClientDiagnostics(BaseModel):
+    """A health report from the desktop's idle monitor.
+
+    Logged, never stored: it exists so that "why did this user's idle popup
+    not appear?" can be answered from the server's own log for one account,
+    on a machine nobody can reach. Every field is a bounded, non-sensitive
+    scalar -- there is deliberately no free-form payload, no URL, no window
+    title and no credential, so nothing here can leak what a user was doing.
+    """
+
+    event: str = Field(..., max_length=64, pattern=r"^[A-Za-z0-9_.:-]+$")
+    app_version: Optional[str] = Field(None, max_length=32)
+    platform: Optional[str] = Field(None, max_length=32)
+    state: Optional[str] = Field(None, max_length=32)
+    service_state: Optional[str] = Field(None, max_length=32)
+    idle_enabled: Optional[bool] = None
+    idle_minutes: Optional[int] = Field(None, ge=0, le=100000)
+    config_loaded: Optional[bool] = None
+    reading_supported: Optional[bool] = None
+    reading_failure: Optional[str] = Field(None, max_length=200)
+    reading_failures: Optional[int] = Field(None, ge=0, le=10_000_000)
+    seconds_since_tick: Optional[float] = Field(None, ge=0, le=1e9)
+    seconds_since_input: Optional[float] = Field(None, ge=0, le=1e9)
+    longest_idle_seconds: Optional[float] = Field(None, ge=0, le=1e9)
+    restarts: Optional[int] = Field(None, ge=0, le=1_000_000)
+    resumes: Optional[int] = Field(None, ge=0, le=1_000_000)
+    report_failures: Optional[int] = Field(None, ge=0, le=1_000_000)
+    last_error_kind: Optional[str] = Field(None, max_length=48)
+    last_error_status: Optional[int] = Field(None, ge=0, le=999)
+    last_api_latency_ms: Optional[int] = Field(None, ge=0, le=10_000_000)
+    pending_period_id: Optional[int] = None
+    detail: Optional[str] = Field(None, max_length=200)
 
 
 class IdlePeriodResolve(BaseModel):

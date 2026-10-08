@@ -48,10 +48,11 @@ ordinary keep/discard rule at resolution.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
 from fastapi import BackgroundTasks, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.time_format import elapsed_seconds
@@ -78,6 +79,27 @@ log = logging.getLogger(__name__)
 #: the two clocks are not synchronised, so a report that arrives a couple of
 #: seconds "early" is a scheduling artefact, not a client trying to bank time.
 IDLE_THRESHOLD_TOLERANCE_SECONDS = 5
+
+#: How far ahead of the server's clock a report from a client that sent no
+#: `client_time` may claim to be before it is refused. Beyond this the client
+#: is not skewed, it is wrong. Matches `activity_log.MAX_CLIENT_CLOCK_LEAD`.
+IDLE_CLIENT_CLOCK_LEAD_SECONDS = 300
+
+
+def _reject(reason: str, status_code: int, detail: str, **context) -> HTTPException:
+    """Build the refusal for a report and leave a WARNING line behind.
+
+    `get_db` deliberately does not log an HTTPException, so before this a
+    report refused for its timestamps left nothing in the server log -- the
+    reason a user's idle popup "never appeared" could not be found after the
+    fact. One line per refusal, naming the rule and the figures it used.
+    """
+    log.warning(
+        "IDLE_REPORT_REJECTED reason=%s status=%d %s",
+        reason, status_code,
+        " ".join(f"{k}={v}" for k, v in context.items()),
+    )
+    return HTTPException(status_code, detail)
 
 
 def counts_idle_time(keep_idle_time: bool, action: str) -> bool:
@@ -127,6 +149,25 @@ class TimeEntryIdlePeriodService:
             "idle_enabled": bool(current_user.idle_enabled),
             "idle_minutes": TimeEntryIdlePeriodService._idle_minutes(current_user),
         }
+
+    @staticmethod
+    def log_client_diagnostics(payload, current_user: User) -> None:
+        """One WARNING-or-INFO line per desktop health report.
+
+        Only the fields the client actually sent are printed, as `key=value`,
+        so the line stays greppable (`IDLE_CLIENT user=42`). The server adds
+        what it knows that the client may not: the configuration it holds.
+        """
+        fields = payload.model_dump(exclude_none=True)
+        event = fields.pop("event")
+        text = " ".join(f"{k}={str(v).replace(chr(10), ' ')}" for k, v in sorted(fields.items()))
+        level = logging.WARNING if event.endswith(("_failed", "_stuck", "_died", "_unavailable")) else logging.INFO
+        log.log(
+            level,
+            "IDLE_CLIENT event=%s user=%s server_idle_enabled=%s server_idle_minutes=%s %s",
+            event, current_user.id, bool(current_user.idle_enabled),
+            current_user.idle_minutes, text,
+        )
 
     @staticmethod
     def _idle_minutes(current_user: User) -> int:
@@ -184,6 +225,60 @@ class TimeEntryIdlePeriodService:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _place_instants(
+        payload: IdlePeriodCreate, now: datetime
+    ) -> Tuple[datetime, datetime, Optional[int]]:
+        """Put the reported instants on the server's clock.
+
+        With `client_time` each instant is placed by age --
+        `now - (client_time - instant)` -- so the client's clock appears only
+        in a difference and its absolute offset from the server cancels. This
+        is the contract start and stop already use (docs/TIMING_MODEL.md).
+        There is deliberately no backdating cap: an interruption gap may be
+        hours long and is legitimate.
+
+        Without it (an older desktop) the instants are used as sent, except
+        that a lead of up to `IDLE_CLIENT_CLOCK_LEAD_SECONDS` over the
+        server's clock is clamped to now rather than refused. A client a few
+        seconds fast was being answered 400 on every retry, forever, with
+        nothing logged, and so never showed a popup. A lead beyond the
+        allowance is still refused.
+
+        Returns the two instants and the skew the placement corrected, in
+        seconds (None when the client sent no clock).
+        """
+        started = _as_utc(payload.idle_started_at)
+        detected = _as_utc(payload.idle_detected_at) if payload.idle_detected_at else None
+
+        if payload.client_time is not None:
+            sent = _as_utc(payload.client_time)
+            skew = int((now - sent).total_seconds())
+
+            def by_age(value: datetime) -> datetime:
+                age = max(0.0, (sent - value).total_seconds())
+                return now - timedelta(seconds=age)
+
+            started = by_age(started)
+            detected = by_age(detected) if detected else now
+            return started, detected, skew
+
+        lead = timedelta(seconds=IDLE_CLIENT_CLOCK_LEAD_SECONDS)
+
+        def clamp(value: datetime) -> datetime:
+            if now < value <= now + lead:
+                log.info(
+                    "IDLE_REPORT_CLOCK_LEAD client instant is %ds ahead of the server; "
+                    "using the server clock",
+                    int((value - now).total_seconds()),
+                )
+                return now
+            return value
+
+        started = clamp(started)
+        detected = clamp(detected) if detected else now
+        return started, detected, None
+
+    @staticmethod
     def report_idle_period(
         db: Session, payload: IdlePeriodCreate, current_user: User
     ) -> TimeEntryIdlePeriod:
@@ -219,33 +314,35 @@ class TimeEntryIdlePeriodService:
             )
 
         now = datetime.now(timezone.utc)
-        idle_started_at = _as_utc(payload.idle_started_at)
-        idle_detected_at = (
-            _as_utc(payload.idle_detected_at) if payload.idle_detected_at else now
+        idle_started_at, idle_detected_at, skew = TimeEntryIdlePeriodService._place_instants(
+            payload, now
         )
+        ctx = dict(user=current_user.id, entry=entry.id, skew_s=skew)
 
         if idle_started_at > now or idle_detected_at > now:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST, "Idle timestamps cannot be in the future."
+            raise _reject(
+                "future_timestamps", status.HTTP_400_BAD_REQUEST,
+                "Idle timestamps cannot be in the future.", **ctx,
             )
         if idle_detected_at < idle_started_at:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                "idle_detected_at cannot precede idle_started_at.",
+            raise _reject(
+                "detected_before_started", status.HTTP_400_BAD_REQUEST,
+                "idle_detected_at cannot precede idle_started_at.", **ctx,
             )
         if idle_started_at < _as_utc(entry.start_time):
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                "Idle time cannot start before the time entry it belongs to.",
+            raise _reject(
+                "before_entry_start", status.HTTP_400_BAD_REQUEST,
+                "Idle time cannot start before the time entry it belongs to.", **ctx,
             )
 
         # The threshold is the user's own, validated server-side: a client
         # cannot open an idle period sooner than the configuration allows.
         observed = (idle_detected_at - idle_started_at).total_seconds()
         if observed + IDLE_THRESHOLD_TOLERANCE_SECONDS < idle_minutes * 60:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
+            raise _reject(
+                "threshold_not_reached", status.HTTP_400_BAD_REQUEST,
                 f"Idle threshold of {idle_minutes} minute(s) has not been reached.",
+                observed_s=int(observed), threshold_min=idle_minutes, **ctx,
             )
 
         # Only one unresolved idle period per active entry. A retry that
@@ -256,18 +353,38 @@ class TimeEntryIdlePeriodService:
         if pending:
             return _with_entry_adjustment(db, pending)
 
-        record = TimeEntryIdlePeriodRepository.create(
-            db=db,
-            organization_id=current_user.organization_id,
-            user_id=current_user.id,
-            time_entry_id=entry.id,
-            original_project_id=entry.project_id,
-            original_task_id=entry.task_id,
-            idle_started_at=idle_started_at,
-            idle_detected_at=idle_detected_at,
-            client_event_id=payload.client_event_id,
-        )
-        db.commit()
+        try:
+            record = TimeEntryIdlePeriodRepository.create(
+                db=db,
+                organization_id=current_user.organization_id,
+                user_id=current_user.id,
+                time_entry_id=entry.id,
+                original_project_id=entry.project_id,
+                original_task_id=entry.task_id,
+                idle_started_at=idle_started_at,
+                idle_detected_at=idle_detected_at,
+                client_event_id=payload.client_event_id,
+            )
+            db.commit()
+        except IntegrityError:
+            # Two reports for one entry (a retry racing its original, or the
+            # threshold path racing an interruption report) both passed the
+            # pending check above; the partial unique index let one in. The
+            # loser is a duplicate, not an error: answer with the period that
+            # won, exactly as the pending check would have.
+            db.rollback()
+            winner = None
+            if payload.client_event_id:
+                winner = TimeEntryIdlePeriodRepository.get_by_client_event_id(
+                    db, payload.client_event_id
+                )
+            if winner is None:
+                winner = TimeEntryIdlePeriodRepository.get_pending_for_entry(db, entry.id)
+            if winner is None or winner.user_id != current_user.id:
+                raise
+            log.info("idle report raced another for entry=%s; returning period %s",
+                     entry.id, winner.id)
+            return _with_entry_adjustment(db, winner)
         db.refresh(record)
         log.info(
             "idle period opened id=%s entry=%s user=%s started=%s detected=%s",

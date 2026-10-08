@@ -110,6 +110,12 @@ class MemberService:
             data.pop("can_add_tasks", None)
         if data.get("can_add_nonbillable_tasks") is None:
             data.pop("can_add_nonbillable_tasks", None)
+        # These three columns are NOT NULL. A client sending `null` for one
+        # meant "leave it", and reaching the column turned it into an
+        # IntegrityError that was reported as a duplicate e-mail address.
+        for column in ("idle_enabled", "idle_minutes", "capture_frequency"):
+            if column in data and data[column] is None:
+                data.pop(column)
         # An administrator excluding their own account would sign themselves
         # out with nobody left able to let them back in.
         if data.get("can_login") is False and member.id == current_user.id:
