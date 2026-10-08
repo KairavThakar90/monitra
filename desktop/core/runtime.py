@@ -60,6 +60,7 @@ from app.time_entries.service import TimeEntryService
 from background_services.activity import ActivityService
 from background_services.activity.app_usage_service import AppUsageService
 from background_services.activity.url_usage_service import UrlUsageService
+from background_services.diagnostics import ResourceMonitorService
 from background_services.idle import IdleService
 from background_services.network import NetworkService, NetworkState
 from background_services.notifications import NotificationService
@@ -253,6 +254,11 @@ class ApplicationRuntime(QObject):
         # while the services it reads are being torn down.
         self.idle: IdleService = self.services.register(
             IdleService(self, self.idle_api)
+        )
+        # Opt-in diagnostics (MONITRA_RESOURCE_LOG=1); inert otherwise -- no thread, no
+        # psutil. Registered after everything it reads, so it stops before any of it.
+        self.resource_monitor: ResourceMonitorService = self.services.register(
+            ResourceMonitorService(self)
         )
 
         # The timer drives the sub-trackers; they never start themselves.

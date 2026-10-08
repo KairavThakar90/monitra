@@ -1106,7 +1106,20 @@ python tools/check_architecture.py            # ownership boundary
 python -m pytest tests/                       # regression suite
 python tests/soak/run_launch_cycles.py        # 10 launch/quit cycles
 python tests/soak/run_soak.py --duration 120  # scale + soak
+python tests/soak/run_resource_soak.py --duration 600 --accelerate   # the real window, OS-reported memory
 ```
+
+**Resource measurement.** `tracemalloc` sees Python objects only; the
+process is mostly native Qt memory. `tools/resource_probe.py` samples a
+process from outside (working set, private bytes, threads, handles, CPU, and
+the trend over the run); `MONITRA_RESOURCE_LOG=1` makes the running
+application log one `RESOURCE` line per `MONITRA_RESOURCE_INTERVAL_S`
+(default 30 s) through `ResourceMonitorService`, which is inert otherwise --
+no thread, no `psutil` import. `tests/soak/run_resource_soak.py` builds the
+real `MainWindow` against the stub backend (`tests/soak/stub_backend_server.py`)
+and drives it -- project and date switches, tab flips, refreshes, timer start
+and stop, dialogs, minimise and restore, a network outage -- while sampling;
+`--gc-off` disables the cyclic collector to expose anything that relies on it.
 
 The boundary check fails the build if feature code touches `QThread`,
 `QThreadPool` or `QRunnable`, imports a service implementation instead of

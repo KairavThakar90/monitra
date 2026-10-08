@@ -36,3 +36,9 @@ pyobjc-framework-Quartz; sys_platform == "darwin"
 # IANA timezone database. Windows ships no system tzdata, so ZoneInfo
 # ("Asia/Kolkata") needs this package to resolve.
 tzdata
+
+# Process resource counters for the opt-in RESOURCE diagnostics
+# (background_services/diagnostics/resource_monitor.py) and tools/resource_probe.py.
+# Imported lazily, only when MONITRA_RESOURCE_LOG=1; a normal session never loads it.
+# BSD-3-Clause.
+psutil
