@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 from typing import List
+from app.core.task_marker import enforce_marked_only_creation
 from app.models.task import Task
 from app.models.user import User
 from app.schemas.task import TaskCreate, TaskUpdate
@@ -20,6 +21,10 @@ from app.services.task_scope import (
 class TaskService:
     @staticmethod
     def create_task(db: Session, project_id: int, task_in: TaskCreate, current_user: User) -> Task:
+        # 0. A member allowed only the Non billable button may create only
+        #    Non billable tasks; see app.core.task_marker.
+        enforce_marked_only_creation(current_user, task_in.task_name)
+
         # 1. Enforce project exists in caller's organization
         project = ProjectService.get_project(db, project_id, current_user)
         

@@ -23,11 +23,12 @@ def list_members(
     role: Optional[MemberRoleFilter] = None, status: Optional[MemberStatus] = None,
     can_login: Optional[bool] = Query(None, description="true: only members allowed to log in; false: only those excluded."),
     can_add_tasks: Optional[bool] = Query(None, description="true: only members allowed to add tasks; false: only those not allowed."),
+    can_add_nonbillable_tasks: Optional[bool] = Query(None, description="true: only members allowed to add Non billable tasks; false: only those not allowed."),
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function"),
 ):
     return MemberService.list(
         db, current_user, search, role.value if role else None, status.value if status else None, page, limit,
-        can_login=can_login, can_add_tasks=can_add_tasks,
+        can_login=can_login, can_add_tasks=can_add_tasks, can_add_nonbillable_tasks=can_add_nonbillable_tasks,
     )
 
 

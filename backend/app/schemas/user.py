@@ -34,6 +34,9 @@ class UserBase(BaseModel):
     #: Add Task at all. The backend refuses the create regardless; this only
     #: lets the client explain the refusal before the user types a name.
     can_add_tasks: bool = True
+    #: True only once an administrator has allowed this member to create Non
+    #: billable tasks (the desktop's second Add button). Off by default.
+    can_add_nonbillable_tasks: bool = False
     #: False while an administrator has excluded this member from signing in.
     can_login: bool = True
     status: str = "active"
@@ -46,6 +49,12 @@ class UserBase(BaseModel):
         # A row or in-memory user that never had the column set reads None,
         # and must serialise as the default rather than fail validation.
         return True if value is None else value
+
+    @field_validator("can_add_nonbillable_tasks", mode="before")
+    @classmethod
+    def unset_means_not_allowed(cls, value):
+        # The opposite default: granted, never assumed.
+        return False if value is None else value
 
 class UserCreate(UserBase):
     #: Re-declared with validated types. These are the fields an administrator

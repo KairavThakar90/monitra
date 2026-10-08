@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 _SWITCH_ACTIONS = {
     "can_login": (ActivityLogAction.LOGIN_ALLOWED, ActivityLogAction.LOGIN_EXCLUDED, "signing in"),
     "can_add_tasks": (ActivityLogAction.ADD_TASKS_ALLOWED, ActivityLogAction.ADD_TASKS_EXCLUDED, "adding tasks"),
+    "can_add_nonbillable_tasks": (
+        ActivityLogAction.ADD_NONBILLABLE_TASKS_ALLOWED, ActivityLogAction.ADD_NONBILLABLE_TASKS_EXCLUDED,
+        "adding Non billable tasks",
+    ),
 }
 
 
@@ -57,7 +61,7 @@ class MemberService:
         return created
 
     @staticmethod
-    def list(db: Session, current_user: User, search, role, member_status, page, limit, *, can_login=None, can_add_tasks=None):
+    def list(db: Session, current_user: User, search, role, member_status, page, limit, *, can_login=None, can_add_tasks=None, can_add_nonbillable_tasks=None):
         # A leader's directory is their own team plus the clients an
         # administrator shared their projects with -- not the organization;
         # every other role with `view_employees` gets None here and is
@@ -65,7 +69,7 @@ class MemberService:
         items, total = MemberRepository.list_by_organization(
             db, current_user.organization_id, search, role, member_status, page, limit,
             visible_directory_ids(db, current_user),
-            can_login=can_login, can_add_tasks=can_add_tasks,
+            can_login=can_login, can_add_tasks=can_add_tasks, can_add_nonbillable_tasks=can_add_nonbillable_tasks,
         )
         return {"items": items, "page": page, "limit": limit, "total": total, "pages": math.ceil(total / limit) if total else 0}
 
@@ -104,6 +108,8 @@ class MemberService:
             data.pop("can_login", None)
         if data.get("can_add_tasks") is None:
             data.pop("can_add_tasks", None)
+        if data.get("can_add_nonbillable_tasks") is None:
+            data.pop("can_add_nonbillable_tasks", None)
         # An administrator excluding their own account would sign themselves
         # out with nobody left able to let them back in.
         if data.get("can_login") is False and member.id == current_user.id:
@@ -128,9 +134,12 @@ class MemberService:
         excluding = data.get("can_login") is False and member.can_login is not False
         # Read before the save overwrites them: a switch is recorded only when
         # it actually moved, so re-sending the current position logs nothing.
+        # `can_add_nonbillable_tasks` is off unless granted, so its current
+        # position is "granted only when explicitly True" -- the reverse of the
+        # two switches that default to allowed.
         switched = {
             key: data[key] for key in _SWITCH_ACTIONS
-            if key in data and (getattr(member, key, None) is not False) != bool(data[key])
+            if key in data and MemberService._switch_position(member, key) != bool(data[key])
         }
         other_fields = sorted(key for key in data if key not in _SWITCH_ACTIONS)
         try:
@@ -164,6 +173,15 @@ class MemberService:
             )
         return saved
 
+    #: Switches that are off until granted; every other one is on until withdrawn.
+    _GRANT_SWITCHES = frozenset({"can_add_nonbillable_tasks"})
+
+    @staticmethod
+    def _switch_position(member: User, key: str) -> bool:
+        """Whether `key` is currently on for `member`."""
+        value = getattr(member, key, None)
+        return value is True if key in MemberService._GRANT_SWITCHES else value is not False
+
     @staticmethod
     def _notify_access_change(db: Session, member: User, switched: dict, changed_at, background_tasks) -> None:
         """Email the member about each switch that actually moved.
@@ -176,6 +194,9 @@ class MemberService:
         from app.services.email import deliver_in_background
 
         for key, allowed in switched.items():
+            if key not in MEMBER_ACCESS_SWITCHES:
+                # The Non billable switch sends no email, by design.
+                continue
             notification_id = queue_member_access_notification(
                 db, member, switch=MEMBER_ACCESS_SWITCHES[key], allowed=bool(allowed), changed_at=changed_at,
             )

@@ -37,6 +37,7 @@ class MemberRepository:
     def list_by_organization(
         db: Session, organization_id: int, search: Optional[str], role: Optional[str], status: Optional[str], page: int, limit: int,
         member_ids: Optional[set[int]] = None, *, can_login: Optional[bool] = None, can_add_tasks: Optional[bool] = None,
+        can_add_nonbillable_tasks: Optional[bool] = None,
     ):
         """One page of the directory.
 
@@ -68,6 +69,13 @@ class MemberRepository:
         for column, wanted in ((User.can_login, can_login), (User.can_add_tasks, can_add_tasks)):
             if wanted is not None:
                 filters.append(column.is_not(False) if wanted else column.is_(False))
+        if can_add_nonbillable_tasks is not None:
+            # The opposite reading: this switch is off unless granted, so only
+            # an explicit True is "allowed" and everything else is excluded.
+            filters.append(
+                User.can_add_nonbillable_tasks.is_(True) if can_add_nonbillable_tasks
+                else User.can_add_nonbillable_tasks.is_not(True)
+            )
 
         query = select(User).where(*filters).order_by(User.name.asc(), User.id.asc())
         total = db.scalar(select(func.count(User.id)).where(*filters)) or 0
@@ -94,9 +102,15 @@ class MemberRepository:
             return func.count(case((column.is_not(False), User.id)))
 
         row = db.execute(
-            select(allowed(User.can_add_tasks), allowed(User.can_login), func.count(User.id)).where(*filters)
+            select(
+                allowed(User.can_add_tasks), allowed(User.can_login), func.count(User.id),
+                func.count(case((User.can_add_nonbillable_tasks.is_(True), User.id))),
+            ).where(*filters)
         ).one()
-        return {"add_task_allowed": row[0], "login_allowed": row[1], "active_members": row[2]}
+        return {
+            "add_task_allowed": row[0], "login_allowed": row[1], "active_members": row[2],
+            "add_nonbillable_task_allowed": row[3],
+        }
 
     @staticmethod
     def create(db: Session, organization_id: int, data: dict) -> User:

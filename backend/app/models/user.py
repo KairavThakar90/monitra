@@ -43,6 +43,12 @@ class User(Base):
     #: sign-in, which is exactly why this lives in its own column). Enforced by
     #: `require_permission` through PER_MEMBER_PERMISSION_OVERRIDES.
     can_add_tasks: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('true'))
+    #: Whether this member may create *Non billable* tasks -- the desktop's
+    #: second Add button, whose tasks end " - Non billable" -- independently of
+    #: `can_add_tasks`. A new capability, so off until an administrator grants
+    #: it (the opposite default to `can_add_tasks`). No email goes out when it
+    #: changes. Enforced by `require_task_creation` and `app.core.task_marker`.
+    can_add_nonbillable_tasks: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('false'))
     #: Whether this member may sign in at all. An administrator excludes a
     #: member from the Members directory; see app/core/login_access.py for
     #: everything that follows (running timer stopped, sessions revoked,

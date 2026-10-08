@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import get_current_user, require_permission
+from app.core.security import get_current_user, require_permission, require_task_creation
 from app.core.permissions import LEADER_ROLE_NAMES
 from app.models.user import User
 from app.repositories.status_catalog import StatusCatalog
@@ -156,7 +156,7 @@ def delete_project(project_id: int, user: User = Depends(get_current_user), db: 
     return ProjectManagementService.delete(db, user, project_id)
 
 
-@router.post("/projects/{project_id}/tasks", response_model=TaskRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_permission("tasks:create"))], summary="Create a project task")
+@router.post("/projects/{project_id}/tasks", response_model=TaskRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_task_creation)], summary="Create a project task")
 def create_task(project_id: int, payload: TaskCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
     return ProjectManagementService.create_task(db, user, project_id, payload)
 

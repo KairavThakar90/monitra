@@ -488,7 +488,7 @@ class CountTests(unittest.TestCase):
         return MemberRepository.access_counts(self.db, 1, ids)
 
     def test_counts_active_members_who_are_allowed(self):
-        self.assertEqual(self.counts(), {"add_task_allowed": 3, "login_allowed": 3, "active_members": 5})
+        self.assertEqual(self.counts(), {"add_task_allowed": 3, "login_allowed": 3, "active_members": 5, "add_nonbillable_task_allowed": 0})
 
     def test_a_deactivated_member_is_not_counted_whatever_their_switch_says(self):
         # Member 6 is deactivated with both switches on: 6 rows in the
@@ -497,10 +497,10 @@ class CountTests(unittest.TestCase):
         self.assertEqual(self.counts()["login_allowed"], 3)
 
     def test_a_scoped_caller_is_counted_over_their_own_set_only(self):
-        self.assertEqual(self.counts({2, 3}), {"add_task_allowed": 1, "login_allowed": 2, "active_members": 2})
+        self.assertEqual(self.counts({2, 3}), {"add_task_allowed": 1, "login_allowed": 2, "active_members": 2, "add_nonbillable_task_allowed": 0})
 
     def test_an_empty_scope_is_zero_not_everyone(self):
-        self.assertEqual(self.counts(set()), {"add_task_allowed": 0, "login_allowed": 0, "active_members": 0})
+        self.assertEqual(self.counts(set()), {"add_task_allowed": 0, "login_allowed": 0, "active_members": 0, "add_nonbillable_task_allowed": 0})
 
     def test_the_numbers_follow_a_switch_at_once(self):
         member = self.db.get(User, 2)
@@ -531,7 +531,7 @@ class AccessSummaryRouteTests(unittest.TestCase):
         self.addCleanup(app.dependency_overrides.clear)
 
     def test_it_serves_the_counts_and_is_not_read_as_a_member_id(self):
-        counts = {"add_task_allowed": 20, "login_allowed": 15, "active_members": 25}
+        counts = {"add_task_allowed": 20, "add_nonbillable_task_allowed": 4, "login_allowed": 15, "active_members": 25}
         with patch("app.api.members.MemberService.access_summary", return_value=counts) as summary:
             response = self.client.get("/api/v1/members/access-summary")
         self.assertEqual(response.status_code, 200, response.text)

@@ -2,14 +2,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from typing import List
 from app.core.database import get_db
-from app.core.security import get_current_user, require_permission
+from app.core.security import get_current_user, require_permission, require_task_creation
 from app.models.user import User
 from app.schemas.task import TaskCreate, TaskUpdate, TaskRead
 from app.services.task import TaskService
 
 router = APIRouter(prefix="/projects", tags=["Tasks"])
 
-@router.post("/{project_id}/tasks", response_model=TaskRead, dependencies=[Depends(require_permission("tasks:create"))])
+@router.post("/{project_id}/tasks", response_model=TaskRead, dependencies=[Depends(require_task_creation)])
 def create_task(
     project_id: int,
     task_in: TaskCreate,

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.login_access import refuse_if_login_disabled
 from app.core.permissions import PER_MEMBER_OVERRIDE_MESSAGES, PER_MEMBER_PERMISSION_OVERRIDES
+from app.core.task_marker import marked_only
 from app.core.database import get_db
 from app.repositories.user import UserRepository
 from app.models.user import User
@@ -134,6 +135,27 @@ def require_permission(permission_name: str):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
         return current_user
     return dependency
+
+
+def require_task_creation(current_user: User = Depends(get_current_user)) -> User:
+    """The create-task gate: `require_permission("tasks:create")`, plus one door.
+
+    A member whose Add Task switch is off may still be allowed to create *Non
+    billable* tasks (`users.can_add_nonbillable_tasks`). They are let through
+    here and the service then refuses any name that lacks the marker
+    (`enforce_marked_only_creation`), because the dependency runs before the
+    request body is read and so cannot judge the name itself. Everyone else is
+    decided exactly as `require_permission` decides.
+    """
+    permissions = current_user.permissions or {}
+    if not permissions.get("tasks:create"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions for this action")
+    if permission_withdrawn(current_user, "tasks:create") and not marked_only(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=PER_MEMBER_OVERRIDE_MESSAGES.get("tasks:create", "Insufficient permissions for this action"),
+        )
+    return current_user
 
 
 import bcrypt

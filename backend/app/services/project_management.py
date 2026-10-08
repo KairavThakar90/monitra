@@ -38,6 +38,7 @@ from app.services.task_scope import (
     is_task_scoped, may_view_task, scoped_task_query, visible_task_condition,
 )
 from app.core.permissions import LEADER_ROLE_NAMES
+from app.core.task_marker import enforce_marked_only_creation
 from app.core.time_format import ist_day_end_utc, ist_day_start_utc
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
@@ -697,6 +698,10 @@ class ProjectManagementService:
         # `wfpm_task_id` is the WFPM integration's alone (app/WFPM/service.py):
         # the id this task has in WFPM, written with the row. A keyword rather
         # than a `TaskCreate` field so that no other route can set it.
+        # A member allowed only the Non billable button may create only Non
+        # billable tasks (the route's dependency lets them in; the name is
+        # judged here, where it can be read).
+        enforce_marked_only_creation(user, payload.name)
         project = ProjectManagementService._project(db, project_id, user)
         # Idempotency. A create whose reply was lost is retried with the same
         # `client_op`; the row already exists, so it is returned rather than

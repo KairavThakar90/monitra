@@ -116,6 +116,9 @@ class MemberUpdate(BaseModel):
     capture_frequency: CaptureFrequencyMinutes = None
     #: The Members directory's Allow / Not allow switch for task creation.
     can_add_tasks: Optional[bool] = None
+    #: The Members directory's Allow / Exclude switch for creating Non billable
+    #: tasks only (the desktop's second Add button).
+    can_add_nonbillable_tasks: Optional[bool] = None
     #: The Members directory's Allow / Exclude switch for signing in.
     can_login: Optional[bool] = None
     #: Whether this member may be chosen as a project's Owner. Withdrawing it
@@ -163,6 +166,7 @@ class MemberResponse(BaseModel):
     idle_minutes: int
     capture_frequency: int
     can_add_tasks: bool = True
+    can_add_nonbillable_tasks: bool = False
     can_login: bool = True
     can_own_projects: bool = False
     created_at: datetime
@@ -170,7 +174,7 @@ class MemberResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    @field_validator("can_own_projects", mode="before")
+    @field_validator("can_own_projects", "can_add_nonbillable_tasks", mode="before")
     @classmethod
     def unset_means_not_eligible(cls, value):
         # The opposite default to `can_add_tasks`: eligibility is granted,
@@ -195,6 +199,7 @@ class MemberAccessUpdate(BaseModel):
     member_ids: list[int] = Field(..., min_length=1, max_length=1000)
     can_login: Optional[bool] = None
     can_add_tasks: Optional[bool] = None
+    can_add_nonbillable_tasks: Optional[bool] = None
 
     @field_validator("member_ids")
     @classmethod
@@ -203,8 +208,8 @@ class MemberAccessUpdate(BaseModel):
 
     @model_validator(mode="after")
     def at_least_one_switch(self):
-        if self.can_login is None and self.can_add_tasks is None:
-            raise ValueError("Send can_login, can_add_tasks, or both")
+        if self.can_login is None and self.can_add_tasks is None and self.can_add_nonbillable_tasks is None:
+            raise ValueError("Send at least one of can_login, can_add_tasks, can_add_nonbillable_tasks")
         return self
 
 
@@ -227,6 +232,9 @@ class MemberAccessSummary(BaseModel):
     """
 
     add_task_allowed: int
+    #: Active members allowed to create Non billable tasks. Counted as granted
+    #: (an explicit True), not as not-excluded: the switch defaults to off.
+    add_nonbillable_task_allowed: int = 0
     login_allowed: int
     active_members: int
 

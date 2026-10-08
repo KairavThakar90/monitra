@@ -100,6 +100,8 @@ class ActivityLogAction:
     LOGIN_ALLOWED = "login_allowed"
     ADD_TASKS_EXCLUDED = "add_tasks_excluded"
     ADD_TASKS_ALLOWED = "add_tasks_allowed"
+    ADD_NONBILLABLE_TASKS_EXCLUDED = "add_nonbillable_tasks_excluded"
+    ADD_NONBILLABLE_TASKS_ALLOWED = "add_nonbillable_tasks_allowed"
 
     FEEDBACK_STATUS_CHANGED = "feedback_status_changed"
 
