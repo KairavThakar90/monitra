@@ -40,6 +40,10 @@ const dashboardBody = (activeProjects = 7) => ({
   billable_projects: [], internal_projects: [],
 });
 
+// These tests wait out RTK's own backoff (up to ~2.5 s) and a real failure
+// banner; the default 5 s test timeout is not enough under a loaded runner.
+vi.setConfig({ testTimeout: 30_000 });
+
 describe('Dashboard: a failed load', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -49,7 +53,7 @@ describe('Dashboard: a failed load', () => {
   const settle = async (ms = 60) => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
   };
-  const waitFor = async (condition: () => boolean, timeoutMs = 6000) => {
+  const waitFor = async (condition: () => boolean, timeoutMs = 20000) => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (condition()) return;
@@ -144,6 +148,11 @@ describe('Dashboard: a failed load', () => {
   });
 
   it('a session that has ended is not presented as a bad connection, and is not retried', async () => {
+    // The mount from beforeEach is still riding out its own 503s (RTK re-sends
+    // after up to ~2.5 s of backoff); let it finish so its requests are not
+    // counted as this test's.
+    await waitFor(() => !!container.querySelector('[role="alert"]'));
+    await settle(4000);
     await act(async () => root.unmount());
     localStorage.removeItem('refreshToken');          // nothing to renew it from
     dashboardStatus = 401;
