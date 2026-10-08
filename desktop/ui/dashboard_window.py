@@ -25,7 +25,8 @@ from typing import Any, Callable, Dict, List, Optional
 from PySide6.QtCore import QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QGuiApplication
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QMessageBox, QSplitter, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QMessageBox, QScrollArea, QSplitter,
+    QVBoxLayout, QWidget,
 )
 
 import version
@@ -57,6 +58,18 @@ from ui.styles import (
 from ui.stat_cards import StatCardsRow
 from ui.task_table import TaskSection
 from ui.topbar import TopBar
+
+#: How the content area is divided between the task list and Activity: the
+#: proportion the splitter opens at (the user can still drag it), and the least
+#: height either section keeps. 60/40 rather than the earlier 40/60 because on a
+#: laptop the task list is the thing worked in, and at 40% it showed two rows;
+#: Activity still keeps its tabs and most of a screenshot row, and scrolls inside
+#: itself for the rest. The owner picked it from side-by-side renders at
+#: 1920x1080 @125%, 1366x768 @100% and 1366x768 @125%.
+TASK_SECTION_SHARE = 6
+ACTIVITY_SECTION_SHARE = 4
+TASK_SECTION_MIN_HEIGHT = 200
+ACTIVITY_SECTION_MIN_HEIGHT = 190
 
 log = get_logger("dashboard")
 
@@ -474,8 +487,32 @@ class DashboardWindow(QWidget):
         # via a drag-resizable splitter rather than a fixed 4:6 stretch
         # inside a scroll area -- each section already scrolls its own
         # content internally, so the outer container only needs to divide
-        # up the available height, not add a second, redundant scrollbar.
-        content_container = QWidget(right_col)
+        # up the available height. It adds no scrollbar of its own at a normal
+        # size; the one exception is below.
+        #
+        # The content pane scrolls as a whole -- and only when the window is
+        # smaller than the pane's own floor (the summary cards plus the two
+        # sections' minimums). At or above that floor the scroll area is
+        # invisible: `setWidgetResizable` hands the pane the full viewport and
+        # no bar is drawn, so every normal window looks exactly as before.
+        # Below it, the alternative was a window *larger than the screen*:
+        # Qt honours the layout's minimum, so on a 1366x768 laptop at 125%
+        # (about 1092x578 usable) the window asked for 1136x790 and its bottom
+        # edge -- Activity and the status bar -- sat under the taskbar where it
+        # could not be reached or resized back. A reachable scrollbar is better
+        # than an unreachable control. The sections inside keep their own
+        # scrolling; this adds none at a normal size.
+        self._content_scroll = QScrollArea(right_col)
+        self._content_scroll.setObjectName("ContentScroll")
+        self._content_scroll.setWidgetResizable(True)
+        self._content_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._content_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._content_scroll.setStyleSheet(
+            f"QScrollArea#ContentScroll {{ background: {CONTENT_BG}; border: none; }}"
+        )
+        content_container = QWidget()
+        self._content_scroll.setWidget(content_container)
         # A sheet with no selector is `* { ... }` to Qt: it reaches every
         # descendant and every descendant's tooltip, and being nearer than
         # the window's sheet it wins. So the tooltip is restated here too.
@@ -508,7 +545,10 @@ class DashboardWindow(QWidget):
         # started…"). An overlay child of the container, not a row in its
         # layout: it takes no space while hidden and moves nothing when it
         # shows. It dismisses itself; see ui/action_banner.py.
-        self._action_banner = ActionBanner(content_container)
+        # Parented to the scroll area's viewport, not to the scrolling pane, so
+        # it stays at the top of what the user can see however far they have
+        # scrolled.
+        self._action_banner = ActionBanner(self._content_scroll.viewport())
 
         self._content_splitter = QSplitter(Qt.Orientation.Vertical, content_container)
         # A section collapsed to 0 height would look like it vanished --
@@ -549,22 +589,24 @@ class DashboardWindow(QWidget):
         self._task_section.add_task_available.connect(self._topbar.set_add_task_enabled)
         self._task_section.task_creation_blocked.connect(self._topbar.set_add_task_blocked_reason)
         self._topbar.add_task_blocked_clicked.connect(self._on_add_task_blocked_clicked)
-        self._task_section.setMinimumHeight(220)
+        self._task_section.setMinimumHeight(TASK_SECTION_MIN_HEIGHT)
         self._content_splitter.addWidget(self._task_section)
 
         self._activity_section = ActivitySection(self.api, self.api_client, self._content_splitter)
         self._activity_section.profile_requested.connect(self._open_activity_in_profile)
-        self._activity_section.setMinimumHeight(220)
+        self._activity_section.setMinimumHeight(ACTIVITY_SECTION_MIN_HEIGHT)
         self._content_splitter.addWidget(self._activity_section)
 
-        # Initial split mirrors the previous 4:6 stretch-factor proportion;
-        # the user can drag it anywhere between the two minimums afterward.
-        self._content_splitter.setStretchFactor(0, 4)
-        self._content_splitter.setStretchFactor(1, 6)
-        self._content_splitter.setSizes([400, 600])
+        # Opens at TASK_SECTION_SHARE : ACTIVITY_SECTION_SHARE; the user can
+        # drag it anywhere between the two minimums afterward.
+        self._content_splitter.setStretchFactor(0, TASK_SECTION_SHARE)
+        self._content_splitter.setStretchFactor(1, ACTIVITY_SECTION_SHARE)
+        self._content_splitter.setSizes([
+            TASK_SECTION_SHARE * 100, ACTIVITY_SECTION_SHARE * 100,
+        ])
 
         content_outer_layout.addWidget(self._content_splitter)
-        right_layout.addWidget(content_container, 1)
+        right_layout.addWidget(self._content_scroll, 1)
 
         h_layout.addWidget(right_col, 1)
         root_layout.addWidget(h_split, 1)

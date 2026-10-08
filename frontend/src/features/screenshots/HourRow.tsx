@@ -2,6 +2,8 @@ import React from 'react';
 import { ENDPOINTS } from '../../api/endpoints';
 import { AuthedImage } from '../../components/AuthedImage';
 import { formatHMS, formatISTTime12 } from '../../utils/duration';
+import { describeCaptureState } from './captureState';
+import type { CaptureTone } from './captureState';
 import { describeDuration } from './hours';
 import type { HourBlock } from './hours';
 import type { ScreenshotTimelineWindow, ScreenshotView } from '../../store/api/screenshotsApi';
@@ -16,9 +18,32 @@ import type { ScreenshotTimelineWindow, ScreenshotView } from '../../store/api/s
  * the viewer there with the rest of the day behind the arrows.
  */
 
+/** Label colour for a tile that has no image, by how much it should worry a viewer. */
+const captureToneClass: Record<CaptureTone, string> = {
+  neutral: 'text-[#94A3B8]',
+  pending: 'text-[#B45309]',
+  problem: 'text-[#B91C1C]',
+};
+
 /** The window's own activity colour — red / amber / green, as elsewhere. */
 const activityColor = (percentage: number) =>
   percentage >= 70 ? 'bg-emerald-500' : percentage >= 40 ? 'bg-amber-400' : 'bg-rose-500';
+
+const EmptyCapture: React.FC<{ window: ScreenshotTimelineWindow }> = ({ window: captureWindow }) => {
+  const view = describeCaptureState(captureWindow);
+  return (
+    <div
+      className="flex aspect-video w-full flex-col items-center justify-center gap-1 bg-[#F1F5F9] px-3 text-center"
+      data-capture-state={captureWindow.capture_state ?? 'none'}
+      title={view.detail ? `${view.label}: ${view.detail}` : view.label}
+    >
+      <span className={`text-[11px] font-semibold ${captureToneClass[view.tone]}`}>{view.label}</span>
+      {view.detail && (
+        <span className="line-clamp-3 text-[10.5px] leading-snug text-[#64748B]">{view.detail}</span>
+      )}
+    </div>
+  );
+};
 
 const WindowCard: React.FC<{
   window: ScreenshotTimelineWindow;
@@ -97,10 +122,11 @@ const WindowCard: React.FC<{
           </button>
         ) : (
           // Tracked time with nothing captured in it. Saying so is the honest
-          // answer; a stand-in image would not be.
-          <div className="flex aspect-video w-full items-center justify-center bg-[#F1F5F9]">
-            <span className="text-[11px] font-semibold text-[#94A3B8]">No capture</span>
-          </div>
+          // answer; a stand-in image would not be. What is *known* about why is
+          // said too -- a failed capture, a permission the OS withheld, an
+          // upload still on its way -- and only a window nothing was reported
+          // for stays plain "No capture".
+          <EmptyCapture window={captureWindow} />
         )}
 
         {captureWindow.screenshot_count > 0 && (

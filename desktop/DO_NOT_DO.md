@@ -702,6 +702,77 @@ long (`searchable=True`). It is still a `QComboBox` — the dialogs' own code
 does not change. `tests/test_dropdown.py` fails on any bare `QComboBox(` or
 `QDateEdit(` in `ui/`.
 
+### ❌ Do not elide in `paintEvent` and leave the size hint alone
+
+```python
+class ElidedLabel(QLabel):
+    def paintEvent(self, event):
+        elided = metrics.elidedText(self._full_text, Qt.ElideRight, self.width())
+```
+
+**What it caused:** a plain `QLabel` reports the *whole string* as its minimum width,
+and drawing less of it does not change that. So a long project or task name set the
+minimum of whatever it sat in. In the screenshot grid that made each column as wide as
+its widest card's text: columns of unequal width, a grid wider than its viewport (a
+horizontal scrollbar), and cards overlapping their neighbours. **Instead:** override
+`minimumSizeHint` to an ellipsis (`ui/elided_label.py`); `sizeHint` stays the full text,
+so a label with room still asks for it. The task name column clipped mid-word for the
+same reason.
+
+### ❌ Do not give a card a width that comes from its content
+
+Four columns were demanded at every width, and a column took its widest cell's
+minimum. **Instead:** the column count is a function of the width the grid is given
+(`screenshot_columns`), cards are `Ignored` horizontally so the column decides their
+width, and an unused column's stretch is set to 0 -- one that keeps its stretch is still
+given a share and makes the cards narrower than they should be.
+
+### ❌ Do not delete and rebuild a view on every refresh
+
+```python
+while self.layout.count():
+    self.layout.takeAt(0).widget().deleteLater()      # then build it all again
+```
+
+A refresh calls `set_data` and then `set_mode`, so every card was destroyed and
+recreated **twice**, each at its default geometry, with the scroll content collapsing in
+between and the scroll position going with it: "the grid jumps every few seconds".
+**Instead:** reconcile by identity (`ScreenshotsTabView._show_data`).
+
+### ❌ Do not let a scrollbar appear and disappear beside aligned content
+
+With `ScrollBarAsNeeded`, the bar appeared the moment a refresh added a row (or the rows
+outgrew the task list) and took its width from the content -- a column boundary moved,
+and the task rows' ACTION/HOURS/CREATE ON stopped lying under their header, by exactly
+the bar's width, until the list shrank back. **Instead:** reserve the slot and make
+whatever sits outside the scroll area reserve the same width.
+
+### ❌ Do not use `setMinimumHeight` to give a container a floor
+
+An explicit minimum *replaces* the layout's own minimum rather than adding to it. Set
+on the grid's container it let a tall grid be squeezed to the floor and the fixed-height
+cards overlapped. **Instead:** raise the hint only (`_FloorHeightWidget`): at least the
+floor, never less than the content needs. (And a word-wrapped label makes Qt size through
+height-for-width, which ignores a `sizeHint` override -- the floor lives in
+`minimumSizeHint`.)
+
+### ❌ Do not let a layout minimum exceed the screen
+
+The window declared `MINIMUM_WINDOW_*` clamped to the work area, and a test pinned it --
+against a stand-in window. The *real* minimum is whatever the layout adds up to: the top
+bar's 760, the task list's 796 (its default column widths, each a floor) and the
+sections' 220px minimum heights made it 1136x790, so on a 1366x768 laptop at 125%
+(about 1092x578 usable) the window opened larger than the screen and its bottom edge
+could not be reached or resized back. **Instead:** a width-driven compact form for the
+top bar, an *applied* width that gives way for the one column that can, and a content
+pane that scrolls below its floor. Test the real widgets at the real usable sizes.
+
+### ❌ Do not measure a layout inside `showEvent`
+
+The top bar read its two forms' minimum widths there and got figures ~130px too wide:
+the children are polished, and their fonts and padding resolved, only once the show has
+completed. Measure one event-loop turn later (`QTimer.singleShot(0, ...)`).
+
 ---
 
 ## Naming
@@ -1170,6 +1241,164 @@ capture after the first, by the same silent mechanism.
 `count_unattributed_screenshots()` exists so this class of stall is visible:
 these rows count as `pending`, which reads as "about to upload", and only an
 adoption can ever release one.
+
+---
+
+## Screenshots
+
+Every entry here was found by reading the capture path after production showed
+windows with tracked time and measured activity and no screenshot -- one here
+and there, and in the worst cases a whole afternoon -- while the timer ran and
+the desktop looked healthy. Each was reproduced against the code as it stood
+before being fixed (`tests/test_screenshot_resilience.py`).
+
+### ❌ Do not let a failed capture return `None` and spend the window
+
+```python
+merged = capture.capture_all_displays()
+if merged is None:
+    return None          # the instant was already popped from the plan
+```
+
+**What it caused:** a locked screen, a monitor asleep or a remote-desktop
+reconnect at the planned instant lost the window's only capture. Nothing was
+rescheduled, the window's budget was not spent, nothing was recorded, and the
+web grid read "No capture" for a window that had tracked time and activity --
+indistinguishable from one that was never due. Measured: one failed grab, zero
+screenshots queued, no retry inside the window, no record of it.
+
+**Instead:** every outcome is a value the GUI thread acts on (`_capture_now`
+returns `{"failed": reason}`, `{"blocked"}`, `{"excluded"}`, or the queued
+capture; a bare `None` means only "authorisation was withdrawn"). A failure is
+retried inside the window with jittered backoff and, if the window ends first,
+recorded (`_finalize_outcome` -> `pending_screenshot_events`). A window must
+end with an image, a retry still inside it, or a recorded outcome.
+
+### ❌ Do not re-arm a single-shot schedule as the last statement of its slot
+
+```python
+def _on_due(self):
+    ...                  # anything in here may raise
+    self._arm()          # ...and then this never runs
+```
+
+**What it caused:** one exception left the `QTimer` stopped for the rest of the
+session. The timer, the activity tracker and every other service carried on, so
+the machine looked healthy, and no screenshot was taken until the user stopped
+and started again. Reproduced: after a fault in the planner, `_due_timer` was
+inactive for good.
+
+**Instead:** re-arm in a `finally` (`_arm_safely`, which cannot itself end the
+schedule), and keep a watchdog on its own timer that restarts a schedule that is
+not running while tracking. A guard that depends on the thing it guards is not a
+guard.
+
+### ❌ Do not serialise a long task by its de-duplication key alone
+
+```python
+tasks.submit(lambda: self._capture_now(...), key="screenshot-capture")
+# TaskRunner drops a submit whose key is in flight -- with a debug-level log
+```
+
+**What it caused:** a call that never returned (a wedged display call, UI
+Automation against a hung browser, a machine that slept mid-grab) held the key
+for ever, so every later capture was dropped silently. Reproduced: four further
+windows, one capture attempt reached the screen, zero screenshots.
+
+**Instead:** serialise captures with an in-flight token, give it a deadline
+(`CAPTURE_STUCK_SECONDS`), abandon a capture that misses it -- its late result is
+still honoured -- and submit the retry under its own key. A timed-out task is a
+failure to account for, not a lock.
+
+### ❌ Do not let a gate's callback be dropped by the session-generation guard
+
+```python
+tasks.submit(fetch_privacy_config, on_success=open_the_gate, key="...")   # guarded by default
+```
+
+**What it caused:** capture is held until the privacy configuration has been
+fetched, so an organisation's exclusions are never skipped. The callback that
+opened the gate was guarded by the session generation, and a sign-in that landed
+while the request was in flight dropped it. Nothing else ever opened the gate --
+the three-minute refresh stored the configuration but never set the flag -- so
+every capture of the process was held, retried every two seconds, until the app
+was restarted. Reproduced: the flag stayed `False` after a later *successful*
+refresh.
+
+**Instead:** the request is not session-scoped (`guard_generation=False`; it says
+what the organisation excludes), *any* successful fetch opens the gate, a held
+capture re-issues the request itself, and a hold that lasts minutes is reported
+to the backend (`blocked` / `privacy_config_unavailable`) instead of being silent.
+
+### ❌ Do not tear down captured work on an involuntary sign-out
+
+```python
+def _on_session_expired(self):
+    self.runtime.on_logout()          # same teardown as pressing Sign Out
+```
+
+**What it caused:** an expired token (or an administrator excluding the account)
+deleted every queued screenshot *and its file* before the person signed back in
+-- although the 401 hold, and `resume_after_auth`, exist precisely so those
+captures can be revived. The first copy of a captured screenshot is the only copy
+until the backend confirms it.
+
+**Instead:** `on_logout(involuntary=True)` keeps the queue; every queued row
+carries its owner, and a sign-in discards only another user's (`discard_foreign_
+captures`), so one person's screen images are never left on disk under another's
+session. A deliberate sign-out still discards all of it.
+
+### ❌ Do not stamp a capture after the work that follows it
+
+```python
+merged = capture.capture_all_displays()
+processed = image_processor.process_merged(merged)     # a second or more
+captured_at = datetime.now(timezone.utc)               # too late
+```
+
+**What it caused:** the backend files a capture into its window by `captured_at`.
+A capture grabbed in the last second of a window was stamped after the encode,
+landed in the next window, and left the window it was taken for showing activity
+and no screenshot. **Instead:** stamp the instant the screen was read.
+
+### ❌ Do not tell the user a screenshot was "captured" and leave it at that
+
+The toast says the picture was *taken*. Nothing used to say whether it had
+reached Drive, and nothing said when it had not -- so a person watching their own
+app saw everything working while the admin's grid showed "No capture" for the
+hour. **Instead:** the status line beside ACTIVITY (`screenshot/health.py`) says
+**uploaded** only once the backend has named the Drive file, turns amber or red
+only past a retry threshold, and never pops up for a single retry.
+
+### ❌ Do not answer every failed image load with the same sentence
+
+```tsx
+.catch(() => setFailed(true))      // ... <span>Image unavailable</span>
+```
+
+**What it caused:** the grid printed "Image unavailable" for a file permanently
+gone from Drive, for a request that timed out under the load of a whole day's
+thumbnails, and for a viewer who was signed out -- and threw the HTTP status
+away. A deleted image (data loss someone has to find) and a bad second (retry it)
+were indistinguishable, nothing was retried, and a screenshot of the page said
+nothing about which. On the server a Drive 404 and a Drive outage were both the
+same 502.
+
+**Instead:** classify by status (`AuthedImage.classifyStatus`): 404/410 is
+*missing from storage* and is never retried; 408/425/429/5xx and network errors
+are *transient* and are retried with backoff, then offered a Retry button; 401 and
+403 say so. Keep the status on the tile. On the server, a Drive 404 is
+`GoogleDriveFileNotFound` -> **410**, everything else stays 502. Cap concurrent
+image requests; a day of thumbnails fired at once is how the transient ones
+happen.
+
+### ❌ Do not report a batch as a unit when its members are independent
+
+A capture-event batch that failed whole for one malformed row would be retried
+whole, for ever, with every good event behind it. The backend validates each
+event on its own, records the good ones, and reports the rest as `rejected`; the
+desktop treats a 200 as complete. No free text crosses the wire: `reason` is a
+short code.
 
 ---
 

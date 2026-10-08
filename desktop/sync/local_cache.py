@@ -74,6 +74,7 @@ TELEMETRY_TABLES = (
     "pending_url_usage",
     "pending_unwanted_activity",
     "pending_adjustments",
+    "pending_screenshot_events",
 )
 
 #: How long a telemetry row that has never uploaded is kept before it is
@@ -1662,6 +1663,7 @@ class LocalCache:
         monitor_number: int = 1,
         client_op: Optional[str] = None,
         display_count: int = 1,
+        owner_user_id: Optional[int] = None,
     ) -> str:
         """
         Register a captured screenshot for upload.
@@ -1689,12 +1691,12 @@ class LocalCache:
                (id, client_screenshot_id, local_file_path, time_entry_id, client_op,
                 captured_at, window_start, monitor_number, display_count, width, height,
                 file_size_bytes, status, retry_count, next_retry_at,
-                created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)""",
+                created_at, updated_at, owner_user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)""",
             (client_screenshot_id, client_screenshot_id, local_file_path, time_entry_id,
              client_op, captured_at, window_start, monitor_number,
              max(1, int(display_count or 1)), width, height,
-             file_size_bytes, now, now, now),
+             file_size_bytes, now, now, now, owner_user_id),
         )
         return client_screenshot_id
 
@@ -1709,7 +1711,8 @@ class LocalCache:
         rows = self._storage.query_all(
             """SELECT id, client_screenshot_id, local_file_path, time_entry_id,
                       captured_at, window_start, monitor_number, display_count,
-                      width, height, file_size_bytes, retry_count
+                      width, height, file_size_bytes, retry_count,
+                      reported_state, created_at, owner_user_id
                FROM pending_screenshots
                WHERE status = 'pending' AND next_retry_at <= ?
                  AND time_entry_id IS NOT NULL
@@ -1958,6 +1961,200 @@ class LocalCache:
 
     def clear_screenshots(self) -> None:
         self._storage.execute("DELETE FROM pending_screenshots")
+        self._storage.execute("DELETE FROM pending_screenshot_events")
+
+    def discard_screenshots_not_owned_by(self, user_id: Optional[int]) -> List[str]:
+        """
+        Drop queued captures that belong to *another* user, keeping this one's.
+
+        An involuntary session end (an expired token) keeps the queue, because
+        the person usually signs straight back in and their captures are still
+        theirs to upload. If someone else signs in instead, their token cannot
+        upload these -- the backend answers 403 -- and an image of one
+        person's screen must not sit on disk under another's session.
+
+        A row with no recorded owner (queued by a build that did not record
+        one) is kept: it is unattributable, not provably foreign, and the
+        backend refuses it if it is wrong.
+
+        :return: the local file paths of the rows removed, for the caller to
+            delete from disk.
+        """
+        if user_id is None:
+            return []
+        rows = self._storage.query_all(
+            "SELECT id, local_file_path FROM pending_screenshots "
+            "WHERE owner_user_id IS NOT NULL AND owner_user_id != ?",
+            (user_id,),
+        )
+        if not rows:
+            return []
+        self._storage.execute(
+            "DELETE FROM pending_screenshots "
+            "WHERE owner_user_id IS NOT NULL AND owner_user_id != ?",
+            (user_id,),
+        )
+        return [row["local_file_path"] for row in rows]
+
+    def discard_screenshot_events_not_owned_by(self, user_id: Optional[int]) -> int:
+        """The events counterpart of `discard_screenshots_not_owned_by`."""
+        if user_id is None:
+            return 0
+        cursor = self._storage.execute(
+            "DELETE FROM pending_screenshot_events "
+            "WHERE owner_user_id IS NOT NULL AND owner_user_id != ?",
+            (user_id,),
+        )
+        return cursor.rowcount or 0
+
+    def set_screenshot_reported_state(self, record_id: str, state: Optional[str]) -> None:
+        """Remember which upload state the backend was last told for a capture."""
+        self._storage.execute(
+            "UPDATE pending_screenshots SET reported_state = ? WHERE id = ?",
+            (state, record_id),
+        )
+
+    def get_screenshot(self, record_id: str) -> Optional[Dict[str, Any]]:
+        row = self._storage.query_one(
+            "SELECT * FROM pending_screenshots WHERE id = ?", (record_id,)
+        )
+        return dict(row) if row else None
+
+    def screenshot_queue_summary(self) -> Dict[str, Any]:
+        """
+        What is waiting to upload, in the terms the status surface needs.
+
+        One read. `oldest_pending_age` is seconds since the oldest unfinished
+        capture was *captured* -- not since it last failed -- because that is
+        how long the person has been waiting on it.
+        """
+        now = time.time()
+        row = self._storage.query_one(
+            """SELECT
+                 SUM(CASE WHEN status IN ('pending', 'uploading') AND time_entry_id IS NOT NULL
+                          THEN 1 ELSE 0 END) AS uploading,
+                 SUM(CASE WHEN status IN ('pending', 'uploading') AND time_entry_id IS NULL
+                          THEN 1 ELSE 0 END) AS unattributed,
+                 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS parked,
+                 MAX(CASE WHEN status IN ('pending', 'uploading') THEN retry_count ELSE 0 END)
+                     AS max_retry_count,
+                 MIN(CASE WHEN status IN ('pending', 'uploading') THEN created_at END)
+                     AS oldest_created_at
+               FROM pending_screenshots"""
+        )
+        oldest = row["oldest_created_at"] if row else None
+        return {
+            "uploading": int((row["uploading"] if row else 0) or 0),
+            "unattributed": int((row["unattributed"] if row else 0) or 0),
+            "parked": int((row["parked"] if row else 0) or 0),
+            "max_retry_count": int((row["max_retry_count"] if row else 0) or 0),
+            "oldest_pending_age": (now - float(oldest)) if oldest else 0.0,
+        }
+
+    # ── Capture events (what the backend is told about a missing screenshot) ──
+
+    def save_screenshot_event(
+        self,
+        event_id: str,
+        event_state: str,
+        window_start: str,
+        occurred_at: str,
+        *,
+        reason: Optional[str] = None,
+        detail: Optional[str] = None,
+        attempts: int = 0,
+        time_entry_id: Optional[int] = None,
+        client_screenshot_id: Optional[str] = None,
+        owner_user_id: Optional[int] = None,
+    ) -> str:
+        """Queue one capture event for upload. Idempotent on `event_id`."""
+        now = time.time()
+        self._storage.execute(
+            """INSERT OR IGNORE INTO pending_screenshot_events
+               (id, event_state, reason, detail, attempts, window_start, occurred_at,
+                time_entry_id, client_screenshot_id, owner_user_id, status,
+                retry_count, next_retry_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)""",
+            (event_id, event_state, reason, (detail or "")[:500] or None,
+             # The backend accepts 0..1000; more is the same fact.
+             max(0, min(int(attempts), 1000)),
+             window_start, occurred_at, time_entry_id, client_screenshot_id,
+             owner_user_id, now, now),
+        )
+        return event_id
+
+    def get_pending_screenshot_events(
+        self, limit: int = TELEMETRY_FETCH_LIMIT
+    ) -> List[Dict[str, Any]]:
+        """Capture events ready to upload, oldest first. Bounded."""
+        rows = self._storage.query_all(
+            """SELECT id, event_state, reason, detail, attempts, window_start,
+                      occurred_at, time_entry_id, client_screenshot_id, retry_count
+               FROM pending_screenshot_events
+               WHERE status = 'pending' AND next_retry_at <= ?
+               ORDER BY created_at ASC
+               LIMIT ?""",
+            (time.time(), limit),
+        )
+        return [dict(row) for row in rows]
+
+    def complete_screenshot_events(self, ids: List[str]) -> None:
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        self._storage.execute(
+            f"DELETE FROM pending_screenshot_events WHERE id IN ({placeholders})", ids
+        )
+
+    #: Events are small and diagnostic, so they get a longer budget than the
+    #: other telemetry: an outage has to outlast about half an hour of retries
+    #: before one is parked, and `requeue_telemetry_for_new_run` revives it at
+    #: the next launch.
+    SCREENSHOT_EVENT_MAX_RETRIES = 30
+
+    def fail_screenshot_events(self, ids: List[str]) -> None:
+        if ids:
+            # A row being failed is pending again (a launch requeues parked
+            # ones), so any stamp left from an earlier parking is stale.
+            stale = ",".join("?" for _ in ids)
+            self._storage.execute(
+                f"UPDATE pending_screenshot_events SET parked_at = NULL "
+                f"WHERE status = 'pending' AND id IN ({stale})",
+                list(ids),
+            )
+        self._fail_queue_records(
+            "pending_screenshot_events", ids, self.SCREENSHOT_EVENT_MAX_RETRIES
+        )
+        if ids:
+            # Stamp the moment one was parked, for `revive_parked_screenshot_events`.
+            placeholders = ",".join("?" for _ in ids)
+            self._storage.execute(
+                f"UPDATE pending_screenshot_events SET parked_at = ? "
+                f"WHERE status = 'failed' AND parked_at IS NULL AND id IN ({placeholders})",
+                [time.time(), *ids],
+            )
+
+    def revive_parked_screenshot_events(self, older_than_seconds: float = 0.0) -> int:
+        """Return events that exhausted their retries to the queue.
+
+        The same rule as `revive_parked_screenshots`, for the same reason: an
+        event is the only explanation the web grid will ever get for a window, so
+        one parked after half an hour of a backend that was down (or not yet
+        deployed) must not wait for a launch -- a tray application is not
+        relaunched for days. Offered again when a hold ends and hourly.
+        """
+        now = time.time()
+        cursor = self._storage.execute(
+            "UPDATE pending_screenshot_events "
+            "SET status = 'pending', retry_count = 0, next_retry_at = 0, parked_at = NULL "
+            "WHERE status = 'failed' AND COALESCE(parked_at, created_at) <= ?",
+            (now - older_than_seconds,),
+        )
+        return cursor.rowcount or 0
+
+    def count_screenshot_events(self) -> int:
+        row = self._storage.query_one("SELECT COUNT(*) AS cnt FROM pending_screenshot_events")
+        return int(row["cnt"]) if row else 0
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 

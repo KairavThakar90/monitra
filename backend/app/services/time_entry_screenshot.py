@@ -33,10 +33,15 @@ from app.core.database import end_transaction
 from app.core.time_format import ist_day_end_utc, ist_day_start_utc, ist_today, to_ist
 from app.models.time_entry import TimeEntry
 from app.models.time_entry_screenshot import TimeEntryScreenshot
+from app.models.time_entry_screenshot_event import TimeEntryScreenshotEvent
 from app.models.user import User
 from app.repositories.time_entry import TimeEntryRepository
 from app.repositories.time_entry_screenshot import TimeEntryScreenshotRepository
-from app.schemas.time_entry_screenshot import TimeEntryScreenshotCreate
+from pydantic import ValidationError
+
+from app.schemas.time_entry_screenshot import (
+    SCREENSHOT_EVENTS_MAX_PER_REQUEST, ScreenshotEventIn, TimeEntryScreenshotCreate,
+)
 from app.services.google_drive_service import (
     GoogleDriveError, GoogleDriveFileNotFound, GoogleDriveNotAccessible,
     drive_service,
@@ -44,6 +49,18 @@ from app.services.google_drive_service import (
 from app.services.member_scope import visible_member_ids
 
 logger = logging.getLogger(__name__)
+
+#: `time_entry_screenshots.client_screenshot_id` is String(64).
+CLIENT_SCREENSHOT_ID_MAX_LENGTH = 64
+
+#: How far ahead of the server's clock a `captured_at` may be before it is
+#: logged as clock skew. Generous: a client a minute ahead is not news.
+CAPTURED_AT_FUTURE_TOLERANCE_SECONDS = 300
+
+#: Capture events are diagnostics about recent windows. An event older than this
+#: describes a day nobody is looking at; one from the future cannot be true.
+EVENT_MAX_AGE = timedelta(days=45)
+EVENT_MAX_FUTURE = timedelta(days=1)
 
 #: The only image format the desktop produces and the only one accepted.
 ALLOWED_MIME_TYPES = {"image/webp"}
@@ -139,6 +156,7 @@ def _build_windows(
     activity: List[Tuple[datetime, int, int]],
     intervals: Optional[List[Tuple[datetime, datetime]]] = None,
     task_project_by_entry: Optional[Dict[int, dict]] = None,
+    events: Optional[List[TimeEntryScreenshotEvent]] = None,
 ) -> List[dict]:
     """Bucket one member's captures and activity into fixed windows.
 
@@ -175,12 +193,19 @@ def _build_windows(
         return buckets.setdefault(index, {
             "index": index,
             "screenshots": [],
+            "events": [],
             "weighted": 0.0,
             "measured": 0,
         })
 
     for shot in screenshots:
         bucket(shot.captured_at)["screenshots"].append(shot)
+
+    # A window the desktop reported on is a window worth showing even if no
+    # activity row and no image ever reached the server for it: that is
+    # precisely the case where the explanation is the only thing there is.
+    for event in events or []:
+        bucket(event.window_start)["events"].append(event)
 
     for recorded_at, percentage, seconds in activity:
         if seconds <= 0:
@@ -201,12 +226,16 @@ def _build_windows(
         # two apart.
         percentage = int(round(slot["weighted"] / measured)) if measured else 0
         shots = sorted(slot["screenshots"], key=lambda s: s.captured_at)
+        tracked_seconds = _overlap_seconds(intervals or [], window_start, window_end)
+        capture_state, capture_reason, capture_attempts = _capture_state(
+            shots, slot["events"], tracked_seconds
+        )
         windows.append({
             "window_start": window_start,
             "window_end": window_end,
             "activity_percentage": max(0, min(100, percentage)),
             "activity_measured_seconds": measured,
-            "tracked_seconds": _overlap_seconds(intervals or [], window_start, window_end),
+            "tracked_seconds": tracked_seconds,
             "screenshots": [
                 {
                     "id": s.id,
@@ -227,8 +256,57 @@ def _build_windows(
                 for s in shots
             ],
             "screenshot_count": len(shots),
+            "capture_state": capture_state,
+            "capture_reason": capture_reason,
+            "capture_attempts": capture_attempts,
         })
     return windows
+
+
+#: How a desktop's event state reads once the window is displayed. A queued
+#: upload that keeps failing is `pending` -- the image exists, on the desktop,
+#: and is still being delivered -- while one the server refused is `failed`.
+_EVENT_TO_CAPTURE_STATE = {
+    "failed": "failed",
+    "blocked": "blocked",
+    "excluded": "excluded",
+    "unavailable": "unavailable",
+    "upload_retrying": "pending",
+    "upload_parked": "failed",
+}
+
+
+def _capture_state(
+    shots: list, events: List[TimeEntryScreenshotEvent],
+    tracked_seconds: Optional[int] = None,
+) -> Tuple[str, Optional[str], int]:
+    """What a window's capture came to: ``(state, reason, attempts)``.
+
+    An image outranks every report about it: the desktop can only say "still
+    trying" up to the moment the upload lands, so once the window holds a
+    screenshot, anything it said earlier is history and must not be shown as the
+    window's state. With no image, the newest report decides -- a capture that
+    failed and was later reported held back is held back. With neither there is
+    nothing to say, and that is `none`, never a guess.
+
+    ``tracked_seconds`` is how long a timer ran inside the window. A window with
+    no image, no report and *no tracked time* is one nobody was working in: no
+    screenshot was due, so it is ``not_expected`` -- never "No capture" and
+    never a broken image. ``None`` (a caller that does not know) leaves the
+    old reading, ``none``.
+    """
+    if shots:
+        return "captured", None, 0
+    if not events:
+        if tracked_seconds is not None and tracked_seconds <= 0:
+            return "not_expected", None, 0
+        return "none", None, 0
+    newest = max(events, key=lambda e: (e.occurred_at, e.id or 0))
+    return (
+        _EVENT_TO_CAPTURE_STATE.get(newest.state, "none"),
+        newest.reason,
+        int(newest.attempts or 0),
+    )
 
 
 class TimeEntryScreenshotService:
@@ -384,6 +462,18 @@ class TimeEntryScreenshotService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="client_screenshot_id is required for idempotent upload",
             )
+        if len(client_screenshot_id) > CLIENT_SCREENSHOT_ID_MAX_LENGTH:
+            # The column is String(64). Past it the INSERT fails *after* the
+            # image is in Drive, which the handler below reports as a transient
+            # 500 -- so the desktop would retry the same capture for ever. A
+            # refusal here is a 422, which it parks with the file kept.
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"client_screenshot_id may be at most "
+                    f"{CLIENT_SCREENSHOT_ID_MAX_LENGTH} characters"
+                ),
+            )
 
         entry = TimeEntryScreenshotService._entry_for_upload(db, time_entry_id, current_user)
 
@@ -433,6 +523,19 @@ class TimeEntryScreenshotService:
         when = captured_at or datetime.now(timezone.utc)
         if when.tzinfo is None:
             when = when.replace(tzinfo=timezone.utc)
+        skew = (when - datetime.now(timezone.utc)).total_seconds()
+        if skew > CAPTURED_AT_FUTURE_TOLERANCE_SECONDS:
+            # Stored as sent -- the timeline files a capture by this instant, and
+            # rewriting it would put the image in a window the person was not
+            # working -- but never silently. A desktop whose clock is ahead
+            # produces captures that appear under the wrong day and window, and
+            # "the screenshot is missing" is the report that follows.
+            logger.warning(
+                "SCREENSHOT_CLOCK_SKEW client_id=%s user=%s entry=%s captured_at is "
+                "%.0fs in the future; the client clock is ahead and the capture will "
+                "be filed under that instant",
+                client_screenshot_id, owner_id, time_entry_id, skew,
+            )
 
         file_name = f"screenshot_{client_screenshot_id}.webp"
         started = time.monotonic()
@@ -531,7 +634,27 @@ class TimeEntryScreenshotService:
                 db, organization_id, client_screenshot_id
             )
             if winner is None:
-                raise
+                # Not a duplicate. The only other thing a unique index plus a
+                # foreign key can refuse here is an entry deleted while the
+                # upload was in flight. That is a refusal the client should
+                # park (404), not a transient 500 it would retry for ever. The
+                # Drive object is kept, as in the generic failure below.
+                still_there = db.get(TimeEntry, time_entry_id) is not None
+                logger.error(
+                    "SCREENSHOT_DB_WRITE_FAILED client_id=%s user=%s entry=%s folder=%s "
+                    "drive_file=%s reason=%s; the Drive object is kept",
+                    client_screenshot_id, owner_id, time_entry_id, folder_id, file_id,
+                    "integrity_error" if still_there else "entry_deleted_mid_upload",
+                )
+                if not still_there:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Time entry not found",
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Screenshot metadata could not be recorded; please retry",
+                )
             if winner.google_drive_file_id != file_id:
                 drive_service.delete_file(file_id)
             logger.info(
@@ -607,9 +730,28 @@ class TimeEntryScreenshotService:
         drive_file_id = record.google_drive_file_id
         mime_type = record.mime_type or "image/webp"
         file_name = record.file_name or f"screenshot_{record.id}.webp"
+        # Read before the transaction ends: ending it expires every instance,
+        # and touching one afterwards would check out a connection again.
+        owner_id = getattr(entry, "user_id", None)
         end_transaction(db)
         try:
             content = drive_service.download_file(drive_file_id)
+        except GoogleDriveFileNotFound as exc:
+            # The row says the image is in Drive and Drive says it is not. That
+            # is an integrity failure with a permanent answer, so it is not
+            # dressed as the transient 502 a Drive outage gets: a viewer must be
+            # able to tell "storage is having a bad minute" from "this image is
+            # gone", and an operator must be able to find these by name.
+            drive_service.image_cache.discard(drive_file_id)
+            logger.error(
+                "SCREENSHOT_IMAGE_MISSING id=%s user=%s drive_file=%s reason=%s; the "
+                "row exists but its Drive object does not",
+                screenshot_id, owner_id, drive_file_id, exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="This screenshot's image was not found in storage",
+            )
         except GoogleDriveError as exc:
             logger.error("could not read Drive file %s: %s", drive_file_id, exc)
             raise HTTPException(
@@ -867,6 +1009,134 @@ class TimeEntryScreenshotService:
         ActivityLogService.capture(db, describe)
         return screenshot_id
 
+    # ── Capture events ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def record_capture_events(
+        db: Session, current_user: User, raw_events: List[dict]
+    ) -> dict:
+        """
+        Record what the desktop says happened to captures that have no image.
+
+        The caller is the only person these can be about: the user and the
+        organisation come from the authenticated session, never from the body,
+        exactly as for an upload. Each event is validated on its own and a bad
+        one is reported back as rejected rather than failing the batch -- a
+        batch that fails whole is retried whole, so one malformed row would hold
+        every good one behind it for ever.
+
+        Idempotent on `client_event_id`: a retry after a lost response records
+        nothing twice and answers as success.
+
+        :return: `{"accepted": n, "duplicates": n, "rejected": [...]}`.
+        """
+        if len(raw_events) > SCREENSHOT_EVENTS_MAX_PER_REQUEST:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"At most {SCREENSHOT_EVENTS_MAX_PER_REQUEST} capture events "
+                    "may be sent in one request"
+                ),
+            )
+
+        now = datetime.now(timezone.utc)
+        valid: List[ScreenshotEventIn] = []
+        rejected: List[dict] = []
+        seen: set = set()
+        for raw in raw_events:
+            try:
+                event = ScreenshotEventIn.model_validate(raw)
+            except (ValidationError, ValueError, TypeError) as exc:
+                client_id = raw.get("client_event_id") if isinstance(raw, dict) else None
+                rejected.append({
+                    "client_event_id": client_id if isinstance(client_id, str) else None,
+                    "reason": "invalid event: " + TimeEntryScreenshotService._first_error(exc),
+                })
+                continue
+            window_start = _as_utc(event.window_start)
+            occurred_at = _as_utc(event.occurred_at)
+            if (
+                window_start < now - EVENT_MAX_AGE or window_start > now + EVENT_MAX_FUTURE
+                or occurred_at < now - EVENT_MAX_AGE or occurred_at > now + EVENT_MAX_FUTURE
+            ):
+                rejected.append({
+                    "client_event_id": event.client_event_id,
+                    "reason": "the event's time is outside the range the server accepts",
+                })
+                continue
+            if event.client_event_id in seen:
+                # Twice in one request is one event.
+                continue
+            seen.add(event.client_event_id)
+            event.window_start, event.occurred_at = window_start, occurred_at
+            valid.append(event)
+
+        organization_id = current_user.organization_id
+        user_id = current_user.id
+        existing = TimeEntryScreenshotRepository.existing_event_ids(
+            db, organization_id, [e.client_event_id for e in valid]
+        )
+        fresh = [e for e in valid if e.client_event_id not in existing]
+        owned = TimeEntryScreenshotRepository.entries_owned_by(
+            db, organization_id, user_id,
+            {e.time_entry_id for e in fresh if e.time_entry_id is not None},
+        )
+
+        def row(e: ScreenshotEventIn) -> TimeEntryScreenshotEvent:
+            return TimeEntryScreenshotEvent(
+                organization_id=organization_id,
+                user_id=user_id,
+                # An entry that is not this user's is not an error worth
+                # refusing the event over -- the event is about this user's
+                # window either way -- but it is never recorded against it.
+                time_entry_id=e.time_entry_id if e.time_entry_id in owned else None,
+                client_event_id=e.client_event_id,
+                client_screenshot_id=e.client_screenshot_id,
+                window_start=e.window_start,
+                occurred_at=e.occurred_at,
+                state=e.state,
+                reason=e.reason,
+                attempts=e.attempts,
+            )
+
+        accepted = 0
+        duplicates = len(valid) - len(fresh)
+        if fresh:
+            try:
+                db.add_all([row(e) for e in fresh])
+                db.commit()
+                accepted = len(fresh)
+            except IntegrityError:
+                # Two requests carrying the same event raced past the existence
+                # check. Settle it row by row so one duplicate cannot take the
+                # rest of the batch with it.
+                db.rollback()
+                for e in fresh:
+                    try:
+                        db.add(row(e))
+                        db.commit()
+                        accepted += 1
+                    except IntegrityError:
+                        db.rollback()
+                        duplicates += 1
+        logger.info(
+            "SCREENSHOT_EVENTS_RECORDED user=%s accepted=%d duplicates=%d rejected=%d states=%s",
+            user_id, accepted, duplicates, len(rejected),
+            ",".join(sorted({e.state for e in fresh})) or "-",
+        )
+        return {"accepted": accepted, "duplicates": duplicates, "rejected": rejected}
+
+    @staticmethod
+    def _first_error(exc: Exception) -> str:
+        """One short, safe sentence about why an event was refused."""
+        if isinstance(exc, ValidationError):
+            errors = exc.errors()
+            if errors:
+                first = errors[0]
+                where = ".".join(str(part) for part in first.get("loc", ())) or "event"
+                return f"{where}: {first.get('msg', 'invalid')}"[:200]
+        return "malformed"
+
     # ── Timeline ──────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -965,9 +1235,17 @@ class TimeEntryScreenshotService:
         task_project_by_entry = TimeEntryScreenshotRepository.get_task_project_names_for_entries(
             db=db, entry_ids={s.time_entry_id for s in screenshots},
         )
+        events = TimeEntryScreenshotRepository.list_events(
+            db=db,
+            organization_id=current_user.organization_id,
+            user_id=subject_id,
+            start=start,
+            end=end,
+        )
 
         return window_minutes, _build_windows(
             window_seconds, screenshots, activity, intervals, task_project_by_entry,
+            events=events,
         )
 
     #: The widest span the grid will read in one request. "Last 30 days" is the
@@ -1050,7 +1328,14 @@ class TimeEntryScreenshotService:
             end=end,
             user_ids=allowed,
         )
-        if not tagged:
+        event_rows = TimeEntryScreenshotRepository.list_events_by_user(
+            db=db,
+            organization_id=current_user.organization_id,
+            start=start,
+            end=end,
+            user_ids=allowed,
+        )
+        if not tagged and not event_rows:
             return window_minutes, []
 
         # Grouped by member and then by the IST calendar day the capture falls
@@ -1060,6 +1345,16 @@ class TimeEntryScreenshotService:
         for user_id, shot in tagged:
             day = TimeEntryScreenshotService._ist_day_of(shot.captured_at)
             shots.setdefault(user_id, {}).setdefault(day, []).append(shot)
+
+        # A member whose desktop reported a window it could not capture is on
+        # the grid even with no image all day. That is the case where leaving
+        # them off was worst: the whole day failed, and the page said "No
+        # screenshots were captured on this day" with nothing to say why.
+        events: Dict[int, Dict[date_type, List[TimeEntryScreenshotEvent]]] = {}
+        for event in event_rows:
+            day = TimeEntryScreenshotService._ist_day_of(event.window_start)
+            events.setdefault(event.user_id, {}).setdefault(day, []).append(event)
+            shots.setdefault(event.user_id, {}).setdefault(day, [])
 
         activity: Dict[int, Dict[date_type, List[Tuple[datetime, int, int]]]] = {}
         for user_id, recorded_at, percentage, seconds in (
@@ -1126,6 +1421,7 @@ class TimeEntryScreenshotService:
                         activity.get(user_id, {}).get(day, []),
                         member_intervals,
                         task_project_by_entry,
+                        events=events.get(user_id, {}).get(day, []),
                     ),
                     "screenshot_count": len(day_shots),
                     # The whole IST day, not the sum of the windows below: time

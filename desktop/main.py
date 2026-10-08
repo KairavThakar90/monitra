@@ -461,7 +461,8 @@ class MainWindow(QMainWindow):
         )
         # Stops a running timer locally too; the backend already stopped the
         # entry on its own clock when the administrator excluded the account.
-        self.runtime.on_logout()
+        # Involuntary: queued screenshots are kept for the next sign-in.
+        self.runtime.on_logout(involuntary=True)
         self.runtime.auth_service.logout()
         self._dashboard.reset_state()
         self._login.reset()

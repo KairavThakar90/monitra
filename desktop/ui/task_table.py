@@ -20,7 +20,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Callable, Optional, List, Dict, Any, Tuple
 
-from PySide6.QtCore import Qt, Signal, QByteArray, QDate, QTime
+from PySide6.QtCore import QByteArray, QDate, QEvent, QObject, QSize, QTime, Qt, Signal
 from PySide6.QtGui import QFont, QColor, QPainter
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import (
@@ -43,6 +43,7 @@ from core.validation import (
     validate_name,
 )
 from ui import icons
+from ui.elided_label import ElidedLabel
 from ui.dropdown import PickerComboBox, PickerDateEdit
 from ui.tick_checkbox import TickCheckBox
 from ui.styles import (
@@ -1311,7 +1312,11 @@ class TaskRow(QFrame):
         self._leading_icon.setToolTip(self.project_name)
         name_row.addWidget(self._leading_icon)
 
-        self._name_label = QLabel(task_name, self)
+        # Elides rather than clips: a name longer than its column ends in an
+        # ellipsis (the whole name is the tooltip) instead of being cut off
+        # mid-word at the column's edge. Its minimum width is an ellipsis, so
+        # it gives way to the columns beside it rather than the other way round.
+        self._name_label = ElidedLabel(task_name, self)
         self._name_label.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         self._name_label.setWordWrap(False)
         name_row.addWidget(self._name_label)
@@ -1534,7 +1539,11 @@ class TaskRow(QFrame):
         self._active_dot.setVisible(self._is_running)
         running = self._is_running
 
-        self._name_label.setStyleSheet(f"color: {TEXT_PRIMARY};")
+        # Names the widget's type and restates the tooltip rule after it (see
+        # TOOLTIP_QSS): a sheet with no selector reaches the label's own
+        # tooltip too, and this label now has one (the whole name, when it is
+        # elided).
+        self._name_label.setStyleSheet(f"QLabel {{ color: {TEXT_PRIMARY}; }}{TOOLTIP_QSS}")
         if self._desc_label is not None:
             self._desc_label.setStyleSheet("color: #64748B;")
         self._created_label.setStyleSheet(
@@ -1737,6 +1746,16 @@ class TaskSection(QWidget):
     Manages the single-timer-at-a-time rule and CRUD operations.
     Emits timer_state_changed(is_active) for sidebar total-time updates.
     """
+
+    #: A row declares a 2px border on every edge in both its states (see
+    #: `TaskRow._apply_row_style`), which insets its contents by that much. The
+    #: header sits outside any row, so it insets itself by the same amount; that
+    #: is the whole of what keeps its labels over the rows' columns.
+    ROW_BORDER_WIDTH = 2
+    #: The header's side margins: the rows' own (16 left, 12 right) plus their
+    #: border. The scrollbar slot is added to the right one separately.
+    HEADER_LEFT_MARGIN = 16 + ROW_BORDER_WIDTH
+    HEADER_RIGHT_MARGIN = 12 + ROW_BORDER_WIDTH
     timer_state_changed = Signal(bool)   # True = timer started, False = stopped
     error_occurred = Signal(str)
     active_timer_conflict = Signal()
@@ -1986,14 +2005,18 @@ class TaskSection(QWidget):
         # is the single source of truth every visible TaskRow reads from
         # too (see TaskSection._resize_columns / _rebuild_rows).
         self._column_widths: Dict[str, int] = dict(COLUMN_DEFAULT_WIDTHS)
+        #: What was last applied to the header and rows: the model, or the
+        #: model with the stretch column shortened (see `_apply_effective_widths`).
+        self._applied_widths: Optional[Dict[str, int]] = None
         self._column_header_labels: Dict[str, QLabel] = {}
 
         col_header = QWidget(card)
         col_header.setFixedHeight(38)
         col_header.setStyleSheet(f"background: transparent; border-bottom: 1px solid {BORDER_LIGHT};")
         col_layout = QHBoxLayout(col_header)
-        col_layout.setContentsMargins(16, 0, 12, 0)
+        col_layout.setContentsMargins(self.HEADER_LEFT_MARGIN, 0, self.HEADER_RIGHT_MARGIN, 0)
         col_layout.setSpacing(0)
+        self._header_layout = col_layout
 
         def make_col_header(key: str) -> QLabel:
             lbl = QLabel(COLUMN_LABELS[key], col_header)
@@ -2031,6 +2054,13 @@ class TaskSection(QWidget):
         self._scroll = QScrollArea(card)
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # The vertical bar's slot is always reserved, and the header reserves
+        # the same width (`_sync_header_gutter`). With "as needed" the bar
+        # appeared the moment the rows overflowed and narrowed the rows by its
+        # width but not the header, so ACTION, HOURS and CREATE ON stopped lying
+        # over their columns -- and moved again when the list shrank back.
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self._scroll.viewport().installEventFilter(self)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
@@ -2435,7 +2465,7 @@ class TaskSection(QWidget):
                 project_status=status_name,
                 is_running=(task.get("id") == self._running_task_id),
                 readonly=self._readonly_date,
-                column_widths=self._column_widths,
+                column_widths=self._effective_column_widths(),
                 parent=self._rows_container,
             )
             if task.get("id") == self._running_task_id:
@@ -2507,6 +2537,99 @@ class TaskSection(QWidget):
         # never do, so an empty card cannot carry a footer for rows it lost.
         self._pagination_widget.hide()
 
+    # ── Narrow windows ────────────────────────────────────────────────────────
+    #
+    # `_column_widths` is the model: what the user dragged the columns to, and
+    # what every row is built from. Each width is a *floor* (see
+    # `_apply_column_extent`), so the four of them added up to 796px and the
+    # list -- and with it the whole dashboard -- refused to be narrower, which on
+    # a 1366x768 laptop at 125% meant a window wider than the screen.
+    #
+    # The model is left alone. What changes is the width *applied* to the one
+    # column that can give some up: while the section is shown narrower than the
+    # model needs, the stretch column (the task name, which elides) is applied
+    # at less than its model width, down to its hard floor. Wide enough and
+    # the applied widths *are* the model, exactly as before; a window made
+    # narrow and wide again returns to precisely where it started.
+
+    def _fixed_width_overhead(self) -> int:
+        """Everything in the header row that is not a column: the handles and
+        the margins (including the scrollbar slot)."""
+        margins = self._header_layout.contentsMargins()
+        return (
+            (len(COLUMN_ORDER) - 1) * COLUMN_HANDLE_WIDTH + margins.left() + margins.right()
+        )
+
+    def _needed_width(self, widths: Dict[str, int]) -> int:
+        return sum(widths.values()) + self._fixed_width_overhead()
+
+    def _effective_column_widths(self) -> Dict[str, int]:
+        """The widths to apply: the model, with the stretch column shortened by
+        as much as the section is short of the room the model needs, but never
+        below its hard floor. Before the section is shown there is no width to
+        be short of, so it is the model."""
+        widths = dict(self._column_widths)
+        if not self.isVisible():
+            return widths
+        shortfall = self._needed_width(widths) - self.width()
+        if shortfall > 0:
+            give = min(shortfall, widths[STRETCH_COLUMN] - COLUMN_MIN_WIDTHS[STRETCH_COLUMN])
+            widths[STRETCH_COLUMN] -= max(0, give)
+        return widths
+
+    def _apply_effective_widths(self) -> None:
+        """Edge-triggered: nothing is touched unless the applied widths changed."""
+        widths = self._effective_column_widths()
+        if widths == self._applied_widths:
+            return
+        self._applied_widths = widths
+        for key, label in self._column_header_labels.items():
+            _apply_column_extent(label, key, widths[key])
+        for row in self._task_rows:
+            row.set_column_widths(widths)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt's own casing
+        """As narrow as the section can actually become: the model with its
+        stretch column at its hard floor. The children's own minimums are the
+        model's, and they relax once the section is given the width (see
+        `_apply_effective_widths`), so the parent must be told the lower figure
+        or it would never offer it."""
+        hint = super().minimumSizeHint()
+        floor = dict(self._column_widths)
+        floor[STRETCH_COLUMN] = min(floor[STRETCH_COLUMN], COLUMN_MIN_WIDTHS[STRETCH_COLUMN])
+        return QSize(min(hint.width(), self._needed_width(floor)), hint.height())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt's own casing
+        super().resizeEvent(event)
+        self._apply_effective_widths()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt's own casing
+        super().showEvent(event)
+        self._apply_effective_widths()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if watched is self._scroll.viewport() and event.type() in (
+            QEvent.Type.Resize, QEvent.Type.Show,
+        ):
+            self._sync_header_gutter()
+        return super().eventFilter(watched, event)
+
+    def _sync_header_gutter(self) -> None:
+        """Make the header end where the rows end.
+
+        The rows live in a scroll area whose vertical bar takes `gutter` pixels
+        from the right; the header sits outside it, so it gives up the same
+        amount from *its* right margin. Edge-triggered: an unchanged gutter
+        rewrites nothing.
+        """
+        gutter = max(0, self._scroll.width() - self._scroll.viewport().width())
+        margins = self._header_layout.contentsMargins()
+        wanted = self.HEADER_RIGHT_MARGIN + gutter
+        if margins.right() != wanted:
+            self._header_layout.setContentsMargins(
+                margins.left(), margins.top(), wanted, margins.bottom()
+            )
+
     def _resize_columns(self, left_key: str, right_key: str, delta: int) -> None:
         """
         Handle a drag on the divider between two adjacent header columns.
@@ -2537,10 +2660,8 @@ class TaskSection(QWidget):
 
         self._column_widths[left_key] = new_left
         self._column_widths[right_key] = new_right
-        _apply_column_extent(self._column_header_labels[left_key], left_key, new_left)
-        _apply_column_extent(self._column_header_labels[right_key], right_key, new_right)
-        for row in self._task_rows:
-            row.set_column_widths(self._column_widths)
+        self._applied_widths = None  # the model moved: re-apply, whatever was
+        self._apply_effective_widths()
 
     # ── Timer workflow ────────────────────────────────────────────────────────
     #

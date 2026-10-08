@@ -46,6 +46,19 @@ re-grant a permission.
   before. **Versions before this one never ask for the schedule, so they will not
   show an administrator's own messages or follow their changes.**
 
+- **Monitra tells you what is happening to your screenshots.** A quiet line
+  beside "ACTIVITY" says **Uploading screenshot** while one is on its way,
+  **Screenshot uploaded 10:34 AM** once it is confirmed in the cloud (never
+  before), and turns amber or red only if an upload has been failing for a
+  couple of minutes or a capture failed outright. Hover it for what to expect.
+  It does not pop up, and one retry is not a warning. The "Screenshot captured"
+  toast is unchanged: it still means the picture was *taken*, not uploaded.
+- **Your manager can see why a screenshot is missing.** When a screenshot could
+  not be taken or uploaded, the web screenshots page now says so — "Capture
+  failed", "Upload pending", "Capture blocked" (e.g. Screen Recording not
+  allowed) or "Held back by privacy rule" — with the reason, instead of only
+  "No capture". Your own timer and tracked time are unaffected.
+
 ### Changed
 
 - **Updating Monitra is safer.** An update is only downloaded from an
@@ -62,6 +75,27 @@ re-grant a permission.
 
 ### Fixed
 
+- **A screenshot that fails to capture is retried, not skipped.** If the screen
+  could not be read at the planned moment (a locked screen, a monitor asleep, a
+  remote-desktop reconnect), Monitra used to give up on that ten-minute slot and
+  say nothing. It now tries again within the same slot, with growing pauses,
+  and if the slot ends without a picture it records why.
+- **Screenshots no longer stop for the rest of the session after one problem.**
+  A single error — or one capture that never finished — could silently end all
+  later screenshots while your timer kept running. The schedule now always
+  re-arms itself, a watchdog restarts it if it ever stops, a capture that hangs
+  is abandoned after 90 seconds and retried, and after the computer wakes from
+  sleep Monitra checks the schedule straight away.
+- **Screenshots are no longer held back for ever when privacy settings fail to
+  load.** If the request for your organisation's privacy settings was dropped
+  while you signed in, every screenshot was held until Monitra was restarted.
+  Monitra now asks again, and tells the web page if it is still waiting.
+- **A session that expires no longer throws away screenshots waiting to
+  upload.** They are kept (with their files) and upload once you sign back in;
+  only another user signing in on the same computer discards them.
+- **A screenshot is dated when the screen was read**, not when the picture
+  finished processing, so one taken in the last second of a slot is no longer
+  filed under the next one.
 - **Add Task's Non billable box draws properly when ticked.** It used to lose
   its frame and show a bare tick; it is now a filled box with a tick.
 - **Pasting into a task description no longer brings its formatting.** Text

@@ -50,22 +50,44 @@ that `start_tracker` and `stop_tracker` both advance. A callback left over from
 a stopped timer, a previous task, or a previous tracking session cannot match
 the current generation, so it aborts before capturing rather than capturing and
 deleting afterwards — an image that is never taken cannot leak.
+
+What happens when a capture does not work
+-----------------------------------------
+Every expected capture ends in exactly one of three places: an image in the
+durable queue, a retry that is still within its window, or an *explicit
+recorded outcome* for the window (`pending_screenshot_events`, uploaded by
+`SyncService`). There is no fourth, silent, state. This replaced a scheduler in
+which a failed grab returned `None`, the planned instant had already been spent,
+and the window simply had no screenshot and no explanation anywhere.
+
+* A failed grab, encode, disk write or queue write is retried inside the same
+  window, with backoff and jitter, until the window has no time left.
+* A window that ends unresolved -- every retry failed, the OS refused, a privacy
+  rule held it back the whole time -- is reported once, with a reason code.
+* One exception cannot end the schedule: `_on_due` always re-arms, and a
+  watchdog re-arms a timer that somehow is not running.
+* A capture that never returns is abandoned after `CAPTURE_STUCK_SECONDS` and
+  the window retried. The de-duplication key can no longer hold every later
+  capture hostage.
 """
 from __future__ import annotations
 
+import random
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from time import time as _wall_time
 from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QTimer, Signal
 
 from background_services.notifications import NotificationLevel
 from background_services.screenshot import (
-    capture, config, image_processor, mac_diagnostics, scheduler, screen_access, store,
+    capture, config, health, image_processor, mac_diagnostics, scheduler, screen_access, store,
 )
 from core.service import BaseService
+from sync.local_cache import CACHE_OWNER_KEY
 from tracking.active_window import get_active_window_details
 from tracking.browsers.manager import get_browser_manager
 
@@ -73,10 +95,19 @@ from tracking.browsers.manager import get_browser_manager
 #: window cannot exceed `SCREENSHOTS_PER_WINDOW`.
 SCREENSHOT_WINDOW_KEY = "screenshot_window_state"
 
+#: What "uploaded" means to the person looking at their own screen; written by
+#: `SyncService` when the backend confirms a capture is in Drive.
+SCREENSHOT_LAST_UPLOAD_KEY = config.LAST_UPLOAD_STATE_KEY
+
 
 def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
 
+
+#: "Read the owner now": the default for a direct `_capture_now(...)` call, as the
+#: end-to-end tests make. A scheduled capture always passes the owner it was
+#: authorised for, so a sign-in that lands while it runs cannot re-stamp it.
+_LIVE_OWNER = object()
 
 #: The same suffixes `tracking/app_identity.py` strips when it builds a
 #: process identity, so a catalogue entry entered *with* one (as admins are
@@ -91,6 +122,49 @@ def _strip_known_suffix(name: str) -> str:
         if lowered.endswith(suffix):
             return name[: -len(suffix)]
     return name
+
+
+class _WindowOutcome:
+    """What has happened to one window's capture so far.
+
+    A window is *resolved* once it holds an image (`captured`), or its
+    unresolved outcome has been recorded for the backend (`reported`). Anything
+    else at the moment the window ends is exactly the silent loss this class
+    exists to make impossible, so `ScreenshotService._finalize_outcome` runs on
+    every exit from a window.
+    """
+
+    __slots__ = (
+        "index", "start", "captured", "taken", "failures", "reason", "detail", "held",
+        "reported",
+    )
+
+    def __init__(self, index: int, start: float) -> None:
+        self.index = index
+        #: The window's start (epoch seconds), fixed when the window was first
+        #: seen. Recomputed later from the *current* window length it would be
+        #: wrong the moment an administrator changed `capture_frequency`
+        #: mid-window -- and a window the server places decades ago is refused.
+        self.start = start
+        self.captured = False
+        #: Images this process has taken for the window.
+        self.taken = 0
+        self.failures = 0
+        self.reason: Optional[str] = None
+        self.detail: Optional[str] = None
+        #: Why the capture is being held back right now, while it is:
+        #: "blocked", "excluded", "privacy_config", "unavailable".
+        self.held: Optional[str] = None
+        self.reported = False
+
+
+#: How a held window is described to the backend: (event state, reason code).
+_HELD_EVENTS = {
+    "blocked": ("blocked", "screen_recording_blocked"),
+    "excluded": ("excluded", "privacy_rule"),
+    "privacy_config": ("blocked", "privacy_config_unavailable"),
+    "unavailable": ("unavailable", "capture_unavailable"),
+}
 
 
 class ScreenshotService(BaseService):
@@ -112,6 +186,10 @@ class ScreenshotService(BaseService):
     screenshot_captured = Signal(dict)
     capture_unavailable = Signal(str)
     capture_blocked = Signal(str)
+    #: The user-facing screenshot state changed (`health.ScreenshotStatus` as a
+    #: dict). Edge-triggered: emitted when the state or its wording changes,
+    #: never on a poll of an unchanged one.
+    status_changed = Signal(dict)
 
     #: How soon a capture that the OS refused (macOS Screen Recording not
     #: granted) is attempted again. The refusal costs one cheap permission
@@ -131,6 +209,55 @@ class ScreenshotService(BaseService):
     #: `apply_user_profile`); this is the slow correction for a value an
     #: administrator changed mid-session.
     CONFIG_REFRESH_SECONDS = 3 * 60
+
+    #: Delays before a failed capture is attempted again inside the same
+    #: window. The last value repeats. Jittered, so a fleet whose screens all
+    #: became unreadable at once (a lock screen, a remote-desktop reconnect)
+    #: does not retry in step.
+    CAPTURE_RETRY_DELAYS = (10.0, 30.0, 60.0, 120.0)
+
+    #: Hard bound on attempts in one window. Six attempts at the delays above
+    #: span about eight minutes of a ten-minute window.
+    CAPTURE_MAX_ATTEMPTS = 6
+
+    #: A retry is never scheduled closer than this to the window's end: it
+    #: would be stamped into the next window and spend that window's budget.
+    CAPTURE_RETRY_MARGIN_SECONDS = 5.0
+
+    #: A capture that has not reported back after this long is abandoned. A
+    #: grab and a WebP encode take about a second; ninety seconds is a wedged
+    #: GDI/UI-Automation call, a display that never answered, or work that was
+    #: interrupted by the machine sleeping.
+    CAPTURE_STUCK_SECONDS = 90.0
+
+    #: The most capture tasks that may be *running* on the shared pool at once --
+    #: counted where they run, so it holds whether or not their callbacks are
+    #: ever delivered. Normally one; a second only while an abandoned one is
+    #: still wedged. A thread stuck in an OS call cannot be killed and the pool
+    #: has four: one wedged capture per window would, in forty minutes, take every
+    #: thread the application has and stop sync, config and every other
+    #: background job with it. At the cap no new capture is started and the window
+    #: is reported failed (`capture_stuck`), so the failure is explicit and the
+    #: rest of the application keeps running.
+    MAX_RUNNING_CAPTURES = 2
+
+    #: How soon the schedule looks again when an overdue instant found a
+    #: capture still running. The instant is kept, not dropped.
+    INFLIGHT_RECHECK_SECONDS = 5.0
+
+    #: Retry after the pool refused a submission (shutting down).
+    REJECTED_RETRY_SECONDS = 10.0
+
+    #: How often the watchdog runs while tracking. It is the thing that
+    #: notices the schedule has stopped, so it must not depend on the schedule.
+    HEALTH_INTERVAL_MS = 30_000
+
+    #: The privacy configuration is fetched at login and at launch. If neither
+    #: result has arrived, capture is held (an exclusion must never be
+    #: skipped), the fetch is re-issued this often, and after
+    #: `PRIVACY_PENDING_REPORT_SECONDS` the hold is reported so it is visible.
+    PRIVACY_REFETCH_SECONDS = 30.0
+    PRIVACY_PENDING_REPORT_SECONDS = 120.0
 
     def __init__(self, runtime, cache, screenshot_api=None, parent=None) -> None:
         super().__init__(runtime, parent)
@@ -195,6 +322,38 @@ class ScreenshotService(BaseService):
         #: on every retry.
         self._access_blocked_state: Optional[str] = None
 
+        #: Whose screen this is (`/auth/me` id), written on each capture row
+        #: so an involuntary sign-out keeps the owner's queue and a different
+        #: user's sign-in discards only another person's.
+        self._owner_user_id: Optional[int] = None
+
+        #: What has happened to the current window's capture; see
+        #: `_WindowOutcome`. GUI thread only.
+        self._outcome: Optional[_WindowOutcome] = None
+        self._consecutive_failed_windows = 0
+        self._last_failure_reason: Optional[str] = None
+
+        #: The capture currently on the pool: `(token, started, window)`.
+        #: `started` is wall-clock, so a machine that slept through it counts
+        #: as having waited. Serialises captures and detects a wedged one.
+        self._token_counter = 0
+        self._inflight: Optional[Tuple[int, float, int]] = None
+        #: Capture tasks currently executing on the pool (see
+        #: `MAX_RUNNING_CAPTURES`). Guarded by `_auth_lock`.
+        self._running_captures = 0
+
+        self._privacy_pending_since: Optional[float] = None
+        self._privacy_last_fetch = 0.0
+        self._scheduler_errors = 0
+        self._status: Optional[health.ScreenshotStatus] = None
+        self._status_dirty = False
+
+        #: The watchdog. Independent of `_due_timer` on purpose: it exists to
+        #: notice that one has stopped.
+        self._health_timer = QTimer(self)
+        self._health_timer.setInterval(self.HEALTH_INTERVAL_MS)
+        self._health_timer.timeout.connect(self._on_health_tick)
+
     # ── Tracker contract (driven by TimerService) ─────────────────────────────
 
     def start_tracker(self, session: Dict[str, Any]) -> None:
@@ -205,6 +364,12 @@ class ScreenshotService(BaseService):
         self._tracking = True
         self._planned_index = None
         self._planned_times = []
+        self._outcome = None
+        self._consecutive_failed_windows = 0
+        self._last_failure_reason = None
+        self._inflight = None
+        self._privacy_pending_since = None
+        self._owner_user_id = self._current_user_id()
         # Arming and authorising are the same act: nothing else in this class
         # may set `_authorized`, so there is no path from "the app is open" or
         # "the service started" to a capture.
@@ -220,7 +385,11 @@ class ScreenshotService(BaseService):
         self._probe_screen_access()
         # Plan and arm immediately, so a session that begins mid-window still
         # gets whatever the window has left rather than waiting for the next.
+        self._health_timer.start()
         self._on_due()
+        # Next turn of the event loop: the first status needs a queue read,
+        # which belongs on the pool, and nothing here waits for it.
+        QTimer.singleShot(0, self._refresh_status)
 
     def bind_entry_id(self, entry_id: int) -> None:
         """
@@ -267,11 +436,55 @@ class ScreenshotService(BaseService):
         """
         if self._tracking:
             self.log.info("screenshot capture stopped for entry %s", self._entry_id)
+            # The window being left may be unresolved. Record it now, while the
+            # session's entry id is still known; after `_revoke` it is not.
+            self._finalize_current_outcome()
         self._due_timer.stop()
+        self._health_timer.stop()
         self._tracking = False
         self._planned_index = None
         self._planned_times = []
+        self._inflight = None
         self._revoke()
+        QTimer.singleShot(0, self._refresh_status)
+
+    def on_system_resumed(self, gap_seconds: float) -> None:
+        """The machine woke from sleep: look at the schedule now.
+
+        Timers do not run while the machine sleeps, so the wake-up this
+        service armed may be hours late, and a capture that was on the pool
+        when the lid closed will never finish. Waiting for the next 30-second
+        wake-up would be harmless; doing it now makes the recovery explicit
+        and the log say so.
+        """
+        if not self._tracking:
+            return
+        self.log.info(
+            "SCREENSHOT_RESUME gap=%ds; re-evaluating the schedule and any capture "
+            "that was running", int(gap_seconds),
+        )
+        self._on_due()
+
+    def _current_user_id(self) -> Optional[int]:
+        """The signed-in user's id, if the runtime knows it."""
+        try:
+            info = getattr(getattr(self.runtime, "session_manager", None), "user_info", None)
+            value = (info or {}).get("id")
+            if value is None:
+                # The profile may not be loaded yet; the cache records whose it
+                # is at every sign-in and restore (`claim_cache_for`).
+                value = self._cache.load_app_state(CACHE_OWNER_KEY)
+            return int(value) if value is not None else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def status(self) -> Dict[str, Any]:
+        """The current user-facing screenshot state, for a status surface."""
+        if self._status is None:
+            return health.ScreenshotStatus(
+                health.INACTIVE, health.SEVERITY_NONE, ""
+            ).as_dict()
+        return self._status.as_dict()
 
     # ── Configuration ─────────────────────────────────────────────────────────
     #
@@ -338,7 +551,7 @@ class ScreenshotService(BaseService):
 
         def _fetch_configs():
             cfg = self._screenshot_api.get_config()
-            privacy_cfg = {}
+            privacy_cfg = None
             try:
                 privacy_cfg = self._screenshot_api.get_privacy_config()
             except Exception as e:
@@ -351,6 +564,12 @@ class ScreenshotService(BaseService):
                 self._set_capture_frequency(cfg.get("capture_frequency"))
             if isinstance(privacy_cfg, dict):
                 self._privacy_config = privacy_cfg
+                # A privacy configuration that has been fetched is a
+                # configuration that has been fetched, whichever request
+                # fetched it. The gate used to open only for the one request
+                # `apply_user_profile` made, so if *that* callback was dropped
+                # every later successful refresh left capture held for good.
+                self._privacy_config_loaded = True
 
         tasks.submit(
             _fetch_configs,
@@ -398,6 +617,13 @@ class ScreenshotService(BaseService):
             on_success=on_success,
             on_error=on_error,
             key="screenshot-privacy-config",
+            # Not session-scoped. The result says what the organisation
+            # excludes, and what it unblocks is *capture*. Under the default
+            # generation guard a sign-in that landed while this request was in
+            # flight dropped both callbacks, `_privacy_config_loaded` stayed
+            # False, and every capture of the process was held -- retried every
+            # two seconds -- until the app was restarted.
+            guard_generation=False,
         )
 
     # ── Capture authorisation ─────────────────────────────────────────────────
@@ -535,16 +761,40 @@ class ScreenshotService(BaseService):
     # ── Loop ──────────────────────────────────────────────────────────────────
 
     def _on_due(self) -> None:
-        """The scheduled instant arrived. Runs on the GUI thread; does no work."""
+        """The scheduled instant arrived. Runs on the GUI thread; does no work.
+
+        Whatever happens inside, the schedule is armed again on the way out.
+        This slot used to re-arm as its last statement, so any exception
+        between the top and the bottom left the single-shot timer stopped and
+        the service silent for the rest of the session -- while the timer, the
+        activity tracker and everything else carried on looking healthy.
+        """
         if not self._tracking:
             return
-        if not self._capture_available():
-            self._arm()
-            return
+        try:
+            self._run_due()
+        except Exception:  # noqa: BLE001
+            self._scheduler_errors += 1
+            self.log.exception(
+                "SCREENSHOT_SCHEDULER_ERROR errors=%d; the schedule is re-armed and "
+                "will try again", self._scheduler_errors,
+            )
+        finally:
+            self._arm_safely()
 
+    def _run_due(self) -> None:
         now = time.time()
         window = self._window_seconds()
         index = scheduler.window_index(now, window)
+        outcome = self._roll_window(index)
+        self._check_stuck()
+
+        if not self._capture_available():
+            outcome.held = "unavailable"
+            return
+        if outcome.held == "unavailable":
+            outcome.held = None
+
         self._plan(index, window, now)
 
         # Take everything that has come due. Normally one; a machine that was
@@ -552,11 +802,21 @@ class ScreenshotService(BaseService):
         # capturing the same screen twice a second apart is pointless — so the
         # whole overdue set counts as a single capture.
         if any(t <= now for t in self._planned_times):
-            self._planned_times = [t for t in self._planned_times if t > now]
-            self._submit_capture(index)
-            self.heartbeat()
-
-        self._arm()
+            future = [t for t in self._planned_times if t > now]
+            if outcome.taken >= config.screenshots_per_window():
+                # The window already holds what it is owed -- a capture
+                # abandoned as stuck can still finish late, and its retry was
+                # planned meanwhile. A second image is not a safer image.
+                self._planned_times = future
+            elif self._inflight is not None:
+                # One is still running. The instant is not spent: look again
+                # shortly rather than dropping it, which is how a slow capture
+                # used to cost the window its screenshot.
+                self._planned_times = [now + self.INFLIGHT_RECHECK_SECONDS] + future
+            else:
+                self._planned_times = future
+                self._submit_capture(index)
+                self.heartbeat()
 
     def _plan(self, index: int, window: int, now: float) -> None:
         """Plan a window's capture instants, once per window."""
@@ -596,14 +856,183 @@ class ScreenshotService(BaseService):
             max(250, min(self.MAX_SLEEP_MS, int((target - now) * 1000)))
         )
 
+    def _arm_safely(self) -> None:
+        """`_arm`, with a fallback so arming itself can never end the schedule."""
+        try:
+            self._arm()
+        except Exception:  # noqa: BLE001
+            self.log.exception(
+                "SCREENSHOT_SCHEDULER_ERROR could not compute the next wake-up; "
+                "falling back to a plain %d ms wake-up", self.MAX_SLEEP_MS,
+            )
+            try:
+                self._due_timer.start(self.MAX_SLEEP_MS)
+            except Exception:  # noqa: BLE001
+                self.log.exception("SCREENSHOT_SCHEDULER_ERROR the schedule timer would not start")
+
+    def _on_health_tick(self) -> None:
+        """The watchdog: the schedule must be running whenever tracking is."""
+        if not self._tracking:
+            return
+        try:
+            if not self._due_timer.isActive():
+                self.log.error(
+                    "SCREENSHOT_SCHEDULER_REVIVED the schedule timer was not running "
+                    "while tracking; re-arming it"
+                )
+                self._on_due()
+            else:
+                self._check_stuck()
+            self._refresh_status()
+        except Exception:  # noqa: BLE001
+            self.log.exception("SCREENSHOT_SCHEDULER_ERROR the watchdog failed")
+
+    # ── Windows and their outcomes ────────────────────────────────────────────
+
+    def _roll_window(self, index: int) -> _WindowOutcome:
+        """The current window's outcome, closing the previous one if it ended."""
+        outcome = self._outcome
+        if outcome is not None and outcome.index == index:
+            return outcome
+        if outcome is not None:
+            self._finalize_outcome(outcome)
+        self._outcome = _WindowOutcome(
+            index, scheduler.window_bounds(index, self._window_seconds())[0]
+        )
+        return self._outcome
+
+    def _outcome_for(self, index: Optional[int]) -> Optional[_WindowOutcome]:
+        """The live outcome for `index`; None for a window already left."""
+        outcome = self._outcome
+        if outcome is None:
+            return None
+        if index is None or outcome.index == index:
+            return outcome
+        return None
+
+    def _finalize_current_outcome(self, direct: bool = False) -> None:
+        outcome = self._outcome
+        self._outcome = None
+        if outcome is not None:
+            self._finalize_outcome(outcome, direct=direct)
+
+    def _finalize_outcome(self, outcome: _WindowOutcome, direct: bool = False) -> None:
+        """Record an unresolved window, once. A window with an image needs nothing."""
+        if outcome.captured or outcome.reported:
+            return
+        if outcome.held in _HELD_EVENTS:
+            state, reason = _HELD_EVENTS[outcome.held]
+            detail = None
+        elif outcome.failures:
+            state, reason, detail = "failed", outcome.reason, outcome.detail
+        else:
+            return
+        outcome.reported = True
+        if state == "failed":
+            self._consecutive_failed_windows += 1
+        self._emit_event(outcome, state, reason or "unknown", detail, direct=direct)
+
+    def _emit_event(
+        self, outcome: _WindowOutcome, state: str, reason: str, detail: Optional[str],
+        direct: bool = False,
+    ) -> None:
+        """Queue one capture event for the backend. Never blocks the GUI thread.
+
+        `direct` writes it here and now. Only the service's own shutdown uses
+        it: the pool is already refusing work by then, and one small insert on
+        the way out is the price of not losing the window's explanation.
+        """
+        start = outcome.start
+        event = {
+            "event_id": str(uuid.uuid4()),
+            "event_state": state,
+            "window_start": _iso(start),
+            "occurred_at": _iso(time.time()),
+            "reason": reason,
+            "detail": detail,
+            "attempts": outcome.failures,
+            "time_entry_id": self._entry_id,
+            "owner_user_id": self._owner_user_id,
+        }
+        self.log.warning(
+            "SCREENSHOT_WINDOW_UNRESOLVED window=%s state=%s reason=%s attempts=%d "
+            "entry=%s detail=%s",
+            _iso(start), state, reason, outcome.failures, self._entry_id, detail,
+        )
+
+        def write() -> None:
+            self._cache.save_screenshot_event(
+                event["event_id"], state, event["window_start"], event["occurred_at"],
+                reason=reason, detail=detail, attempts=outcome.failures,
+                time_entry_id=event["time_entry_id"], owner_user_id=event["owner_user_id"],
+            )
+
+        def done(_result: Any = None) -> None:
+            sync = getattr(self.runtime, "sync", None)
+            if sync is not None:
+                sync.wake()
+
+        tasks = getattr(self.runtime, "tasks", None)
+        if tasks is None or direct:
+            try:
+                write()
+            except Exception:  # noqa: BLE001
+                self.log.exception("SCREENSHOT_EVENT_LOST could not queue the event")
+            else:
+                done()
+            return
+        tasks.submit(
+            write,
+            on_success=done,
+            on_error=lambda exc: self.log.error(
+                "SCREENSHOT_EVENT_LOST could not queue the event: %s", exc
+            ),
+            key=f"screenshot-event:{event['event_id']}",
+            # A local write that must happen whoever is signed in by the time
+            # the pool reaches it; the row carries its owner.
+            guard_generation=False,
+        )
+
+    # ── Submitting a capture ──────────────────────────────────────────────────
+
+    def _check_stuck(self) -> None:
+        """Abandon a capture that has not reported back, and retry the window."""
+        inflight = self._inflight
+        if inflight is None:
+            return
+        token, started, index = inflight
+        age = _wall_time() - started
+        if age < self.CAPTURE_STUCK_SECONDS:
+            return
+        self._inflight = None
+        self.log.error(
+            "SCREENSHOT_CAPTURE_STUCK token=%d window=%d age=%ds; abandoning it and "
+            "capturing again", token, index, int(age),
+        )
+        self._on_capture_failed(index, "capture_stuck", f"no result after {int(age)}s")
+
     def _submit_capture(self, index: int) -> None:
         """Run one capture on the shared pool, never on the GUI thread.
 
-        Keyed, so a capture that is somehow still running when the next instant
-        arrives drops the new one rather than overlapping with it.
+        One at a time: `_inflight` serialises captures, so two can never
+        overlap. The pool's own de-duplication by key is kept for the normal
+        case, but it is not what this relies on -- a task that never returns
+        holds its key for ever, and with it every later capture.
         """
         tasks = getattr(self.runtime, "tasks", None)
         if tasks is None:
+            return
+        with self._auth_lock:
+            running = self._running_captures
+        if running >= self.MAX_RUNNING_CAPTURES:
+            self.log.error(
+                "SCREENSHOT_CAPTURE_REFUSED window=%d: %d capture(s) are still running "
+                "on the task pool; not starting another, so the pool keeps threads "
+                "for everything else", index, running,
+            )
+            self._on_capture_failed(
+                index, "capture_stuck", f"{running} earlier capture(s) have not returned",
+            )
             return
         if self._entry_id is None:
             session = self.runtime.timer.active_session() or {}
@@ -615,45 +1044,267 @@ class ScreenshotService(BaseService):
         # capture aborts untaken.
         generation = self._current_generation()
 
-        tasks.submit(
-            lambda: self._capture_now(index, generation),
-            on_success=self._on_captured,
-            on_error=lambda exc: self.log.error("screenshot capture failed: %s", exc),
-            key="screenshot-capture",
+        self._token_counter += 1
+        token = self._token_counter
+        self._inflight = (token, _wall_time(), index)
+        # Always its own key. `_inflight` is what serialises captures; the pool's
+        # de-duplication by key must never be what decides whether one runs, or a
+        # single wedged task -- or one still running across a stop and start --
+        # makes every later submission quietly return None.
+        key = f"screenshot-capture:{token}"
+        owner = self._owner_user_id        # whose screen this is, as of now
+
+        handle = tasks.submit(
+            lambda: self._capture_now(index, generation, owner),
+            on_success=lambda record, t=token: self._on_captured(record, t),
+            on_error=lambda exc, t=token: self._on_capture_error(exc, index, t),
+            key=key,
             # A capture belongs to the session that was tracking when it was
             # taken; if that session ended while it ran, there is nothing to
             # publish.
             guard_generation=True,
         )
+        if handle is None and self._inflight is not None and self._inflight[0] == token:
+            # Refused (the pool is shutting down). Not a failure of the screen;
+            # try again shortly rather than spending the instant.
+            self._inflight = None
+            self._retry_capture_in(self.REJECTED_RETRY_SECONDS)
 
-    def _on_captured(self, record: Optional[Dict[str, Any]]) -> None:
+    def _clear_inflight(self, token: Optional[int]) -> None:
+        if token is None:
+            return
+        if self._inflight is not None and self._inflight[0] == token:
+            self._inflight = None
+
+    def _on_capture_error(self, exc: BaseException, index: int, token: Optional[int]) -> None:
+        """The capture task raised. Back on the GUI thread."""
+        self._clear_inflight(token)
+        self.log.error(
+            "SCREENSHOT_CAPTURE_ERROR window=%s %s: %s",
+            index, type(exc).__name__, exc,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        self._on_capture_failed(index, "capture_exception", f"{type(exc).__name__}: {exc}")
+
+    def _on_captured(self, record: Optional[Dict[str, Any]], token: Optional[int] = None) -> None:
         """Publish a completed capture. Back on the GUI thread."""
+        self._clear_inflight(token)
         if not record:
+            # Authorisation was withdrawn before the screen was read (the timer
+            # stopped, the task changed). Nothing was expected, nothing failed.
             return
 
+        index = record.get("index")
+
         if record.get("blocked"):
+            outcome = self._outcome_for(index)
+            if outcome is not None:
+                outcome.held = "blocked"
             self._on_capture_blocked(record["blocked"], record.get("detail", ""))
+            self._refresh_status()
             return
 
         # If the capture was skipped because of privacy controls, we want to
         # resume instantly when they leave the excluded app. We do this by
         # scheduling a retry 2 seconds from now.
         if record.get("excluded"):
-            import time
-            retry_time = time.time() + 2.0
-            # Insert at the front so it's the very next thing
-            if not self._planned_times or self._planned_times[0] > retry_time:
-                self._planned_times.insert(0, retry_time)
-            self._arm()
+            self._on_capture_held(index, record.get("reason"))
+            return
+
+        if record.get("failed"):
+            self._on_capture_failed(index, record["failed"], record.get("detail"))
             return
 
         # A real capture went through, so any earlier refusal by the OS is over.
+        outcome = self._outcome_for(index)
+        if outcome is not None:
+            outcome.captured = True
+            outcome.taken += 1
+            outcome.held = None
+            if outcome.taken >= config.screenshots_per_window():
+                # Done for the window: drop any retry planned while this capture
+                # was thought lost.
+                window_end = outcome.start + self._window_seconds()
+                self._planned_times = [t for t in self._planned_times if t > window_end]
+        self._consecutive_failed_windows = 0
+        self._last_failure_reason = None
+        self._privacy_pending_since = None
         self._on_capture_unblocked()
         self.screenshot_captured.emit(record)
         # Upload promptly rather than on the sync loop's idle cadence.
         sync = getattr(self.runtime, "sync", None)
         if sync is not None:
             sync.wake()
+        self._refresh_status()
+
+    def _on_capture_held(self, index: Optional[int], reason: Optional[str]) -> None:
+        """The capture was withheld on purpose (a privacy rule, or the privacy
+        configuration not being known yet). Retry soon; record it if it lasts."""
+        outcome = self._outcome_for(index)
+        held_before = outcome.held if outcome is not None else None
+        delay = 2.0
+        if reason == "privacy_config_pending":
+            now = _wall_time()
+            if self._privacy_pending_since is None:
+                self._privacy_pending_since = now
+            waited = now - self._privacy_pending_since
+            if now - self._privacy_last_fetch >= self.PRIVACY_REFETCH_SECONDS:
+                # The request that should have opened this gate may have been
+                # dropped. Ask again rather than wait for a restart.
+                self._privacy_last_fetch = now
+                self._refresh_privacy_config()
+            if waited >= self.PRIVACY_PENDING_REPORT_SECONDS and outcome is not None:
+                outcome.held = "privacy_config"
+            if waited >= 20.0:
+                delay = 10.0
+        else:
+            self._privacy_pending_since = None
+            if outcome is not None:
+                outcome.held = "excluded"
+        self._retry_capture_in(delay)
+        # Retried every couple of seconds for as long as the user stays in an
+        # excluded application; the status only needs recomputing when what is
+        # being held (or why) has changed, not on every one of those retries.
+        if (outcome.held if outcome is not None else None) != held_before:
+            self._refresh_status()
+
+    def _retry_delay(self, failures: int) -> float:
+        delays = self.CAPTURE_RETRY_DELAYS
+        base = delays[min(max(failures, 1) - 1, len(delays) - 1)]
+        return base * (0.75 + 0.5 * random.random())
+
+    def _on_capture_failed(
+        self, index: Optional[int], reason: str, detail: Optional[str]
+    ) -> None:
+        """A capture attempt produced no image. Retry inside the window, or record it.
+
+        This is the path that did not exist. A failure used to return `None`:
+        the instant was already spent, the window's budget was not, nothing was
+        scheduled and nothing was recorded, so the window ended with activity
+        and no screenshot and no one -- on this machine or the server -- able to
+        say why.
+        """
+        if index is None and self._outcome is not None:
+            index = self._outcome.index
+        outcome = self._outcome_for(index)
+        late = outcome is None
+        if late and index is None:
+            # Nothing says which window this was, and a window the server would
+            # place in 1970 is worse than none; it is logged, not recorded.
+            self.log.error(
+                "SCREENSHOT_CAPTURE_ATTEMPT_FAILED with no window reason=%s detail=%s",
+                reason, detail,
+            )
+            return
+        if late:
+            # The window has already been left (a slow failure, an abandoned
+            # capture reporting back). It can no longer be retried; record it.
+            outcome = _WindowOutcome(
+                index, scheduler.window_bounds(index, self._window_seconds())[0]
+            )
+        outcome.failures += 1
+        outcome.reason = reason
+        outcome.detail = detail
+        self._last_failure_reason = reason
+        self.log.warning(
+            "SCREENSHOT_CAPTURE_ATTEMPT_FAILED window=%s attempt=%d reason=%s detail=%s",
+            outcome.index, outcome.failures, reason, detail,
+        )
+        if late or not self._tracking:
+            self._finalize_outcome(outcome)
+            self._refresh_status()
+            return
+
+        delay = self._retry_delay(outcome.failures)
+        window_end = scheduler.window_bounds(outcome.index, self._window_seconds())[1]
+        if (
+            outcome.failures < self.CAPTURE_MAX_ATTEMPTS
+            and time.time() + delay <= window_end - self.CAPTURE_RETRY_MARGIN_SECONDS
+        ):
+            self.log.info(
+                "SCREENSHOT_CAPTURE_RETRY window=%s attempt=%d next_in=%.0fs",
+                outcome.index, outcome.failures + 1, delay,
+            )
+            self._retry_capture_in(delay)
+        else:
+            self._finalize_outcome(outcome)
+        self._refresh_status()
+
+    # ── Status ────────────────────────────────────────────────────────────────
+
+    def _refresh_status(self) -> None:
+        """Recompute the user-facing state off the GUI thread and publish a change."""
+        tasks = getattr(self.runtime, "tasks", None)
+        if tasks is None:
+            return
+        outcome = self._outcome
+        held = None
+        if outcome is not None and not outcome.captured:
+            held = outcome.held if outcome.held in ("excluded", "privacy_config") else None
+        inputs = {
+            "tracking": self._tracking,
+            "blocked_state": self._access_blocked_state,
+            "consecutive_failed_windows": self._consecutive_failed_windows,
+            "last_failure_reason": self._last_failure_reason,
+            "held": held,
+        }
+
+        def compute() -> "health.ScreenshotStatus":
+            queue = self._cache.screenshot_queue_summary()
+            last = self._cache.load_app_state(SCREENSHOT_LAST_UPLOAD_KEY)
+            at = last.get("at") if isinstance(last, dict) else None
+            return health.derive_status(**inputs, queue=queue, last_upload_at=at)
+
+        def failed(exc: BaseException) -> None:
+            self.log.warning("screenshot status refresh failed: %s", exc)
+            self._rerun_status_if_dirty()
+
+        def applied(status: "health.ScreenshotStatus") -> None:
+            self._apply_status(status)
+            self._rerun_status_if_dirty()
+
+        handle = tasks.submit(
+            compute,
+            on_success=applied,
+            on_error=failed,
+            key="screenshot-status",
+            guard_generation=False,
+        )
+        if handle is None:
+            # A refresh is already running and may have read the queue before
+            # whatever prompted this one. Run again when it lands, or the line
+            # can stay behind the truth until something else happens to move it.
+            self._status_dirty = True
+
+    def refresh_status(self) -> None:
+        """Recompute the status now. Called when an upload has been confirmed."""
+        self._refresh_status()
+
+    def _rerun_status_if_dirty(self) -> None:
+        if self._status_dirty:
+            self._status_dirty = False
+            self._refresh_status()
+
+    def _apply_status(self, status: "health.ScreenshotStatus") -> None:
+        previous = self._status
+        if status.same_as(previous):
+            self._status = status
+            return
+        self._status = status
+        self.log.info(
+            "SCREENSHOT_STATUS state=%s severity=%s headline=%r pending=%d",
+            status.state, status.severity, status.headline, status.pending,
+        )
+        self.status_changed.emit(status.as_dict())
+        # One notice on entering a failed state, never one per poll. Blocked is
+        # announced by its own, more specific, notification.
+        if status.state == health.FAILED and (previous is None or previous.state != health.FAILED):
+            notifications = getattr(self.runtime, "notifications", None)
+            if notifications is not None:
+                notifications.notify(
+                    status.detail or status.headline, NotificationLevel.WARNING,
+                    title=status.headline, key="screenshot-failed",
+                )
 
     # ── Screen access (macOS Screen Recording) ────────────────────────────────
 
@@ -734,7 +1385,7 @@ class ScreenshotService(BaseService):
         retry_time = time.time() + seconds
         if not self._planned_times or self._planned_times[0] > retry_time:
             self._planned_times.insert(0, retry_time)
-        self._arm()
+        self._arm_safely()
 
     def _capture_available(self) -> bool:
         """Whether this machine can capture and process a screenshot at all."""
@@ -753,7 +1404,9 @@ class ScreenshotService(BaseService):
 
     # ── Capture ───────────────────────────────────────────────────────────────
 
-    def _capture_now(self, index: int, generation: int) -> Optional[Dict[str, Any]]:
+    def _capture_now(
+        self, index: int, generation: int, owner_user_id: Any = _LIVE_OWNER
+    ) -> Optional[Dict[str, Any]]:
         """Capture, process, persist and queue one screenshot.
 
         Runs on a pool thread. It touches no widgets and no Qt objects — the
@@ -765,7 +1418,31 @@ class ScreenshotService(BaseService):
         discarding would mean the user's screen was photographed at a moment
         they were not tracking, which is the thing this rule exists to prevent
         — deleting the file afterwards does not undo that.
+
+        Returns None only when authorisation was withdrawn (nothing was
+        expected). Every other outcome is a dict the GUI thread acts on:
+        a queued capture, `{"blocked"}`, `{"excluded"}` or `{"failed"}` --
+        never a bare None, which is what used to make a failed capture
+        indistinguishable from one that was never due.
         """
+        with self._auth_lock:
+            self._running_captures += 1
+        try:
+            return self._capture_now_inner(index, generation, owner_user_id)
+        except Exception as exc:  # noqa: BLE001
+            self.log.exception("SCREENSHOT_CAPTURE_ERROR window=%s", index)
+            return {
+                "failed": "capture_exception", "index": index,
+                "detail": f"{type(exc).__name__}: {exc}",
+            }
+        finally:
+            with self._auth_lock:
+                self._running_captures -= 1
+
+    def _capture_now_inner(
+        self, index: int, generation: int, owner_user_id: Any = _LIVE_OWNER
+    ) -> Optional[Dict[str, Any]]:
+        owner = self._owner_user_id if owner_user_id is _LIVE_OWNER else owner_user_id
         allowed, entry_id, client_op, reason = self._check_authorized(generation)
         if not allowed:
             self.log.info("screenshot capture aborted: reason=%s", reason)
@@ -775,6 +1452,10 @@ class ScreenshotService(BaseService):
             # unlike "timer_stopped" or a stale generation, which mean this
             # window's capture is not coming back at all.
             if reason and ("excluded by privacy config" in reason or reason == "privacy_config_pending"):
+                # No window index: a held capture is retried against whatever window
+                # is current when the retry runs, and the pinned shape of this
+                # record (tests/test_screenshot_privacy_config_race.py) is exactly
+                # these two keys.
                 return {"excluded": True, "reason": reason}
             return None
 
@@ -798,19 +1479,36 @@ class ScreenshotService(BaseService):
         # never becomes a second capture, a second queue row or a second
         # upload, whatever the machine has plugged in.
         merged = capture.capture_all_displays()
+        # The instant the screen was read, not the instant it finished encoding:
+        # the backend files the capture into its window by this timestamp, and
+        # the encode can take a second or more on a dense screen. Stamping after
+        # the encode moved a capture taken in the last second of a window into
+        # the next one, leaving the window it was taken for showing activity and
+        # no screenshot.
+        captured_at = datetime.now(timezone.utc)
         if merged is None:
-            return None  # already logged; the window's budget is deliberately not spent
+            # Already logged. The window's budget is deliberately not spent, and
+            # the caller retries inside the window.
+            return {
+                "failed": "screen_unreadable", "index": index,
+                "detail": "no display could be read",
+            }
         mac_diagnostics.log_capture(merged)  # logging only; no-op off macOS
 
         processed = image_processor.process_merged(merged)
         if processed is None or not processed.data:
-            return None
+            return {
+                "failed": "encode_failed", "index": index,
+                "detail": "the captured frame could not be encoded",
+            }
 
         client_screenshot_id = str(uuid.uuid4())
-        captured_at = datetime.now(timezone.utc)
         path = store.write_screenshot(client_screenshot_id, processed.data, captured_at)
         if path is None:
-            return None
+            return {
+                "failed": "store_failed", "index": index,
+                "detail": "the image could not be written to the local cache",
+            }
 
         window_start = _iso(scheduler.window_bounds(index, self._window_seconds())[0])
 
@@ -840,11 +1538,15 @@ class ScreenshotService(BaseService):
                 monitor_number=merged.monitor_number,
                 display_count=processed.display_count,
                 client_op=client_op,
+                owner_user_id=owner,
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             self.log.exception("could not queue screenshot %s", client_screenshot_id)
             store.delete_screenshot(str(path))
-            return None
+            return {
+                "failed": "queue_failed", "index": index,
+                "detail": f"{type(exc).__name__}: {exc}",
+            }
 
         self._record_capture(index)
         self.log.info(
@@ -864,6 +1566,7 @@ class ScreenshotService(BaseService):
             "window_start": window_start,
             "file_size_bytes": processed.size_bytes,
             "display_count": processed.display_count,
+            "index": index,
         }
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -952,7 +1655,16 @@ class ScreenshotService(BaseService):
         # Nothing to wind down but the schedule: any capture still running is
         # on the shared pool, which the runtime drains before it stops
         # services.
+        if self._tracking:
+            # An update restart or an OS shutdown never calls `stop_tracker` (the
+            # timer is deliberately left running for recovery), so a window that
+            # is unresolved right now would otherwise be lost with the process.
+            try:
+                self._finalize_current_outcome(direct=True)
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not record the unresolved window at shutdown")
         self._due_timer.stop()
+        self._health_timer.stop()
         self._config_refresh_timer.stop()
         self._tracking = False
         # A capture already on the pool must not take the screen during

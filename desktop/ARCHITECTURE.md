@@ -832,10 +832,34 @@ tick()  ->  first tick: read the persisted schedule, mark ready, wake Wellbeing
   keyed `custom:<id>`, once per IST day, with the same grace window and
   spacing; the daily record is pruned of keys that no longer exist.
 
-**Screenshot capture and URL tracking are likewise not implemented** in the
-client; it only reads screenshots the backend already holds. The mock fallback
-data that previously made these tabs look populated has been removed, so the
-tabs now show honest empty states.
+### Screenshots
+
+`ScreenshotService` ([background_services/screenshot/](background_services/screenshot/))
+captures one screenshot at a random instant inside every epoch-aligned window,
+while -- and only while -- a timer runs. It owns no thread: the schedule is a
+single-shot `QTimer` on the GUI thread and every capture runs on the
+`TaskRunner`. [docs/SCREENSHOT_PERSISTENCE.md](../docs/SCREENSHOT_PERSISTENCE.md)
+is authoritative for everything after the capture.
+
+Two rules about the capture itself, each learned in production:
+
+- **Every expected capture ends in an image, a retry still inside its window,
+  or a recorded outcome.** A failed grab is retried inside the window with
+  backoff; a window that ends unresolved is recorded once
+  (`pending_screenshot_events`, uploaded by `SyncService`), and the web grid
+  shows the reason instead of "No capture".
+- **The schedule cannot silently end.** `_on_due` re-arms in a `finally`, a
+  watchdog restarts a schedule that is not running, a capture that never returns
+  is abandoned after 90 s and retried, and a resume from sleep re-evaluates the
+  schedule at once.
+
+The user is told what is happening through `ScreenshotService.status_changed`
+and `BackgroundApi.screenshot_status()` (a quiet line beside ACTIVITY). It says
+"uploaded" only after the backend has confirmed the Drive file.
+
+URL tracking is documented with the activity pipeline above; the mock fallback
+data that once made the Activity tabs look populated has been removed, so the
+tabs show honest empty states.
 
 ---
 
@@ -1087,3 +1111,85 @@ python tests/soak/run_soak.py --duration 120  # scale + soak
 The boundary check fails the build if feature code touches `QThread`,
 `QThreadPool` or `QRunnable`, imports a service implementation instead of
 `public_api`, or resurrects one of the removed modules.
+
+---
+
+## 16. Layout: what decides the size of things
+
+The dashboard is a PySide6 layout, not CSS, so "responsive" here means *size hints,
+size policies and a handful of width-driven switches*. The rule that keeps it stable:
+**every switch is a pure function of the width (or height) it is given -- never of
+what the widgets happen to contain, never of history.** The same width always draws
+the same screen.
+
+### The shell
+
+```
+DashboardWindow
+├── SidebarWidget          fixed 300px (60px collapsed); never changes with the window
+└── right column
+    ├── TopBar             full form / compact form, chosen by width (below)
+    └── ContentScroll      a QScrollArea -- scrolls only below the content's own floor
+        └── summary cards · task/Activity splitter
+```
+
+`ContentScroll` is why the window can always be made to fit its screen. Qt honours a
+layout's minimum size, so before it existed the dashboard's floor (1136x790) made a
+1366x768 laptop at 125% scaling (about 1092x578 usable) open a window larger than the
+screen, with its bottom edge unreachable. At or above the content's floor the scroll
+area is invisible; below it, a scrollbar appears instead of a clipped window.
+
+### The switches
+
+| What | Rule | Where |
+|---|---|---|
+| Screenshot columns | `screenshot_columns(width)`: as many as fit at >= 220px a card, 1..4, equal stretch; unused columns stretch 0 | `ui/activity_section.py` |
+| Summary cards | four full cards (icon tiles) on one row from `SINGLE_ROW_MINIMUM_WIDTH` (1202px); the same four on one row *without tiles* from `COMPACT_ROW_MINIMUM_WIDTH` (978px, derived from the card floors); 2x2 below that | `ui/stat_cards.py` |
+| Task / Activity split | opens at 60/40 (`TASK_SECTION_SHARE`/`ACTIVITY_SECTION_SHARE`); the task list keeps >= 200px, Activity >= 190px; still draggable | `ui/dashboard_window.py` |
+| Top bar | compact (icon-only Add Task/Request, short date, no Ctrl+K chip) below the full form's minimum width | `ui/topbar.py` |
+| Task name column | the one stretch column; its *applied* width gives way (to 160px) only while the section is narrower than the model needs | `ui/task_table.py` |
+
+The window's width floor is the sidebar plus the top bar's *compact* minimum. Nothing
+else sets it: the content pane scrolls, and the task list reports its own low floor.
+
+### Scrollbars never move a column
+
+Every vertical scrollbar slot that sits beside aligned content is reserved
+(`ScrollBarAlwaysOn`; the bar is a transparent 6px track, so an empty slot is
+invisible), and whatever sits outside the scroll area reserves the same width. The
+task header does this itself (`_sync_header_gutter`: the measured slot, plus the
+rows' 2px border). The Activity panel never scrolls sideways.
+
+### Refresh does not rebuild
+
+`ScreenshotsTabView.render_view` is idempotent and incremental: a card whose
+screenshot is unchanged is the *same widget* after a refresh, a changed one is replaced
+in its own cell, order is whatever the data gives, and a state panel already showing
+is left alone. Loading, empty and loaded all have the same minimum height
+(`SCREENSHOT_STATE_MIN_HEIGHT`).
+
+### How the content area is divided
+
+This is a visual decision, and it is the owner's. It was changed on 2026-10-07 to the
+rules in the table above (one row of cards where the width allows; 60/40), chosen from
+side-by-side renders at three laptop sizes. An earlier content-driven rule and
+font-measured card floors were reverted as ugly, so any further change to how the area
+is divided should be shown as a screenshot first.
+
+### Apps and URLs rows
+
+`UsageActivityRow`'s title and subtitle are `ElidedLabel`s. All three Activity tabs
+share one container (the scroll area's content), so one row with a long name used to set
+the minimum width of the whole panel -- wider than its viewport on a laptop, clipped on
+the right, whichever tab was showing. Now no name or URL, however long, changes the
+panel's floor.
+
+### Verifying a layout
+
+`tests/test_layout_stability.py` (the grid) and `tests/test_layout_shell.py` (the shell,
+top bar, task list) run the real widgets at the usable sizes of real screens and assert
+on geometry. They assert *structure*, not pixel counts: the test machine's fonts are not
+the user's. To look at the real thing, run a throwaway test with
+`QT_QPA_PLATFORM=windows` (real fonts, real DPI; add `QT_SCALE_FACTOR=1.25` to see a
+scaled display) and `widget.grab().save(...)`; offscreen needs `QT_QPA_FONTDIR` or it
+draws boxes and every text width is wrong.

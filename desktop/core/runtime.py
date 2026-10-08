@@ -275,6 +275,8 @@ class ApplicationRuntime(QObject):
         # whether it can drain. (Queued: the emitter is on the recovery
         # thread, the slots belong here.)
         self.recovery.system_resumed.connect(self._on_system_resumed)
+        # The status line says "uploaded" when the uploader confirms one.
+        self.sync.screenshot_uploaded.connect(self.screenshot.refresh_status)
 
         log.info("runtime constructed in %.0fms", (time.monotonic() - self._started_at) * 1000)
 
@@ -403,18 +405,27 @@ class ApplicationRuntime(QObject):
             self.cache.claim_cache_for(user_id)
         except Exception:  # noqa: BLE001 — a cache check must not block signing in
             log.exception("could not verify which user the local cache belongs to")
+        self.discard_foreign_captures(user_id)
         self.sync.resume_after_auth()
         # The check holds while signed out; a login is the moment it can work.
         self.updates.check_now()
         self.maintenance.check_now()
         self.notification_schedule.check_now()
 
-    def on_logout(self) -> None:
+    def on_logout(self, involuntary: bool = False) -> None:
         """
         Tear down session-scoped state.
 
         Raising the queue floor is what prevents user A's queued operations
         from later executing under user B's token.
+
+        :param involuntary: the session ended without the user asking -- an
+            expired token, an administrator excluding the account. The person
+            will usually sign straight back in, and their queued screenshots
+            are captured work that still has to reach Drive, so unlike a
+            deliberate sign-out this keeps them (and the capture events behind
+            them). Each is stamped with its owner; whoever signs in next has
+            anyone else's discarded (`discard_foreign_captures`).
         """
         generation = bump_session_generation()
         self.queue_floor_generation = generation
@@ -447,7 +458,13 @@ class ApplicationRuntime(QObject):
             # (a time entry is only writable by the user it belongs to), so
             # leaving them queued would only park images of one user's screen
             # on disk through another user's session.
-            self._discard_queued_screenshots()
+            if involuntary:
+                log.info(
+                    "session ended involuntarily: keeping %d queued screenshot(s) for "
+                    "the next sign-in", sum(self.cache.count_screenshots_by_status().values()),
+                )
+            else:
+                self._discard_queued_screenshots()
             self.cache.clear_app_state()
             # The read-through caches the dashboard paints from before the
             # network answers. They are not user-scoped, so leaving them
@@ -456,6 +473,27 @@ class ApplicationRuntime(QObject):
             self.cache.clear_user_scoped_cache()
         except Exception:  # noqa: BLE001
             log.exception("could not fully clear session-scoped state")
+
+    def discard_foreign_captures(self, user_id: Optional[int]) -> None:
+        """Drop queued screenshots (and their events) that another user took.
+
+        Called when someone signs in. An involuntary sign-out keeps the queue,
+        so this is what stops one person's screen images being left on disk
+        under another person's session -- while leaving the same person's
+        captures alone.
+        """
+        from background_services.screenshot import store
+
+        try:
+            paths = self.cache.discard_screenshots_not_owned_by(user_id)
+            self.cache.discard_screenshot_events_not_owned_by(user_id)
+        except Exception:  # noqa: BLE001
+            log.exception("could not discard another user's queued screenshots")
+            return
+        for path in paths:
+            store.delete_screenshot(path)
+        if paths:
+            log.info("discarded %d queued screenshot(s) belonging to another user", len(paths))
 
     def _discard_queued_screenshots(self) -> None:
         """Drop the screenshot queue and the files it references."""
@@ -495,6 +533,9 @@ class ApplicationRuntime(QObject):
         log.info("resume after %.0fs: probing the backend and waking the sync consumer", gap_seconds)
         self.network.check_now()
         self.sync.wake()
+        # The screenshot schedule was paused with the machine, and a capture
+        # that was running when the lid closed will never finish.
+        self.screenshot.on_system_resumed(gap_seconds)
 
     # ── Health ────────────────────────────────────────────────────────────────
 

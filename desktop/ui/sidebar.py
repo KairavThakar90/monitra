@@ -19,6 +19,7 @@ from core.validation import SEARCH_MAX_LENGTH
 from ui import icons
 from ui.timer_control import TimerControl
 from core.branding import logo_pixmap
+from ui.elided_label import ElidedLabel  # noqa: F401  (re-exported: other modules import it from here)
 from ui.styles import (
     SIDEBAR_BG, SIDEBAR_BG_HOVER, SIDEBAR_SELECTED, SIDEBAR_MUTED,
     SIDEBAR_TEXT, SIDEBAR_BORDER, PROJECT_COLORS, SUCCESS, TEXT_MUTED, ERROR,
@@ -343,44 +344,6 @@ class ProjectItem(QPushButton):
 
     def get_project_id(self) -> Optional[int]:
         return self.project_data.get("id")
-
-
-class ElidedLabel(QLabel):
-    """QLabel that elides text with an ellipsis (...) if it exceeds widget width.
-
-    `align` is the horizontal alignment of the (possibly elided) text; the
-    text is always vertically centred. It defaults to left, which is what the
-    account card wants, and the greeting block asks for centre.
-    """
-
-    def __init__(
-        self,
-        text: str = "",
-        parent: Optional[QWidget] = None,
-        align: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignLeft,
-    ) -> None:
-        super().__init__(text, parent)
-        self._full_text = text
-        self._align = align
-        if text:
-            self.setToolTip(text)
-
-    def setText(self, text: str) -> None:
-        self._full_text = text
-        self.setToolTip(text)
-        super().setText(text)
-        self.update()
-
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        metrics = painter.fontMetrics()
-        elided = metrics.elidedText(self._full_text, Qt.TextElideMode.ElideRight, max(1, self.width()))
-
-        painter.setPen(self.palette().color(self.foregroundRole()))
-        painter.setFont(self.font())
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignVCenter | self._align, elided)
-        painter.end()
 
 
 class UserCardFrame(QFrame):

@@ -17,6 +17,104 @@ working. Read it before touching `desktop/background_services/screenshot/`,
 
 Every rule below exists to keep that true.
 
+A second invariant sits in front of it, about the capture that *does not*
+produce an image:
+
+> Every expected capture ends in one of three places: an image in the durable
+> queue, a retry that is still inside its ten-minute window, or an **explicit
+> recorded outcome** for that window. There is no fourth, silent, state.
+
+The first invariant starts at "the desktop reports a capture". This one covers
+everything before it, because a capture that fails, hangs, is refused or is held
+back never gets as far as being reported, and used to leave the window with
+tracked time, measured activity and no screenshot -- and no one, on the
+machine or on the server, able to say why.
+
+## Accounting for every window
+
+`ScreenshotService` keeps a `_WindowOutcome` for the current window. It is
+resolved when the window holds an image or its unresolved outcome has been
+recorded; `_finalize_outcome` runs on **every** exit from a window (it ended,
+the timer stopped, a retry ran out of time), so a window cannot end quietly.
+
+| What happened | What the desktop does | What the backend can show |
+|---|---|---|
+| The grab, the encode, the disk write or the queue write failed | Retries inside the same window with jittered backoff (10 s, 30 s, 60 s, 120 s...), at most `CAPTURE_MAX_ATTEMPTS` (6), never closer than 5 s to the window's end. Records one `failed` event if the window ends without an image. | `capture_state: failed`, with the reason and the attempts spent |
+| The OS refused the screen (macOS Screen Recording) | Retries every 30 s; records one `blocked` event for the window | `blocked` / `screen_recording_blocked` |
+| A privacy rule excluded the application on screen | Retries every 2 s so the capture is taken the moment the user leaves it; records `excluded` if the window ends first | `excluded` / `privacy_rule` |
+| The privacy configuration has not loaded | Holds capture (an exclusion must never be skipped), re-requests the configuration every 30 s, records `blocked` / `privacy_config_unavailable` after two minutes | `blocked` |
+| This machine cannot capture at all | Records `unavailable` each window | `unavailable` |
+| A capture never returned | Abandoned after `CAPTURE_STUCK_SECONDS` (90 s); the window is retried; `failed` / `capture_stuck` if it cannot be | `failed` |
+| The image is captured and queued but uploads keep failing | Keeps retrying (see below). After two minutes outstanding, records one `upload_retrying` event; `upload_parked` if the server refuses it | `pending` (retrying) or `failed` (refused) |
+| The window had an image | Nothing: the image is its own record | `captured` |
+| Nothing reported (an older desktop, the machine was off, the timer stopped before the planned instant) | Nothing | `none` -- plain "No capture" |
+
+Only the last row is "No capture" with no explanation, and it is the only one
+the system genuinely cannot explain.
+
+### The schedule cannot silently end
+
+* `_on_due` re-arms in a `finally`. It used to re-arm as its last statement, so
+  any exception in between left the single-shot timer stopped for the rest of
+  the session while the timer and every other service looked healthy.
+* A watchdog (`HEALTH_INTERVAL_MS`, 30 s, its own `QTimer`, independent of the
+  schedule's) restarts a schedule that is not running while tracking.
+* Captures are serialised by an in-flight token, not by the pool's key
+  de-duplication alone. A task that never returns holds its key for ever; the
+  old behaviour was to drop every later capture with a debug-level message.
+* On resume from sleep (`RecoveryService.system_resumed`) the schedule is
+  re-evaluated immediately and any capture that slept through its window is
+  abandoned and accounted for.
+* The idle service never reaches a tracker: an idle period, Keep, Discard and
+  Resume leave capture running; only the user's own **Stop** ends it.
+
+### Capture events
+
+`pending_screenshot_events` (desktop, `LocalCache.save_screenshot_event`) is
+drained by `SyncService._sync_screenshot_events` -- the only consumer, ahead of
+the images, in batches of 50 -- to `POST /time-entry-screenshots/capture-events`.
+
+* Idempotent on `client_event_id` (the queue row's id). A retry after a lost
+  response records nothing twice; the same id is sent every time.
+* A malformed event is **rejected individually** and reported in the response;
+  the rest of the batch is recorded. A batch that failed whole would be retried
+  whole, for ever.
+* Always about the caller: user and organisation come from the session, never
+  the body. A `time_entry_id` that is not the caller's is dropped, not trusted.
+* No free text crosses the wire. `reason` is a short code (`screen_unreadable`,
+  `http_502`, ...); the desktop's log carries the detail.
+* An event that exhausts its retries (about half an hour of a failing or
+  not-yet-deployed backend) is parked, never discarded, and is offered again when
+  a hold ends and an hour after it was parked (`parked_at`) -- not left for a
+  launch, because a tray application is not relaunched for days.
+* Persisted in `time_entry_screenshot_events` (migration `a7c3e9d15b42`,
+  additive). A window's state is derived at read time from the newest event and
+  **ignored once the window holds an image**, so an upload that finally lands
+  needs no cleanup.
+* The admin grid now includes a member whose only record of the day is such a
+  report. Before, a member whose whole day failed was left off the page, which
+  said "No screenshots were captured on this day" with nothing to explain it.
+
+### What the person is told
+
+`screenshot/health.py` derives one status from facts (never assumed):
+`inactive`, `waiting`, `uploading`, `ok`, `excluded`, `retrying`, `blocked`,
+`failed`. It is shown as a single quiet line beside "ACTIVITY"
+(`ActivitySection.set_screenshot_status`), fed edge-triggered by
+`ScreenshotService.status_changed` and readable through
+`BackgroundApi.screenshot_status()`.
+
+* **"Uploaded" appears only after the backend named the Drive file**
+  (`screenshot_last_upload` in `app_state`, written by the uploader).
+* One upload that needs a second attempt is `uploading`, not a warning. It
+  becomes `retrying` after `RETRYING_AFTER_ATTEMPTS` (3) attempts or
+  `RETRYING_AFTER_SECONDS` (120 s) outstanding.
+* A failed capture window or a refused upload is `failed`, with one
+  notification on entering the state (`key="screenshot-failed"`), never one per
+  poll. Blocked has its own, more specific, notification.
+* The "Screenshot captured at ..." toast is unchanged and still means the
+  picture was *taken*.
+
 ## The path
 
 | Stage | Owner | Durable record |
@@ -52,7 +150,17 @@ Two consequences of the ordering:
 | row deleted | The backend confirmed the Drive file id. The local file is deleted immediately afterwards. | — |
 
 Nothing deletes a queued file except a confirmed upload, an unreadable or
-empty local file, or a logout (`clear_screenshots`).
+empty local file, or a **deliberate** logout (`clear_screenshots`).
+
+A session that ends *involuntarily* -- an expired token, an administrator
+excluding the account (`main._on_session_expired` ->
+`ApplicationRuntime.on_logout(involuntary=True)`) -- keeps the queue and its
+files. That path used to go through the same teardown as a deliberate sign-out
+and delete every queued screenshot, although the person signs straight back in
+and the 401 hold exists precisely so they can be revived
+(`resume_after_auth`). Each row carries `owner_user_id`; at the next sign-in
+`discard_foreign_captures` removes only *another* user's rows and files, so one
+person's screen images are never left on disk under another's session.
 
 `BackgroundApi.screenshot_queue_status()` / `count_unattributed_screenshots()`
 expose these counts to diagnostics. A non-zero unattributed count that does
@@ -112,6 +220,31 @@ SCREENSHOT_UPLOAD_FAILED stage=drive client_id=<uuid> user=281 entry=3503 outcom
 SCREENSHOT_DB_WRITE_FAILED client_id=<uuid> ... drive_file=<id>; the Drive object is kept and the client will retry against it
 ```
 
+Capture accounting (same file):
+
+```
+SCREENSHOT_CAPTURE_ATTEMPT_FAILED window=<n> attempt=2 reason=screen_unreadable detail=...
+SCREENSHOT_CAPTURE_RETRY window=<n> attempt=3 next_in=31s
+SCREENSHOT_WINDOW_UNRESOLVED window=2026-10-06T05:00:00+00:00 state=failed reason=screen_unreadable attempts=6 entry=3503 detail=...
+SCREENSHOT_CAPTURE_STUCK token=7 window=<n> age=94s; abandoning it and capturing again
+SCREENSHOT_SCHEDULER_ERROR errors=1; the schedule is re-armed and will try again
+SCREENSHOT_SCHEDULER_REVIVED the schedule timer was not running while tracking; re-arming it
+SCREENSHOT_RESUME gap=3600s; re-evaluating the schedule and any capture that was running
+SCREENSHOT_EVENTS_SENT count=3 | SCREENSHOT_EVENTS_FAILED count=3 http=502 detail=...
+SCREENSHOT_STATUS state=retrying severity=warning headline='Screenshot upload is retrying' pending=2
+```
+
+Backend (adds):
+
+```
+SCREENSHOT_EVENTS_RECORDED user=281 accepted=2 duplicates=1 rejected=0 states=failed,upload_retrying
+SCREENSHOT_CLOCK_SKEW client_id=<uuid> user=281 entry=3503 captured_at is 10800s in the future ...
+```
+
+**To find out why a window is empty:** the web grid names the state and reason;
+for the machine itself grep its log for `SCREENSHOT_WINDOW_UNRESOLVED` and
+`SCREENSHOT_CAPTURE_ATTEMPT_FAILED` at that time.
+
 No log line ever contains the key, a token, or image bytes.
 
 ## Checking a deployment
@@ -149,6 +282,65 @@ No log line ever contains the key, a token, or image bytes.
    multi-display merging, an offline capture, a Drive outage followed by
    recovery on a different backend process, and a desktop restart with an
    upload outstanding.
+
+## Why a card can show no picture
+
+A card in the grid is a *window*. What it shows is derived, and each reason is
+its own state -- "Image unavailable" used to cover all of them.
+
+| What the card has | Backend | What the person sees |
+|---|---|---|
+| A screenshot row and its Drive object | `/view` 200 | the image |
+| No timer ran in the window, no screenshot, no report | `capture_state: not_expected` | "No capture expected -- no timer was running" |
+| A timer ran, nothing reported | `none` | "No capture" |
+| The desktop reported why | `failed` / `blocked` / `excluded` / `unavailable` | named, with the reason |
+| Captured on the desktop, upload still failing | `pending` | "Upload pending" |
+| A row exists, no Drive id (legacy only: the current upload path never writes one) | `/view` **404** "no stored image" | "Image missing from storage" |
+| A row exists, Drive says the object is gone | `/view` **410** | "Image missing from storage" -- an integrity failure |
+| Drive or the backend failed for a moment (5xx, 429, timeout) | `/view` 502/503 | retried with backoff, then "Couldn't load image" + **Retry** |
+| The viewer is signed out / not permitted | 401 / 403 | "Sign in again" / "Not permitted" |
+| Bytes arrive that the browser cannot draw | 200 | "Image is damaged" |
+
+* A card that has a project, a task and "N capture(s)" has a screenshot row:
+  those labels come from the row's own time entry, which cannot exist without a
+  timer. **A window with no timer never produces a broken-image card**; it has no
+  screenshot row at all, and is `not_expected` should one ever be produced (a
+  window with activity rows but no tracked time).
+* `GoogleDriveService.download_file` raises `GoogleDriveFileNotFound` on a Drive
+  404; every other failure stays a retryable 502. They were the same 502 before.
+  `SCREENSHOT_IMAGE_MISSING id=<n> user=<n> drive_file=<id>` is logged for each
+  410, so the rows can be found by name.
+* The browser caps concurrent image requests at 6 (`AuthedImage`), retries a
+  transient failure up to three times (1 s, 3 s, 8 s) and puts the HTTP status on
+  the tile (`data-http-status`, `title`).
+
+### Finding the rows
+
+```bash
+python scripts/screenshot_window_audit.py --user-id <n> --date YYYY-MM-DD --check-drive
+```
+
+Read-only. `--check-drive` asks Drive for metadata only (never the bytes, never a
+folder created, renamed or deleted) and reports per screenshot `OK`,
+`MISSING-IN-DRIVE`, `TRASHED`, `FORBIDDEN`, `NOT-AN-IMAGE` or `DRIVE-ERROR`, plus
+`ORPHAN` (a row with no Drive id) and `DRIVE-ONLY` (an object in the member's
+Drive day folder with no database row -- stored, never shown). On a database that
+has not had migration `a7c3e9d15b42` it says so and carries on without events.
+
+## Deploying the capture-event table
+
+Migration `a7c3e9d15b42_add_screenshot_capture_events` creates
+`time_entry_screenshot_events`. It is additive (a new table; nothing existing is
+altered) and reversible (`alembic downgrade -1`). **Apply it before deploying
+the backend that reads it** -- the timeline and grid query the table, and a
+backend ahead of its database would fail every screenshot page. A desktop that
+reports events to a backend that does not have the endpoint yet gets a 404; it
+keeps the events and retries (parked after 30 attempts, revived at the next
+launch), so desktops may safely be released first.
+
+```bash
+cd backend && python -m alembic upgrade head      # development database first
+```
 
 ## Production configuration (backend VM)
 

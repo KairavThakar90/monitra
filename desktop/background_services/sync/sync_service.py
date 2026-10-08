@@ -22,7 +22,9 @@ its own retry loop.
 """
 from __future__ import annotations
 
+import re
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -35,6 +37,7 @@ from app.time_entries.service import TimeEntryService
 from background_services.network import NetworkState
 from background_services.screenshot import store
 from background_services.screenshot.config import (
+    LAST_UPLOAD_STATE_KEY as SCREENSHOT_LAST_UPLOAD_KEY,
     PARKED_RETRY_INTERVAL_SECONDS as SCREENSHOT_PARKED_RETRY_INTERVAL,
     UPLOAD_RETRY_MAX_DELAY_SECONDS as SCREENSHOT_RETRY_MAX_DELAY,
     UPLOAD_TIMEOUT_SECONDS as SCREENSHOT_UPLOAD_TIMEOUT,
@@ -80,6 +83,9 @@ class SyncService(LoopService):
     action_completed = Signal(str, str, dict)
     action_failed = Signal(str, str, str, bool)
     auth_required = Signal()
+    #: A screenshot was confirmed stored in Drive. Edge-triggered by the upload
+    #: itself, so the status line can say "uploaded" when it is true.
+    screenshot_uploaded = Signal()
     queue_drained = Signal()
     pending_count_changed = Signal(int)
     synced_at_changed = Signal(object)
@@ -117,6 +123,12 @@ class SyncService(LoopService):
     #: because the consumer has to recognise a full batch as "there is more
     #: behind this" and come back promptly rather than at the idle cadence.
     TELEMETRY_BATCH = TELEMETRY_FETCH_LIMIT
+    #: Capture events are small and rare; one request carries up to this many.
+    SCREENSHOT_EVENT_BATCH = 50
+    #: A queued screenshot that has been waiting this long is reported to the
+    #: backend as "retrying". Shorter would report every ordinary retry; the
+    #: desktop's own status uses the same threshold (`health.RETRYING_AFTER_*`).
+    UPLOAD_REPORT_AFTER_SECONDS = 120.0
 
     #: Priorities — lower runs first.
     PRIORITY = {
@@ -281,6 +293,10 @@ class SyncService(LoopService):
                         "SCREENSHOT_REVIVED count=%d reason=hold_ended brought_forward=%d",
                         revived, ready,
                     )
+            try:
+                self._cache.revive_parked_screenshot_events()
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not revive parked screenshot events")
 
         # Walk past rows that only defer (their prerequisite has not landed)
         # to the first one that can be attempted. See MAX_DEFERRALS_PER_TICK
@@ -309,6 +325,10 @@ class SyncService(LoopService):
             backlog |= self._sync_activity()
             backlog |= self._sync_unwanted_activity()
             backlog |= self._sync_adjustments()
+            # Before the images: when the backend or Drive is failing, what a
+            # person looking at the grid needs is the reason, and the reason is
+            # small enough to get through when an image is not.
+            backlog |= self._sync_screenshot_events()
             self._sync_screenshots()
             self.heartbeat()
             return self.BUSY_INTERVAL_MS if backlog else self.IDLE_INTERVAL_MS
@@ -897,6 +917,118 @@ class SyncService(LoopService):
                 self._mark_synced()
         return len(pending) >= self.TELEMETRY_BATCH
 
+    def _sync_screenshot_events(self) -> bool:
+        """
+        Tell the backend about captures that have not (yet) produced an image.
+
+        One batched request. The queue row's id is the idempotency key, so a
+        retry after a lost response records nothing twice. This is the only
+        way the web grid can say *why* a window has no screenshot -- the
+        capture failed, the OS refused it, a rule held it back, or the image is
+        queued here failing to upload -- instead of a bare "No capture".
+
+        :return: True if the pass read a full batch, i.e. more may be waiting.
+        """
+        upload = getattr(self._time_entry_service, "record_screenshot_events", None)
+        if upload is None:
+            return False
+        try:
+            pending = self._cache.get_pending_screenshot_events(
+                limit=self.SCREENSHOT_EVENT_BATCH
+            )
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not read pending screenshot events")
+            return False
+        if not pending:
+            # Nothing due. An event parked after a long outage is offered again
+            # once an hour, as parked screenshots are -- not left for a launch.
+            try:
+                if self._cache.revive_parked_screenshot_events(
+                    older_than_seconds=SCREENSHOT_PARKED_RETRY_INTERVAL
+                ):
+                    self.wake()
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not revive parked screenshot events")
+            return False
+        ids = [event["id"] for event in pending]
+        payload = [
+            {
+                "client_event_id": event["id"],
+                "state": event["event_state"],
+                "reason": event["reason"],
+                "attempts": event["attempts"],
+                "window_start": event["window_start"],
+                "occurred_at": event["occurred_at"],
+                "time_entry_id": event["time_entry_id"],
+                "client_screenshot_id": event["client_screenshot_id"],
+            }
+            for event in pending
+        ]
+        try:
+            upload(payload)
+        except ApiError as exc:
+            self.log.warning(
+                "SCREENSHOT_EVENTS_FAILED count=%d http=%s detail=%s",
+                len(ids), getattr(exc, "status_code", None), exc,
+            )
+            self._cache.fail_screenshot_events(ids)
+            return False
+        except Exception:  # noqa: BLE001
+            self.log.exception("SCREENSHOT_EVENTS_FAILED count=%d unexpected error", len(ids))
+            self._cache.fail_screenshot_events(ids)
+            return False
+        self._cache.complete_screenshot_events(ids)
+        self._mark_synced()
+        self.log.info("SCREENSHOT_EVENTS_SENT count=%d", len(ids))
+        return len(pending) >= self.SCREENSHOT_EVENT_BATCH
+
+    def _report_upload_state(
+        self, record: Dict[str, Any], state: str, reason: str, detail: str, attempt: int
+    ) -> None:
+        """
+        Tell the backend that this capture is stuck, once per transition.
+
+        Edge-triggered on the row's `reported_state`: the first time an upload
+        has been failing long enough to matter, and again if it moves from
+        retrying to refused -- never on every attempt. Nothing is reported for a
+        capture that uploads after a retry or two, which is every ordinary
+        network blip; the screenshot itself is the record of those.
+        """
+        if record.get("reported_state") == state:
+            return
+        if record.get("owner_user_id") is None:
+            # Queued by a build that did not record whose screen it is. An event
+            # about it would be filed against whoever is signed in now, which
+            # may not be the person it is about -- a phantom failed window on
+            # someone else's grid. The upload itself still retries; only the
+            # report is withheld.
+            return
+        created = record.get("created_at")
+        if (
+            state == "upload_retrying"
+            and created is not None
+            and time.time() - float(created) < self.UPLOAD_REPORT_AFTER_SECONDS
+        ):
+            return
+        try:
+            self._cache.save_screenshot_event(
+                str(uuid.uuid4()), state, record["window_start"],
+                datetime.now(timezone.utc).isoformat(),
+                reason=reason, detail=detail, attempts=attempt,
+                time_entry_id=record.get("time_entry_id"),
+                client_screenshot_id=record.get("client_screenshot_id"),
+                owner_user_id=record.get("owner_user_id"),
+            )
+            self._cache.set_screenshot_reported_state(record["id"], state)
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not queue the %s event for screenshot %s", state, record["id"])
+
+    @staticmethod
+    def _upload_reason_code(reason: str) -> str:
+        """`HTTP 502` -> `http_502`; `network` -> `network`; a stable, short code."""
+        code = re.sub(r"[^a-z0-9]+", "_", (reason or "unknown").lower()).strip("_")
+        return code[:60] or "unknown"
+
     def _sync_screenshots(self) -> None:
         """
         Upload queued screenshots, one file per request.
@@ -1050,6 +1182,9 @@ class SyncService(LoopService):
                 # launch, when a hold ends, and once an hour, which is when
                 # the server may have caught up.
                 self._cache.park_screenshot(record_id, f"HTTP {status}")
+                self._report_upload_state(
+                    record, "upload_parked", f"http_{status}", str(exc), attempt
+                )
                 self.log.warning(
                     "SCREENSHOT_UPLOAD_REFUSED id=%s entry=%s attempt=%d http=%s "
                     "action=parked_with_file next_retry_in=%ds",
@@ -1057,12 +1192,16 @@ class SyncService(LoopService):
                     SCREENSHOT_PARKED_RETRY_INTERVAL,
                 )
                 return
-            self._retry_screenshot_later(record_id, entry_id, attempt, f"HTTP {status}" if status else "network", str(exc))
+            self._retry_screenshot_later(
+                record_id, entry_id, attempt,
+                f"HTTP {status}" if status else "network", str(exc), record,
+            )
             return
         except Exception as exc:  # noqa: BLE001
             self.log.exception("screenshot %s upload failed unexpectedly", record_id)
             self._retry_screenshot_later(
-                record_id, entry_id, attempt, "unexpected", f"{type(exc).__name__}: {exc}"
+                record_id, entry_id, attempt, "unexpected",
+                f"{type(exc).__name__}: {exc}", record,
             )
             return
 
@@ -1072,7 +1211,7 @@ class SyncService(LoopService):
             # the row is retried; see `_confirmed_drive_file_id`.
             self._retry_screenshot_later(
                 record_id, entry_id, attempt, "unconfirmed",
-                "the backend answered without a Drive file id",
+                "the backend answered without a Drive file id", record,
             )
             return
 
@@ -1081,6 +1220,16 @@ class SyncService(LoopService):
         if stored_path:
             store.delete_screenshot(stored_path)
         self._mark_synced()
+        self.screenshot_uploaded.emit()
+        # What the person sees as "uploaded": the last instant the backend
+        # *confirmed* a capture in Drive, never the instant one was taken.
+        try:
+            self._cache.save_app_state(SCREENSHOT_LAST_UPLOAD_KEY, {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "captured_at": record.get("captured_at"),
+            })
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not record the last confirmed screenshot upload")
         stored = response.get("screenshot") or {}
         self.log.info(
             "SCREENSHOT_UPLOADED id=%s entry=%s attempt=%d backend_id=%s drive_file=%s "
@@ -1091,12 +1240,17 @@ class SyncService(LoopService):
         )
 
     def _retry_screenshot_later(
-        self, record_id: str, entry_id: Any, attempt: int, reason: str, detail: str
+        self, record_id: str, entry_id: Any, attempt: int, reason: str, detail: str,
+        record: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Schedule a transient failure's next attempt and say when it is."""
         self._cache.fail_screenshot(
             record_id, detail, max_delay_seconds=SCREENSHOT_RETRY_MAX_DELAY
         )
+        if record is not None:
+            self._report_upload_state(
+                record, "upload_retrying", self._upload_reason_code(reason), detail, attempt
+            )
         next_at = self._cache.next_screenshot_retry_at(record_id)
         self.log.warning(
             "SCREENSHOT_UPLOAD_FAILED id=%s entry=%s attempt=%d reason=%s "

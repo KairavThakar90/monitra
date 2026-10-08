@@ -1077,7 +1077,9 @@ class TestTimerIntegration:
         svc._planned_times = [self.NOW]
         svc._on_due()
 
-        assert submitted == ["screenshot-capture"]
+        # Its own key per capture: `_inflight` serialises captures, and the pool's
+        # de-duplication by key must never decide whether one runs.
+        assert len(submitted) == 1 and submitted[0].startswith("screenshot-capture:")
         assert grabs["count"] == 0, "no capture ran outside the pool submission"
 
 

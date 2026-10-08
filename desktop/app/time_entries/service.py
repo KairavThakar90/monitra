@@ -1,6 +1,6 @@
 import json
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 from app.api.client import ApiClient
 from app.api.exceptions import ApiError, ApiHttpError, ApiConnectionError
 from core.validation.rules import IDEMPOTENCY_KEY_PATTERN
@@ -428,6 +428,33 @@ class TimeEntryService:
             raise ApiError("Failed to upload screenshot: Network connection error")
         except Exception as e:
             raise ApiError(f"Failed to upload screenshot: {str(e)}")
+
+    def record_screenshot_events(self, events: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Tell the backend about captures that did not produce an image.
+
+        One request for a batch. Each event carries `client_event_id`, the
+        idempotency key, so a retry after a lost response records nothing twice.
+        The user and organisation are derived from the session, never sent.
+
+        :raises ApiError: on any failure, so the caller's queue can retry.
+        """
+        try:
+            response = self.api_client.post(
+                "/time-entry-screenshots/capture-events", json_data={"events": events}
+            )
+            return response.json()
+        except ApiHttpError as e:
+            if e.status_code == 401:
+                raise ApiError("Session expired. Please log in again.", status_code=401)
+            raise ApiError(
+                f"Failed to record screenshot events: HTTP {e.status_code}",
+                status_code=e.status_code,
+            )
+        except ApiConnectionError:
+            raise ApiError("Failed to record screenshot events: Network connection error")
+        except Exception as e:
+            raise ApiError(f"Failed to record screenshot events: {str(e)}")
 
     def record_unwanted_activity(self, time_entry_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
