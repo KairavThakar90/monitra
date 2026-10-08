@@ -15,7 +15,6 @@ with the backend afterwards, so the UI is immediate without the widget having
 to guess at, or duplicate, the authoritative state.
 """
 import math
-import re
 import uuid
 from datetime import date, datetime, timezone
 from typing import Callable, Optional, List, Dict, Any, Tuple
@@ -45,7 +44,6 @@ from core.validation import (
 from ui import icons
 from ui.elided_label import ElidedLabel
 from ui.dropdown import PickerComboBox, PickerDateEdit
-from ui.tick_checkbox import TickCheckBox
 from ui.styles import (
     PRIMARY, PRIMARY_HOVER, PRIMARY_LIGHT, SUCCESS_BG,
     ERROR, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED,
@@ -56,6 +54,9 @@ from ui.styles import (
     TIMER_BUTTON_STOP, TIMER_BUTTON_STOP_HOVER,
 )
 from core.date_mode import as_calendar_day, is_live_date
+from core.task_marker import (
+    NON_BILLABLE_SUFFIX, split_non_billable, with_non_billable_suffix,
+)
 from core.logging_setup import get_logger
 from core.time_format import format_hms, ist_today
 
@@ -66,6 +67,13 @@ from core.time_format import format_hms, ist_today
 #: shows the backend's own sentence instead.
 TASK_CREATION_BLOCKED_MESSAGE = (
     "You are not allowed to add tasks yet. Once an administrator allows you, you can add tasks."
+)
+
+
+#: What the user is told if Add Non Billable Task is invoked without the switch
+#: (the button is hidden then, so this is the shortcut / stale-window case).
+NONBILLABLE_CREATION_BLOCKED_MESSAGE = (
+    "You are not allowed to add non billable tasks. Ask an administrator to allow it."
 )
 
 
@@ -231,49 +239,8 @@ class ColumnResizeHandle(QFrame):
 
 # ─── Dialogs ─────────────────────────────────────────────────────────────────
 
-#: Appended to a task's name when "Non billable" is ticked in Add Task. The
-#: marker lives in the name on purpose: that is the one field every surface
-#: that lists a task (this app, the dashboard, reports, WFPM) already shows, so
-#: nothing else has to learn about it. Written "Non billable" -- two words, no
-#: hyphen -- as the product asked.
-NON_BILLABLE_SUFFIX = " - Non billable"
-
-#: Any spelling of the marker at the end of a name. Wider than what is written
-#: today so a task named with an earlier spelling (" - Non-billable") is still
-#: recognised as marked, and is kept exactly as it was created.
-_NON_BILLABLE_ENDING = re.compile(r"\s-\s*non[-\s]?billable\s*$", re.IGNORECASE)
-
-
-def split_non_billable(name: str):
-    """`(base, marker)` for a task name; `marker` is None when it has none.
-
-    `marker` is the text actually found, with its leading space and dash
-    (`" - Non billable"`), so a caller that must keep a task's marker as it
-    was created can put back exactly that.
-    """
-    name = (name or "").rstrip()
-    found = _NON_BILLABLE_ENDING.search(name)
-    if not found:
-        return name.strip(), None
-    return name[:found.start()].strip(), name[found.start():].rstrip()
-
-
-def with_non_billable_suffix(name: str) -> str:
-    """`name` with ` - Non billable` on the end, exactly once.
-
-    A name that already ends in the marker -- typed by the person, in any
-    spelling -- is brought to the one canonical form rather than given a
-    second, so ticking the box on ``Fix login - Non-billable`` gives
-    ``Fix login - Non billable``.
-    """
-    base, marker = split_non_billable(name)
-    if not base:
-        return ""
-    return f"{base}{NON_BILLABLE_SUFFIX}"
-
-
 class AddTaskDialog(QDialog):
-    """Add Task: a name, an optional description and an optional Non billable tick.
+    """Add Task: a name and an optional description, nothing else.
 
     There is deliberately no assignee field. An employee's task is assigned
     to them by the caller, and a task created by anyone else starts
@@ -281,16 +248,21 @@ class AddTaskDialog(QDialog):
     owns assignment. Putting the choice here as well was a second way to do
     one job.
 
-    Non billable is not a field the backend stores: ticking it puts
-    ``NON_BILLABLE_SUFFIX`` on the end of the name the dialog hands back, and
-    nothing else about the task changes.
+    `non_billable=True` is the top bar's Add Non Billable Task button: the same
+    dialog, with the "Non billable" tag shown beside the name and
+    ``NON_BILLABLE_SUFFIX`` put on the end of the name it hands back. There is
+    no tick to choose it -- which button was pressed decides -- and nothing
+    else about the task changes.
     """
 
-    def __init__(self, project_name: str, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self, project_name: str, parent: Optional[QWidget] = None, *, non_billable: bool = False,
+    ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Add Task")
+        self.non_billable = non_billable
+        self.setWindowTitle("Add Non Billable Task" if non_billable else "Add Task")
         self.setModal(True)
-        self.setFixedSize(400, 296)
+        self.setFixedSize(400, 260)
         self._build_ui(project_name)
         self._apply_style()
 
@@ -318,7 +290,24 @@ class AddTaskDialog(QDialog):
         # accepting text rather than failing on submit.
         self.name_input.setMaxLength(NAME_MAX_LENGTH)
         self.name_input.setFixedHeight(34)
-        form.addRow("Task Name *", self.name_input)
+        if self.non_billable:
+            # The marker is fixed, not typed: shown beside the name exactly as
+            # Edit Task shows it, so what will be saved is never a surprise.
+            name_row = QHBoxLayout()
+            name_row.setContentsMargins(0, 0, 0, 0)
+            name_row.setSpacing(8)
+            name_row.addWidget(self.name_input, 1)
+            self.marker_label = QLabel(NON_BILLABLE_SUFFIX.lstrip(" -"), self)
+            self.marker_label.setObjectName("NonBillableTag")
+            self.marker_label.setToolTip(
+                "Tasks added with this button are Non billable. The marker is added to the name."
+            )
+            self.marker_label.setFixedHeight(34)
+            name_row.addWidget(self.marker_label)
+            form.addRow("Task Name *", name_row)
+        else:
+            self.marker_label = None
+            form.addRow("Task Name *", self.name_input)
 
         self.desc_input = QTextEdit(self)
         # Plain text only. Pasting from a web page or a dark-themed editor
@@ -328,18 +317,6 @@ class AddTaskDialog(QDialog):
         self.desc_input.setPlaceholderText("Enter task description (optional)")
         self.desc_input.setFixedHeight(68)
         form.addRow("Description", self.desc_input)
-
-        # Optional, and off: leaving it alone changes nothing about the task.
-        # The name box's limit is deliberately not lowered when this is ticked:
-        # QLineEdit.setMaxLength cuts text already typed, which would quietly
-        # edit what the person wrote. `accept()` checks the final length and
-        # says so instead.
-        self.non_billable_check = TickCheckBox("Non billable", self)
-        self.non_billable_check.setChecked(False)
-        self.non_billable_check.setToolTip(
-            f'Adds "{NON_BILLABLE_SUFFIX.strip(" -")}" to the end of the task name.'
-        )
-        form.addRow("", self.non_billable_check)
 
         layout.addLayout(form)
         layout.addStretch()
@@ -388,31 +365,14 @@ class AddTaskDialog(QDialog):
             QLineEdit:focus, QTextEdit:focus {{
                 border-color: {PRIMARY};
             }}
-            QCheckBox {{
-                font-size: 13px;
-                color: #334155;
-                spacing: 8px;
-                background: transparent;
-            }}
-            QCheckBox:focus {{
-                color: #0F172A;
-            }}
-            QCheckBox::indicator {{
-                width: 16px;
-                height: 16px;
-                border: 1.5px solid #94A3B8;
-                border-radius: 4px;
-                background-color: #FFFFFF;
-            }}
-            QCheckBox::indicator:hover {{
-                border-color: {PRIMARY};
-            }}
-            QCheckBox::indicator:focus {{
-                border-color: {PRIMARY};
-            }}
-            QCheckBox::indicator:checked {{
-                border-color: {PRIMARY};
-                background-color: {PRIMARY};
+            QLabel#NonBillableTag {{
+                background-color: #F0FDFA;
+                border: 1px solid #99F6E4;
+                border-radius: 6px;
+                padding: 0 10px;
+                font-size: 12px;
+                font-weight: 600;
+                color: #0F766E;
             }}
             QPushButton {{
                 border-radius: 6px;
@@ -449,15 +409,15 @@ class AddTaskDialog(QDialog):
             QMessageBox.warning(self, "Validation Error", name.error)
             self.name_input.setFocus()
             return
-        # What will actually be stored. With Non billable ticked this is the
-        # name plus the suffix, and it has to fit the same limit as any name.
+        # What will actually be stored. For Add Non Billable Task this is the name
+        # plus the marker, and it has to fit the same limit as any name.
         stored = validate_name(
             self._final_name(name.value), field_label="Task name"
         )
         if not stored.ok:
             QMessageBox.warning(
                 self, "Validation Error",
-                f"{stored.error} Non billable adds {len(NON_BILLABLE_SUFFIX)} "
+                f"{stored.error} The Non billable marker adds {len(NON_BILLABLE_SUFFIX)} "
                 f"characters to the name; please shorten it.",
             )
             self.name_input.setFocus()
@@ -472,7 +432,7 @@ class AddTaskDialog(QDialog):
         super().accept()
 
     def _final_name(self, name: str) -> str:
-        return with_non_billable_suffix(name) if self.non_billable_check.isChecked() else name
+        return with_non_billable_suffix(name) if self.non_billable else name
 
     def get_data(self) -> dict:
         # The normalised values, not the raw widget text: that is what carries
@@ -602,13 +562,13 @@ class EditTaskDialog(QDialog):
                 border-color: {PRIMARY};
             }}
             QLabel#NonBillableTag {{
-                background-color: #F1F5F9;
-                border: 1px solid #CBD5E1;
+                background-color: #F0FDFA;
+                border: 1px solid #99F6E4;
                 border-radius: 6px;
                 padding: 0 8px;
                 font-size: 12px;
                 font-weight: 600;
-                color: #475569;
+                color: #0F766E;
             }}
             QPushButton {{
                 border-radius: 6px;
@@ -1776,6 +1736,15 @@ class TaskSection(QWidget):
     #: Members directory's Allow / Not allow switch for this user changes;
     #: the top bar shows it as the button's tooltip.
     task_creation_blocked = Signal(str)
+    #: Whether this member may use the Add Non Billable Task button at all (the
+    #: Members directory's switch, `can_add_nonbillable_tasks` on the profile).
+    #: The button is not shown without it. Emitted on transition only.
+    nonbillable_task_visible = Signal(bool)
+    #: Whether that button is usable right now: allowed, and a project that
+    #: accepts tasks is loaded. The twin of `add_task_available`, which it
+    #: deliberately does not depend on -- a member with Add Task switched off
+    #: may still have this one.
+    nonbillable_task_available = Signal(bool)
     #: The selected task changed: `{"project_id", "task_id", "task_name"}`,
     #: or None when nothing is selected. This is the task the sidebar's
     #: circular Play control starts; selecting starts nothing by itself.
@@ -1829,6 +1798,10 @@ class TaskSection(QWidget):
         #: refuse. Allowed until the profile says otherwise: an older backend
         #: without the field must not lock every user out of Add Task.
         self._task_creation_allowed = True
+        #: Whether the profile grants Add Non Billable Task. Off until it says so:
+        #: unlike Add Task, an absent field (an older backend) means *not*
+        #: allowed, because this is a capability that has to be granted.
+        self._nonbillable_creation_allowed = False
         self._has_loaded_tasks = False
         #: The calendar day the window is showing, and whether that makes this
         #: list read-only. Only today is live: a past day is finished history
@@ -1897,6 +1870,33 @@ class TaskSection(QWidget):
     def task_creation_allowed(self) -> bool:
         return self._task_creation_allowed
 
+    def set_nonbillable_creation_allowed(self, allowed: Any) -> None:
+        """Apply the Members directory's Add Non Billable Task switch for this user.
+
+        Only an explicit True grants it; a profile without the field, from an
+        older backend, leaves the button hidden. Re-published only when the
+        answer actually changes.
+        """
+        value = allowed is True
+        if value == self._nonbillable_creation_allowed:
+            return
+        self._nonbillable_creation_allowed = value
+        log.info("billable-task creation %s for this user", "allowed" if value else "not allowed")
+        self.nonbillable_task_visible.emit(value)
+        if self._project is not None:
+            self.nonbillable_task_available.emit(self._can_add_nonbillable_task_to(self._project))
+
+    @property
+    def nonbillable_creation_allowed(self) -> bool:
+        return self._nonbillable_creation_allowed
+
+    def _can_add_nonbillable_task_to(self, project: Optional[Dict[str, Any]]) -> bool:
+        """The same project rule as Add Task, with this member's own switch."""
+        if not self._nonbillable_creation_allowed or not project:
+            return False
+        status_name = (project.get("status") or {}).get("name")
+        return status_name not in ("Paused", "Completed")
+
     def _can_add_task_to(self, project: Optional[Dict[str, Any]]) -> bool:
         """Whether Add Task applies to `project` right now: the user's own
         switch is on, and the project is neither paused nor completed."""
@@ -1958,6 +1958,14 @@ class TaskSection(QWidget):
         the backend's own sentence still follows."""
         if getattr(exc, "status_code", None) == 403:
             self.set_task_creation_allowed(False)
+
+    def _on_nonbillable_create_refused(self, exc: BaseException) -> None:
+        """A 403 on a Non billable create means the switch was withdrawn since
+        the profile was last read, so hide the button now instead of offering a
+        create the server will keep refusing. Add Task is left as it is: its own
+        switch is a separate fact."""
+        if getattr(exc, "status_code", None) == 403:
+            self.set_nonbillable_creation_allowed(False)
 
     def _client_op_for_create(self, project_id: int, task_name: str) -> str:
         """The idempotency key for creating `task_name` in `project_id`.
@@ -2177,6 +2185,7 @@ class TaskSection(QWidget):
         self._search_text = ""
         
         self.add_task_available.emit(self._can_add_task_to(project))
+        self.nonbillable_task_available.emit(self._can_add_nonbillable_task_to(project))
 
         # _rebuild_rows() sets the title (name + task count) below -- no
         # need to set it here too and have it immediately overwritten.
@@ -2215,6 +2224,7 @@ class TaskSection(QWidget):
         self._status_label.setText("Select a project to see tasks.")
         self._status_label.show()
         self.add_task_available.emit(False)
+        self.nonbillable_task_available.emit(False)
         self._tasks = []
         self._project = None
         self._has_loaded_tasks = False
@@ -2826,13 +2836,26 @@ class TaskSection(QWidget):
         """
         self._on_add_task_clicked()
 
-    def _on_add_task_clicked(self) -> None:
+    def open_add_nonbillable_task_dialog(self) -> None:
+        """Open Add Task for a Non billable task (the top bar's second button)."""
+        self._on_add_task_clicked(non_billable=True)
+
+    def _on_add_task_clicked(self, non_billable: bool = False) -> None:
         if not self._project:
             return
         project_id = self._project.get("id")
         if project_id is None:
             return
-        if not self._task_creation_allowed:
+        if non_billable:
+            if not self._nonbillable_creation_allowed:
+                # The button is hidden without the switch; a shortcut or a stale
+                # window can still land here.
+                self.api.notify(
+                    NONBILLABLE_CREATION_BLOCKED_MESSAGE, NotificationLevel.WARNING,
+                    key="add-nonbillable-task-blocked",
+                )
+                return
+        elif not self._task_creation_allowed:
             # The button is disabled whenever this is false, but a keyboard
             # shortcut or a stale window can still land here; say why rather
             # than open a dialog whose Save the server would refuse.
@@ -2842,7 +2865,7 @@ class TaskSection(QWidget):
             return
 
         proj_name = self._project.get("project_name", "Project")
-        dialog = AddTaskDialog(proj_name, self)
+        dialog = AddTaskDialog(proj_name, self, non_billable=non_billable)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -2871,7 +2894,9 @@ class TaskSection(QWidget):
             kind="created",
             project_id=project_id,
             after_success=lambda: self._pending_create_ops.pop((project_id, task_name), None),
-            after_failure=self._on_create_refused,
+            after_failure=(
+                self._on_nonbillable_create_refused if non_billable else self._on_create_refused
+            ),
         )
 
     # ── Manual time entry ─────────────────────────────────────────────────────

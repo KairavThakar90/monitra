@@ -578,6 +578,13 @@ class DashboardWindow(QWidget):
         self._task_section.add_task_available.connect(self._topbar.set_add_task_enabled)
         self._task_section.task_creation_blocked.connect(self._topbar.set_add_task_blocked_reason)
         self._topbar.add_task_blocked_clicked.connect(self._on_add_task_blocked_clicked)
+        # Add Non Billable Task: the second Add button, shown only to a member the
+        # Members directory allows to use it (the profile's
+        # `can_add_nonbillable_tasks`). TaskSection owns the dialog and the
+        # create; the top bar owns the button.
+        self._topbar.add_nonbillable_task_clicked.connect(self._task_section.open_add_nonbillable_task_dialog)
+        self._task_section.nonbillable_task_visible.connect(self._topbar.set_nonbillable_task_visible)
+        self._task_section.nonbillable_task_available.connect(self._topbar.set_nonbillable_task_enabled)
         self._task_section.setMinimumHeight(TASK_SECTION_MIN_HEIGHT)
         self._content_splitter.addWidget(self._task_section)
 
@@ -1154,6 +1161,9 @@ class DashboardWindow(QWidget):
         self._user_id = user_data.get("id")
         self._task_section.set_user_id(user_data.get("id"))
         self._task_section.set_task_creation_allowed(user_data.get("can_add_tasks", True))
+        # Off unless the profile says True: a capability that has to be granted,
+        # so a profile from an older backend (no such field) shows no button.
+        self._task_section.set_nonbillable_creation_allowed(user_data.get("can_add_nonbillable_tasks"))
 
     def _load_profile(self, on_done: Optional[Callable[[bool], None]] = None) -> bool:
         """Re-read `/auth/me` as part of a refresh round.
@@ -1223,6 +1233,7 @@ class DashboardWindow(QWidget):
         self._user_id = None
         # The next user starts allowed until their own profile says otherwise.
         self._task_section.set_task_creation_allowed(True)
+        self._task_section.set_nonbillable_creation_allowed(False)
         self._today_time_entries = []
         self._today_activity = TodaySnapshot()
         self._pending_active_timer = None

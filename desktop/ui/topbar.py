@@ -61,6 +61,20 @@ SEARCH_MIN_WIDTH = 130
 #: of the placeholder text; the shortcut still works, only the reminder goes.
 SEARCH_HINT_MIN_WIDTH = 200
 
+#: The Add Non Billable Task button's full-bar width floor, and its tooltip. The
+#: label is longer than Add Task's, so it needs the room to read in one line.
+NONBILLABLE_BUTTON_MIN_WIDTH = 196
+NONBILLABLE_BUTTON_TOOLTIP = "Add a Non billable task to the selected project"
+
+#: Teal, so the second Add button is told apart from the indigo Add Task and the
+#: white Request beside it at a glance.
+BILLABLE_BUTTON_BACKGROUND = (
+    "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0D9488, stop:1 #14B8A6)"
+)
+BILLABLE_BUTTON_BACKGROUND_HOVER = (
+    "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0F766E, stop:1 #0D9488)"
+)
+
 
 def _format_date_win(d: date) -> str:
     """Windows-compatible date formatting."""
@@ -93,6 +107,10 @@ class TopBar(QFrame):
     #: it switched off for this user. Carries the reason to show. A disabled
     #: QPushButton emits nothing, so the press is caught here instead.
     add_task_blocked_clicked = Signal(str)
+    #: Add Non Billable Task: the second Add button, shown only to a member the
+    #: Members directory allows to use it. Same arrangement as Add Task --
+    #: button here, dialog and create call in TaskSection.
+    add_nonbillable_task_clicked = Signal()
     #: Live text of the header search field; TaskSection filters on it.
     search_changed = Signal(str)
 
@@ -305,6 +323,24 @@ class TopBar(QFrame):
         self._add_task_blocked_reason = ""
         layout.addWidget(self._add_task_btn)
 
+        # ── Add Non Billable Task ─────────────────────────────────────
+        # Right after Add Task. Hidden unless the member's profile grants it
+        # (see set_nonbillable_task_visible): nobody else sees a button they
+        # could not use. A colour of its own, so it cannot be mistaken for
+        # Add Task beside it, in the full bar or the icon-only compact one.
+        self._add_nonbillable_btn = QPushButton(" Add Non Billable Task", self)
+        self._add_nonbillable_btn.setObjectName("HeaderAddNonBillableTaskBtn")
+        self._add_nonbillable_btn.setIcon(icons.icon("add", "#FFFFFF", 16))
+        self._add_nonbillable_btn.setIconSize(QSize(16, 16))
+        self._add_nonbillable_btn.setFixedHeight(34)
+        self._add_nonbillable_btn.setMinimumWidth(NONBILLABLE_BUTTON_MIN_WIDTH)
+        self._add_nonbillable_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._add_nonbillable_btn.setEnabled(False)
+        self._add_nonbillable_btn.setToolTip(NONBILLABLE_BUTTON_TOOLTIP)
+        self._add_nonbillable_btn.clicked.connect(self.add_nonbillable_task_clicked.emit)
+        self._add_nonbillable_btn.setVisible(False)
+        layout.addWidget(self._add_nonbillable_btn)
+
         # ── Request (manual time entry) ────────────────────────────
         # Formerly the task section's "Log Time" button. It is a global
         # action -- the dialog picks its own project and task -- so it
@@ -413,9 +449,11 @@ class TopBar(QFrame):
                 border: 1px solid {PRIMARY};
                 background: {CARD_BG};
             }}
+            /* The three header actions share a light accent border, each in
+               the tint of its own colour, so they read as one group. */
             QPushButton#HeaderAddTaskBtn {{
                 background: {BUTTON_GRADIENT};
-                border: none;
+                border: 1.5px solid #A5B4FC;
                 border-radius: 10px;
                 color: #FFFFFF;
                 font-size: 12.5px;
@@ -429,6 +467,23 @@ class TopBar(QFrame):
                 background: #C7D2FE;
                 color: #F8FAFC;
             }}
+            QPushButton#HeaderAddNonBillableTaskBtn {{
+                background: {BILLABLE_BUTTON_BACKGROUND};
+                border: 1.5px solid #5EEAD4;
+                border-radius: 10px;
+                color: #FFFFFF;
+                font-size: 12.5px;
+                font-weight: bold;
+                padding: 0 16px;
+            }}
+            QPushButton#HeaderAddNonBillableTaskBtn:hover {{
+                background: {BILLABLE_BUTTON_BACKGROUND_HOVER};
+            }}
+            QPushButton#HeaderAddNonBillableTaskBtn:disabled {{
+                background: #99F6E4;
+                border-color: #CCFBF1;
+                color: #F0FDFA;
+            }}
             /* Excluded by an administrator: looks off, still answers a click. */
             QPushButton#HeaderAddTaskBtn[blocked="true"],
             QPushButton#HeaderAddTaskBtn[blocked="true"]:hover {{
@@ -437,7 +492,7 @@ class TopBar(QFrame):
             }}
             QPushButton#RequestBtn {{
                 background: {CARD_BG};
-                border: 1px solid {BORDER_LIGHT};
+                border: 1.5px solid #A5B4FC;
                 border-radius: 10px;
                 color: {TEXT_PRIMARY};
                 font-size: 12.5px;
@@ -452,6 +507,7 @@ class TopBar(QFrame):
             /* Icon-only: no side padding, or a 34px button has nothing left
                for its 16px glyph. */
             QPushButton#HeaderAddTaskBtn[compact="true"],
+            QPushButton#HeaderAddNonBillableTaskBtn[compact="true"],
             QPushButton#RequestBtn[compact="true"] {{
                 padding: 0;
             }}
@@ -525,6 +581,30 @@ class TopBar(QFrame):
 
     def add_task_blocked_reason(self) -> str:
         return self._add_task_blocked_reason
+
+    # ── Add Non Billable Task ─────────────────────────────────────────────────────
+
+    def set_nonbillable_task_visible(self, visible: bool) -> None:
+        """Show the second Add button, or take it away.
+
+        Whether the member may use it is the Members directory's decision, read
+        from their profile; a member without it never sees the button. The bar's
+        two widths are re-measured afterwards, because a button that is shown
+        changes how narrow the full form can be.
+        """
+        visible = bool(visible)
+        if visible == self._add_nonbillable_btn.isVisibleTo(self):
+            return
+        self._add_nonbillable_btn.setVisible(visible)
+        self.updateGeometry()
+        QTimer.singleShot(0, self._measure_forms)
+
+    def set_nonbillable_task_enabled(self, enabled: bool) -> None:
+        """Usable only once a project that accepts tasks is selected."""
+        self._add_nonbillable_btn.setEnabled(bool(enabled))
+
+    def is_nonbillable_task_visible(self) -> bool:
+        return self._add_nonbillable_btn.isVisibleTo(self)
 
     def search_text(self) -> str:
         return self._search.text()
@@ -608,6 +688,7 @@ class TopBar(QFrame):
         self._compact = compact
         for button, label, full_min in (
             (self._add_task_btn, "Add Task", 116),
+            (self._add_nonbillable_btn, "Add Non Billable Task", NONBILLABLE_BUTTON_MIN_WIDTH),
             (self._request_btn, "Request", 112),
         ):
             button.setAccessibleName(label)

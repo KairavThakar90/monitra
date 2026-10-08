@@ -1,40 +1,41 @@
-"""Add Task / Edit Task: the Non billable marker, and the boxes around it.
+"""Add Non Billable Task, Edit Task, and the boxes around the Non billable marker.
 
-Non billable is a naming convention, not a stored field: ticking it in Add Task
-puts " - Non billable" on the end of the name the dialog hands back. Everything
-that lists a task already shows its name, so nothing else has to learn about it.
+Non billable is a naming convention, not a stored field: a task made with the
+top bar's *Add Non Billable Task* button ends " - Non billable". Everything that
+lists a task already shows its name, so nothing else has to learn about it.
 These tests pin that:
 
-* the marker is added exactly once, only when asked for, in the wording the
-  product chose ("Non billable", no hyphen inside it);
-* Add Task never blocks a task that does not want it, and respects the name limit;
+* plain Add Task is exactly what it always was -- no tick, no marker, no change;
+* the Add Non Billable Task dialog is the same dialog with a fixed "Non billable"
+  tag, and hands back the name with the marker on it exactly once, in the
+  wording the product chose ("Non billable", no hyphen inside it);
 * Edit Task treats a marked task's marker as fixed -- only the rest of the name
   can change, and the marker comes back exactly as the task was created;
-* the tick box draws a box *and* a tick when ticked (it used to lose its frame);
 * the description boxes take plain text only (a rich paste used to bring its
   dark background along);
 * a description starts where the task name starts in the task list.
+
+The button itself (who sees it, when it is usable) is in
+`test_add_billable_task_button.py`.
 """
 from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import QMimeData, Qt
-from PySide6.QtWidgets import QDialog, QFormLayout, QMessageBox
+from PySide6.QtCore import QMimeData
+from PySide6.QtWidgets import QDialog, QMessageBox
 
+from core.task_marker import NON_BILLABLE_SUFFIX, split_non_billable, with_non_billable_suffix
 from core.validation.rules import NAME_MAX_LENGTH
 from ui.task_table import (
-    COLUMN_DEFAULT_WIDTHS, NON_BILLABLE_SUFFIX, AddTaskDialog, EditTaskDialog,
-    ManualTimeEntryDialog, TaskRow, TaskSection, split_non_billable,
-    with_non_billable_suffix,
+    COLUMN_DEFAULT_WIDTHS, AddTaskDialog, EditTaskDialog, ManualTimeEntryDialog,
+    TaskRow, TaskSection,
 )
-from ui.tick_checkbox import TickCheckBox
 
 
-def _dialog(name="Fix the login", description="", checked=False) -> AddTaskDialog:
-    dialog = AddTaskDialog("Apollo")
+def _dialog(name="Fix the login", description="", billable=False) -> AddTaskDialog:
+    dialog = AddTaskDialog("Apollo", non_billable=billable)
     dialog.name_input.setText(name)
     dialog.desc_input.setPlainText(description)
-    dialog.non_billable_check.setChecked(checked)
     return dialog
 
 
@@ -94,140 +95,108 @@ def test_split_returns_the_marker_as_it_was_written():
     assert split_non_billable("") == ("", None)
 
 
-# ── Add Task ─────────────────────────────────────────────────────────────────
+# ── plain Add Task is unchanged ──────────────────────────────────────────────
 
-def test_the_box_is_optional_and_off_by_default(qapp):
+def test_plain_add_task_has_no_tick_box_and_no_marker_tag(qapp):
     dialog = AddTaskDialog("Apollo")
-    assert isinstance(dialog.non_billable_check, TickCheckBox)
-    assert dialog.non_billable_check.text() == "Non billable"
-    assert not dialog.non_billable_check.isChecked()
+    assert dialog.non_billable is False
+    assert dialog.marker_label is None
+    assert not hasattr(dialog, "non_billable_check")
+    assert dialog.windowTitle() == "Add Task"
 
 
-def test_the_box_sits_directly_after_the_description(qapp):
+def test_plain_add_task_is_its_original_size(qapp):
     dialog = AddTaskDialog("Apollo")
-    form = dialog.findChild(QFormLayout)
-    rows = [form.itemAt(i, QFormLayout.ItemRole.FieldRole).widget() for i in range(form.rowCount())]
-    assert rows.index(dialog.non_billable_check) == rows.index(dialog.desc_input) + 1
-    assert rows.index(dialog.non_billable_check) == len(rows) - 1
+    assert (dialog.width(), dialog.height()) == (400, 260)
 
 
-def test_unticked_the_name_is_exactly_what_was_typed(qapp):
-    assert _dialog("  Write the report  ").get_data()["task_name"] == "Write the report"
+def test_plain_add_task_hands_back_exactly_what_was_typed(qapp):
+    data = _dialog("  Write the report  ", "Cover Q3").get_data()
+    assert data == {"task_name": "Write the report", "description": "Cover Q3", "estimated_hours": None}
 
 
-def test_ticked_the_name_carries_the_marker(qapp):
-    assert _dialog("Write the report", checked=True).get_data()["task_name"] == \
+def test_plain_add_task_never_adds_the_marker_even_to_a_name_that_has_one(qapp):
+    assert _dialog("Report - Non billable").get_data()["task_name"] == "Report - Non billable"
+    assert _dialog("Report").get_data()["task_name"] == "Report"
+
+
+def test_plain_add_task_still_refuses_a_blank_name(qapp, monkeypatch):
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a[2]))
+    dialog = _dialog("   ")
+    dialog.accept()
+    assert warned and dialog.result() != QDialog.DialogCode.Accepted
+
+
+# ── Add Non Billable Task ────────────────────────────────────────────────────────
+
+def test_the_billable_dialog_shows_a_fixed_non_billable_tag_beside_the_name(qapp):
+    dialog = AddTaskDialog("Apollo", non_billable=True)
+    assert dialog.windowTitle() == "Add Non Billable Task"
+    assert dialog.marker_label is not None and dialog.marker_label.text() == "Non billable"
+    assert not dialog.name_input.text()                    # the person types only the name
+
+
+def test_the_billable_dialog_has_no_box_to_untick_the_marker(qapp):
+    dialog = AddTaskDialog("Apollo", non_billable=True)
+    assert not hasattr(dialog, "non_billable_check")
+
+
+def test_the_billable_dialog_is_the_same_size_as_add_task(qapp):
+    dialog = AddTaskDialog("Apollo", non_billable=True)
+    assert (dialog.width(), dialog.height()) == (400, 260)
+
+
+def test_the_billable_dialog_adds_the_marker_automatically(qapp):
+    assert _dialog("Write the report", billable=True).get_data()["task_name"] == \
+        "Write the report - Non billable"
+    assert _dialog("  Write the report  ", billable=True).get_data()["task_name"] == \
         "Write the report - Non billable"
 
 
-def test_ticking_changes_nothing_but_the_name(qapp):
+def test_the_billable_dialog_changes_nothing_but_the_name(qapp):
     plain = _dialog("Report", "Cover Q3").get_data()
-    marked = _dialog("Report", "Cover Q3", checked=True).get_data()
+    marked = _dialog("Report", "Cover Q3", billable=True).get_data()
     assert marked["description"] == plain["description"] == "Cover Q3"
     assert marked["estimated_hours"] is plain["estimated_hours"] is None
     assert set(marked) == set(plain)
 
 
-def test_unticking_again_removes_the_marker(qapp):
-    dialog = _dialog("Report", checked=True)
-    dialog.non_billable_check.setChecked(False)
-    assert dialog.get_data()["task_name"] == "Report"
-
-
 def test_a_marker_the_person_typed_is_not_doubled(qapp):
-    assert _dialog("Report - Non billable", checked=True).get_data()["task_name"] == \
-        "Report - Non billable"
+    for typed in ("Report - Non billable", "Report - Non-billable", "Report - non billable"):
+        assert _dialog(typed, billable=True).get_data()["task_name"] == "Report - Non billable", typed
 
 
-def test_saving_with_the_box_ticked_closes_the_dialog(qapp):
-    dialog = _dialog("Report", checked=True)
+def test_saving_closes_the_billable_dialog(qapp):
+    dialog = _dialog("Report", billable=True)
     dialog.accept()
     assert dialog.result() == QDialog.DialogCode.Accepted
 
 
-def test_a_blank_name_is_still_refused_with_the_box_ticked(qapp, monkeypatch):
+def test_a_blank_name_is_refused_and_is_never_just_the_marker(qapp, monkeypatch):
     warned = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a[2]))
-    dialog = _dialog("   ", checked=True)
+    dialog = _dialog("   ", billable=True)
     dialog.accept()
     assert warned and dialog.result() != QDialog.DialogCode.Accepted
-    assert dialog.get_data()["task_name"] == ""      # never just " - Non billable"
-
-
-def test_ticking_never_cuts_text_the_person_already_typed(qapp):
-    dialog = AddTaskDialog("Apollo")
-    dialog.name_input.setText("x" * NAME_MAX_LENGTH)
-    dialog.non_billable_check.setChecked(True)
-    assert dialog.name_input.text() == "x" * NAME_MAX_LENGTH
-    assert dialog.name_input.maxLength() == NAME_MAX_LENGTH
+    assert dialog.get_data()["task_name"] == ""
 
 
 def test_a_name_that_only_fits_without_the_marker_is_refused_not_truncated(qapp, monkeypatch):
     warned = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a[2]))
-    dialog = _dialog("x" * NAME_MAX_LENGTH)
-    dialog.non_billable_check.setChecked(True)
+    dialog = _dialog("x" * NAME_MAX_LENGTH, billable=True)
     dialog.accept()
     assert dialog.result() != QDialog.DialogCode.Accepted
     assert warned and "shorten" in warned[0]
-    assert dialog.name_input.text() == "x" * NAME_MAX_LENGTH
+    assert dialog.name_input.text() == "x" * NAME_MAX_LENGTH       # nothing quietly cut
 
 
 def test_the_longest_name_that_fits_is_accepted_with_the_marker(qapp):
-    dialog = _dialog("x" * (NAME_MAX_LENGTH - len(NON_BILLABLE_SUFFIX)), checked=True)
+    dialog = _dialog("x" * (NAME_MAX_LENGTH - len(NON_BILLABLE_SUFFIX)), billable=True)
     dialog.accept()
     assert dialog.result() == QDialog.DialogCode.Accepted
     assert len(dialog.get_data()["task_name"]) == NAME_MAX_LENGTH
-
-
-# ── the tick box draws a box and a tick ──────────────────────────────────────
-
-def _grab_indicator(dialog):
-    """The pixels of the check box's own indicator square."""
-    from PySide6.QtWidgets import QStyle, QStyleOptionButton
-    box = dialog.non_billable_check
-    option = QStyleOptionButton()
-    box.initStyleOption(option)
-    rect = box.style().subElementRect(QStyle.SubElement.SE_CheckBoxIndicator, option, box)
-    return box.grab().toImage(), rect
-
-
-def _is_whiteish(color) -> bool:
-    return color.red() > 235 and color.green() > 235 and color.blue() > 235
-
-
-def test_unticked_it_is_a_framed_empty_box(qapp):
-    dialog = AddTaskDialog("Apollo")
-    dialog.show(); qapp.processEvents()
-    image, rect = _grab_indicator(dialog)
-    centre = image.pixelColor(rect.center())
-    edge = image.pixelColor(rect.left() + 1, rect.center().y())
-    assert _is_whiteish(centre)                       # empty inside
-    assert not _is_whiteish(edge)                     # but the frame is drawn
-
-
-def test_ticked_it_is_a_filled_box_with_a_tick_not_a_bare_mark(qapp):
-    dialog = AddTaskDialog("Apollo")
-    dialog.non_billable_check.setChecked(True)
-    dialog.show(); qapp.processEvents()
-    image, rect = _grab_indicator(dialog)
-    corner = image.pixelColor(rect.left() + 3, rect.top() + 3)
-    assert not _is_whiteish(corner)                   # the box is filled, so it still reads as a box
-    ticks = sum(
-        _is_whiteish(image.pixelColor(x, y))
-        for x in range(rect.left() + 2, rect.right() - 1)
-        for y in range(rect.top() + 2, rect.bottom() - 1)
-    )
-    assert ticks >= 6                                 # a white tick is painted on the fill
-
-
-def test_the_box_can_be_toggled_from_the_keyboard(qapp):
-    from PySide6.QtTest import QTest
-    dialog = AddTaskDialog("Apollo")
-    dialog.show(); qapp.processEvents()
-    dialog.non_billable_check.setFocus()
-    QTest.keyClick(dialog.non_billable_check, Qt.Key.Key_Space)
-    assert dialog.non_billable_check.isChecked()
 
 
 # ── plain-text descriptions ──────────────────────────────────────────────────
@@ -352,34 +321,48 @@ def test_a_plain_task_is_not_given_a_marker_by_editing(qapp):
 
 # ── through to the create call ───────────────────────────────────────────────
 
-def _section() -> TaskSection:
+def _section(billable_allowed=True) -> TaskSection:
     api = MagicMock()
     api.timer_elapsed_seconds.return_value = 0
     api.is_timer_running.return_value = False
     section = TaskSection(api=api, task_service=MagicMock())
     section.set_user_role("employee")
     section.set_user_id(54)
+    section.set_nonbillable_creation_allowed(billable_allowed)
     section._project = {"id": 7, "project_name": "Apollo"}
     return section
 
 
-def _created_name(monkeypatch, *, checked: bool) -> str:
-    dialog = _dialog("Write the report", "Cover Q3", checked=checked)
-    monkeypatch.setattr(AddTaskDialog, "__new__", lambda cls, *a, **k: dialog, raising=False)
-    monkeypatch.setattr(AddTaskDialog, "__init__", lambda self, *a, **k: None)
+def _created_name(monkeypatch, *, billable: bool) -> str:
+    """Run the real dialog (opened the way the button opens it) through the
+    section and return the task name the create request would carry."""
+    opened = {}
+    real_init = AddTaskDialog.__init__
+
+    def init(self, project_name, parent=None, *, non_billable=False):
+        real_init(self, project_name, parent, non_billable=non_billable)
+        self.name_input.setText("Write the report")
+        self.desc_input.setPlainText("Cover Q3")
+        opened["non_billable"] = non_billable
+
+    monkeypatch.setattr(AddTaskDialog, "__init__", init)
     monkeypatch.setattr(AddTaskDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
     section = _section()
-    section._on_add_task_clicked()
+    if billable:
+        section.open_add_nonbillable_task_dialog()
+    else:
+        section.open_add_task_dialog()
+    assert opened["non_billable"] is billable
     section.api.run_in_background.call_args.args[0]()
     return section.task_service.create_task.call_args.args[1]
 
 
-def test_the_create_request_carries_the_marked_name(qapp, monkeypatch):
-    assert _created_name(monkeypatch, checked=True) == "Write the report - Non billable"
+def test_the_billable_button_creates_the_marked_name(qapp, monkeypatch):
+    assert _created_name(monkeypatch, billable=True) == "Write the report - Non billable"
 
 
-def test_the_create_request_is_unchanged_when_the_box_is_not_ticked(qapp, monkeypatch):
-    assert _created_name(monkeypatch, checked=False) == "Write the report"
+def test_the_plain_button_creates_the_name_as_typed(qapp, monkeypatch):
+    assert _created_name(monkeypatch, billable=False) == "Write the report"
 
 
 def test_the_update_request_carries_the_locked_marker(qapp, monkeypatch):

@@ -22,12 +22,14 @@ re-grant a permission.
 
 ### Added
 
-- **Mark a task Non billable when you create it.** Add Task has an optional
-  "Non billable" tick under Description. Ticked, " - Non billable" is added to
-  the end of the task name (once, even if you typed it yourself); unticked, the
-  task is created exactly as before. In Edit Task the marker of such a task
-  stays fixed beside the name: you can rename the task, but not remove or change
-  the marker.
+- **A second Add button: Add Non Billable Task.** If an administrator allows it for
+  you (Members page), a teal **Add Non Billable Task** button appears right after
+  Add Task. It opens the same dialog, with a fixed "Non billable" tag beside the
+  name, and the task is created with " - Non billable" on the end of its name.
+  You can rename such a task in Edit Task, but the marker stays. Members who are
+  not allowed see the top bar exactly as before, and the button works even if
+  Add Task itself has been switched off for you. The Add Task, Add Non Billable Task
+  and Request buttons now share a light highlighted border.
 - **Attach a screenshot to your feedback.** The Feedback & Help form now has an
   optional **Attach file** button: add up to three images (PNG, JPG or WEBP, 10 MB
   in all) to show us what you are seeing. Each file is listed with a preview, its
@@ -86,8 +88,6 @@ re-grant a permission.
 - **A screenshot is dated when the screen was read**, not when the picture
   finished processing, so one taken in the last second of a slot is no longer
   filed under the next one.
-- **Add Task's Non billable box draws properly when ticked.** It used to lose
-  its frame and show a bare tick; it is now a filled box with a tick.
 - **Pasting into a task description no longer brings its formatting.** Text
   copied from a web page or a dark editor arrived as white-on-black blocks; the
   description boxes (Add Task, Edit Task, Request) now take plain text only.
