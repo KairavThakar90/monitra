@@ -1145,7 +1145,7 @@ area is invisible; below it, a scrollbar appears instead of a clipped window.
 |---|---|---|
 | Screenshot columns | `screenshot_columns(width)`: as many as fit at >= 220px a card, 1..4, equal stretch; unused columns stretch 0 | `ui/activity_section.py` |
 | Summary cards | four full cards (icon tiles) on one row from `SINGLE_ROW_MINIMUM_WIDTH` (1202px); the same four on one row *without tiles* from `COMPACT_ROW_MINIMUM_WIDTH` (978px, derived from the card floors); 2x2 below that | `ui/stat_cards.py` |
-| Task / Activity split | opens at 60/40 (`TASK_SECTION_SHARE`/`ACTIVITY_SECTION_SHARE`); the task list keeps >= 200px, Activity >= 190px; still draggable | `ui/dashboard_window.py` |
+| Task / Activity split | opens at 60/40 (`TASK_SECTION_SHARE`/`ACTIVITY_SECTION_SHARE`); the user drags it between the task list's 200px floor and Activity's *header alone*; a chevron in the Activity header does the same by click | `ui/activity_splitter.py`, `ui/dashboard_window.py` |
 | Top bar | compact (icon-only Add Task/Request, short date, no Ctrl+K chip) below the full form's minimum width | `ui/topbar.py` |
 | Task name column | the one stretch column; its *applied* width gives way (to 160px) only while the section is narrower than the model needs | `ui/task_table.py` |
 
@@ -1175,6 +1175,36 @@ rules in the table above (one row of cards where the width allows; 60/40), chose
 side-by-side renders at three laptop sizes. An earlier content-driven rule and
 font-measured card floors were reverted as ugly, so any further change to how the area
 is divided should be shown as a screenshot first.
+
+### The Activity divider: expanded, compact, header-only
+
+`ActivitySplitter` holds a small *model* of what the user chose -- collapsed or not, and
+the share of the height Activity takes when it is not -- and applies it on every resize.
+That is deliberate: Qt's own resize handling scales the existing sizes in proportion,
+which would grow a header-only panel with the window, and a pixel height means something
+different on every screen.
+
+- **Bounds.** Activity's floor is its header (`ActivitySection.header_only_height()`:
+  title, the three tabs, the chevron). The task list's floor is 200px. Neither can be
+  crossed, by mouse, keyboard or window resize.
+- **Header-only.** The body (divider, search, scroll area) is one widget and is hidden
+  whenever the panel is shorter than `header + content_floor_height()`, so nothing is
+  left under the header and no scrollbar slot is left behind. Hiding rebuilds nothing:
+  the grid, its cards and the scroll position are the same after expanding.
+- **Snapping.** A drag that ends below the smallest useful body snaps to exactly the
+  header. Expanding (chevron, Home, Enter) restores the user's last share, never a sliver.
+- **Small windows.** While expanded the splitter's minimum height includes a useful body,
+  so the content pane scrolls (as it always has) instead of squeezing Activity to a
+  header the user did not ask for. While collapsed it asks for only the header. When the
+  divider cannot move at all (the task list is already at its floor), an upward drag on
+  a collapsed panel is read as "open it".
+- **Keyboard.** The handle is focusable with an accessible name and description: Up/Down
+  move it, Home restores the default, End collapses, Enter/Space toggle; double-click
+  toggles. The focus ring appears for keyboard focus only.
+- **Persistence.** The share is kept in memory for the session and clamps to any window
+  size. It is not written to disk: a pixel height saved on one screen is wrong on the next.
+- **Tabs.** The selected tab is independent of the state; a tab click never expands or
+  collapses anything.
 
 ### Apps and URLs rows
 

@@ -773,6 +773,30 @@ The top bar read its two forms' minimum widths there and got figures ~130px too 
 the children are polished, and their fonts and padding resolved, only once the show has
 completed. Measure one event-loop turn later (`QTimer.singleShot(0, ...)`).
 
+### ❌ Do not leave a collapsed state to the splitter's own resize logic
+
+A `QSplitter` keeps its sizes in proportion when the window changes. A panel the user
+had taken down to its header is then a header that grows with the window and stops
+being one, and a panel dragged to "40%" is a pixel height that means something
+different on every screen. **Instead:** keep a model (collapsed flag, share of the
+height) in `ActivitySplitter` and apply it on every resize.
+
+### ❌ Do not give an expanded panel only a header-sized minimum
+
+When the panel can be taken down to its header, its minimum is the header -- and a
+splitter built from that minimum on a 1092x578 laptop (a 200px task list plus a 66px
+header) had nowhere to put a body: Activity opened as a header, and could not be dragged
+open because the task list was already at its floor. **Instead:** the splitter's
+minimum height depends on the state (a useful body while expanded, the header while
+collapsed), so a small window scrolls its content pane rather than hiding the panel;
+and an upward drag that goes nowhere on a collapsed panel counts as a request to open it.
+
+### ❌ Do not draw a focus ring for a mouse click
+
+A `StrongFocus` handle takes focus when clicked, and a ring drawn for any focus is left
+on the divider after every drag. **Instead:** draw it only for `TabFocusReason`,
+`BacktabFocusReason` and `ShortcutFocusReason`.
+
 ---
 
 ## Naming

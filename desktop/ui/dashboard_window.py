@@ -25,8 +25,7 @@ from typing import Any, Callable, Dict, List, Optional
 from PySide6.QtCore import QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QGuiApplication
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QMessageBox, QScrollArea, QSplitter,
-    QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QMessageBox, QScrollArea, QVBoxLayout, QWidget,
 )
 
 import version
@@ -57,19 +56,20 @@ from ui.styles import (
 )
 from ui.stat_cards import StatCardsRow
 from ui.task_table import TaskSection
+from ui.activity_splitter import ActivitySplitter
 from ui.topbar import TopBar
 
 #: How the content area is divided between the task list and Activity: the
-#: proportion the splitter opens at (the user can still drag it), and the least
-#: height either section keeps. 60/40 rather than the earlier 40/60 because on a
-#: laptop the task list is the thing worked in, and at 40% it showed two rows;
-#: Activity still keeps its tabs and most of a screenshot row, and scrolls inside
-#: itself for the rest. The owner picked it from side-by-side renders at
-#: 1920x1080 @125%, 1366x768 @100% and 1366x768 @125%.
+#: proportion the splitter opens at, and the task list's floor. 60/40 because on a
+#: laptop the task list is the thing worked in. The user can drag it anywhere from
+#: there -- down to Activity's header alone, which is its floor (see
+#: `ui/activity_splitter.py`) -- and the choice is kept for the session as a share
+#: of the height, so it means something sensible at any window size. The owner
+#: picked the 60/40 default from side-by-side renders at 1920x1080 @125%,
+#: 1366x768 @100% and 1366x768 @125%.
 TASK_SECTION_SHARE = 6
 ACTIVITY_SECTION_SHARE = 4
 TASK_SECTION_MIN_HEIGHT = 200
-ACTIVITY_SECTION_MIN_HEIGHT = 190
 
 log = get_logger("dashboard")
 
@@ -550,21 +550,10 @@ class DashboardWindow(QWidget):
         # scrolled.
         self._action_banner = ActionBanner(self._content_scroll.viewport())
 
-        self._content_splitter = QSplitter(Qt.Orientation.Vertical, content_container)
-        # A section collapsed to 0 height would look like it vanished --
-        # each side keeps a usable minimum instead (enforced below).
-        self._content_splitter.setChildrenCollapsible(False)
-        self._content_splitter.setHandleWidth(10)
-        self._content_splitter.setStyleSheet(f"""
-            QSplitter::handle {{
-                background: {CONTENT_BG};
-                border-top: 1px solid {BORDER_LIGHT};
-                border-bottom: 1px solid {BORDER_LIGHT};
-            }}
-            QSplitter::handle:hover {{
-                background: {BORDER_LIGHT};
-            }}
-        """)
+        # The divider between the task list and Activity. It owns the model of
+        # how much each gets (expanded, compact or Activity's header alone) and
+        # applies it on every resize; see ui/activity_splitter.py.
+        self._content_splitter = ActivitySplitter(content_container)
 
         self._task_section = TaskSection(
             api=self.api, task_service=self.task_service,
@@ -594,16 +583,17 @@ class DashboardWindow(QWidget):
 
         self._activity_section = ActivitySection(self.api, self.api_client, self._content_splitter)
         self._activity_section.profile_requested.connect(self._open_activity_in_profile)
-        self._activity_section.setMinimumHeight(ACTIVITY_SECTION_MIN_HEIGHT)
         self._content_splitter.addWidget(self._activity_section)
 
-        # Opens at TASK_SECTION_SHARE : ACTIVITY_SECTION_SHARE; the user can
-        # drag it anywhere between the two minimums afterward.
-        self._content_splitter.setStretchFactor(0, TASK_SECTION_SHARE)
-        self._content_splitter.setStretchFactor(1, ACTIVITY_SECTION_SHARE)
-        self._content_splitter.setSizes([
-            TASK_SECTION_SHARE * 100, ACTIVITY_SECTION_SHARE * 100,
-        ])
+        # Opens at TASK_SECTION_SHARE : ACTIVITY_SECTION_SHARE. The Activity
+        # chevron asks the splitter, which alone knows how much room there is.
+        self._content_splitter.configure(
+            top_min=TASK_SECTION_MIN_HEIGHT,
+            default_fraction=ACTIVITY_SECTION_SHARE / (TASK_SECTION_SHARE + ACTIVITY_SECTION_SHARE),
+        )
+        self._activity_section.collapse_toggle_requested.connect(
+            self._content_splitter.toggle_collapsed
+        )
 
         content_outer_layout.addWidget(self._content_splitter)
         right_layout.addWidget(self._content_scroll, 1)

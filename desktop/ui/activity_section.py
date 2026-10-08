@@ -11,7 +11,7 @@ from PySide6.QtGui import QFont, QColor, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QLineEdit,
     QScrollArea, QGridLayout, QPushButton, QSizePolicy, QStackedWidget,
-    QDialog, QProgressBar
+    QDialog, QProgressBar, QToolButton
 )
 
 from app.api.client import ApiClient
@@ -64,6 +64,16 @@ SCREENSHOT_PAGE_SIZE = 12
 #: height whichever state it is in and the first captures arriving -- or the
 #: last being cleared -- does not resize the scroll content under the user.
 SCREENSHOT_STATE_MIN_HEIGHT = SCREENSHOT_THUMB_HEIGHT + 130
+
+
+#: How little of the scrolling content is worth showing under the header: the
+#: least height the scroll area gets before the whole body is hidden instead.
+#: Below it the content would be a sliver -- a half-drawn row, a scrollbar with
+#: nothing to scroll -- so the panel shows its header alone (see
+#: `ActivitySection.content_floor_height`).
+ACTIVITY_CONTENT_MIN_HEIGHT = 40
+#: The card's 1px border, top and bottom, which the header does not include.
+ACTIVITY_CARD_BORDER_ALLOWANCE = 2
 
 
 def screenshot_columns(available_width: int) -> int:
@@ -1548,6 +1558,11 @@ class ActivitySection(QWidget):
     #: the dashboard already owns.
     profile_requested = Signal(str, object)
 
+    #: The chevron in the header was pressed. The panel does not know how much
+    #: room it has been given -- the splitter that owns the division does -- so
+    #: it only reports the intent.
+    collapse_toggle_requested = Signal()
+
     def __init__(self, api, api_client: ApiClient, parent: Optional[QWidget] = None) -> None:
         """
         :param api: `BackgroundApi` - the only route to background work.
@@ -1558,6 +1573,9 @@ class ActivitySection(QWidget):
         self.api = api
         self.api_client = api_client
         self._active_tab = "screenshots"
+        #: The body (search, list, grid) is hidden because the panel was given
+        #: no more than its header. Derived from the height, never stored.
+        self._content_hidden = False
         self._enabled = False
         #: The one date all three tabs are showing. Every fetch is scoped to
         #: it, so the tabs can never disagree about which day is on screen.
@@ -1655,6 +1673,66 @@ class ActivitySection(QWidget):
         if self._enabled and self._selected_date == ist_today():
             self._auto_timer.start(self.AUTO_REFRESH_MS)
 
+    # ── Height: header-only, compact, expanded ────────────────────────────────
+
+    def header_only_height(self) -> int:
+        """The least height the panel can have: its header and the card's border.
+        Title, the three tabs and the chevron are all in it, so none of them
+        can be lost however far the divider is dragged."""
+        return self._header.sizeHint().height() + ACTIVITY_CARD_BORDER_ALLOWANCE
+
+    def content_floor_height(self) -> int:
+        """The height the body needs before it is worth showing: the divider, the
+        search band (whether or not this tab shows it, so a tab click can never
+        move the threshold) and a usable stretch of the scrolling area."""
+        return 1 + self._search_bar.sizeHint().height() + ACTIVITY_CONTENT_MIN_HEIGHT
+
+    #: How much body the panel *prefers* on top of its header. Only a standalone
+    #: panel ever uses it -- inside the dashboard the splitter dictates the height
+    #: -- but without it the body's Ignored vertical policy would make the
+    #: preferred size the header alone, and a panel shown by itself would open
+    #: as a bare header.
+    PREFERRED_CONTENT_HEIGHT = 240
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt's own casing
+        hint = super().sizeHint()
+        return QSize(
+            hint.width(),
+            max(hint.height(), self.header_only_height() + self.PREFERRED_CONTENT_HEIGHT),
+        )
+
+    def is_content_hidden(self) -> bool:
+        """Whether the panel is showing its header alone."""
+        return self._content_hidden
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt's own casing
+        super().resizeEvent(event)
+        self._sync_content_visibility()
+
+    def _sync_content_visibility(self) -> None:
+        """Show the body exactly when there is room for it.
+
+        A pure function of the height the panel was given, and edge-triggered.
+        Hiding changes no widget's identity: the grid, its cards and the
+        scroll position all stay, so expanding again shows what was there.
+        """
+        available = self.height() - self.header_only_height()
+        hidden = available < self.content_floor_height()
+        if hidden == self._content_hidden:
+            return
+        self._content_hidden = hidden
+        self._body.setVisible(not hidden)
+        self._update_collapse_button()
+
+    def _update_collapse_button(self) -> None:
+        collapsed = self._content_hidden
+        self._collapse_btn.setIcon(
+            icons.icon("expand_less" if collapsed else "expand_more", TEXT_SECONDARY, 18)
+        )
+        label = "Expand Activity" if collapsed else "Collapse Activity"
+        self._collapse_btn.setToolTip(label)
+        self._collapse_btn.setAccessibleName(label)
+
     def set_enabled(self, enabled: bool) -> None:
         """Start or stop refreshing. Called on login and logout."""
         self._enabled = enabled
@@ -1744,6 +1822,7 @@ class ActivitySection(QWidget):
         # drove real data (refresh() sets each tab's mode from actual API
         # results) and is gone entirely rather than relocated.
         header = QWidget(self.card)
+        self._header = header
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(20, 14, 16, 14)
         header_layout.setSpacing(12)
@@ -1804,14 +1883,56 @@ class ActivitySection(QWidget):
         self.tab_urls.clicked.connect(lambda: self.switch_tab("urls"))
 
         header_layout.addWidget(tabs_widget)
+
+        # Collapse / expand. The splitter is the primary control; this is the
+        # one-click way to the same two states, and a visible sign that the
+        # panel can be collapsed at all. It sits after the tabs and never
+        # touches them: a tab click selects a tab and does nothing else.
+        self._collapse_btn = QToolButton(header)
+        self._collapse_btn.setObjectName("ActivityCollapseBtn")
+        self._collapse_btn.setFixedSize(30, 30)
+        self._collapse_btn.setIconSize(QSize(18, 18))
+        self._collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._collapse_btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._collapse_btn.setStyleSheet(f"""
+            QToolButton#ActivityCollapseBtn {{
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 8px;
+            }}
+            QToolButton#ActivityCollapseBtn:hover {{
+                background: {CONTENT_BG};
+            }}
+            QToolButton#ActivityCollapseBtn:focus {{
+                border: 1px solid {PRIMARY};
+            }}
+            {TOOLTIP_QSS}
+        """)
+        self._collapse_btn.clicked.connect(self.collapse_toggle_requested.emit)
+        header_layout.addWidget(self._collapse_btn)
+        self._update_collapse_button()
         card_layout.addWidget(header)
 
+        # Everything under the header is one *body*, so "header only" is one
+        # widget hidden rather than three, and nothing is left behind it (no
+        # divider line, no search band, no scrollbar slot). Its vertical policy
+        # is Ignored on purpose: the panel's minimum height is then the header
+        # and nothing else, which is what lets the splitter take it down to a
+        # header-only state. (An explicit `setMinimumHeight` would have been the
+        # other way to get a floor, and it *replaces* the layout's minimum.)
+        self._body = QWidget(self.card)
+        self._body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
+        body_layout = QVBoxLayout(self._body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+        card_layout.addWidget(self._body, 1)
+
         # Horizontal Divider line
-        div = QFrame(self.card)
+        div = QFrame(self._body)
         div.setFrameShape(QFrame.Shape.HLine)
         div.setStyleSheet(f"background: {BORDER_LIGHT}; border: none;")
         div.setFixedHeight(1)
-        card_layout.addWidget(div)
+        body_layout.addWidget(div)
 
         # Search bar. It filters the Apps and URLs lists that are already in
         # memory -- no request, no query -- and is shown on those two tabs
@@ -1821,7 +1942,7 @@ class ActivitySection(QWidget):
         # it is a scroll area drawn on a different background from this band,
         # so with no bottom margin that change of background fell exactly on
         # the box's lower border and the field read as glued to the list.
-        self._search_bar = QWidget(self.card)
+        self._search_bar = QWidget(self._body)
         search_layout = QHBoxLayout(self._search_bar)
         search_layout.setContentsMargins(20, 12, 20, 12)
         search_layout.setSpacing(8)
@@ -1870,7 +1991,7 @@ class ActivitySection(QWidget):
         self._search_error.hide()
         search_layout.addWidget(self._search_error)
 
-        card_layout.addWidget(self._search_bar)
+        body_layout.addWidget(self._search_bar)
 
         # Rebuilding a list of rows is real work, so a fast typist should not
         # pay for it on every keystroke. A UI-thread timer only -- the filter
@@ -1881,7 +2002,7 @@ class ActivitySection(QWidget):
         self._search_debounce.timeout.connect(self._apply_search)
 
         # Tabs Inner Content area
-        self._scroll_area = QScrollArea(self.card)
+        self._scroll_area = QScrollArea(self._body)
         self._scroll_area.setWidgetResizable(True)
         self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -1929,7 +2050,7 @@ class ActivitySection(QWidget):
 
         self.scroll_layout.addWidget(self.tab_stack)
         self._scroll_area.setWidget(scroll_content)
-        card_layout.addWidget(self._scroll_area, 1)
+        body_layout.addWidget(self._scroll_area, 1)
 
         layout.addWidget(self.card, 1)
 

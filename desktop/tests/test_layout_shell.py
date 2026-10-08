@@ -554,14 +554,17 @@ class TestSplitter:
 
     @pytest.mark.parametrize("name", list(ALL_SCREENS))
     def test_neither_section_goes_below_its_minimum(self, qapp, pump, dashboard, name):
-        from ui.dashboard_window import ACTIVITY_SECTION_MIN_HEIGHT, TASK_SECTION_MIN_HEIGHT
+        from ui.dashboard_window import TASK_SECTION_MIN_HEIGHT
 
         width, height = ALL_SCREENS[name]
         dashboard.show()
         dashboard.resize(width, height)
         pump(20)
         tasks, activity = dashboard._content_splitter.sizes()
-        assert tasks >= TASK_SECTION_MIN_HEIGHT and activity >= ACTIVITY_SECTION_MIN_HEIGHT
+        # Activity's floor is its header, not a fixed height: it can be taken
+        # down to the header alone (see test_activity_splitter.py).
+        assert tasks >= TASK_SECTION_MIN_HEIGHT
+        assert activity >= dashboard._activity_section.header_only_height()
 
     def test_the_user_can_still_drag_it(self, qapp, pump, dashboard):
         dashboard.show()
@@ -569,7 +572,7 @@ class TestSplitter:
         pump(20)
         splitter = dashboard._content_splitter
         total = sum(splitter.sizes())
-        splitter.setSizes([total // 2, total - total // 2])
+        splitter.moveSplitter(total // 2, 1)
         pump(5)
         tasks, activity = splitter.sizes()
         assert abs(tasks - activity) <= 10
