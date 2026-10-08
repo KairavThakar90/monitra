@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { V2Shell } from '../dashboard/v2/V2Shell';
 import {
@@ -10,6 +10,7 @@ import {
   useGetAssignableEmployeesQuery,
   useCreateProjectMutation,
   useUpdateProjectMutation,
+  useAssignProjectCategoryMutation,
   useDeleteProjectMutation,
   type Project,
   type ProjectUser,
@@ -486,8 +487,11 @@ const ToolbarSelect: React.FC<{
   </div>
 );
 
-type ColumnKey = 'project' | 'wfpmId' | 'category' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'created' | 'started' | 'manage';
+type ColumnKey = 'select' | 'project' | 'wfpmId' | 'category' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'created' | 'started' | 'manage';
 const COLUMNS: { key: ColumnKey; label: string }[] = [
+  // The tick boxes for assigning an organization to several projects at once.
+  // Off until someone turns them on here: most visits are for reading the table.
+  { key: 'select', label: 'Select (bulk assign)' },
   { key: 'project', label: 'Project' },
   { key: 'wfpmId', label: 'WFPM ID' },
   { key: 'category', label: 'Organization' },
@@ -553,7 +557,8 @@ export const AdminProjectManagement: React.FC = () => {
     // and WFPM ID are shown. (The Organization filter, the creation-date filter, the
     // form's dropdown and the detail view are unaffected -- hiding a column never
     // hides its filter.)
-    project: true, wfpmId: true, category: false, status: true, owner: true, leader: true, team: true, tasks: false, billing: true,
+    // Select (the bulk-assign tick boxes) starts hidden too.
+    select: false, project: true, wfpmId: true, category: false, status: true, owner: true, leader: true, team: true, tasks: false, billing: true,
     usedHours: true, internalHours: true, remainingHours: true, created: true, started: false, manage: true
   });
   const [showColumnDropdown, setShowColumnDropdown] = useState(false);
@@ -589,6 +594,12 @@ export const AdminProjectManagement: React.FC = () => {
   const [createProject] = useCreateProjectMutation();
   const [updateProject, { isLoading: isUpdatingProject }] = useUpdateProjectMutation();
   const [deleteProject] = useDeleteProjectMutation();
+  const [assignProjectCategory, { isLoading: isAssigningCategory }] = useAssignProjectCategoryMutation();
+
+  // Bulk assign: the projects ticked in the Select column, and the organization
+  // chosen to give them. Empty means nothing ticked / none chosen yet.
+  const [selectedProjectIds, setSelectedProjectIds] = useState<number[]>([]);
+  const [bulkCategory, setBulkCategory] = useState<'' | ProjectCategory>('');
 
   // Drawer state
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -875,6 +886,64 @@ export const AdminProjectManagement: React.FC = () => {
   const projects = projectsData?.items || [];
   const totalPages = projectsData?.pagination?.total_pages || 1;
 
+  // Bulk assign works on the rows on screen and nothing else. What is ticked is
+  // read back through the rows currently shown, so a project that has left the
+  // page (a new search, filter or page) can never be part of an action the
+  // person cannot see -- and the ticks are dropped outright when the rows change.
+  const selectionOn = visibleColumns.select;
+  const selectedOnPage = selectionOn ? projects.filter((project) => selectedProjectIds.includes(project.id)) : [];
+  const allOnPageSelected = projects.length > 0 && selectedOnPage.length === projects.length;
+  const someOnPageSelected = selectedOnPage.length > 0 && !allOnPageSelected;
+
+  useEffect(() => {
+    setSelectedProjectIds([]);
+  }, [page, pageSize, debouncedSearch, filterStatusId, billingScope, billingKind, filterCategory, dateRange.from, dateRange.to]);
+
+  useEffect(() => {
+    // Turning the column off turns the whole feature off, ticks included.
+    if (!visibleColumns.select) {
+      setSelectedProjectIds([]);
+      setBulkCategory('');
+    }
+  }, [visibleColumns.select]);
+
+  const toggleProjectSelected = (id: number) =>
+    setSelectedProjectIds((current) => (current.includes(id) ? current.filter((value) => value !== id) : [...current, id]));
+
+  /** The header box: everything on this page, or -- when it is all ticked -- nothing. */
+  const toggleAllOnPage = () =>
+    setSelectedProjectIds(allOnPageSelected ? [] : projects.map((project) => project.id));
+
+  const handleBulkAssign = async () => {
+    if (bulkCategory === '' || selectedOnPage.length === 0) return;
+    const count = selectedOnPage.length;
+    const noun = (n: number) => `${n} project${n === 1 ? '' : 's'}`;
+    const label = projectCategoryLabel(bulkCategory);
+    if (!(await confirmAction('Assign organization?', `${noun(count)} will be set to ${label}.`))) return;
+    try {
+      const result = await assignProjectCategory({
+        project_ids: selectedOnPage.map((project) => project.id),
+        category: bulkCategory,
+      }).unwrap();
+      const parts: string[] = [];
+      if (result.updated.length) parts.push(`${label} set for ${noun(result.updated.length)}.`);
+      if (result.unchanged.length) parts.push(`${noun(result.unchanged.length)} already had it.`);
+      if (result.failed.length) parts.push(`${noun(result.failed.length)} could not be changed.`);
+      showToast(
+        parts.join(' ') || 'Nothing to change.',
+        result.failed.length ? 'error' : result.updated.length ? 'success' : 'info',
+      );
+      setSelectedProjectIds([]);
+      setBulkCategory('');
+    } catch (err) {
+      console.error('Failed to assign the organization:', err);
+      showToast(
+        formatApiError((err as { data?: unknown })?.data, 'Unable to assign the organization. Please try again.'),
+        'error',
+      );
+    }
+  };
+
   // Used/Remaining/Started are all all-time tracked-time facts -- a separate,
   // additive endpoint from `getProjects` (see projectsApi.ts) rather than a
   // new field on that response, which the desktop client also reads
@@ -1058,6 +1127,63 @@ export const AdminProjectManagement: React.FC = () => {
           </div>
         </div>
 
+        {/* Bulk assign: appears once at least one project is ticked in the Select
+            column (which is off until turned on under Columns). */}
+        {selectionOn && selectedOnPage.length > 0 && (
+          <div
+            role="region"
+            aria-label="Assign organization to the selected projects"
+            className="flex flex-col gap-3 rounded-xl border border-[#3B82F6]/30 bg-[#EFF6FF] p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
+          >
+            <p className="text-sm font-bold text-slate-700">
+              <span data-testid="bulk-selected-count">{selectedOnPage.length}</span>{' '}
+              {selectedOnPage.length === 1 ? 'project' : 'projects'} selected
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="relative">
+                <select
+                  aria-label="Organization to assign"
+                  value={bulkCategory}
+                  disabled={isAssigningCategory}
+                  onChange={(e) => setBulkCategory(e.target.value as '' | ProjectCategory)}
+                  className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
+                >
+                  <option value="">Choose organization...</option>
+                  {PROJECT_CATEGORY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                <svg
+                  className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  aria-hidden="true"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+                </svg>
+              </div>
+              <button
+                type="button"
+                onClick={handleBulkAssign}
+                disabled={bulkCategory === '' || isAssigningCategory}
+                className={`rounded-lg px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 ${GRADIENT_CYAN_PURPLE}`}
+              >
+                {isAssigningCategory ? 'Assigning...' : 'Assign organization'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedProjectIds([])}
+                disabled={isAssigningCategory}
+                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-600 shadow-sm transition hover:bg-slate-50 disabled:opacity-40"
+              >
+                Clear selection
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Project Cards Grid */}
         {showFirstLoad ? (
           <div className="flex justify-center p-20">
@@ -1068,6 +1194,18 @@ export const AdminProjectManagement: React.FC = () => {
             <table className="w-full text-left text-sm whitespace-nowrap">
               <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
                 <tr>
+                  {visibleColumns.select && <th className="w-12 px-5 py-4">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all projects on this page"
+                      title="Select all projects on this page"
+                      checked={allOnPageSelected}
+                      ref={(element) => { if (element) element.indeterminate = someOnPageSelected; }}
+                      onChange={toggleAllOnPage}
+                      disabled={projects.length === 0}
+                      className="h-4 w-4 cursor-pointer rounded border-slate-300 text-[#3B82F6] focus:ring-[#3B82F6] transition"
+                    />
+                  </th>}
                   {visibleColumns.project && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Project</th>}
                   {visibleColumns.wfpmId && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">WFPM ID</th>}
                   {visibleColumns.category && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Organization</th>}
@@ -1087,7 +1225,16 @@ export const AdminProjectManagement: React.FC = () => {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {projects.map(proj => (
-                  <tr key={proj.id} className="group transition hover:bg-slate-50/80">
+                  <tr key={proj.id} className={`group transition hover:bg-slate-50/80 ${selectedProjectIds.includes(proj.id) && selectionOn ? 'bg-[#EFF6FF]/60' : ''}`}>
+                    {visibleColumns.select && <td className="w-12 px-5 py-4">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${proj.project_name}`}
+                        checked={selectedProjectIds.includes(proj.id)}
+                        onChange={() => toggleProjectSelected(proj.id)}
+                        className="h-4 w-4 cursor-pointer rounded border-slate-300 text-[#3B82F6] focus:ring-[#3B82F6] transition"
+                      />
+                    </td>}
                     {visibleColumns.project && <td className="px-6 py-4">
                       <div className="font-bold text-slate-800">{proj.project_name}</div>
                       {/* {proj.description && <div className="text-xs text-slate-500 truncate max-w-[200px]">{proj.description}</div>} */}

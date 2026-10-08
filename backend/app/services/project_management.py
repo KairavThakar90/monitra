@@ -632,6 +632,52 @@ class ProjectManagementService:
         return ProjectManagementService._detail_payload(db, project, user)
 
     @staticmethod
+    def assign_category(db: Session, user: User, project_ids: list[int], category: ProjectCategory):
+        """Give several projects the same organization, in one transaction.
+
+        Every project goes through `_project`, the one rule for who may see a
+        project: a leader reaches only their own, and a project that is gone,
+        archived or in another organization is reported in `failed` rather than
+        written -- and does not stop the others. One that already has the
+        organization is left exactly as it is: no write and no audit row.
+        Everything that did change commits together, and the trail gets the
+        same row `update` writes for the same change ("category: none → Kyle
+        project"), one per project.
+
+        Only `category` is written. `update` revalidates the leader, owner, team
+        and deadline of the project it edits, so looping it over projects would
+        fail on one with an unrelated stale field and leave the rest half done.
+        """
+        unchanged: list[int] = []
+        failed: list[dict] = []
+        changed: list[tuple[Project, Optional[dict]]] = []
+        for project_id in project_ids:
+            try:
+                project = ProjectManagementService._project(db, project_id, user)
+            except HTTPException as exc:
+                failed.append({"id": project_id, "detail": str(exc.detail)})
+                continue
+            if project.category == category.value:
+                unchanged.append(project_id)
+                continue
+            # What the edit is about to overwrite, so the trail can say "from X to Y".
+            changed.append((project, ProjectActivity.project_before(db, project)))
+            project.category = category.value
+
+        updated: list[dict] = []
+        if changed:
+            db.commit()
+            for project, _before in changed:
+                db.refresh(project)
+                updated.append({"id": project.id, "project_name": project.project_name, "category": project.category})
+            ActivityLogService.capture_many(db, lambda: [
+                row
+                for project, before in changed
+                for row in ProjectActivity.project_update_rows(db, user, project, before)
+            ])
+        return {"category": category, "updated": updated, "unchanged": unchanged, "failed": failed}
+
+    @staticmethod
     def delete(db: Session, user: User, project_id: int):
         project = ProjectManagementService._project(db, project_id, user)
         project.status = "archived"

@@ -140,6 +140,19 @@ export interface CreateProjectPayload {
   category?: ProjectCategory | null;
 }
 
+/**
+ * What `PATCH /projects/category` did for each project asked about: `updated`
+ * were changed, `unchanged` already had that organization, and `failed` could
+ * not be changed (gone, archived, not the caller's to see) without stopping the
+ * rest.
+ */
+export interface AssignProjectCategoryResult {
+  category: ProjectCategory;
+  updated: { id: number; project_name: string; category: ProjectCategory | null }[];
+  unchanged: number[];
+  failed: { id: number; detail: string }[];
+}
+
 export type GetProjectsArgs = {
   page?: number;
   limit?: number;
@@ -423,6 +436,36 @@ export const projectsApi = baseApi.injectEndpoints({
       },
     }),
 
+    /**
+     * Gives several projects the same organization in one request. The rows are
+     * repainted from the answer at once, and the project tags are invalidated so
+     * a list filtered by organization drops the rows that just moved out of it.
+     */
+    assignProjectCategory: builder.mutation<
+      AssignProjectCategoryResult,
+      { project_ids: number[]; category: ProjectCategory }
+    >({
+      query: (body) => ({ url: ENDPOINTS.PROJECTS.ASSIGN_CATEGORY, method: 'PATCH', body }),
+      invalidatesTags: (result) =>
+        result && result.updated.length
+          ? [{ type: 'Project' as const, id: 'LIST' }, ...result.updated.map(({ id }) => ({ type: 'Project' as const, id }))]
+          : [],
+      async onQueryStarted(_body, { dispatch, getState, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          const changed = new Map(data.updated.map((item) => [item.id, item.category]));
+          if (changed.size === 0) return;
+          patchProjectLists({ dispatch, getState }, (items) => {
+            items.forEach((project) => {
+              if (changed.has(project.id)) project.category = changed.get(project.id) ?? null;
+            });
+          });
+        } catch {
+          // The caller surfaces the failure; nothing was patched.
+        }
+      },
+    }),
+
     deleteProject: builder.mutation<{ id: number; status: string }, number>({
       query: (id) => ({ url: ENDPOINTS.PROJECTS.DELETE(id), method: 'DELETE' }),
       invalidatesTags: [{ type: 'Team', id: 'LIST' }],
@@ -578,6 +621,7 @@ export const {
   useGetAssignableEmployeesQuery,
   useCreateProjectMutation,
   useUpdateProjectMutation,
+  useAssignProjectCategoryMutation,
   useDeleteProjectMutation,
   useCreateTaskMutation,
   useUpdateTaskMutation,
