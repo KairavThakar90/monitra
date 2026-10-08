@@ -129,3 +129,20 @@ Application side (`<api-unit>` is the systemd unit that runs Uvicorn):
 `DB_POOL_EXHAUSTED` = 0 and no `idle in transaction` older than 60 s under normal
 load, then under `backend/tests/load/loadtest.py` at 50 / 100 / 150 (and 200)
 users on a VM of production size against a non-production database.
+
+## Connection establishment, unreachable databases and request ids
+
+`DB_POOL_TIMEOUT_SECONDS` bounds the wait for a *pooled* connection; opening a *new* one had no limit,
+so a database that was restarting, failing over or unreachable held a worker thread for the operating
+system's TCP timeout. Every Postgres connection now has `connect_timeout` (`DB_CONNECT_TIMEOUT_SECONDS`,
+10) and TCP keepalives (`DB_TCP_KEEPALIVES`, idle 30 s / interval 10 s / 3 probes). A statement timeout
+exists (`DB_STATEMENT_TIMEOUT_MS`) but is **off**: the heaviest reports and the scheduled jobs share this
+engine and have never been timed against a ceiling.
+
+A lost or refused database connection is answered **503 + `Retry-After: 2`** (`DB_UNAVAILABLE`, with the
+path and request id), not a plain-text 500 without CORS headers; a cancelled statement is a **504 +
+`Retry-After: 30`** (`DB_STATEMENT_TIMEOUT`) that clients deliberately do not repeat. `get_db` no longer
+returns the exception text (it can name the database host). The `DB_CONNECTION_HELD_LONG` and
+`DB_POOL_EXHAUSTED` lines now carry `req=<X-Request-ID>`. `GET /health?deep=1` runs `SELECT 1` and
+reports the latency (`status: degraded` when unreachable); the plain `/health` stays free of the
+database. See [API_FAILURES.md](API_FAILURES.md) for how to follow one request through the logs.

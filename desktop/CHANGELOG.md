@@ -67,6 +67,13 @@ re-grant a permission.
 
 ### Fixed
 
+- **A hiccup in the connection no longer leaves "Unable to load projects" on screen.** After
+  signing in, the project or task list could fail to load for a while when a connection was dropped
+  or a server restarted, with nothing to press. Monitra now repeats a failed read once or twice
+  straight away, tells you it is retrying ("Connection temporarily unavailable. Retrying…"), keeps
+  retrying on its own, and shows a **Retry now** link. If your sign-in has really ended you are taken
+  to sign in rather than told about a connection problem. Starting and stopping the timer are never
+  repeated by this: they go through the queue that already guarantees one entry.
 - **The idle popup can no longer get stuck on "Confirming with the server…".**
   After a crash, a power cut or a sleep the popup could sit with every button
   greyed out until an administrator signed you out. It now says what it is

@@ -1566,6 +1566,41 @@ whose construction raised, or that was hidden, means no popup until a restart.
 The dashboard acknowledges (`popup_shown`); an unacknowledged popup is raised
 again and the tray is told.
 
+## Requests and loading
+
+### ❌ Do not fold every connection failure into one sentence
+
+```python
+except ApiConnectionError:
+    raise ApiError("Failed to load projects: Network connection error.")
+```
+
+**What it caused:** a refused connection, a reset keep-alive, a DNS failure, a server that hung up
+and any unexpected exception all read "Network connection error" -- on the user's screen and in the
+log -- so an intermittent "Unable to load projects" could not be traced to anything. The message may
+stay short; the cause must travel (`failure_code`, `request_id`) and be logged.
+
+### ❌ Do not retry a write in the HTTP client
+
+A POST that failed *after the server applied it* is repeated by nothing except the durable queue,
+because only the queue carries an idempotency key. A retry in `ApiClient` would create a second time
+entry. Reads only, and only for failures that say nothing happened.
+
+### ❌ Do not retry a timeout
+
+A request that timed out reached a backend that is already slow; asking again is the load test. The
+backend's statement-timeout 504 sends `Retry-After: 30` for the same reason.
+
+### ❌ Do not leave a failed screen with nothing to press
+
+"Unable to load projects" with no word on whether anything was being done about it reads as "it is
+broken, sign out". Say it is retrying, retry on a bounded backoff, and give a Retry.
+
+### ❌ Do not let a refresh failure end a session
+
+Only the server's own 401/403 on the refresh means the session is over. A network failure, a timeout
+or a 5xx on the refresh means it could not be asked.
+
 ## Updater and release
 
 ### ❌ Do not start the update helper with `DETACHED_PROCESS` and wait on `tasklist | find`

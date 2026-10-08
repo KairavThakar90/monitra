@@ -687,6 +687,30 @@ sent, throttled, to `POST /idle-periods/diagnostics`, which the backend logs as
 `IDLE_CLIENT` (a closed set of bounded scalars, no user content); the runbook
 is [docs/IDLE_DIAGNOSTICS.md](../docs/IDLE_DIAGNOSTICS.md).
 
+### Transient failures: reads are retried, writes never are
+
+`ApiClient` ([app/api/client.py](app/api/client.py)) is the one place a request can fail, so it is the
+one place that names the failure and decides whether to repeat it. Every `ApiError` carries a
+`failure_code` (`FailureCode` in [app/api/exceptions.py](app/api/exceptions.py): `dns`, `refused`,
+`reset`, `protocol`, `tls`, `proxy`, `connect_timeout`, `read_timeout`, `http_<n>` ...), the
+`X-Request-ID` it carried and how many attempts were made; domain services that re-wrap an error as
+"Network connection error." keep the original on `__context__`, and `describe_failure()` /
+`is_session_failure()` read it back, so no screen infers a 401 from the words in a message.
+
+* **Only a GET is repeated, only after a fast failure that says "nothing happened"** (a reset, a
+  hang-up with no answer, DNS, refused, a 502/503/504, a 429 with a short `Retry-After`): two extra
+  attempts, 0.3 s then 0.9 s with jitter, 4 s in total. Never after a timeout (a slow backend is made
+  slower), a slow failure, a definitive 4xx, or a long `Retry-After`; never for a POST/PUT/PATCH/DELETE
+  -- those reach the backend again only through the durable queue, whose idempotency keys make that
+  safe. The network probe opts out (`retry=False`), because reporting the first failure is its job.
+* **A reset replaces the connection pool** (`_recycle_pool`): its idle neighbours were opened at the same
+  time and are as likely to be dead. The old pool is retired, not closed, so a request still on it finishes.
+* **One `API_FAIL` line per failed attempt**: method, path (never the query), code, status, attempt,
+  elapsed, request id; `API_RECOVERED` when a retry worked.
+* **Screens** treat everything but a 401 as temporary: "Connection temporarily unavailable. Retrying…"
+  with a Retry link, an automatic retry on a bounded backoff (3/6/12/24 s, spread out after the first)
+  for the project list and for the task list of the selected project, and never a refusal to try again.
+
 ### Update notice and installer
 
 `UpdateService` ([background_services/update/update_service.py](background_services/update/update_service.py))
