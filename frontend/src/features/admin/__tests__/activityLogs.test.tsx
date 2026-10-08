@@ -352,11 +352,25 @@ describe('AdminActivityLogs', () => {
     expect(accordions()[0].getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('asks the server for the last seven days, and never for a category', async () => {
+  it('opens on today, not the last seven days, and never asks for a category', async () => {
     await render();
-    const first = requests.find((url) => url.includes('/activity-logs'))!;
-    expect(first).toMatch(/start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}/);
-    expect(requests.filter((url) => url.includes('/activity-logs')).every((url) => !url.includes('module='))).toBe(true);
+    const istToday = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const logRequests = requests.filter((url) => url.includes('/activity-logs'));
+    expect(logRequests.length).toBeGreaterThan(0);
+    for (const url of logRequests) {
+      const query = new URL(url, 'http://localhost').searchParams;
+      expect(query.get('start')).toBe(istToday);
+      expect(query.get('end')).toBe(istToday);
+      expect(url).not.toContain('module=');
+    }
+  });
+
+  it('labels the opening range "Today", and does not show it as a changed filter', async () => {
+    await render();
+    const text = container.textContent ?? '';
+    expect(text).toContain('Today');
+    expect(text).not.toContain('Last 7 days');
+    expect(buttonNamed('Reset')).toBeUndefined();     // the default is not a filter to reset
   });
 
   it('has no category filter: no "All categories" picker, and nothing to open', async () => {

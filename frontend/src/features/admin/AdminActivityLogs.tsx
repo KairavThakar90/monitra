@@ -3,10 +3,10 @@ import { V2Shell } from "../dashboard/v2/V2Shell";
 import { Card, EmptyState, ErrorNote, Spinner, initialsOf } from "../member/MemberUi";
 import { SearchInput } from "../feedback/feedbackFilters";
 import {
-  DEFAULT_RANGE,
   DateRangeFilter,
   MemberMultiSelect,
   exportToCsv,
+  rangeFor,
   type DateRange,
 } from "../dashboard/v2/filters";
 import { useGetActivityLogsQuery } from "../../store/api/activityLogsApi";
@@ -192,11 +192,21 @@ const MemberAccordion: React.FC<{
   );
 };
 
+/**
+ * What the Logs page opens on, and what Reset returns to: today (IST).
+ *
+ * Not the shared `DEFAULT_RANGE` (the last seven days), which the dashboard and
+ * reports still use -- the trail is read day by day, and a week of everyone's
+ * activity is a long page to open on. Computed when asked rather than once at
+ * load, so a tab left open past midnight resets to the new day, not the old one.
+ */
+const todayRange = (): DateRange => rangeFor("today", { preset: "today", from: "", to: "" });
+
 export const AdminActivityLogs: React.FC = () => {
   const { currentUser } = useAuth();
   const teamScoped = isTeamScoped(currentUser);
 
-  const [range, setRange] = useState<DateRange>(DEFAULT_RANGE);
+  const [range, setRange] = useState<DateRange>(todayRange);
   const [search, setSearch] = useState("");
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
 
@@ -246,12 +256,12 @@ export const AdminActivityLogs: React.FC = () => {
 
   const isDirty =
     search !== "" || selectedMembers.length > 0 ||
-    range.from !== DEFAULT_RANGE.from || range.to !== DEFAULT_RANGE.to;
+    range.from !== todayRange().from || range.to !== todayRange().to;
 
   const resetFilters = () => {
     setSearch("");
     setSelectedMembers([]);
-    setRange(DEFAULT_RANGE);
+    setRange(todayRange());
   };
 
   const exportCsv = () =>
