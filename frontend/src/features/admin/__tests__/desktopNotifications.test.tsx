@@ -61,12 +61,25 @@ describe('AdminDesktopNotifications', () => {
   };
   let calls: { method: string; path: string; body: Body | null }[];
   let refuseNext: { status: number; detail: string } | null;
+  // While set, a write is held until it resolves, so a test can look at the page before the server answers.
+  let gate: Promise<void> | null;
 
   const settle = async () => {
     for (let i = 0; i < 6; i += 1) {
       // eslint-disable-next-line no-await-in-loop
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     }
+  };
+  // After mounting: wait until the page has its data (it shows "Built-in reminders" only then),
+  // however long the machine takes to start and answer the first request. A fixed number of
+  // ticks is only enough when nothing else is running.
+  const mounted = async () => {
+    await settle();
+    for (let i = 0; i < 400 && !container.textContent?.includes('Built-in reminders'); i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    await settle();
   };
   const click = async (el: Element | null | undefined) => {
     expect(el).toBeTruthy();
@@ -97,6 +110,7 @@ describe('AdminDesktopNotifications', () => {
     confirmAnswer = true;
     calls = [];
     refuseNext = null;
+    gate = null;
     state = {
       version: 0, updated_at: null, updated_by_username: null,
       max_per_hour: 2, default_max_per_hour: 2, min_max_per_hour: 1, max_max_per_hour: 6,
@@ -106,13 +120,15 @@ describe('AdminDesktopNotifications', () => {
       ],
       custom: [],
     };
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => answer(input, init)));
+    const answer = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const request = input instanceof Request ? input : null;
       const url = new URL(request ? request.url : String(input), 'http://localhost');
       const method = (request?.method ?? init?.method ?? 'GET').toUpperCase();
       const raw = request ? await request.text() : (init?.body as string | undefined);
       const body = raw ? (JSON.parse(raw) as Body) : null;
       calls.push({ method, path: url.pathname, body });
+      if (gate && method !== 'GET') await gate;
       if (!url.pathname.includes('/desktop-notifications')) return json({}, 404);
       if (method === 'GET') return json(state);
       if (refuseNext) {
@@ -137,7 +153,7 @@ describe('AdminDesktopNotifications', () => {
       }
       bump();
       return json(state);
-    }));
+    };
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -146,7 +162,7 @@ describe('AdminDesktopNotifications', () => {
       middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(baseApi.middleware),
     });
     await act(async () => { root.render(<Provider store={store}><AdminDesktopNotifications /></Provider>); });
-    await settle();
+    await mounted();
   });
 
   afterEach(async () => {
@@ -183,7 +199,7 @@ describe('AdminDesktopNotifications', () => {
       middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(baseApi.middleware),
     });
     await act(async () => { root.render(<Provider store={store}><AdminDesktopNotifications /></Provider>); });
-    await settle();
+    await mounted();
 
     const text = container.textContent!;
     expect(text.indexOf('Custom notifications (1 of 1 on)')).toBeGreaterThan(-1);
@@ -271,7 +287,7 @@ describe('AdminDesktopNotifications', () => {
       middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(baseApi.middleware),
     });
     await act(async () => { root.render(<Provider store={store}><AdminDesktopNotifications /></Provider>); });
-    await settle();
+    await mounted();
 
     await click(box('Standup'));
     expect(writes()[0]).toEqual({ method: 'PATCH', path: expect.stringMatching(/\/custom\/c1$/), body: { enabled: false } });
@@ -329,7 +345,7 @@ describe('AdminDesktopNotifications', () => {
       middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(baseApi.middleware),
     });
     await act(async () => { root.render(<Provider store={store}><AdminDesktopNotifications /></Provider>); });
-    await settle();
+    await mounted();
 
     await click(Array.from(rowOf('Lunch break').querySelectorAll('button')).find((b) => b.textContent === 'Edit'));
     await click(button('Reset to default'));
@@ -350,7 +366,7 @@ describe('AdminDesktopNotifications', () => {
         middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(baseApi.middleware),
       });
       await act(async () => { root.render(<Provider store={store}><AdminDesktopNotifications /></Provider>); });
-      await settle();
+      await mounted();
     };
 
     it('offers a time only once "Only at a set time" is chosen, and sends exactly {time}', async () => {
@@ -388,6 +404,25 @@ describe('AdminDesktopNotifications', () => {
 
       expect(writes()).toEqual([{ method: 'PUT', path: expect.stringMatching(/\/builtin\/hydrate$/), body: { repeat: true } }]);
       expect(rowOf('Drink water').textContent).toContain('Every 60 min while working');
+    });
+
+    it('shows the reminder as repeating the moment it is saved, before the server has answered', async () => {
+      await fixedTo('12:40');
+      expect(rowOf('Drink water').textContent).toContain('Only at 12:40 IST');
+      let release!: () => void;
+      gate = new Promise<void>((resolve) => { release = resolve; });
+
+      await editWater();
+      await click(radio('Repeat every 60 minutes'));
+      await click(button('Save'));
+
+      expect(writes()).toHaveLength(1);                                   // sent, and still unanswered
+      expect(rowOf('Drink water').textContent).toContain('Every 60 min while working');
+      expect(rowOf('Drink water').textContent).not.toContain('Only at');
+
+      release();
+      await settle();
+      expect(rowOf('Drink water').textContent).toContain('Every 60 min while working');   // and the server agrees
     });
 
     it('moves it to another time sending only {time}, never {repeat}', async () => {

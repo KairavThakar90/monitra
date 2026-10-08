@@ -42,8 +42,14 @@ def service(qapp):
 
 @pytest.fixture
 def popup_service(qapp):
-    """The same service with its in-app card enabled — the real delivery path."""
+    """The same service with its in-app card enabled and asked for by default.
+
+    Notifications are the platform's own unless a caller says otherwise
+    (`NATIVE_BY_DEFAULT`), so the card -- still the fallback, and what
+    `native=False` draws -- is selected here for the tests that are about it.
+    """
     svc = NotificationService(MagicMock())
+    svc.NATIVE_BY_DEFAULT = False
     svc._available = True
     svc._tray = MagicMock()
     svc._icon = MagicMock()
@@ -638,3 +644,202 @@ def test_stopping_the_service_takes_the_card_down(popup_service):
 
     assert not popup.isVisible()
     assert popup_service._popup is None
+
+
+# ── The platform's own notification (`native=True`) ──────────────────────────
+#
+# The administrator's notifications are shown as the operating system's own: a
+# Windows toast under the application's name with the standard icon and the
+# time, kept in the Action Center afterwards. The application's own messages keep
+# their card. One surface per notification, never both.
+
+def test_a_native_notification_is_the_platforms_own_with_the_standard_icon(popup_service):
+    from PySide6.QtWidgets import QSystemTrayIcon
+
+    assert popup_service.notify("Please save your work.", NotificationLevel.INFO, title="Server restart",
+                                key="push:1", native=True) is True
+
+    popup_service._tray.showMessage.assert_called_once()
+    title, message, icon, _ms = popup_service._tray.showMessage.call_args.args
+    assert (title, message) == ("Server restart", "Please save your work.")
+    assert icon == QSystemTrayIcon.MessageIcon.Information        # the blue "i", not the brand mark
+    assert popup_service._cards == []                              # and no card as well
+
+
+def test_the_icon_is_the_blue_i_whatever_the_level(popup_service):
+    """The owner's design: every notification has the same look -- the application's header on top,
+    then the information icon, the title and the text."""
+    from PySide6.QtWidgets import QSystemTrayIcon
+
+    for level in (NotificationLevel.INFO, NotificationLevel.SUCCESS, NotificationLevel.WARNING, NotificationLevel.ERROR):
+        popup_service.notify(f"A {level} message", level, key=f"k-{level}", native=True)
+
+    icons = [call.args[2] for call in popup_service._tray.showMessage.call_args_list]
+    assert icons == [QSystemTrayIcon.MessageIcon.Information] * 4
+
+
+def test_a_notification_gives_its_own_title_and_text_and_never_the_application_name(native_service):
+    native_service.notify("Keep a water bottle nearby.", title="Drink Water", key="water")
+    native_service.notify("Timer started for 'project v2'", key="timer")           # no title given
+    native_service.show_success("Task created", key="task")                        # the wrappers give none either
+
+    shown = [call.args[:2] for call in native_service._tray.showMessage.call_args_list]
+    assert shown == [
+        ("Drink Water", "Keep a water bottle nearby."),
+        ("", "Timer started for 'project v2'"),            # just the text: no "Monitra" under Monitra's own header
+        ("", "Task created"),
+    ]
+
+
+def test_a_card_still_has_a_heading_when_the_caller_gave_none(native_service):
+    native_service.notify("Timer started", key="timer-started", native=False)
+
+    assert native_service._popup._title.text() == "Monitra"
+
+
+def test_the_platform_fallback_toast_has_a_heading_too(native_service, monkeypatch):
+    """No card could be placed, so the platform toast is the fallback: it keeps the application's name."""
+    native_service._popup_enabled = False
+    native_service.notify("Timer started", key="timer-started", native=False)
+
+    assert native_service._tray.showMessage.call_args.args[0] == "Monitra"
+
+
+def test_the_tray_icon_is_the_monitra_logo_which_windows_draws_in_every_notifications_header(qapp, monkeypatch):
+    from background_services.notifications import notification_service as module
+
+    shown_with = []
+    real = module.QSystemTrayIcon
+
+    class SpyTray(real):
+        def __init__(self, icon, parent=None):
+            shown_with.append(icon)
+            super().__init__(icon, parent)
+
+    monkeypatch.setattr(module, "QSystemTrayIcon", SpyTray)
+    monkeypatch.setattr(real, "isSystemTrayAvailable", staticmethod(lambda: True))
+    svc = module.NotificationService(MagicMock())
+    try:
+        svc.on_start()
+        assert shown_with and shown_with[0] is svc._icon          # the shared Monitra mark, not another brand's
+    finally:
+        svc.on_stop(1000)
+
+
+@pytest.fixture
+def native_service(qapp):
+    """The service as it is shipped: the card is available, native is the default."""
+    svc = NotificationService(MagicMock())
+    svc._available = True
+    svc._tray = MagicMock()
+    svc._icon = MagicMock()
+    svc._icon.isNull.return_value = False
+    yield svc
+    svc._dismiss_timer.stop()
+    svc.on_stop(1000)
+
+
+def test_every_notification_is_the_platforms_own_by_default(native_service):
+    """Not only the administrator's: an application message, a warning, an error."""
+    assert NotificationService.NATIVE_BY_DEFAULT is True
+    for level in (NotificationLevel.INFO, NotificationLevel.SUCCESS, NotificationLevel.WARNING, NotificationLevel.ERROR):
+        assert native_service.notify(f"A {level} message", level, key=f"k-{level}") is True
+
+    assert native_service._tray.showMessage.call_count == 4
+    assert native_service._cards == []                              # no card as well
+
+
+def test_the_convenience_wrappers_are_native_too(native_service):
+    native_service.show_info("i", key="a")
+    native_service.show_success("s", key="b")
+    native_service.show_warning("w", key="c")
+    native_service.show_error("e", key="d")
+
+    assert native_service._tray.showMessage.call_count == 4
+    assert native_service._cards == []
+
+
+def test_a_caller_can_still_ask_for_the_card(native_service):
+    native_service.notify("Timer started", key="timer-started", native=False)
+
+    assert native_service._popup is not None and native_service._popup.isVisible()
+    native_service._tray.showMessage.assert_not_called()
+
+
+def test_the_default_can_be_switched_off_for_the_whole_service(native_service):
+    native_service.NATIVE_BY_DEFAULT = False
+    native_service.notify("Timer started", key="timer-started")
+
+    assert native_service._popup is not None and native_service._popup.isVisible()
+    native_service._tray.showMessage.assert_not_called()
+
+
+def test_a_native_notification_falls_back_to_a_card_when_there_is_no_tray(qapp):
+    svc = NotificationService(MagicMock())
+    svc._available = False
+    svc._tray = None
+    try:
+        assert svc.notify("Please save your work.", key="push:1", native=True) is True
+        assert svc._popup is not None and svc._popup.isVisible()
+    finally:
+        svc._dismiss_timer.stop()
+        svc.on_stop(1000)
+
+
+def test_a_native_notification_the_platform_refuses_becomes_a_card_not_a_loss(popup_service):
+    popup_service._tray.showMessage.side_effect = RuntimeError("no notification centre")
+
+    assert popup_service.notify("Please save your work.", key="push:1", native=True) is True
+
+    assert popup_service._popup is not None and popup_service._popup.isVisible()
+    assert popup_service._pending_link is None
+
+
+def test_native_notifications_are_still_de_duplicated_and_rate_limited(popup_service):
+    assert popup_service.notify("Hello", key="same", native=True) is True
+    assert popup_service.notify("Hello", key="same", native=True) is False
+    assert popup_service._tray.showMessage.call_count == 1
+
+    admitted = sum(
+        1 for index in range(NotificationService.MAX_PER_MINUTE + 10)
+        if popup_service.notify(f"message {index}", key=f"key-{index}", native=True)
+    )
+    assert admitted <= NotificationService.MAX_PER_MINUTE - 1       # one already used this minute
+
+
+def test_clicking_a_native_notification_opens_its_link(popup_service, monkeypatch):
+    opened = []
+    monkeypatch.setattr(
+        "background_services.notifications.notification_service.QDesktopServices.openUrl",
+        lambda url: opened.append(url.toString()),
+    )
+
+    popup_service.notify("Update available", key="update", link="https://example.invalid/r", native=True)
+    popup_service._on_message_clicked()
+
+    assert opened == ["https://example.invalid/r"]
+
+
+def test_a_native_notification_from_a_worker_thread_is_shown_on_the_owning_thread(popup_service):
+    from PySide6.QtCore import QCoreApplication
+
+    def worker():
+        popup_service.notify("From a worker", key="worker", native=True)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    popup_service._tray.showMessage.assert_not_called()             # not on the worker's thread
+
+    QCoreApplication.processEvents()
+
+    popup_service._tray.showMessage.assert_called_once()            # on the owner's, natively
+    assert popup_service._cards == []
+
+
+def test_stopping_clears_a_native_notifications_link(popup_service):
+    popup_service.notify("Update available", key="update", link="https://example.invalid/r", native=True)
+
+    popup_service.on_stop(1000)
+
+    assert popup_service._pending_link is None

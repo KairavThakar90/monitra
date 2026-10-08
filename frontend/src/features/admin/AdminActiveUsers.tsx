@@ -14,7 +14,9 @@ import { formatISTDate, formatISTTime12 } from "../../utils/duration";
  * page is a client counter: `Running for` is the server's own figure (net of the
  * entry's adjustments, per docs/TIMING_MODEL.md section 3) as of the moment it
  * answered, and the page re-asks every `ACTIVE_USERS_POLL_MS` instead of
- * ticking a second clock of its own.
+ * ticking a second clock of its own. `Activity` is likewise the server's figure:
+ * the member's duration-weighted activity today, or a dash when none has been
+ * measured yet (never a made-up 0%).
  *
  * The backend scopes the list to what the caller may see: the organization, a
  * leader's team, or just the caller.
@@ -149,7 +151,7 @@ export const AdminActiveUsers: React.FC = () => {
                 className={`overflow-x-auto transition-opacity duration-200 ${refreshingStale ? "opacity-50" : ""}`}
                 data-stale={refreshingStale ? "true" : "false"}
               >
-                <table className="w-full min-w-[640px] text-left text-[13px]">
+                <table className="w-full min-w-[720px] text-left text-[13px]">
                   <thead>
                     <tr className="border-b border-[#E2E8F0] text-[11px] font-bold uppercase tracking-wider text-[#94A3B8]">
                       <th className="px-3 py-2.5">Member</th>
@@ -169,6 +171,9 @@ export const AdminActiveUsers: React.FC = () => {
                           Started
                           <SortArrow order={startedOrder} />
                         </button>
+                      </th>
+                      <th className="px-3 py-2.5 text-right" title="Today's activity, weighted by time measured">
+                        Activity
                       </th>
                       <th className="px-3 py-2.5 text-right">Running for</th>
                     </tr>
@@ -203,6 +208,18 @@ export const AdminActiveUsers: React.FC = () => {
                         </td>
                         <td className="whitespace-nowrap px-3 py-3 text-[#64748B]">
                           {startedLabel(item.start_time, data?.server_time)}
+                        </td>
+                        <td
+                          className="whitespace-nowrap px-3 py-3 text-right font-semibold text-[#0F172A]"
+                          data-testid="active-user-activity"
+                        >
+                          {item.activity_percentage == null ? (
+                            <span className="text-[#94A3B8]" title="No activity measured yet today">
+                              —
+                            </span>
+                          ) : (
+                            `${item.activity_percentage}%`
+                          )}
                         </td>
                         <td className="whitespace-nowrap px-3 py-3 text-right font-mono font-semibold text-[#0F172A]">
                           {item.elapsed_time}

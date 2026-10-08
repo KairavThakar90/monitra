@@ -7,9 +7,10 @@ it carries the request and hands the answer back. What the schedule *means*
 something the scheduler can trust is the schedule service's job, not this
 client's.
 """
-from typing import Any, Dict
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator
 
-from app.api.client import ApiClient, TIMEOUT_FAST
+from app.api.client import ApiClient, ApiStream, TIMEOUT_FAST
 from app.api.exceptions import ApiConnectionError, ApiError, ApiHttpError
 from core.logging_setup import get_logger
 
@@ -17,10 +18,33 @@ log = get_logger("notification_schedule.api")
 
 
 class NotificationScheduleApiService:
-    """Client for `GET /desktop-notifications/schedule`."""
+    """Client for `GET /desktop-notifications/schedule` and, to hear about a
+    change the moment it is made, `GET /desktop-notifications/stream`."""
 
     def __init__(self, api_client: ApiClient) -> None:
         self.api_client = api_client
+
+    @contextmanager
+    def open_stream(self, since: int, *, read_timeout: float) -> Iterator[ApiStream]:
+        """Open the change stream; leave the block to close it.
+
+        The stream carries no schedule, only a signal that the version moved
+        past `since` -- the schedule itself is always fetched with
+        `get_schedule`. Failures to open it are raised as `ApiError`, a 404 with
+        its `status_code` (an older deployment without the route is a normal
+        state during a rollout); failures while reading are raised by
+        `ApiStream.lines()` as the client's own exception types.
+        """
+        try:
+            with self.api_client.stream_get(
+                "/desktop-notifications/stream", {"since": since}, read_timeout=read_timeout,
+            ) as stream:
+                yield stream
+        except ApiHttpError as exc:
+            raise ApiError(
+                f"Notification change stream refused (HTTP {exc.status_code}).",
+                status_code=exc.status_code,
+            )
 
     def get_schedule(self) -> Dict[str, Any]:
         """The deployment-wide notification schedule, payload unchanged.

@@ -47,6 +47,23 @@ re-grant a permission.
   before. **Versions before this one never ask for the schedule, so they will not
   show an administrator's own messages or follow their changes.**
 
+- **Notifications now appear as Windows notifications.** Everything Monitra tells
+  you — health reminders, messages your administrator schedules,
+  timer and screenshot messages, errors, updates — now shows as a normal Windows
+  notification headed with the Monitra logo and "Monitra — Staff Management", showing
+  the blue information icon, the notification's own title and its text, with the time, and stays in the notification
+  centre (the speech bubble at the right of the taskbar) after it has gone from
+  the screen, so you can read one you missed. Windows decides how long one stays
+  on screen (five seconds unless you changed it in Settings → Accessibility →
+  Visual effects). Where Windows cannot show one, Monitra still shows its own
+  card.
+- **Changes from your administrator arrive at once.** A change your
+  administrator makes to the notification schedule now reaches Monitra within a
+  second or two while you are
+  signed in, instead of at its next half-minute check. Monitra keeps a light
+  connection open to hear about it; if that connection cannot be kept (an older
+  server, a network that drops it) it quietly goes back to checking every half
+  minute, so nothing is lost.
 - **Monitra tells you what is happening to your screenshots.** A quiet line
   beside "ACTIVITY" says **Uploading screenshot** while one is on its way,
   **Screenshot uploaded 10:34 AM** once it is confirmed in the cloud (never

@@ -211,6 +211,11 @@ class FakeScheduleApi:
             raise self.error
         return self.response
 
+    def open_stream(self, since, *, read_timeout):
+        """An older backend: no change stream (404), so the poll is all there is.
+        The stream itself is covered by test_notification_push.py."""
+        raise ApiError("no change stream", status_code=404)
+
 
 class LogCapture(logging.Handler):
     def __init__(self):
@@ -505,7 +510,7 @@ class FakeNotifications:
         self.shown = []
         self.ist = lambda: None
 
-    def notify(self, message, level=None, title=None, key=None, link=None):
+    def notify(self, message, level=None, title=None, key=None, link=None, native=False):
         self.shown.append({"body": message, "title": title, "key": key,
                            "level": level, "ist": self.ist()})
         return True

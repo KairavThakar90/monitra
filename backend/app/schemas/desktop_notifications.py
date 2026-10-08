@@ -75,6 +75,15 @@ class DesktopLimitUpdate(BaseModel):
     max_per_hour: MaxPerHour
 
 
+class DesktopPushCreate(BaseModel):
+    """A message to show on every signed-in desktop now. The same title and
+    message rules as a custom notification; there is no time or weekday,
+    because it is shown when it arrives."""
+
+    title: Title
+    message: Message
+
+
 class CustomNotificationCreate(BaseModel):
     title: Title
     message: Message
@@ -120,6 +129,19 @@ class ScheduleCustomRead(BaseModel):
     weekdays: List[int]
 
 
+class SchedulePushRead(BaseModel):
+    """A message pushed to the desktops, still worth showing.
+
+    ``seconds_ago`` is measured by the server, so the desktop never compares
+    its own clock with the server's: it shows the push if it has not been
+    shown yet and ``seconds_ago`` is inside the push lifetime."""
+
+    id: str
+    title: str
+    message: str
+    seconds_ago: int
+
+
 class DesktopScheduleRead(BaseModel):
     """The whole schedule. Every built-in reminder appears, with the default
     filled in where an administrator never touched it; a custom notification
@@ -135,6 +157,8 @@ class DesktopScheduleRead(BaseModel):
     max_per_hour: int
     builtin: List[ScheduleBuiltinRead]
     custom: List[ScheduleCustomRead]
+    #: Messages pushed in the last ``PUSH_TTL_SECONDS``. Empty most of the time.
+    pushes: List[SchedulePushRead] = []
 
 
 # ── What the administrator reads ─────────────────────────────────────────────

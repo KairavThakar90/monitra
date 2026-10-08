@@ -846,6 +846,16 @@ single dismissal timer take it down. Keep the platform toast as the fallback
 for a machine the card cannot be placed on, and show one or the other — never
 both, or a single event notifies the user twice.
 
+**The deliberate exception (owner's decision, 2026-10-08):** notifications are
+now the platform's own *by default* (`NotificationService.NATIVE_BY_DEFAULT`):
+a Windows toast that stays in the Action Center, with the card as the fallback
+and the opt-out (`native=False`). That is a choice to accept the platform's
+on-screen time -- five seconds unless the user changed it -- made knowingly,
+not a sign that a platform toast can be trusted to last. Do not pass a
+duration to it expecting it to be honoured, do not use a card for an ordinary
+notification to get thirty seconds without asking, and do not show a card as
+well as the toast.
+
 ### ❌ Do not emit a notification per state transition without throttling
 
 Network flapping produced a burst of toasts. Notifications are de-duplicated by

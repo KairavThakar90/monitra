@@ -118,6 +118,13 @@ class ActiveTimeTrackingTests(unittest.TestCase):
             role_name="administrator",
             permissions={"time_entries:view_all": True},
         )
+        # Today's activity per member; no database here. Tests that care set `.return_value`.
+        patcher = patch(
+            "app.services.time_tracking.TimeEntryActivityRepository.get_day_totals_for_users",
+            return_value={},
+        )
+        self.day_totals = patcher.start()
+        self.addCleanup(patcher.stop)
 
     @staticmethod
     def _row(entry_id=501, member_id=11, elapsed=3725.4):
@@ -150,6 +157,33 @@ class ActiveTimeTrackingTests(unittest.TestCase):
             validated = ActiveTimeTrackingResponse.model_validate(TimeTrackingService.list_active(None, self.user))
         self.assertEqual(validated.items[0].elapsed_seconds, 0)
         self.assertEqual(validated.items[0].elapsed_time, "00:00:00")
+
+    def test_activity_is_the_members_duration_weighted_figure_for_today(self):
+        # 80% for 120 s and 0% for 10 s: weighted 9600 / 130 s = 73.8 -> 74 (a per-window mean says 40).
+        self.day_totals.return_value = {11: (9600.0, 130)}
+        with patch("app.services.time_tracking.TimeTrackingRepository.list_active", return_value=[self._row()]):
+            validated = ActiveTimeTrackingResponse.model_validate(TimeTrackingService.list_active(None, self.user))
+        self.assertEqual(validated.items[0].activity_percentage, 74)
+
+    def test_activity_is_unknown_not_zero_when_nothing_was_measured(self):
+        with patch("app.services.time_tracking.TimeTrackingRepository.list_active", return_value=[self._row()]):
+            validated = ActiveTimeTrackingResponse.model_validate(TimeTrackingService.list_active(None, self.user))
+        self.assertIsNone(validated.items[0].activity_percentage)
+
+    def test_a_measured_zero_is_zero(self):
+        self.day_totals.return_value = {11: (0.0, 600)}
+        with patch("app.services.time_tracking.TimeTrackingRepository.list_active", return_value=[self._row()]):
+            validated = ActiveTimeTrackingResponse.model_validate(TimeTrackingService.list_active(None, self.user))
+        self.assertEqual(validated.items[0].activity_percentage, 0)
+
+    def test_activity_is_looked_up_once_for_all_members_in_the_callers_organization(self):
+        rows = [self._row(entry_id=1, member_id=12), self._row(entry_id=2, member_id=11)]
+        with patch("app.services.time_tracking.TimeTrackingRepository.list_active", return_value=rows):
+            TimeTrackingService.list_active(None, self.user)
+        self.assertEqual(self.day_totals.call_count, 1)
+        args = self.day_totals.call_args.args
+        self.assertEqual(args[1], 3)
+        self.assertEqual(args[2], [11, 12])
 
     def test_nobody_running_is_an_empty_list(self):
         with patch("app.services.time_tracking.TimeTrackingRepository.list_active", return_value=[]):

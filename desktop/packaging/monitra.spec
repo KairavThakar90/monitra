@@ -184,7 +184,8 @@ VSVersionInfo(
     StringFileInfo([
       StringTable('040904B0', [
         StringStruct('CompanyName', '{APP_NAME}'),
-        StringStruct('FileDescription', '{_version_ns["APP_DISPLAY_NAME"]}'),
+        # Windows prints this at the top of every notification Monitra raises.
+        StringStruct('FileDescription', '{_version_ns["NOTIFICATION_HEADER_NAME"]}'),
         StringStruct('FileVersion', '{VERSION}'),
         StringStruct('InternalName', '{APP_NAME}'),
         StringStruct('LegalCopyright', '{COPYRIGHT}'),

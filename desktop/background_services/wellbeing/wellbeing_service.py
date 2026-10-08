@@ -78,6 +78,16 @@ stays due (it is not dropped or re-gridded), so when room opens the one that
 has waited longest goes first. The count is in memory only; a restart starts the
 hour afresh together with the repeating cadence.
 
+**A pushed message is shown once, at once, first.** An administrator can push a
+message to every desktop (`pushes` in the schedule snapshot). It is not scheduled
+for a time: it is shown on the first tick that finds it, ahead of the daily and
+repeating reminders, and then recorded by id in `app_state` so a restart or a
+second delivery of the same schedule never shows it again. It follows the same
+spacing as everything else, counts toward the hour like any shown notification,
+and -- being an administrator's own message -- is never held back by the hourly
+limit. One whose lifetime ran out before it could be shown (the desktop was
+signed out, or busy for ten minutes) is dropped: "now" is wrong ten minutes later.
+
 **Reminders are gated on being signed in.** They accompany a working session.
 Nudging the login screen at three in the morning is not a feature.
 
@@ -138,6 +148,14 @@ DAILY_STATE_KEY = "wellbeing.daily_last_fired"
 
 #: Prefix of a custom notification's key in the daily record.
 CUSTOM_KEY_PREFIX = "custom:"
+
+#: Where the ids of the pushed messages already shown are kept, so a restart does
+#: not show one again while it is still inside its lifetime.
+PUSH_STATE_KEY = "wellbeing.pushes_seen"
+
+#: How many shown ids are remembered. A push lives ten minutes and the backend
+#: keeps twenty, so this is far more than can ever be live at once.
+PUSHES_REMEMBERED = 50
 
 
 @dataclass(frozen=True)
@@ -227,6 +245,9 @@ class WellbeingService(LoopService):
         self._recent_shown: List[datetime] = []
         #: Whether the current hold by the hourly limit is already in the log.
         self._limit_hold_logged = False
+        #: Ids of the pushed messages already shown, oldest first. None until
+        #: first read; read on the service's own thread, like the daily record.
+        self._pushes_seen: Optional[List[str]] = None
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -244,6 +265,7 @@ class WellbeingService(LoopService):
         self._held_reason = None
         self._recent_shown = []
         self._limit_hold_logged = False
+        self._pushes_seen = None
 
     # ── Clocks ────────────────────────────────────────────────────────────────
     #
@@ -365,6 +387,46 @@ class WellbeingService(LoopService):
         if fired_on != today:
             return False
         return not fired_at or fired_at == entry.at.strftime("%H:%M")
+
+    # ── Pushed messages ───────────────────────────────────────────────────────
+
+    def _load_pushes_seen(self) -> List[str]:
+        """The ids of pushed messages already shown, read once per process. A
+        missing or corrupt record degrades to empty: the worst case is one
+        message shown twice, inside its ten minutes."""
+        if self._pushes_seen is not None:
+            return self._pushes_seen
+        seen: List[str] = []
+        if self._cache is not None:
+            try:
+                stored = self._cache.load_app_state(PUSH_STATE_KEY)
+                if isinstance(stored, list):
+                    seen = [item for item in stored if isinstance(item, str)]
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not read the pushed-message record")
+        self._pushes_seen = seen[-PUSHES_REMEMBERED:]
+        return self._pushes_seen
+
+    def _save_pushes_seen(self) -> None:
+        if self._cache is None or self._pushes_seen is None:
+            return
+        try:
+            self._cache.save_app_state(PUSH_STATE_KEY, self._pushes_seen)
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not record the pushed-message state")
+
+    def _pending_push(self, now: float, schedule: Any) -> Optional[Any]:
+        """The oldest pushed message that has not been shown and has not run out
+        of time, or None. `now` is monotonic: a push's lifetime was anchored to
+        this machine's monotonic clock when the schedule was parsed."""
+        pushes = getattr(schedule, "pushes", None)
+        if not pushes:
+            return None
+        seen = self._load_pushes_seen()
+        for pushed in pushes:
+            if pushed.id not in seen and now <= pushed.expires_at_mono:
+                return pushed
+        return None
 
     # ── The hourly limit ──────────────────────────────────────────────────────
 
@@ -628,6 +690,9 @@ class WellbeingService(LoopService):
                 NotificationLevel.INFO,
                 title=title,
                 key=f"wellbeing:{key}",
+                # The platform's own notification, which stays in the Action
+                # Center; the application's own messages keep their card.
+                native=True,
             )
         except Exception:  # noqa: BLE001
             # A reminder that cannot be displayed must never stop the ones
@@ -654,6 +719,8 @@ class WellbeingService(LoopService):
         daily_wait = self._seconds_until_daily(now_ist, schedule)
         if daily_wait is not None:
             wait = min(wait, daily_wait)
+        if self._pending_push(now, schedule) is not None:
+            wait = 0.0  # due now; the spacing rule below decides how soon
         wait = min(ceiling, max(wait, self._spacing_remaining(now)))
         return int(min(self.interval_ms, max(self.MIN_TICK_MS, math.ceil(wait * 1000))))
 
@@ -690,6 +757,7 @@ class WellbeingService(LoopService):
             # on the tick that has a daily reminder to show: the first use of
             # storage on this thread opens its connection.
             self._load_daily_state()
+            self._load_pushes_seen()
             # The cadence starts here, not at start-up, and it is the moment a
             # reader of the log needs in order to work out when the first
             # reminder is due -- without it the service is silent for the whole
@@ -705,6 +773,19 @@ class WellbeingService(LoopService):
         if self._spacing_remaining(now) > 0:
             # The previous reminder is still on screen, or only just gone.
             # Whatever is due stays due and is shown when the window closes.
+            return self._next_delay_ms(now, now_ist, schedule)
+
+        # An administrator's pushed message before anything else: it says "now".
+        pushed = self._pending_push(now, schedule)
+        if pushed is not None:
+            self._show(f"push:{pushed.id}", pushed.title, pushed.message)
+            self._last_shown = now
+            self._note_shown(now_ist)
+            seen = self._load_pushes_seen()
+            seen.append(pushed.id)
+            del seen[:-PUSHES_REMEMBERED]
+            self._save_pushes_seen()
+            self.log.info("NOTIFICATION_PUSH_SHOWN: %s", pushed.id)
             return self._next_delay_ms(now, now_ist, schedule)
 
         # Time-of-day reminders first: their window is minutes wide, while an

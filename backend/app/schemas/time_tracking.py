@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TimeTrackingStatus(BaseModel):
@@ -49,6 +49,10 @@ class ActiveTimeTrackingItem(BaseModel):
     #: entry's adjustments applied. Never a client counter.
     elapsed_seconds: int
     elapsed_time: str
+    #: The member's duration-weighted activity for today (IST), 0-100 -- the
+    #: same figure as the dashboard and the desktop. `None` when no activity
+    #: window has been measured yet today; that is "unknown", not 0%.
+    activity_percentage: Optional[int] = Field(None, ge=0, le=100)
 
 
 class ActiveTimeTrackingResponse(BaseModel):

@@ -62,6 +62,7 @@ def raised(monkeypatch):
 @pytest.fixture
 def service(qapp):
     svc = NotificationService(MagicMock())
+    svc.NATIVE_BY_DEFAULT = False          # these tests are about the card, which is what native=False draws
     svc._available = True
     svc._tray = MagicMock()
     svc._icon = MagicMock()

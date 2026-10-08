@@ -71,6 +71,11 @@ export interface ActiveTimeTrackingItem {
   elapsed_seconds: number;
   /** `elapsed_seconds` as HH:MM:SS. */
   elapsed_time: string;
+  /**
+   * The member's duration-weighted activity for today (IST), 0-100. `null` when
+   * no activity has been measured yet today: unknown, which is not 0%.
+   */
+  activity_percentage: number | null;
 }
 
 export interface ActiveTimeTrackingResponse {

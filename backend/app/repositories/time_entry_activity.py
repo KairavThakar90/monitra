@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -51,6 +51,49 @@ class TimeEntryActivityRepository:
             )
         ).one()
         return float(row[0] or 0), int(row[1] or 0)
+
+    @staticmethod
+    def get_day_totals_for_users(
+        db: Session,
+        organization_id: int,
+        user_ids: List[int],
+        start_utc: datetime,
+        end_utc: datetime,
+    ) -> Dict[int, Tuple[float, int]]:
+        """``{user_id: (weighted_percent_seconds, measured_seconds)}`` for many
+        members in one grouped query -- :meth:`get_day_totals` for a list.
+
+        Same window rules as ``get_day_totals``. A member with no measured
+        window in the range is simply absent from the result, so a caller can
+        tell "nothing measured" from a measured 0%.
+        """
+        if not user_ids:
+            return {}
+        rows = db.execute(
+            select(
+                TimeEntry.user_id,
+                func.coalesce(
+                    func.sum(
+                        TimeEntryActivity.activity_percentage * TimeEntryActivity.window_seconds
+                    ),
+                    0,
+                ),
+                func.coalesce(func.sum(TimeEntryActivity.window_seconds), 0),
+            )
+            .select_from(TimeEntryActivity)
+            .join(TimeEntry, TimeEntry.id == TimeEntryActivity.time_entry_id)
+            .where(
+                TimeEntryActivity.organization_id == organization_id,
+                TimeEntry.user_id.in_(user_ids),
+                TimeEntryActivity.recorded_at >= start_utc,
+                TimeEntryActivity.recorded_at < end_utc,
+                TimeEntryActivity.window_seconds > 0,
+                TimeEntryActivity.activity_percentage >= 0,
+                TimeEntryActivity.activity_percentage <= 100,
+            )
+            .group_by(TimeEntry.user_id)
+        ).all()
+        return {int(user_id): (float(weighted or 0), int(measured or 0)) for user_id, weighted, measured in rows}
 
     @staticmethod
     def get_by_client_event_id(db: Session, client_event_id: str) -> Optional[TimeEntryActivity]:

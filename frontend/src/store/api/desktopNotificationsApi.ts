@@ -109,7 +109,12 @@ export const desktopNotificationsApi = baseApi.injectEndpoints({
           const optimistic = dispatch(
             desktopNotificationsApi.util.updateQueryData(QUERY, undefined, (draft) => {
               const row = draft.builtin.find((item) => item.key === key);
-              if (row) Object.assign(row, body);
+              if (row) {
+                // `repeat` is an instruction, not a field: it removes a repeating reminder's time.
+                const { repeat, ...change } = body;
+                Object.assign(row, change);
+                if (repeat) row.time = null;
+              }
             }),
           );
           try {

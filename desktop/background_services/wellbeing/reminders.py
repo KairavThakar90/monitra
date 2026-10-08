@@ -27,6 +27,14 @@ from datetime import time
 #: compares the two.
 DEFAULT_MAX_PER_HOUR = 2
 
+#: How long a message an administrator pushed is still worth showing, in
+#: seconds. A push older than this when the desktop learns of it -- it was off,
+#: signed out or offline -- is not shown: a message that says "now" is wrong ten
+#: minutes later. Mirrored by `PUSH_TTL_SECONDS` in
+#: `backend/app/services/desktop_notification_catalogue.py`; the contract test
+#: compares the two.
+PUSH_TTL_SECONDS = 10 * 60
+
 #: The widest range of `max_per_hour` the desktop accepts from a schedule. The
 #: backend allows less (1-6); a value outside this is ignored, never trusted.
 MAX_PER_HOUR_RANGE = (1, 12)

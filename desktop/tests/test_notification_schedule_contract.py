@@ -127,3 +127,11 @@ def test_every_limit_an_administrator_may_choose_is_one_the_desktop_accepts(back
         f"{backend.DEFAULT_MAX_PER_HOUR}) but the desktop only accepts {low}-{high}: a number it would "
         f"ignore is one the administrator could set"
     )
+
+
+def test_a_pushed_message_lives_as_long_on_both_sides(backend, desktop):
+    assert backend.PUSH_TTL_SECONDS == desktop.PUSH_TTL_SECONDS, (
+        f"the backend keeps a push in the schedule for {backend.PUSH_TTL_SECONDS} s but the desktop "
+        f"accepts one for {desktop.PUSH_TTL_SECONDS} s: the longer side would show (or drop) what the "
+        f"other did not"
+    )

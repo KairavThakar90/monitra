@@ -63,7 +63,7 @@ class FakeNotifications:
         self.shown = []
         self.ist = lambda: None
 
-    def notify(self, message, level=None, title=None, key=None, link=None):
+    def notify(self, message, level=None, title=None, key=None, link=None, native=False):
         self.shown.append({"body": message, "title": title, "key": key, "ist": self.ist()})
         return True
 

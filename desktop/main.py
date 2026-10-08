@@ -30,6 +30,18 @@ import os
 import sys
 from typing import Optional
 
+if __name__ == "__main__":
+    # From source on Windows, run through a copy of the interpreter stamped with the name
+    # notifications should carry (otherwise Windows heads each one "Python"). Before the
+    # heavy imports, so nothing is loaded twice; a no-op in an installed build.
+    from pathlib import Path
+
+    from core import dev_identity
+
+    _relaunched = dev_identity.relaunch_if_needed(Path(__file__).resolve())
+    if _relaunched is not None:
+        sys.exit(_relaunched)
+
 from PySide6.QtCore import QByteArray, QRect, QSettings, Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStackedWidget

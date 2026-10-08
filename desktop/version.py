@@ -62,6 +62,13 @@ APP_NAME = "Monitra"
 #: Longer display name for window titles and installer headings.
 APP_DISPLAY_NAME = "Monitra — Staff Management"
 
+#: The name Windows prints at the top of every notification Monitra raises, beside
+#: the tray icon (the Monitra logo). It is the executable's file description, which
+#: `packaging/monitra.spec` stamps and `core/dev_identity.py` stamps on a copy of the
+#: interpreter for runs from source. The notification's own title is separate: it is
+#: the caller's, and there is none when a caller gives none.
+NOTIFICATION_HEADER_NAME = APP_DISPLAY_NAME
+
 #: Publisher / Qt organisation name. QSettings already persists under
 #: ("Monitra", "SMSDesktop"); changing ORG_NAME would orphan existing user
 #: preferences, so treat it as fixed.
