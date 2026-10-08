@@ -53,12 +53,13 @@ class FakeIdleApi:
         return dict(self.config)
 
     def report_idle_period(self, time_entry_id, idle_started_at, idle_detected_at,
-                           client_event_id=None):
+                           client_event_id=None, client_time=None):
         self.reports.append({
             "time_entry_id": time_entry_id,
             "idle_started_at": idle_started_at,
             "idle_detected_at": idle_detected_at,
             "client_event_id": client_event_id,
+            "client_time": client_time,
         })
         if self.report_error:
             raise self.report_error
@@ -465,10 +466,17 @@ def test_a_failed_report_shows_no_popup_and_retries_on_the_next_tick(idle):
     assert idle.pending_period() is None
     assert idle.idle_state == IdleState.MONITORING
 
+    # The retry is paced by a jittered backoff, not made on every tick (a
+    # synchronised retry is a self-inflicted load test); the stretch is held,
+    # with the same identity, until the backoff has elapsed.
+    idle.tick()
+    assert len(idle.api.reports) == 1, "retried before its backoff elapsed"
+    idle._report_next_at = 0.0
     idle.api.report_error = None
     idle.tick()
     assert idle.pending_period() is not None
     assert len(idle.api.reports) == 2
+    assert idle.api.reports[0]["client_event_id"] == idle.api.reports[1]["client_event_id"]
 
 
 def test_a_double_clicked_resume_sends_one_request(idle):

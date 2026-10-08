@@ -161,6 +161,10 @@ class ActivityService(LoopService):
         """
         return self._probe.idle_seconds()
 
+    def probe_diagnostics(self) -> Dict[str, Any]:
+        """The inactivity probe's own health, for the idle monitor's report."""
+        return self._probe.diagnostics()
+
     def current_percent(self) -> int:
         return calculate_activity_percentage(
             self._keyboard_strokes,

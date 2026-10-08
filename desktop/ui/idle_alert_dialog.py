@@ -35,6 +35,7 @@ by the backend at resolution, from the same timestamp.
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
@@ -46,12 +47,16 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QRadioButton, QVBoxLayout, QWidget,
 )
 
+from core.logging_setup import get_logger
 from ui.reassign_time_dialog import ReassignTimeDialog
 from ui.styles import (
     BORDER_LIGHT, BORDER_MID, BUTTON_GRADIENT, BUTTON_GRADIENT_HOVER,
     CONTENT_BG, ERROR, MONITRA_MARK_SVG, PRIMARY, PRIMARY_HOVER, SUCCESS,
     TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 )
+
+
+log = get_logger("idle.dialog")
 
 
 def parse_utc(value: Optional[str]) -> Optional[datetime]:
@@ -108,6 +113,17 @@ class IdleAlertDialog(QDialog):
     #: stopped the moment the dialog is done — never a second update loop.
     TICK_MS = 1000
 
+    #: A request-in-flight state this dialog has shown for longer than this is
+    #: given up on, whatever the service has or has not said. The service
+    #: enforces its own, shorter, deadline and answers it with a failure; this
+    #: is the backstop for the day that answer does not arrive, because the
+    #: one thing this popup must never do is leave every button disabled.
+    BUSY_LIMIT_S = 60.0
+    #: Defaults for the provisional popup's recovery controls (the service
+    #: sends its own with each status).
+    RETRY_NOW_AFTER_S = 5.0
+    DEFER_AFTER_S = 60.0
+
     #: Fixed width of the dialog, and the width the project/task column gets
     #: within it once the "Reassign time" action and the padding are taken
     #: out. Used to elide names before the first layout has happened.
@@ -153,6 +169,20 @@ class IdleAlertDialog(QDialog):
         #: checks it, so there is no accidental dismissal.
         self._finished = False
         self._busy = False
+        self._busy_since: Optional[float] = None
+        #: Set the first time the window is shown. The "put it back on screen"
+        #: guard applies only after that: before it, the owner has not shown
+        #: the popup yet and there is nothing to put back.
+        self._was_shown = False
+        #: When the provisional gap was first shown, as wall-clock seconds
+        #: (the service stamps the interruption with it), and the thresholds
+        #: for offering the user a way out of "Confirming…".
+        self._waiting_since_epoch = float(
+            (provisional or {}).get("recorded_epoch") or time.time()
+        )
+        self._retry_after = self.RETRY_NOW_AFTER_S
+        self._defer_after = self.DEFER_AFTER_S
+        self._last_hidden_log = 0.0
         self._reassign_dialog: Optional[ReassignTimeDialog] = None
         #: Where the pointer was, relative to the window's top-left corner,
         #: when a drag began; None while no drag is in progress.
@@ -316,6 +346,35 @@ class IdleAlertDialog(QDialog):
         self.status_label.setVisible(False)
         card.addWidget(self.status_label)
 
+        # ── Recovery controls (provisional popup only) ───────────────────────
+        # Shown once "Confirming with the server…" has taken long enough that
+        # the user deserves a way to act on it. Neither answers the idle
+        # question: Retry asks the backend again now, and Decide later puts
+        # the popup away until the backend has confirmed the gap, when it
+        # comes back by itself. Nothing is counted or discarded by either.
+        recovery = QHBoxLayout()
+        recovery.setSpacing(10)
+        self.retry_btn = QPushButton("Retry now", self.card)
+        self.retry_btn.setObjectName("SecondaryBtn")
+        self.retry_btn.setMinimumSize(110, 32)
+        self.retry_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.retry_btn.clicked.connect(self._retry_now)
+        self.retry_btn.setVisible(False)
+        recovery.addWidget(self.retry_btn)
+        self.later_btn = QPushButton("Decide later", self.card)
+        self.later_btn.setObjectName("SecondaryBtn")
+        self.later_btn.setMinimumSize(120, 32)
+        self.later_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.later_btn.setToolTip(
+            "Close this for now. Your timer keeps running unchanged, and Monitra "
+            "asks again as soon as it can reach the server."
+        )
+        self.later_btn.clicked.connect(self._decide_later)
+        self.later_btn.setVisible(False)
+        recovery.addWidget(self.later_btn)
+        recovery.addStretch()
+        card.addLayout(recovery)
+
         # ── Actions ──────────────────────────────────────────────────────────
         actions = QHBoxLayout()
         actions.setSpacing(10)
@@ -445,6 +504,11 @@ class IdleAlertDialog(QDialog):
         # A no-op unless this dialog is still provisional (`self._locked`):
         # guarded inside the slot itself, so it is safe to connect always.
         idle.interruption_withdrawn.connect(self._on_interruption_withdrawn)
+        # What the provisional popup is waiting for. Tolerant of a service
+        # that does not publish it: the popup then shows the plain message.
+        status = getattr(idle, "interruption_status", None)
+        if status is not None:
+            status.connect(self._on_interruption_status)
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
@@ -458,6 +522,49 @@ class IdleAlertDialog(QDialog):
         self.duration_label.setText(humanize_idle(self._idle_seconds()))
         if self._reassign_dialog is not None:
             self._reassign_dialog.set_duration_text(humanize_idle(self._idle_seconds()))
+        # The same once-a-second tick carries the popup's own safeguards, so
+        # no second timer exists to be forgotten or to leak.
+        self._keep_alive()
+
+    def _keep_alive(self) -> None:
+        """Make sure this popup is on screen and is not stuck waiting.
+
+        Run from the one tick this dialog already owns.
+        """
+        if self._finished:
+            return
+        # A top-level window the OS hid while Qt still believes it is shown
+        # (the failure that parenting to the main window caused) reports
+        # `isVisible()` true; the reverse -- hidden by anything else -- is
+        # caught here, and put right.
+        if self._was_shown and not self.isVisible():
+            now = time.monotonic()
+            if now - self._last_hidden_log > 30:
+                self._last_hidden_log = now
+                log.error("IDLE_POPUP_HIDDEN the popup was not visible; showing it again")
+            self.show()
+            self.raise_()
+            self.activateWindow()
+        if self._locked:
+            elapsed = time.time() - self._waiting_since_epoch
+            self.retry_btn.setVisible(elapsed >= self._retry_after)
+            self.later_btn.setVisible(elapsed >= self._defer_after)
+        elif self.retry_btn.isVisible() or self.later_btn.isVisible():
+            self.retry_btn.setVisible(False)
+            self.later_btn.setVisible(False)
+        if (
+            self._busy and not self._locked and self._busy_since is not None
+            and time.monotonic() - self._busy_since > self.BUSY_LIMIT_S
+        ):
+            log.error(
+                "IDLE_POPUP_BUSY_TIMEOUT no answer after %.0fs; giving the buttons back",
+                time.monotonic() - self._busy_since,
+            )
+            recover = getattr(self.api.idle, "recover_inflight", None)
+            if recover is not None:
+                recover()
+            if self._busy:  # the service did not answer either
+                self._on_resolve_failed("The server did not answer in time.")
 
     def _render_assignment(self) -> None:
         session = self.api.active_session() or {}
@@ -494,6 +601,10 @@ class IdleAlertDialog(QDialog):
         label.setText(metrics.elidedText(text, Qt.TextElideMode.ElideRight, available))
         label.setToolTip(text)
 
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        self._was_shown = True
+        super().showEvent(event)
+
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         super().resizeEvent(event)
         self._render_assignment()
@@ -506,6 +617,7 @@ class IdleAlertDialog(QDialog):
         nor a stuck button can send two.
         """
         self._busy = busy
+        self._busy_since = time.monotonic() if busy else None
         self._apply_action_availability()
         if message:
             self._set_status(message, TEXT_SECONDARY)
@@ -554,8 +666,12 @@ class IdleAlertDialog(QDialog):
 
     def _on_resolve_failed(self, message: str) -> None:
         self._set_busy(False)
+        # The selection (Yes/No) is untouched, so pressing the same button
+        # again repeats the same answer -- which the backend recognises, so a
+        # request that did get through is confirmed rather than applied twice.
         self._set_status(
-            f"{message} Your answer was not saved — please try again.", ERROR
+            f"{message} Your answer has not been saved yet and your timer is "
+            f"unaffected — press the button again to retry.", ERROR
         )
 
     def _on_period_cleared(self) -> None:
@@ -566,6 +682,44 @@ class IdleAlertDialog(QDialog):
         self._tick_timer.stop()
         self._close_reassign_dialog()
         self.resolved.emit({"cleared": True})
+        self.accept()
+
+    def is_done(self) -> bool:
+        """True once this popup has been answered, cleared or put away."""
+        return self._finished
+
+    def _on_interruption_status(self, status: dict) -> None:
+        """The service says what the provisional popup is waiting for."""
+        if not self._locked or self._finished or not isinstance(status, dict):
+            return
+        self._retry_after = float(status.get("retry_after") or self._retry_after)
+        self._defer_after = float(status.get("defer_after") or self._defer_after)
+        since = status.get("since_epoch")
+        if since:
+            self._waiting_since_epoch = float(since)
+        message = str(status.get("message") or "")
+        failing = status.get("phase") in ("retrying", "auth")
+        self._set_status(message, ERROR if failing else TEXT_SECONDARY)
+
+    def _retry_now(self) -> None:
+        if not self._locked or self._finished:
+            return
+        self._set_status("Confirming with the server…", TEXT_SECONDARY)
+        retry = getattr(self.api.idle, "retry_interruption_now", None)
+        if retry is not None:
+            retry()
+
+    def _decide_later(self) -> None:
+        """Put the unconfirmed popup away; the service keeps the gap and asks again."""
+        if not self._locked or self._finished:
+            return
+        defer = getattr(self.api.idle, "defer_interruption", None)
+        if defer is not None:
+            defer()
+        self._finished = True
+        self._tick_timer.stop()
+        self._close_reassign_dialog()
+        self.resolved.emit({"deferred": True})
         self.accept()
 
     def is_provisional_for(self, period: Dict[str, Any]) -> bool:

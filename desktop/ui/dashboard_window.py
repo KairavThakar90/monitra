@@ -703,26 +703,18 @@ class DashboardWindow(QWidget):
         never accepted the gap. The backend still decides everything but the
         on-screen count.
         """
-        if self._idle_dialog is not None:
-            self._idle_dialog.raise_()
-            self._idle_dialog.activateWindow()
+        if self._reuse_idle_dialog():
             return
 
-        dialog = IdleAlertDialog(
-            self.api,
-            provisional=interruption,
-            project_name_resolver=self._project_name_for,
-            project_loader=self.project_service.get_projects,
-            task_loader=self.task_service.get_tasks_for_project,
-            parent=self.window(),
-        )
-        self._idle_dialog = dialog
-        dialog.resolved.connect(self._on_idle_period_resolved)
-        dialog.finished.connect(lambda _result: self._forget_idle_dialog())
-
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        try:
+            dialog = self._build_idle_dialog(provisional=interruption)
+        except Exception:  # noqa: BLE001
+            log.exception("IDLE_POPUP_CREATE_FAILED could not build the provisional idle popup")
+            self.api.notify(
+                "You have been idle. Open Monitra to say whether to keep that time.",
+                NotificationLevel.WARNING, key="idle-alert",
+            )
+            return
         self.api.notify(
             "You have been idle. Monitra needs to know whether to keep that time.",
             NotificationLevel.WARNING, key="idle-alert",
@@ -740,37 +732,90 @@ class DashboardWindow(QWidget):
                 # The dialog already on screen is the provisional view of
                 # this exact gap -- unlock it rather than build a second one.
                 self._idle_dialog.bind_confirmed_period(period)
+                self.api.idle.popup_shown(period.get("id"))
                 return
-            self._idle_dialog.raise_()
-            self._idle_dialog.activateWindow()
-            return
+            if self._reuse_idle_dialog():
+                self.api.idle.popup_shown(period.get("id"))
+                return
 
+        # The user is, by definition, not looking at Monitra: the window may
+        # be minimised or hidden in the tray. The alert is its own top-level
+        # window, put in front, and the tray is told as well so the prompt is
+        # carried even if focus is stolen back.
+        #
+        # A failure to build it must not be silent. The service holds a
+        # pending period and stops looking for inactivity until it is
+        # answered, so an exception here used to mean no popup, ever, until a
+        # restart. Nothing is acknowledged, the service raises it again, and
+        # the tray says it in the meantime.
+        try:
+            self._build_idle_dialog(period=period)
+        except Exception:  # noqa: BLE001
+            log.exception("IDLE_POPUP_CREATE_FAILED could not build the idle popup")
+            self.api.notify(
+                "You have been idle. Open Monitra to say whether to keep that time.",
+                NotificationLevel.WARNING, key="idle-alert",
+            )
+            return
+        self.api.idle.popup_shown(period.get("id"))
+        self.api.notify(
+            "You have been idle. Monitra needs to know whether to keep that time.",
+            NotificationLevel.WARNING, key="idle-alert",
+        )
+
+    def _reuse_idle_dialog(self) -> bool:
+        """Bring the popup already on record forward; False if there is none to bring.
+
+        A dialog that is finished, gone, or not actually visible is not a
+        popup the user can see, whatever this window believes: it is dropped
+        so that a fresh one is built, instead of "raising" a ghost while the
+        service waits for an answer nobody can give.
+        """
+        dialog = self._idle_dialog
+        if dialog is None:
+            return False
+        try:
+            usable = (not dialog.is_done()) and dialog.isVisible()
+        except RuntimeError:  # the C++ object is gone
+            usable = False
+        if not usable:
+            log.warning("IDLE_POPUP_STALE the recorded popup was not on screen; replacing it")
+            self._forget_idle_dialog()
+            return False
+        dialog.raise_()
+        dialog.activateWindow()
+        return True
+
+    def _build_idle_dialog(self, *, period=None, provisional=None) -> IdleAlertDialog:
+        """Build and show the mandatory popup.
+
+        Deliberately **unparented**. Parented to this window it was an *owned*
+        window, and Windows hides an owned window when its owner is minimised
+        or hidden to the tray -- while Qt goes on reporting it visible. A user
+        who minimised Monitra (or pressed Show Desktop) with the popup up had
+        a modal application with nothing on screen to answer. Measured: the
+        owned dialog's real `IsWindowVisible` went false and a second
+        `show()` did not bring it back; the unowned one stayed up.
+        """
         dialog = IdleAlertDialog(
             self.api,
             period,
+            provisional=provisional,
             project_name_resolver=self._project_name_for,
             # The same authorised loaders this window uses, so the
             # reassignment dropdowns cannot show a project or task the user is
             # not entitled to — and there is no second way of fetching them.
             project_loader=self.project_service.get_projects,
             task_loader=self.task_service.get_tasks_for_project,
-            parent=self.window(),
+            parent=None,
         )
         self._idle_dialog = dialog
         dialog.resolved.connect(self._on_idle_period_resolved)
-        dialog.finished.connect(lambda _result: self._forget_idle_dialog())
-
-        # The user is, by definition, not looking at Monitra: the window may
-        # be minimised or hidden in the tray. Show the alert as its own
-        # top-level window and put it in front, and notify as well so the
-        # taskbar/tray carries the prompt even if focus is stolen back.
+        dialog.finished.connect(lambda _result, d=dialog: self._forget_idle_dialog(d))
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
-        self.api.notify(
-            "You have been idle. Monitra needs to know whether to keep that time.",
-            NotificationLevel.WARNING, key="idle-alert",
-        )
+        return dialog
 
     def _on_idle_period_resolved(self, result: dict) -> None:
         """The backend accepted an answer (or the period went away).
@@ -783,7 +828,12 @@ class DashboardWindow(QWidget):
         self._load_today_time()
         self._update_stat_cards()
 
-    def _forget_idle_dialog(self) -> None:
+    def _forget_idle_dialog(self, only=None) -> None:
+        """Drop the recorded popup. With `only`, just that one: a replaced
+        popup finishing late must not forget the one that replaced it."""
+        if only is not None and only is not self._idle_dialog:
+            only.deleteLater()
+            return
         dialog, self._idle_dialog = self._idle_dialog, None
         if dialog is not None:
             dialog.deleteLater()

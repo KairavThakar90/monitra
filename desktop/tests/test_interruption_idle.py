@@ -464,8 +464,11 @@ def test_7_the_gap_is_kept_and_reported_when_the_network_returns(qapp, cache, cl
         assert second.idle._interruption is not None, "a connection error is not an answer"
         assert second.idle.idle_state == IdleState.MONITORING
 
-        # Then it lands.
+        # Then it lands (once the jittered backoff after the failure is over).
         second.idle_api.report_error = None
+        second.idle.tick()
+        assert len(second.idle_api.reports) == 1, "retried before its backoff elapsed"
+        second.idle._report_next_at = 0.0
         second.idle.tick()
         assert len(second.idle_api.reports) == 2
         assert second.idle._interruption is None

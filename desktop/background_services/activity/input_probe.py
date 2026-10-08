@@ -68,6 +68,13 @@ class InputProbe:
     def __init__(self) -> None:
         self._supported = _IS_WINDOWS
         self._last_cursor: Optional[Tuple[int, int]] = None
+        #: Why the last reading was unavailable, and how many in a row have
+        #: been. A reading that fails is `None` to the caller; this is how an
+        #: investigation tells "this platform cannot measure it" from "the OS
+        #: call failed just now" without a debugger on the user's machine.
+        self._failure_reason: Optional[str] = None
+        self._consecutive_failures = 0
+        self._total_failures = 0
 
         if not self._supported:
             log.warning(
@@ -98,16 +105,37 @@ class InputProbe:
     def _idle_seconds(self) -> Optional[float]:
         """Seconds since the last system-wide keyboard or mouse input."""
         if not self._supported:
+            self._failure_reason = f"unsupported_platform:{sys.platform}"
             return None
         try:  # pragma: no cover - platform specific
             info = _LASTINPUTINFO()
             info.cbSize = ctypes.sizeof(_LASTINPUTINFO)
             if not _user32.GetLastInputInfo(ctypes.byref(info)):
+                self._note_failure(f"GetLastInputInfo returned 0 (winerror {ctypes.GetLastError()})")
                 return None
             now_ticks = _kernel32.GetTickCount()
-            return ((now_ticks - info.dwTime) & 0xFFFFFFFF) / 1000.0
-        except Exception:  # noqa: BLE001
+            reading = ((now_ticks - info.dwTime) & 0xFFFFFFFF) / 1000.0
+        except Exception as exc:  # noqa: BLE001
+            self._note_failure(f"{type(exc).__name__}: {exc}")
             return None
+        self._consecutive_failures = 0
+        self._failure_reason = None
+        return reading
+
+    def _note_failure(self, reason: str) -> None:
+        self._failure_reason = reason
+        self._consecutive_failures += 1
+        self._total_failures += 1
+
+    def diagnostics(self) -> Dict[str, Any]:
+        """What this probe can say about its own health. No user content."""
+        return {
+            "supported": self._supported,
+            "platform": sys.platform,
+            "failure_reason": self._failure_reason,
+            "consecutive_failures": self._consecutive_failures,
+            "total_failures": self._total_failures,
+        }
 
     def _cursor_moved(self) -> bool:
         if not self._supported:
