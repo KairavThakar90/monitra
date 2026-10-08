@@ -187,17 +187,23 @@ export const AdminAssignTasks: React.FC = () => {
       }
     >
       <div className="w-full px-4 py-8 sm:px-6 lg:px-8">
-        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-          <input
-            type="search"
-            value={searchInput}
-            maxLength={SEARCH_MAX_LENGTH}
-            onChange={(event) => { setSearchInput(event.target.value); setPage(1); }}
-            placeholder="Search projects, tasks or members..."
-            aria-label="Search projects, tasks or members"
-            className="w-full max-w-sm rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-[#3B82F6]"
-          />
-          <div className="flex flex-wrap items-center gap-3">
+        {/* Search and filters: the same card as Project Management's toolbar. */}
+        <div className="mb-6 flex flex-col items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row">
+          <div className="relative w-full sm:min-w-[12rem] sm:max-w-md sm:flex-1">
+            <svg className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              type="text"
+              value={searchInput}
+              maxLength={SEARCH_MAX_LENGTH}
+              onChange={(event) => { setSearchInput(event.target.value); setPage(1); }}
+              placeholder="Search projects, tasks or members..."
+              aria-label="Search projects, tasks or members"
+              className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-10 pr-4 text-sm font-semibold text-slate-700 outline-none transition focus:border-[#3B82F6] focus:bg-white focus:ring-1 focus:ring-[#3B82F6]"
+            />
+          </div>
+          <div className="flex w-full flex-wrap items-center gap-3 sm:w-auto">
             <MemberMultiSelect
               members={holderChoices}
               selected={memberIds}
@@ -207,26 +213,25 @@ export const AdminAssignTasks: React.FC = () => {
               projects={projects}
               selected={projectIds}
               onChange={(ids) => { setProjectIds(ids); setPage(1); }}
-              compact
             />
             <DateRangeFilter
               allowAll
               value={dateRange}
               onChange={(range) => { setDateRange(range); setPage(1); }}
             />
-          <button
-            type="button"
-            onClick={() => {
-              const anyOpen = pageProjects.some((project) => !collapsed[project.id]);
-              setCollapsed((previous) => ({
-                ...previous,
-                ...Object.fromEntries(pageProjects.map((project) => [project.id, anyOpen])),
-              }));
-            }}
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-bold text-slate-500 transition hover:bg-slate-50 hover:text-slate-700"
-          >
-            {pageProjects.some((project) => !collapsed[project.id]) ? 'Collapse All' : 'Expand All'}
-          </button>
+            <button
+              type="button"
+              onClick={() => {
+                const anyOpen = pageProjects.some((project) => !collapsed[project.id]);
+                setCollapsed((previous) => ({
+                  ...previous,
+                  ...Object.fromEntries(pageProjects.map((project) => [project.id, anyOpen])),
+                }));
+              }}
+              className="h-9 rounded-lg border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+            >
+              {pageProjects.some((project) => !collapsed[project.id]) ? 'Collapse All' : 'Expand All'}
+            </button>
           </div>
         </div>
 

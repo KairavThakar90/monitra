@@ -86,7 +86,7 @@ describe('Assign Tasks: member filter', () => {
   const taskNames = () => Array.from(container.querySelectorAll('h4')).map((h) => h.textContent);
   const projectNames = () => Array.from(container.querySelectorAll('section h3')).map((h) => h.textContent);
   const typeInSearch = async (value: string) => {
-    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
+    const input = container.querySelector('input[aria-label="Search projects, tasks or members"]') as HTMLInputElement;
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
     await act(async () => { input.dispatchEvent(new Event('input', { bubbles: true })); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
@@ -138,6 +138,23 @@ describe('Assign Tasks: member filter', () => {
     expect(taskNames()).toEqual([
       'Wire up login', 'Write the docs', 'Fix the build', 'Triage the backlog', 'Design the logo', 'Pick the colours',
     ]);
+  });
+
+  it('wears Project Management\'s search-and-filter bar: a white card, a magnifier in a filled search box', () => {
+    const search = container.querySelector('input[aria-label="Search projects, tasks or members"]') as HTMLInputElement;
+    const bar = search.closest('.rounded-xl');
+    expect(bar?.className).toContain('border-slate-200');
+    expect(bar?.className).toContain('bg-white');
+    expect(bar?.className).toContain('p-4');
+    expect(bar?.className).toContain('shadow-sm');
+    expect(search.type).toBe('text');
+    expect(search.className).toContain('bg-slate-50');
+    expect(search.className).toContain('pl-10');
+    expect(search.parentElement?.querySelector('svg path[d^="M21 21l-6-6"]')).toBeTruthy();
+    // the filters live inside that same card
+    expect(bar?.contains(buttonByText('All members') ?? null)).toBe(true);
+    expect(bar?.contains(buttonByText('All projects') ?? null)).toBe(true);
+    expect(bar?.contains(buttonByText('Collapse All') ?? null)).toBe(true);
   });
 
   it('sits beside the project and date filters, before them, as on the Reports page', () => {
