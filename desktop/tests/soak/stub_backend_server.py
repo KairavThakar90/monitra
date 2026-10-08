@@ -194,7 +194,7 @@ def build_user(email_addr: str) -> Dict[str, Any]:
         "wp_capabilities": None,
         "idle_enabled": True,
         "idle_minutes": 5,
-        "capture_frequency": SCREENSHOT_WINDOW_MINUTES,
+        "capture_frequency": CAPTURE_FREQUENCY_MINUTES,
         "can_add_tasks": True,
         "can_add_nonbillable_tasks": True,
         "can_login": True,
@@ -249,6 +249,8 @@ class State:
         self.duplicate_screenshot_uploads = 0
         self.app_usage: Dict[str, int] = {}
         self.url_usage: Dict[Tuple[str, str, str], int] = {}
+        self.timeline_requests = 0
+        self.churn_timeline = bool(getattr(args, "churn_timeline", False))
         if getattr(args, "seed_usage", False):
             # A day that looks like a working one, so the Apps and URLs tabs
             # have rows to render (and icons/favicons to resolve).
@@ -477,6 +479,12 @@ class State:
             if start <= s["captured_at"] < end:
                 windows.setdefault(int(s["captured_at"].timestamp()) // width, []).append(s)
         out = []
+        # `--churn-timeline`: every answer differs from the last, so a client
+        # refresh rebuilds every card -- the exact pattern that retained
+        # pictures before the fix. A real backend changes a window's activity
+        # as more of it is measured; this just does it on every request.
+        self.timeline_requests += 1
+        churn = self.timeline_requests if self.churn_timeline else 0
         for idx in sorted(windows):
             shots = windows[idx]
             w_start = datetime.fromtimestamp(idx * width, UTC)
@@ -485,7 +493,7 @@ class State:
             out.append({
                 "window_start": iso(w_start),
                 "window_end": iso(w_start + timedelta(seconds=width)),
-                "activity_percentage": 35 + digest % 60,
+                "activity_percentage": (35 + digest % 60 + churn) % 100,
                 "activity_measured_seconds": measured,
                 "tracked_seconds": width,
                 "screenshots": [self.screenshot_view(s) for s in shots],
@@ -663,6 +671,7 @@ class Handler(BaseHTTPRequestHandler):
                 "tasks": len(st.task_index),
                 "screenshots_total": len(st.screenshots),
                 "uploaded_screenshot_count": st.uploaded_screenshot_count,
+                "timeline_requests": st.timeline_requests,
                 "duplicate_screenshot_uploads": st.duplicate_screenshot_uploads,
                 "uploaded_screenshot_bytes": st.uploaded_bytes,
                 "active_entries": len(active),
@@ -767,7 +776,7 @@ class Handler(BaseHTTPRequestHandler):
                 st.upload_counts["capture_events"] += len(events)
             self._send(200, {"success": True, "accepted": len(events), "duplicates": 0, "rejected": []})
         elif m == "GET" and p == "/screenshots/config":
-            self._send(200, {"capture_frequency": SCREENSHOT_WINDOW_MINUTES})
+            self._send(200, {"capture_frequency": CAPTURE_FREQUENCY_MINUTES})
         elif m == "GET" and p == "/screenshot/privacy-config":
             self._send(200, {"applications": [], "urls": [], "excluded_applications": [], "excluded_urls": []})
 
@@ -1063,6 +1072,10 @@ SEED_SITES = [(d, d.split(".")[0].title() + " - Home") for d in (
 )]
 
 
+#: The capture interval the stub reports for the user; `--capture-frequency`.
+CAPTURE_FREQUENCY_MINUTES = SCREENSHOT_WINDOW_MINUTES
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8765)
@@ -1070,12 +1083,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--tasks-per-project", type=int, default=30)
     ap.add_argument("--screenshots", type=int, default=40)
     ap.add_argument("--user-email", default="rig.user@example.test")
+    ap.add_argument("--capture-frequency", type=int, default=SCREENSHOT_WINDOW_MINUTES,
+                    help="the user's screenshot interval in minutes (the backend's value wins over env)")
+    ap.add_argument("--churn-timeline", action="store_true",
+                    help="change every window's activity on every timeline request")
     ap.add_argument("--seed-usage", action="store_true",
                     help="start the day with application and URL usage rows")
     ap.add_argument("--verbose", action="store_true", help="log every request to stderr")
     args = ap.parse_args(argv)
 
     t0 = time.monotonic()
+    global CAPTURE_FREQUENCY_MINUTES
+    CAPTURE_FREQUENCY_MINUTES = max(1, args.capture_frequency)
     Handler.state = State(args)
     srv = Server(("127.0.0.1", args.port), Handler)
     print(f"stub backend ready on http://127.0.0.1:{args.port} "

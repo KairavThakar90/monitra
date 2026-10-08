@@ -63,6 +63,11 @@ def _parse() -> argparse.Namespace:
     ap.add_argument("--no-ui-ops", action="store_true", help="idle: sample only")
     ap.add_argument("--csv", type=Path)
     ap.add_argument("--platform", default=None, help="QT_QPA_PLATFORM (default: the real one)")
+    ap.add_argument("--outage-every", type=float, default=600.0,
+                    help="seconds between injected network outages (0 = none)")
+    ap.add_argument("--outage-seconds", type=float, default=90.0)
+    ap.add_argument("--settle", type=float, default=60.0,
+                    help="idle seconds after the workload before the final sample")
     return ap.parse_args()
 
 
@@ -91,7 +96,7 @@ def _start_stub() -> subprocess.Popen:
     stub = subprocess.Popen(
         [sys.executable, str(HERE / "stub_backend_server.py"), "--port", str(ARGS.port),
          "--projects", "40", "--tasks-per-project", "30",
-         "--screenshots", str(ARGS.screenshots), "--seed-usage"],
+         "--screenshots", str(ARGS.screenshots), "--seed-usage", "--churn-timeline"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     for _ in range(90):
@@ -162,7 +167,22 @@ def _run() -> int:
     prev_cpu = {}
     prev_t = [started]
     samples = []
-    counters = {"ops": 0, "start_stop": 0, "dialogs": 0, "offline": 0}
+    counters = {"ops": 0, "start_stop": 0, "breaks": 0, "dialogs": 0, "notifications": 0,
+                "offline": 0, "refreshes": 0, "project_switches": 0, "date_switches": 0,
+                "tab_switches": 0, "activity_refreshes": 0, "cards_created": 0, "cards_retired": 0}
+    # Count card births and retirements on the real classes. Harness-only:
+    # wrappers around the product's own methods, nothing in the product changes.
+    from ui import activity_section as _as
+    _orig_card_init = _as.ScreenshotCard.__init__
+    _orig_retire = _as.ScreenshotsTabView._retire
+    def _counting_init(self, *a, **kw):
+        counters["cards_created"] += 1
+        _orig_card_init(self, *a, **kw)
+    def _counting_retire(self, card):
+        counters["cards_retired"] += 1
+        _orig_retire(self, card)
+    _as.ScreenshotCard.__init__ = _counting_init
+    _as.ScreenshotsTabView._retire = _counting_retire
     state = {"step": 0, "online": True, "running": False, "settled": False}
 
     def dashboard():
@@ -206,19 +226,24 @@ def _run() -> int:
         counters["ops"] += 1
         sidebar = d._sidebar
         activity = d._activity_section
-        kind = step % 12
+        kind = step % 14
         try:
             if kind == 0:
                 d.refresh_data()
+                counters["refreshes"] += 1
             elif kind == 1 and sidebar._projects:
                 d._on_project_selected(sidebar._projects[step % len(sidebar._projects)])
+                counters["project_switches"] += 1
             elif kind == 2:
                 from core.time_format import ist_today
-                d._on_date_changed(ist_today() - timedelta(days=1 if (step // 12) % 2 else 0))
+                d._on_date_changed(ist_today() - timedelta(days=1 if (step // 14) % 2 else 0))
+                counters["date_switches"] += 1
             elif kind == 3:
-                activity.switch_tab(("apps", "urls", "screenshots")[(step // 12) % 3])
+                activity.switch_tab(("apps", "urls", "screenshots")[(step // 14) % 3])
+                counters["tab_switches"] += 1
             elif kind == 4:
                 activity.refresh()
+                counters["activity_refreshes"] += 1
             elif kind == 5:
                 _toggle_timer(d)
             elif kind == 6:
@@ -230,8 +255,17 @@ def _run() -> int:
                 _open_close_dialog(d)
             elif kind == 9:
                 activity.refresh()
-            elif kind == 10 and step % 144 == 10:       # roughly every 5 minutes
-                _flap_network()
+                counters["activity_refreshes"] += 1
+            elif kind == 10:
+                _break(d)
+            elif kind == 11:
+                runtime.notifications.notify(f"soak notification {step}", key=f"soak:{step % 3}")
+                counters["notifications"] += 1
+            elif kind == 12:
+                activity.switch_tab("screenshots")
+                activity.refresh()
+                counters["tab_switches"] += 1
+                counters["activity_refreshes"] += 1
         except Exception as exc:  # noqa: BLE001 - a failing op is reported, not fatal
             print(f"  op {kind} raised {type(exc).__name__}: {exc}", flush=True)
 
@@ -248,6 +282,16 @@ def _run() -> int:
                 state["running"] = True
         counters["start_stop"] += 1
 
+    def _break(d) -> None:
+        t = runtime.timer
+        if not t.is_running():
+            return
+        if getattr(t, "break_status", "NONE") != "NONE":
+            t.break_out()
+        else:
+            t.break_in()
+        counters["breaks"] += 1
+
     def _open_close_dialog(d) -> None:
         from ui.task_table import AddTaskDialog
         dlg = AddTaskDialog((d._current_project or {}).get("project_name", "Project"), d)
@@ -259,7 +303,12 @@ def _run() -> int:
     def _flap_network() -> None:
         _admin("offline?on=1")
         counters["offline"] += 1
-        QTimer.singleShot(20_000, lambda: _admin("offline?on=0"))
+        print(f"  -- network outage injected for {ARGS.outage_seconds:.0f}s", flush=True)
+        QTimer.singleShot(int(ARGS.outage_seconds * 1000), lambda: (_admin("offline?on=0"),
+                          print("  -- network restored", flush=True)))
+
+    outage_timer = QTimer()
+    outage_timer.timeout.connect(_flap_network)
 
     sample_timer = QTimer()
     sample_timer.timeout.connect(sample)
@@ -274,21 +323,34 @@ def _run() -> int:
             gc.collect()
             gc.disable()
         op_timer.start(int(ARGS.op_interval * 1000))
+        if ARGS.outage_every > 0:
+            outage_timer.start(int(ARGS.outage_every * 1000))
+
+    def end_ops() -> None:
+        op_timer.stop()
+        outage_timer.stop()
+        if runtime.timer.is_running():
+            runtime.timer.stop_tracking()
+        print(f"  -- workload finished; idle settle {ARGS.settle:.0f}s", flush=True)
 
     QTimer.singleShot(25_000, begin_ops)
+    QTimer.singleShot(int((25 + ARGS.duration) * 1000), end_ops)
     # exit(), not quit(): quit() asks the window to close, and its close prompt
     # would wait for a person.
-    QTimer.singleShot(int((25 + ARGS.duration) * 1000), lambda: app.exit(0))
+    QTimer.singleShot(int((25 + ARGS.duration + ARGS.settle) * 1000), lambda: app.exit(0))
     app.exec()
 
     sample()
+    settled = samples[-1]
     freed = gc.collect()
     app.processEvents()
     after_gc = probe.sample_tree(proc, {}, time.monotonic() - 1, time.monotonic())
     print()
     print(f"operations: {counters}")
+    print(f"after idle settle: private {settled['private']:.1f} MB rss {settled['rss']:.1f} MB "
+          f"cards alive {settled['thumbs']}")
     print(f"cyclic garbage the collector freed at the end: {freed} objects "
-          f"(private {samples[-1]['private']:.1f} MB -> {after_gc.private_mb:.1f} MB)")
+          f"(private {settled['private']:.1f} MB -> {after_gc.private_mb:.1f} MB)")
     _report(samples)
     stats = _stats()
     if stats:
