@@ -36,7 +36,7 @@ const ACCESS_SUMMARY_POLL_MS = 15_000;
  * desktop's second Add button, whose tasks are created with " - Non billable"
  * on the end of their name. One string, so renaming it is one edit.
  */
-const BILLABLE_TASK_LABEL = 'Add Billable Task';
+const NON_BILLABLE_TASK_LABEL = 'Add Non Billable Task';
 
 const GRADIENT_CYAN_PURPLE = 'bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[#8b5cf6]';
 
@@ -665,7 +665,7 @@ export const AdminMembers: React.FC = () => {
     }
   };
 
-  // The Add Billable Task switch. Off until granted, and no email goes out when
+  // The Add Non Billable Task switch. Off until granted, and no email goes out when
   // it moves (the backend sends none), so there is nothing to confirm: the row
   // flips optimistically and is rolled back with a toast if the server refuses.
   const [pendingBillableTaskId, setPendingBillableTaskId] = useState<number | null>(null);
@@ -677,8 +677,8 @@ export const AdminMembers: React.FC = () => {
       if (result.failed.length) throw new Error(result.failed[0].detail);
       showToast(
         allowed
-          ? `${member.name} is now allowed to add billable tasks.`
-          : `${member.name} is now excluded from adding billable tasks.`,
+          ? `${member.name} is now allowed to add non billable tasks.`
+          : `${member.name} is now excluded from adding non billable tasks.`,
         'success',
       );
     } catch (err) {
@@ -993,7 +993,7 @@ export const AdminMembers: React.FC = () => {
               onChange={(value) => { setFilterLogin(value); setPage(1); }}
             />
             <AccessFilterSelect
-              label={BILLABLE_TASK_LABEL}
+              label={NON_BILLABLE_TASK_LABEL}
               value={filterBillableTask}
               onChange={(value) => { setFilterBillableTask(value); setPage(1); }}
             />
@@ -1027,7 +1027,7 @@ export const AdminMembers: React.FC = () => {
             {([
               { label: 'Login', key: 'can_login' as const, noun: 'allowed to log in' },
               { label: 'Add Task', key: 'can_add_tasks' as const, noun: 'allowed to add tasks' },
-              { label: BILLABLE_TASK_LABEL, key: 'can_add_nonbillable_tasks' as const, noun: 'allowed to add billable tasks' },
+              { label: NON_BILLABLE_TASK_LABEL, key: 'can_add_nonbillable_tasks' as const, noun: 'allowed to add non billable tasks' },
             ]).map(({ label, key, noun }) => {
               const canAllow = wouldChange(key, true);
               const canExclude = wouldChange(key, false);
@@ -1100,7 +1100,7 @@ export const AdminMembers: React.FC = () => {
                     Login<HeaderCount value={accessSummary?.login_allowed} meaning="allowed to log in" />
                   </th>
                   <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">
-                    {BILLABLE_TASK_LABEL}<HeaderCount value={accessSummary?.add_nonbillable_task_allowed} meaning="allowed to add billable tasks" />
+                    {NON_BILLABLE_TASK_LABEL}<HeaderCount value={accessSummary?.add_nonbillable_task_allowed} meaning="allowed to add non billable tasks" />
                   </th>
                   {canManageMembers && (
                     <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px] text-right">Action</th>
@@ -1184,8 +1184,8 @@ export const AdminMembers: React.FC = () => {
                           allowed={member.can_add_nonbillable_tasks === true}
                           editable={canManageAccess}
                           busy={pendingBillableTaskId === member.id}
-                          subject="adding billable tasks"
-                          allowPhrase="to add billable tasks"
+                          subject="adding non billable tasks"
+                          allowPhrase="to add non billable tasks"
                           onChange={(allowed) => handleSetBillableTask(member, allowed)}
                         />
                       </td>

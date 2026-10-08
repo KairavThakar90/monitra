@@ -1,31 +1,24 @@
-# Non billable tasks and the Add Billable Task switch
+# Non billable tasks and the Add Non Billable Task switch
 
-The desktop's top bar can carry a second Add button, **Add Billable Task**, right
+The desktop's top bar can carry a second Add button, **Add Non Billable Task**, right
 after **Add Task**. A task created with it ends **` - Non billable`** (for
 example `Fix the login - Non billable`). An administrator decides, member by
 member, who sees the button.
-
-> **Naming.** The button, the Members column and the filter are labelled
-> "Add Billable Task" as the product asked, while the tasks it creates are marked
-> "Non billable". The label lives in one constant per client
-> (`BILLABLE_TASK_LABEL` in `frontend/src/features/admin/AdminMembers.tsx`, the
-> button text in `desktop/ui/topbar.py`); the data and API are named for what the
-> button actually does (`can_add_nonbillable_tasks`).
 
 ## The switch
 
 | | |
 |---|---|
 | Column | `users.can_add_nonbillable_tasks` (boolean, **default false**) |
-| Where it is set | Members page → **Add Billable Task** column (Allowed / Excluded switch), the filter beside Login, and the bulk bar. Same right as the other two switches: `manage_member_access` (administrators and HR). |
+| Where it is set | Members page → **Add Non Billable Task** column (Allowed / Excluded switch), the filter beside Login, and the bulk bar. Same right as the other two switches: `manage_member_access` (administrators and HR). |
 | Email | **None**, in either direction. (Login and Add Task email the member; this one does not.) |
 | Audit | Recorded in the activity trail as `add_nonbillable_tasks_allowed` / `_excluded`. |
 | Default | Off. Every member that existed before keeps exactly what they can do today and sees no new button until allowed. Only an explicit `true` grants it. |
 | Profile | `GET /auth/me` returns it; the desktop re-reads the profile on every refresh round, so a change reaches an open window without a restart. |
 
 It is independent of **Add Task** (`can_add_tasks`): an administrator can switch
-Add Task off and Add Billable Task on, and that member then sees a greyed Add
-Task and a working Add Billable Task. A member with Add Task on and this off sees
+Add Task off and Add Non Billable Task on, and that member then sees a greyed Add
+Task and a working Add Non Billable Task. A member with Add Task on and this off sees
 the bar they always had.
 
 ## The marker
@@ -48,7 +41,7 @@ lists a task already shows it.
 
 The desktop hides the button from members who lack it, but a hidden button is
 presentation. `require_task_creation` (the dependency on both task-create routes)
-lets a member whose Add Task is off through **only if** their Add Billable Task is
+lets a member whose Add Task is off through **only if** their Add Non Billable Task is
 on, and the service then refuses any name that does not end in the marker
 (`403`, "Your account may only create Non billable tasks…"). A member with both
 off is refused as before; a member who may add tasks is never restricted; a name

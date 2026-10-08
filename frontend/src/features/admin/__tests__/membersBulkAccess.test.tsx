@@ -64,7 +64,7 @@ const row = (id: number, name: string, extra: Record<string, unknown> = {}) => (
 });
 
 /**
- * The text of a row's Add Task and Login cells only. The Add Billable Task cell
+ * The text of a row's Add Task and Login cells only. The Add Non Billable Task cell
  * after them reads "Excluded" for everyone who has not been granted it, which is
  * the normal state, so a whole-row text probe cannot tell these two switches apart.
  */

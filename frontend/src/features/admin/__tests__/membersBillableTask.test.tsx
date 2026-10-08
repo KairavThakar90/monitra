@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * The Members page's "Add Billable Task" switch.
+ * The Members page's "Add Non Billable Task" switch.
  *
  * It governs the desktop's second Add button (tasks created with
  * " - Non billable" on the end of their name) and works like Add Task and Login
@@ -44,7 +44,7 @@ vi.mock('../../../components/FeedbackProvider', () => ({
 
 import { AdminMembers } from '../AdminMembers';
 
-const LABEL = 'Add Billable Task';
+const LABEL = 'Add Non Billable Task';
 
 type Row = Record<string, unknown>;
 const row = (id: number, name: string, extra: Row = {}): Row => ({
@@ -54,7 +54,7 @@ const row = (id: number, name: string, extra: Row = {}): Row => ({
   can_login: true, can_add_tasks: true, ...extra,
 });
 
-describe('AdminMembers: Add Billable Task', () => {
+describe('AdminMembers: Add Non Billable Task', () => {
   let container: HTMLDivElement;
   let root: Root;
   let directory: Row[];
@@ -198,7 +198,7 @@ describe('AdminMembers: Add Billable Task', () => {
     await click(switchIn(billableCell('Bob')));
     expect(accessRequests).toEqual([{ member_ids: [12], can_add_nonbillable_tasks: true }]);
     expect(confirmAction).not.toHaveBeenCalled();
-    expect(showToast).toHaveBeenCalledWith('Bob is now allowed to add billable tasks.', 'success');
+    expect(showToast).toHaveBeenCalledWith('Bob is now allowed to add non billable tasks.', 'success');
     expect(JSON.stringify(showToast.mock.calls)).not.toMatch(/mail/i);
     expect(billableCell('Bob').textContent).toContain('Allowed');
   });
@@ -208,7 +208,7 @@ describe('AdminMembers: Add Billable Task', () => {
     await click(switchIn(billableCell('Alice')));
     expect(accessRequests).toEqual([{ member_ids: [11], can_add_nonbillable_tasks: false }]);
     expect(confirmAction).not.toHaveBeenCalled();
-    expect(showToast).toHaveBeenCalledWith('Alice is now excluded from adding billable tasks.', 'success');
+    expect(showToast).toHaveBeenCalledWith('Alice is now excluded from adding non billable tasks.', 'success');
     expect(billableCell('Alice').textContent).toContain('Excluded');
   });
 

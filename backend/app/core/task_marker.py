@@ -4,7 +4,7 @@ A task made with the desktop's second Add button carries ``" - Non billable"``
 on the end of its name. The marker is a naming convention, not a stored field:
 every surface that lists a task already shows its name, so nothing else has to
 learn about it. The desktop keeps its own copy of the wording
-(`desktop/ui/task_marker.py`); `desktop/tests/test_task_marker.py` reads this
+(`desktop/core/task_marker.py`); `desktop/tests/test_add_billable_task_button.py` reads this
 file and fails if the two disagree.
 
 The server needs the rule for one reason. An administrator can allow a member
