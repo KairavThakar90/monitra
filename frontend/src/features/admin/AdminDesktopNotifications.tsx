@@ -14,7 +14,9 @@ import {
   useGetDesktopNotificationsQuery,
   useUpdateBuiltinNotificationMutation,
   useUpdateCustomNotificationMutation,
+  useUpdateDesktopNotificationLimitMutation,
   type BuiltinNotification,
+  type BuiltinNotificationChange,
   type CustomNotification,
 } from "../../store/api/desktopNotificationsApi";
 
@@ -47,8 +49,12 @@ const formatWhen = (iso: string | null | undefined) => {
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
 };
 
-const cadenceOf = (item: BuiltinNotification) =>
-  item.kind === "daily" ? `${item.time} IST` : `Every ${item.every_minutes} min while working`;
+/** A repeating reminder an administrator gave a time of day is shown only then. */
+const cadenceOf = (item: BuiltinNotification) => {
+  if (item.kind === "daily") return `${item.time} IST`;
+  if (item.time) return `Only at ${item.time} IST`;
+  return `Every ${item.every_minutes} min while working`;
+};
 
 /** The seven day toggles, shared by the dialog's one schedule control. */
 const WeekdayPicker: React.FC<{ value: number[]; onChange: (days: number[]) => void; error?: string | null }> = ({
@@ -110,6 +116,8 @@ const NotificationDialog: React.FC<{ editing: Editing; onClose: () => void }> = 
   const [time, setTime] = useState(custom?.time ?? builtin?.time ?? "10:00");
   const [weekdays, setWeekdays] = useState<number[]>(custom?.weekdays ?? builtin?.weekdays ?? [0, 1, 2, 3, 4]);
   const [enabled, setEnabled] = useState(custom?.enabled ?? true);
+  // A repeating reminder either repeats or, with a time, is shown only then.
+  const [mode, setMode] = useState<"repeat" | "fixed">(builtin?.kind === "interval" && builtin.time ? "fixed" : "repeat");
   const [errors, setErrors] = useState<Record<string, string | null>>({});
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -121,7 +129,7 @@ const NotificationDialog: React.FC<{ editing: Editing; onClose: () => void }> = 
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const showsTime = isCustom || builtin?.kind === "daily";
+  const showsTime = isCustom || builtin?.kind === "daily" || (builtin?.kind === "interval" && mode === "fixed");
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -142,8 +150,11 @@ const NotificationDialog: React.FC<{ editing: Editing; onClose: () => void }> = 
     try {
       if (builtin) {
         // Only what actually changed, so an unchanged field is never re-sent.
-        const body: { time?: string; weekdays?: number[] } = {};
-        if (builtin.kind === "daily" && timeCheck?.ok && timeCheck.value !== builtin.time) body.time = timeCheck.value;
+        const body: BuiltinNotificationChange = {};
+        if (timeCheck?.ok && timeCheck.value !== builtin.time) body.time = timeCheck.value;
+        // A repeating reminder switched back from a fixed time: the backend is told to
+        // repeat, because an absent or empty time would mean "unchanged" or be refused.
+        if (builtin.kind === "interval" && mode === "repeat" && builtin.time) body.repeat = true;
         if (weekdays.join(",") !== builtin.weekdays.join(",")) body.weekdays = weekdays;
         if (Object.keys(body).length) await updateBuiltin({ key: builtin.key, body }).unwrap();
       } else {
@@ -166,7 +177,8 @@ const NotificationDialog: React.FC<{ editing: Editing; onClose: () => void }> = 
 
   const resetToDefault = () => {
     if (!builtin) return;
-    setTime(builtin.default_time ?? "");
+    setTime(builtin.default_time ?? "10:00");
+    setMode("repeat");
     setWeekdays([...ALL_WEEKDAYS]);
   };
 
@@ -238,6 +250,42 @@ const NotificationDialog: React.FC<{ editing: Editing; onClose: () => void }> = 
             </>
           )}
 
+          {builtin && builtin.kind === "interval" && (
+            <fieldset>
+              <legend className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-500">When to show</legend>
+              <div className="space-y-2">
+                <label className="flex cursor-pointer items-start gap-2.5 text-sm font-semibold text-slate-700">
+                  <input
+                    type="radio"
+                    name="interval-mode"
+                    checked={mode === "repeat"}
+                    onChange={() => setMode("repeat")}
+                    className="mt-0.5 h-4 w-4 border-slate-300 text-blue-600 focus:ring-blue-500/40"
+                  />
+                  <span>
+                    Repeat every {builtin.every_minutes} minutes
+                    <span className="block text-xs font-normal text-slate-500">While someone is working, on the days below.</span>
+                  </span>
+                </label>
+                <label className="flex cursor-pointer items-start gap-2.5 text-sm font-semibold text-slate-700">
+                  <input
+                    type="radio"
+                    name="interval-mode"
+                    checked={mode === "fixed"}
+                    onChange={() => setMode("fixed")}
+                    className="mt-0.5 h-4 w-4 border-slate-300 text-blue-600 focus:ring-blue-500/40"
+                  />
+                  <span>
+                    Only at a set time
+                    <span className="block text-xs font-normal text-slate-500">
+                      Shown once a day at the time you choose, and no longer repeated.
+                    </span>
+                  </span>
+                </label>
+              </div>
+            </fieldset>
+          )}
+
           {showsTime && (
             <div>
               <label htmlFor="notification-time" className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-500">
@@ -253,13 +301,6 @@ const NotificationDialog: React.FC<{ editing: Editing; onClose: () => void }> = 
               />
               <FieldError message={errors.time} />
             </div>
-          )}
-
-          {builtin && builtin.kind === "interval" && (
-            <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] text-slate-600">
-              This reminder repeats every {builtin.every_minutes} minutes of a working session, so it has no fixed
-              time. You can switch it off or limit it to certain days.
-            </p>
           )}
 
           <div>
@@ -322,6 +363,7 @@ export const AdminDesktopNotifications: React.FC = () => {
   const notifications = useGetDesktopNotificationsQuery();
   const [updateBuiltin] = useUpdateBuiltinNotificationMutation();
   const [updateCustom] = useUpdateCustomNotificationMutation();
+  const [updateLimit] = useUpdateDesktopNotificationLimitMutation();
   const [deleteCustom] = useDeleteCustomNotificationMutation();
   const [editing, setEditing] = useState<Editing | null>(null);
   const [pending, setPending] = useState<Set<string>>(new Set());
@@ -350,6 +392,16 @@ export const AdminDesktopNotifications: React.FC = () => {
 
   const toggleCustom = (item: CustomNotification, enabled: boolean) =>
     hold(`custom:${item.id}`, () => updateCustom({ id: item.id, body: { enabled } }).unwrap(), "Could not update the notification.");
+
+  const changeLimit = (next: number) =>
+    hold(
+      "limit",
+      async () => {
+        await updateLimit({ max_per_hour: next }).unwrap();
+        showToast(`The desktop will show at most ${next} notification${next === 1 ? "" : "s"} an hour.`, "success");
+      },
+      "Could not change the limit.",
+    );
 
   const remove = async (item: CustomNotification) => {
     const confirmed = await confirmAction(
@@ -404,8 +456,37 @@ export const AdminDesktopNotifications: React.FC = () => {
             <span className="font-semibold">IST</span>. A desktop picks up a change within about half a minute, so
             save a notification at least a minute before its time to see it on the minute.
           </p>
+          {data && (
+            <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-4 py-3">
+              <label htmlFor="notification-limit" className="font-semibold text-slate-800">
+                Notifications per hour
+              </label>
+              <select
+                id="notification-limit"
+                aria-label="Maximum notifications per hour"
+                value={data.max_per_hour}
+                disabled={pending.has("limit")}
+                onChange={(event) => changeLimit(Number(event.target.value))}
+                className="min-h-[34px] rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 shadow-sm outline-none focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {Array.from(
+                  { length: data.max_max_per_hour - data.min_max_per_hour + 1 },
+                  (_, index) => data.min_max_per_hour + index,
+                ).map((count) => (
+                  <option key={count} value={count}>
+                    {count}{count === data.default_max_per_hour ? " (default)" : ""}
+                  </option>
+                ))}
+              </select>
+              <p className="basis-full text-xs leading-5 text-slate-500">
+                A desktop shows at most this many notifications in any hour. Your own notifications and the daily break
+                times are always shown at their time, and so is any reminder you give a set time; the repeating
+                reminders (every 20, 30, 60 minutes...) share what is left.
+              </p>
+            </div>
+          )}
           {data && data.version > 0 && data.updated_by_username && (
-            <p className="mt-1 text-xs text-slate-500">
+            <p className="mt-3 text-xs text-slate-500">
               Last changed by <span className="font-semibold text-slate-700">{data.updated_by_username}</span>
               {data.updated_at ? ` on ${formatWhen(data.updated_at)}` : ""}.
             </p>
@@ -524,7 +605,7 @@ export const AdminDesktopNotifications: React.FC = () => {
                 <h2 id="builtin-notifications-heading" className="text-[13px] font-bold uppercase tracking-wider text-[#64748B]">
                   {`Built-in reminders (${builtinOn} of ${data.builtin.length} on)`}
                 </h2>
-                <p className="mt-0.5 text-xs text-slate-500">The desktop's own wellbeing reminders. Switch one off, move it, or limit it to certain days.</p>
+                <p className="mt-0.5 text-xs text-slate-500">The desktop's own wellbeing reminders. Switch one off, give it a time, or limit it to certain days.</p>
               </div>
               <div className="overflow-hidden rounded-xl border border-[#E2E8F0] bg-white shadow-sm">
                 <div className="overflow-x-auto">

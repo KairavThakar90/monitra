@@ -20,6 +20,17 @@ from dataclasses import dataclass
 from datetime import time
 
 
+#: How many wellbeing notifications the desktop shows in any rolling hour,
+#: unless an administrator has chosen another number (the schedule carries it as
+#: `max_per_hour`). Mirrored by `DEFAULT_MAX_PER_HOUR` in
+#: `backend/app/services/desktop_notification_catalogue.py`; the contract test
+#: compares the two.
+DEFAULT_MAX_PER_HOUR = 2
+
+#: The widest range of `max_per_hour` the desktop accepts from a schedule. The
+#: backend allows less (1-6); a value outside this is ignored, never trusted.
+MAX_PER_HOUR_RANGE = (1, 12)
+
 #: The closest two interval reminders may ever fall due, in minutes.
 #:
 #: Five is not a preference, it is the ceiling: the 20- and 30-minute cadences

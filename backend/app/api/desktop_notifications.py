@@ -16,6 +16,7 @@ from app.schemas.desktop_notifications import (
     BuiltinNotificationUpdate,
     CustomNotificationCreate,
     CustomNotificationUpdate,
+    DesktopLimitUpdate,
     DesktopNotificationAdminRead,
     DesktopScheduleRead,
 )
@@ -67,6 +68,25 @@ def update_builtin(
     db: Session = Depends(get_db, scope="function"),
 ):
     return DesktopNotificationService.update_builtin(db, current_user, key, payload)
+
+
+@router.put(
+    "/limit",
+    response_model=DesktopNotificationAdminRead,
+    summary="Set how many notifications a desktop may show per hour. Administrators only.",
+    description=(
+        "A rolling hour. An administrator's own notification and the daily break times are shown at "
+        "their time whatever this says; it decides how many of the repeating reminders fit around them. "
+        "Idempotent: choosing the number already in force records nothing."
+    ),
+    responses=_FORBIDDEN,
+)
+def update_limit(
+    payload: DesktopLimitUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db, scope="function"),
+):
+    return DesktopNotificationService.update_limit(db, current_user, payload)
 
 
 @router.post(

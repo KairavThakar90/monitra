@@ -65,7 +65,11 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 from app.api.exceptions import ApiError
 from app.desktop_notifications.service import NotificationScheduleApiService
 from background_services.network import NetworkState
-from background_services.wellbeing.reminders import DAILY_REMINDERS, INTERVAL_REMINDERS
+from background_services.wellbeing.reminders import (
+    DAILY_REMINDERS,
+    INTERVAL_REMINDERS,
+    MAX_PER_HOUR_RANGE,
+)
 from core.service import LoopService, ServiceState
 from core.validation import validate_time_of_day
 
@@ -89,8 +93,9 @@ KNOWN_BUILTIN_KEYS = frozenset(
 class BuiltinSetting:
     """What an administrator set for one built-in reminder.
 
-    `at` is the daily reminder's time of day (IST) or None to keep the
-    catalogue's own; it is always None for an interval reminder.
+    `at` is a time of day (IST), or None. A daily reminder with None keeps the
+    catalogue's own time. An interval reminder with None repeats on its
+    cadence; one with a time is shown once a day at that time instead.
     """
 
     key: str
@@ -117,6 +122,11 @@ class NotificationSchedule:
     version: int
     builtin: Mapping[str, BuiltinSetting]
     custom: Tuple[CustomNotification, ...]
+    #: How many notifications the desktop may show in a rolling hour, as the
+    #: administrator set it. None when the response did not carry a usable
+    #: number (an older backend, or one this desktop does not understand): the
+    #: scheduler then uses its own default. Never fabricated here.
+    max_per_hour: Optional[int] = None
 
     @property
     def builtin_off(self) -> int:
@@ -127,6 +137,7 @@ class NotificationSchedule:
         schedule). Never contains anything but the contract's own fields."""
         return {
             "version": self.version,
+            "max_per_hour": self.max_per_hour,
             "builtin": [
                 {
                     "key": s.key,
@@ -234,10 +245,18 @@ def parse_schedule(raw: Any) -> Optional[NotificationSchedule]:
                 seen.add(notification.id)
                 custom.append(notification)
 
+        # An unusable limit does not spoil the rest of the schedule: it is
+        # simply not applied, and the scheduler keeps its own default.
+        low, high = MAX_PER_HOUR_RANGE
+        max_per_hour = raw.get("max_per_hour")
+        if isinstance(max_per_hour, bool) or not isinstance(max_per_hour, int) or not low <= max_per_hour <= high:
+            max_per_hour = None
+
         return NotificationSchedule(
             version=version,
             builtin=MappingProxyType(builtin),
             custom=tuple(custom),
+            max_per_hour=max_per_hour,
         )
     except Exception:  # noqa: BLE001 -- a malformed payload must never raise out
         return None
@@ -389,8 +408,8 @@ class NotificationScheduleService(LoopService):
 
         self._schedule = parsed
         self.log.info(
-            "NOTIFICATION_SCHEDULE_APPLIED version=%d builtin_off=%d custom=%d source=%s",
-            parsed.version, parsed.builtin_off, len(parsed.custom), source,
+            "NOTIFICATION_SCHEDULE_APPLIED version=%d builtin_off=%d custom=%d max_per_hour=%s source=%s",
+            parsed.version, parsed.builtin_off, len(parsed.custom), parsed.max_per_hour, source,
         )
         if source == "fetched":
             self._persist(parsed)
@@ -414,8 +433,8 @@ class NotificationScheduleService(LoopService):
         self._schedule = parsed
         self._persisted = True
         self.log.info(
-            "NOTIFICATION_SCHEDULE_APPLIED version=%d builtin_off=%d custom=%d source=persisted",
-            parsed.version, parsed.builtin_off, len(parsed.custom),
+            "NOTIFICATION_SCHEDULE_APPLIED version=%d builtin_off=%d custom=%d max_per_hour=%s source=persisted",
+            parsed.version, parsed.builtin_off, len(parsed.custom), parsed.max_per_hour,
         )
 
     def _persist(self, schedule: NotificationSchedule) -> None:

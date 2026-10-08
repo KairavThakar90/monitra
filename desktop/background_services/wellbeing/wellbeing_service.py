@@ -60,6 +60,24 @@ when the laptop was opened, is worse than no reminder. The record is written
 *after* the reminder is shown: the write can wait on the database for as long
 as its busy timeout, and a reminder is not something to hold up for that.
 
+**"Already shown today" names the time it was shown for.** The record is
+`2026-10-08@12:40`, not the date alone. With the date alone, a notification that
+had fired at 11:13 and was then edited to 12:40 counted as shown for today and
+never fired at 12:40: the administrator saw nothing at the time they had just
+set. A different time is a different turn; the same time is still shown once; a
+date-only record from before is honoured for today.
+
+**An hourly limit, with the administrator's notifications exempt from it.** At
+most `max_per_hour` notifications (2 unless the schedule says otherwise) are
+shown in any rolling hour. Time-of-day notifications -- the daily breaks and an
+administrator's own -- are shown at their time whatever the limit says (holding
+one back is the bug above), and count toward the hour. The *repeating*
+reminders share what is left: a place is held for each time-of-day notification
+still to come in the next hour, and a repeating reminder the limit holds back
+stays due (it is not dropped or re-gridded), so when room opens the one that
+has waited longest goes first. The count is in memory only; a restart starts the
+hour afresh together with the repeating cadence.
+
 **Reminders are gated on being signed in.** They accompany a working session.
 Nudging the login screen at three in the morning is not a feature.
 
@@ -71,9 +89,15 @@ never will: it only reads that snapshot. With none (never fetched, nothing
 persisted) every built-in reminder is on, every day, at the catalogue's time --
 exactly what this service did before the schedule existed.
 
-  * An interval reminder is shown only if it is on and today's IST weekday is
-    allowed. One the schedule suppresses still advances its grid exactly as a
-    shown one would, so switching it on later does not release a backlog.
+  * An interval reminder repeats only if it is on, today's IST weekday is
+    allowed, and the schedule has not fixed it to a time of day. One the
+    schedule suppresses still advances its grid exactly as a shown one would,
+    so switching it on (or back to repeating) later does not release a backlog.
+  * An interval reminder the schedule gives a time of day stops repeating and
+    becomes a time-of-day notification at that time, with its own wording: the
+    same rules as a daily one (once per IST day, late beyond
+    `DAILY_GRACE_SECONDS` is missed, shown at its time whatever the hourly
+    limit says). Removing the time puts it back on its cadence.
   * A built-in daily reminder takes its time, weekdays and on/off from the
     schedule.
   * A custom notification is a daily reminder keyed `custom:<id>` whose title
@@ -94,7 +118,7 @@ from __future__ import annotations
 import math
 import time as _time
 from dataclasses import dataclass
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QObject
@@ -102,6 +126,7 @@ from PySide6.QtCore import QObject
 from background_services.notifications import NotificationLevel
 from background_services.wellbeing.reminders import (
     DAILY_REMINDERS,
+    DEFAULT_MAX_PER_HOUR as _DEFAULT_MAX_PER_HOUR,
     INTERVAL_REMINDERS,
     IntervalReminder,
 )
@@ -163,6 +188,15 @@ class WellbeingService(LoopService):
     #: and the same again before the next one.
     MIN_SPACING_SECONDS = 60
 
+    #: How many notifications may be shown in any rolling hour, when the
+    #: schedule does not say (an administrator sets it as `max_per_hour`).
+    #: An instance attribute in effect: tests that are about something other
+    #: than the limit raise it on the service they build.
+    DEFAULT_MAX_PER_HOUR = _DEFAULT_MAX_PER_HOUR
+
+    #: The window the limit is counted over.
+    LIMIT_WINDOW_SECONDS = 3600
+
     def __init__(self, runtime, cache=None, parent: Optional[QObject] = None) -> None:
         super().__init__(runtime, parent)
         self._cache = cache if cache is not None else getattr(runtime, "cache", None)
@@ -186,6 +220,13 @@ class WellbeingService(LoopService):
         #: all, and "no reminders" would be indistinguishable from "reminders
         #: held because nobody is signed in".
         self._held_reason: Optional[str] = None
+        #: When each notification shown in the last hour was shown (IST). Kept
+        #: in memory only: a restart starts the hour afresh, and the interval
+        #: cadence restarts with it, so the first repeating reminder is at
+        #: least its own interval into the new session.
+        self._recent_shown: List[datetime] = []
+        #: Whether the current hold by the hourly limit is already in the log.
+        self._limit_hold_logged = False
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -201,6 +242,8 @@ class WellbeingService(LoopService):
         self._last_shown = None
         self._gated = True
         self._held_reason = None
+        self._recent_shown = []
+        self._limit_hold_logged = False
 
     # ── Clocks ────────────────────────────────────────────────────────────────
     #
@@ -246,17 +289,34 @@ class WellbeingService(LoopService):
 
     @staticmethod
     def _interval_allowed(schedule: Any, key: str, weekday: int) -> bool:
-        """Whether an interval reminder may be shown on this IST weekday."""
+        """Whether an interval reminder may *repeat* on this IST weekday.
+
+        One an administrator fixed to a time of day (`setting.at`) does not
+        repeat at all: it is a time-of-day notification, scheduled by
+        `_daily_entries_today`, and here it counts as suppressed so its repeating
+        grid keeps moving on without showing anything.
+        """
         if schedule is None:
             return True
         setting = schedule.builtin.get(key)
         if setting is None:
             return True
-        return bool(setting.enabled) and weekday in setting.weekdays
+        return bool(setting.enabled) and weekday in setting.weekdays and setting.at is None
 
     def _daily_entries_today(self, schedule: Any, weekday: int) -> List[_DailyEntry]:
         """Every time-of-day notification that is on for this IST weekday."""
         entries: List[_DailyEntry] = []
+        if schedule is not None:
+            # A repeating reminder the administrator gave a time of day: shown
+            # once, then, under every daily rule (once per IST day, late beyond
+            # the grace is missed, exempt from the hourly limit).
+            for reminder in INTERVAL_REMINDERS:
+                setting = schedule.builtin.get(reminder.key)
+                if setting is None or setting.at is None:
+                    continue
+                if not setting.enabled or weekday not in setting.weekdays:
+                    continue
+                entries.append(_DailyEntry(reminder.key, reminder.title, reminder.body, setting.at))
         for reminder in DAILY_REMINDERS:
             setting = None if schedule is None else schedule.builtin.get(reminder.key)
             if setting is not None:
@@ -274,6 +334,87 @@ class WellbeingService(LoopService):
                     f"{CUSTOM_KEY_PREFIX}{custom.id}", custom.title, custom.message, custom.at,
                 ))
         return entries
+
+    # ── What "already shown today" means ──────────────────────────────────────
+
+    @staticmethod
+    def _spent_mark(today: str, entry: _DailyEntry) -> str:
+        """The record written when a daily notification is shown or missed:
+        the IST date *and the time it was set to*, `2026-10-08@12:40`.
+
+        The time is part of the record because an administrator can move a
+        notification. Recording the date alone made "shown today" true for the
+        notification whatever its time later became: one that had fired at
+        11:13 and was then edited to 12:40 never fired at 12:40, and the
+        administrator saw nothing at the time they had just set.
+        """
+        return f"{today}@{entry.at.strftime('%H:%M')}"
+
+    @staticmethod
+    def _is_spent(record: Optional[str], entry: _DailyEntry, today: str) -> bool:
+        """Whether `entry`, at its *current* time, has already had its turn today.
+
+        A record from before the time was recorded (just the date) means "today,
+        at whatever time it had": it is honoured for today so an upgrade does
+        not repeat what was already shown, and replaced by the full form the
+        next time the notification is shown.
+        """
+        if not isinstance(record, str):
+            return False
+        fired_on, _, fired_at = record.partition("@")
+        if fired_on != today:
+            return False
+        return not fired_at or fired_at == entry.at.strftime("%H:%M")
+
+    # ── The hourly limit ──────────────────────────────────────────────────────
+
+    def _max_per_hour(self, schedule: Any) -> int:
+        """How many notifications may be shown in a rolling hour: the
+        administrator's number, or the default when the schedule has none."""
+        configured = getattr(schedule, "max_per_hour", None)
+        if isinstance(configured, int) and not isinstance(configured, bool) and configured >= 1:
+            return configured
+        return self.DEFAULT_MAX_PER_HOUR
+
+    def _shown_in_the_last_hour(self, now_ist: datetime) -> int:
+        cutoff = now_ist - timedelta(seconds=self.LIMIT_WINDOW_SECONDS)
+        self._recent_shown = [shown for shown in self._recent_shown if shown > cutoff]
+        return len(self._recent_shown)
+
+    def _reserved_for_scheduled(self, now_ist: datetime, schedule: Any) -> int:
+        """Time-of-day notifications still to be shown in the next hour (or
+        due now and waiting their turn).
+
+        An administrator's notification, and the daily break times, are shown
+        at their time whatever the limit says: the limit decides how many of the
+        *repeating* reminders fit around them, so it holds a place for each one
+        that is coming. Otherwise two repeating reminders could use up the hour
+        and the notification someone set for 12:40 would arrive as the third.
+        """
+        state = self._daily_fired or {}
+        today = now_ist.date().isoformat()
+        earliest = now_ist - timedelta(seconds=self.DAILY_GRACE_SECONDS)
+        latest = now_ist + timedelta(seconds=self.LIMIT_WINDOW_SECONDS)
+        reserved = 0
+        for entry in self._daily_entries_today(schedule, now_ist.weekday()):
+            if self._is_spent(state.get(entry.key), entry, today):
+                continue
+            scheduled = datetime.combine(now_ist.date(), entry.at, tzinfo=IST)
+            if earliest <= scheduled <= latest:
+                reserved += 1
+        return reserved
+
+    def _interval_budget_ok(self, now_ist: datetime, schedule: Any) -> bool:
+        """Whether a repeating reminder may be shown now without taking the
+        hour past its limit, counting what is already shown and what is booked."""
+        return (
+            self._shown_in_the_last_hour(now_ist) + self._reserved_for_scheduled(now_ist, schedule)
+            < self._max_per_hour(schedule)
+        )
+
+    def _note_shown(self, now_ist: datetime) -> None:
+        self._recent_shown.append(now_ist)
+        self._limit_hold_logged = False
 
     # ── Gating ────────────────────────────────────────────────────────────────
 
@@ -390,7 +531,9 @@ class WellbeingService(LoopService):
         key for every custom notification ever created. With no schedule at
         all the customs are left alone: absence of knowledge is not deletion.
         """
-        builtin_keys = {r.key for r in DAILY_REMINDERS}
+        # A repeating reminder fixed to a time of day is recorded here too, so
+        # its key is as legitimate as a daily reminder's.
+        builtin_keys = {r.key for r in DAILY_REMINDERS} | {r.key for r in INTERVAL_REMINDERS}
         live_custom = (
             None if schedule is None
             else {f"{CUSTOM_KEY_PREFIX}{c.id}" for c in schedule.custom}
@@ -426,7 +569,7 @@ class WellbeingService(LoopService):
         changed = self._prune_daily_state(state, schedule)
 
         for entry in self._daily_entries_today(schedule, now_ist.weekday()):
-            if state.get(entry.key) == today:
+            if self._is_spent(state.get(entry.key), entry, today):
                 continue
             scheduled = datetime.combine(now_ist.date(), entry.at, tzinfo=IST)
             if now_ist < scheduled:
@@ -437,7 +580,7 @@ class WellbeingService(LoopService):
                 # Spend it for today without showing it. The user was not here
                 # when it was relevant, and telling them now is worse than
                 # telling them nothing.
-                state[entry.key] = today
+                state[entry.key] = self._spent_mark(today, entry)
                 changed = True
                 self.log.info(
                     "daily reminder %s was %d minutes late; not shown",
@@ -446,7 +589,7 @@ class WellbeingService(LoopService):
                 continue
 
             if chosen is None:
-                state[entry.key] = today
+                state[entry.key] = self._spent_mark(today, entry)
                 changed = True
                 chosen = entry
 
@@ -463,7 +606,7 @@ class WellbeingService(LoopService):
         waits = [
             (datetime.combine(now_ist.date(), e.at, tzinfo=IST) - now_ist).total_seconds()
             for e in self._daily_entries_today(schedule, now_ist.weekday())
-            if state.get(e.key) != today
+            if not self._is_spent(state.get(e.key), e, today)
         ]
         return max(0.0, min(waits)) if waits else None
 
@@ -503,7 +646,10 @@ class WellbeingService(LoopService):
         """
         ceiling = self.interval_ms / 1000.0
         wait = ceiling
-        if self._due_at:
+        # A repeating reminder the hourly limit is holding back is not a deadline
+        # to wake for: it would be due at once, every time, and the loop would spin.
+        # The ceiling still re-checks often enough to show it soon after room opens.
+        if self._due_at and self._interval_budget_ok(now_ist, schedule):
             wait = min(wait, min(self._due_at.values()) - now)
         daily_wait = self._seconds_until_daily(now_ist, schedule)
         if daily_wait is not None:
@@ -568,6 +714,7 @@ class WellbeingService(LoopService):
             scheduled = datetime.combine(now_ist.date(), daily.at, tzinfo=IST)
             self._show(daily.key, daily.title, daily.body)
             self._last_shown = now
+            self._note_shown(now_ist)
             self.log.info(
                 "reminder %s shown %.0fs after its time",
                 daily.key, (now_ist - scheduled).total_seconds(),
@@ -578,13 +725,24 @@ class WellbeingService(LoopService):
         if daily is None:
             interval = self._due_interval(now, schedule, weekday)
             if interval is not None:
-                late = now - self._due_at[interval.key]
-                self._advance(interval, now)
-                self._show(interval.key, interval.title, interval.body)
-                self._last_shown = now
-                self.log.info(
-                    "reminder %s shown %.0fs after it fell due; next in %d minutes",
-                    interval.key, late,
-                    int(round((self._due_at[interval.key] - now) / 60)),
-                )
+                if self._interval_budget_ok(now_ist, schedule):
+                    late = now - self._due_at[interval.key]
+                    self._advance(interval, now)
+                    self._show(interval.key, interval.title, interval.body)
+                    self._last_shown = now
+                    self._note_shown(now_ist)
+                    self.log.info(
+                        "reminder %s shown %.0fs after it fell due; next in %d minutes",
+                        interval.key, late,
+                        int(round((self._due_at[interval.key] - now) / 60)),
+                    )
+                elif not self._limit_hold_logged:
+                    # Once per hold, not per tick. The reminder stays due, so
+                    # when room opens the one that has waited longest goes first.
+                    self._limit_hold_logged = True
+                    self.log.info(
+                        "reminder %s held: %d shown in the last hour and %d booked, limit %d",
+                        interval.key, self._shown_in_the_last_hour(now_ist),
+                        self._reserved_for_scheduled(now_ist, schedule), self._max_per_hour(schedule),
+                    )
         return self._next_delay_ms(now, now_ist, schedule)

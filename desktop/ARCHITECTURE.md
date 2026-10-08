@@ -784,6 +784,20 @@ The timing rules, each one a defect that reached users:
   clock so a corrected system clock cannot release a backlog, but that clock
   stands still through a sleep on macOS and Linux, so the wall clock is read
   as well to notice one.
+- **"Shown today" names the time it was shown for.** The daily record is
+  `2026-10-08@12:40`, not the date. Recorded by date alone, a notification
+  that had fired at 11:13 and was then moved to 12:40 never fired at 12:40.
+  A different time is a different turn; the same time is still shown once; a
+  date-only record from before is honoured for today.
+- **An hourly limit that never holds back an administrator's notification.** At
+  most `max_per_hour` (the schedule's number; 2 by default) notifications are
+  shown in any rolling hour. The daily breaks and an administrator's own
+  notifications are shown at their time regardless and count toward the hour;
+  the repeating reminders share what is left, with a place held for each
+  scheduled one still to come in the next hour. A reminder the limit holds back
+  stays due -- it is not advanced -- so the one that has waited longest goes
+  first when room opens, and the loop does not wake for a deadline it cannot
+  act on. The count is in memory; a restart starts the hour afresh.
 
 ### Notification schedule
 
@@ -807,7 +821,7 @@ tick()  ->  first tick: read the persisted schedule, mark ready, wake Wellbeing
 
 * **Edge-triggered.** The backend answers the same `version` on every poll.
   The snapshot is replaced, persisted and logged
-  (`NOTIFICATION_SCHEDULE_APPLIED version=… builtin_off=… custom=…`, one line
+  (`NOTIFICATION_SCHEDULE_APPLIED version=… builtin_off=… custom=… max_per_hour=…`, one line
   per change, no payload) and Wellbeing is woken only when the version
   differs.
 * **Failure is silence; the last good schedule stands.** A failed poll, a 404
@@ -830,7 +844,12 @@ tick()  ->  first tick: read the persisted schedule, mark ready, wake Wellbeing
   Wellbeing's rules are unchanged: a suppressed interval reminder advances its
   grid exactly as a shown one would; a custom notification is a daily reminder
   keyed `custom:<id>`, once per IST day, with the same grace window and
-  spacing; the daily record is pruned of keys that no longer exist.
+  spacing; the daily record is pruned of keys that no longer exist. An interval
+  reminder the schedule gives a time (`BuiltinSetting.at`) is not a second
+  mechanism: it is counted as suppressed on the repeating grid and enters
+  `_daily_entries_today` instead, so it follows every daily rule (once per IST
+  day, `date@HH:MM` record, grace, exempt from and reserved against the hourly
+  limit). Its key is in the daily record's allowed keys.
 
 ### Screenshots
 

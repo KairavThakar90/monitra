@@ -927,6 +927,35 @@ for up to the ten-second busy timeout. In the session this was diagnosed from,
 the 10:30 break appeared 14.5 seconds after the tick that found it due. Show
 first, persist after; and give the service a stop budget that covers the wait.
 
+### ❌ Do not record "already shown today" by the date alone
+
+```python
+state[entry.key] = today                      # "2026-10-08"
+if state.get(entry.key) == today: continue    # shown for today, whatever its time
+```
+
+**What it caused:** an administrator added a custom notification for 11:13; it
+fired at 11:15. They then edited the same notification (same id) to 12:40. The
+record said it had been shown today, so it never fired at 12:40 -- the person who
+had just set the time saw nothing at it. Found from a real session
+(`custom:8f747c55a50e: "2026-10-08"` in `app_state`, no `reminder custom:...`
+line in the log at 12:40), not by any test.
+
+**Instead:** record what the notification fired *for* -- the date and the time it
+was set to (`2026-10-08@12:40`) -- and let a different time be a different turn.
+Honour a date-only record from before for today, so an upgrade repeats nothing.
+`tests/test_notification_hourly_limit.py` reproduces it.
+
+### ❌ Do not let a limit on repeating reminders hold back an administrator's notification
+
+An hourly cap that counted every notification alike would have let two repeating
+reminders use the hour up, and the notification an administrator set for 12:40
+would then have been dropped or shown as the third: the bug above again, from
+another direction. Scheduled notifications are exempt from the cap (they count
+toward it), and the repeating reminders hold a place for each one still to come.
+A reminder the cap holds back is not advanced and not dropped: it stays due, so
+the one that has waited longest goes first when room opens.
+
 ### ❌ Do not ship without an explicit Windows App User Model ID
 
 Without `SetCurrentProcessExplicitAppUserModelID`, Windows attributes toasts to

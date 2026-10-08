@@ -36,9 +36,10 @@ re-grant a permission.
   exactly as before, and if a send fails your message and files are kept so you
   can try again without creating a duplicate.
 - **Notifications your administrator chooses.** An administrator can now decide
-  which of Monitra's reminders you see, on which days, and — for the daily
-  breaks — at what time, and can send you their own messages at a set time of
-  day. Times are India time (IST). A change reaches Monitra within about half a
+  which of Monitra's reminders you see, on which days, and at what time — a
+  daily break can be moved, and a repeating reminder (water, posture, the
+  20-20-20 rule...) can be set to appear only at one time of day instead of
+  repeating — and can send you their own messages at a set time of day. Times are India time (IST). A change reaches Monitra within about half a
   minute while you are signed in, and nothing is shown while you are signed out.
   A message that could not be shown within ten minutes of its time (the computer
   was asleep, or offline) is skipped for that day rather than arriving late.
@@ -72,8 +73,22 @@ re-grant a permission.
   rather than being left to find out.
 - **Your timer survives an update**, as before — it is not stopped, and
   Monitra picks it up again after it restarts.
+- **No more than two reminders an hour.** Monitra's health reminders (water,
+  posture, blinking, the 20-20-20 rule and the rest) used to arrive about every
+  five minutes; it now shows at most two notifications in any hour, and your
+  administrator can change that number (one to six). A reminder that has to wait
+  is not lost — the one that has waited longest comes next. Your administrator's
+  own messages and the daily break times (tea, lunch) are always shown at their
+  time and are never held back by the limit. Monitra's own messages — an error,
+  an update, "Screenshot captured" — are not part of this and are unchanged.
 
 ### Fixed
+
+- **A notification your administrator moves to a later time now shows at the
+  new time.** If a message had already been shown today and the administrator
+  then changed its time to later in the day, Monitra considered it done for
+  today and showed nothing at the time they had just set. It now shows at the
+  new time (once), and editing only the wording still does not repeat it.
 
 - **A screenshot that fails to capture is retried, not skipped.** If the screen
   could not be read at the planned moment (a locked screen, a monitor asleep, a

@@ -5,7 +5,9 @@ What it is
 A schedule an administrator controls from the web and every desktop follows:
 
 * the desktop's **built-in reminders** (20-20-20, water, posture, tea, lunch...)
-  can each be switched off, and the daily ones moved to another time;
+  can each be switched off and limited to chosen weekdays; the daily ones can
+  be moved to another time, and a repeating one ("every 60 minutes") can be
+  fixed to a time of day, when it is shown once instead of repeating;
 * **custom notifications** -- a title and a message the administrator writes --
   are shown at a time of day, on chosen weekdays.
 
@@ -26,7 +28,7 @@ desktop. The value is::
                   "weekdays": [0,1,2,3,4], "enabled": true, ...}]}
 
 ``builtin`` holds only what an administrator has *changed*; a reminder with no
-entry is on, at its default time, every day. So an untouched deployment behaves
+entry is on, at its default time (a repeating one: repeating), every day. So an untouched deployment behaves
 exactly as the desktop did before this existed, and a new built-in reminder
 added to the desktop arrives switched on.
 
@@ -62,13 +64,17 @@ from app.schemas.desktop_notifications import (
     BuiltinNotificationUpdate,
     CustomNotificationCreate,
     CustomNotificationUpdate,
+    DesktopLimitUpdate,
 )
 from app.services.activity_log import ActivityLogService
 from app.services.desktop_notification_catalogue import (
     ALL_WEEKDAYS,
     BUILTIN_BY_KEY,
     BUILTIN_NOTIFICATIONS,
+    DEFAULT_MAX_PER_HOUR,
     KIND_DAILY,
+    MAX_MAX_PER_HOUR,
+    MIN_MAX_PER_HOUR,
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -112,6 +118,7 @@ class DesktopNotificationService:
             "version": value["version"],
             "updated_at": getattr(setting, "updated_at", None) if value["version"] else None,
             "server_time": datetime.now(timezone.utc),
+            "max_per_hour": DesktopNotificationService._max_per_hour(value),
             "builtin": [
                 {"key": row["key"], "enabled": row["enabled"], "time": row["time"], "weekdays": row["weekdays"]}
                 for row in DesktopNotificationService._resolved_builtin(value)
@@ -137,10 +144,10 @@ class DesktopNotificationService:
         spec = BUILTIN_BY_KEY.get(key)
         if spec is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown built-in notification.")
-        if payload.time is not None and spec.kind != KIND_DAILY:
+        if payload.repeat and spec.kind == KIND_DAILY:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                f"'{spec.label}' repeats every {spec.every_minutes} minutes and has no time of day.",
+                f"'{spec.label}' is shown at a time of day and does not repeat. Choose another time instead.",
             )
 
         def change(value: Dict[str, Any]) -> List[str]:
@@ -153,11 +160,19 @@ class DesktopNotificationService:
                     override["enabled"] = False
                 notes.append("turned on" if payload.enabled else "turned off")
             if payload.time is not None:
+                # A daily reminder's default time is not stored. A repeating one
+                # has no default time (it repeats), so any time is a choice to
+                # show it once a day at that time.
                 if payload.time == spec.default_time:
                     override.pop("time", None)
                 else:
                     override["time"] = payload.time
-                notes.append(f"time {payload.time}")
+                notes.append(
+                    f"time {payload.time}" if spec.kind == KIND_DAILY else f"only at {payload.time}"
+                )
+            if payload.repeat:
+                override.pop("time", None)  # back on its cadence: nothing to remember
+                notes.append(f"repeats every {spec.every_minutes} minutes")
             if payload.weekdays is not None:
                 if list(payload.weekdays) == list(ALL_WEEKDAYS):
                     override.pop("weekdays", None)
@@ -174,6 +189,29 @@ class DesktopNotificationService:
             db, current_user, change,
             action=ActivityLogAction.DESKTOP_NOTIFICATION_UPDATED,
             describe=lambda notes: f"Updated the desktop reminder '{spec.label}' ({', '.join(notes)})",
+            entity_id=None,
+        )
+
+    @staticmethod
+    def update_limit(db: Session, current_user: User, payload: DesktopLimitUpdate) -> Dict[str, Any]:
+        """Set how many notifications a desktop may show in a rolling hour.
+
+        The default is not stored (like a built-in reminder's default): choosing
+        it again puts the row back as if nobody had touched it.
+        """
+        DesktopNotificationService._require_manage(current_user)
+
+        def change(value: Dict[str, Any]) -> List[str]:
+            if payload.max_per_hour == DEFAULT_MAX_PER_HOUR:
+                value.pop("max_per_hour", None)
+            else:
+                value["max_per_hour"] = payload.max_per_hour
+            return [f"{payload.max_per_hour} per hour"]
+
+        return DesktopNotificationService._apply(
+            db, current_user, change,
+            action=ActivityLogAction.DESKTOP_NOTIFICATION_UPDATED,
+            describe=lambda notes: f"Set the desktop notification limit ({notes[0]})",
             entity_id=None,
         )
 
@@ -353,7 +391,21 @@ class DesktopNotificationService:
                 })
             except (KeyError, TypeError, ValueError):
                 continue
-        return {"version": version if isinstance(version, int) and version >= 0 else 0, "builtin": builtin, "custom": custom}
+        value: Dict[str, Any] = {
+            "version": version if isinstance(version, int) and version >= 0 else 0,
+            "builtin": builtin,
+            "custom": custom,
+        }
+        # Present only when an administrator chose one: an untouched row has no key
+        # and reads as the default, so existing rows need no migration.
+        limit = raw.get("max_per_hour")
+        if isinstance(limit, int) and not isinstance(limit, bool) and MIN_MAX_PER_HOUR <= limit <= MAX_MAX_PER_HOUR:
+            value["max_per_hour"] = limit
+        return value
+
+    @staticmethod
+    def _max_per_hour(value: Dict[str, Any]) -> int:
+        return value.get("max_per_hour", DEFAULT_MAX_PER_HOUR)
 
     @staticmethod
     def _resolved_builtin(value: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -362,11 +414,14 @@ class DesktopNotificationService:
         for spec in BUILTIN_NOTIFICATIONS:
             override = value["builtin"].get(spec.key, {})
             weekdays = override.get("weekdays")
+            chosen = override.get("time")
             rows.append({
                 "key": spec.key,
                 "spec": spec,
                 "enabled": override.get("enabled", True) is not False,
-                "time": override.get("time", spec.default_time) if spec.kind == KIND_DAILY else None,
+                # A daily reminder always has a time. A repeating one has one only
+                # while an administrator has fixed it to a time of day.
+                "time": chosen if isinstance(chosen, str) else spec.default_time,
                 "weekdays": sorted(set(weekdays)) if isinstance(weekdays, list) and weekdays else list(ALL_WEEKDAYS),
             })
         return rows
@@ -378,6 +433,10 @@ class DesktopNotificationService:
             "version": value["version"],
             "updated_at": getattr(setting, "updated_at", None) if value["version"] else None,
             "updated_by_username": getattr(setting, "updated_by_username", None) if value["version"] else None,
+            "max_per_hour": DesktopNotificationService._max_per_hour(value),
+            "default_max_per_hour": DEFAULT_MAX_PER_HOUR,
+            "min_max_per_hour": MIN_MAX_PER_HOUR,
+            "max_max_per_hour": MAX_MAX_PER_HOUR,
             "builtin": [
                 {
                     "key": row["key"], "label": row["spec"].label, "description": row["spec"].description,

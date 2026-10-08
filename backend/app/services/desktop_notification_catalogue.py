@@ -25,6 +25,16 @@ KIND_DAILY = "daily"
 #: Monday = 0 ... Sunday = 6, the same numbering as ``datetime.weekday()``.
 ALL_WEEKDAYS: Tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6)
 
+#: How many notifications a desktop shows in any rolling hour unless an
+#: administrator chose another number. A copy of ``DEFAULT_MAX_PER_HOUR`` in
+#: ``desktop/background_services/wellbeing/reminders.py``; the contract test
+#: compares the two, and checks the range below sits inside what the desktop
+#: accepts.
+DEFAULT_MAX_PER_HOUR = 2
+#: What an administrator may choose.
+MIN_MAX_PER_HOUR = 1
+MAX_MAX_PER_HOUR = 6
+
 
 @dataclass(frozen=True)
 class BuiltinNotification:

@@ -41,6 +41,9 @@ from core.time_format import IST
 
 TICK_SECONDS = WellbeingService.interval_ms / 1000
 CLOCK_START = 1000.0
+#: These tests are about the schedule, not the hourly limit, so the services they build are not limited
+#: (the limit has its own tests in test_notification_hourly_limit.py).
+UNCAPPED = 1000
 ALL_DAYS = [0, 1, 2, 3, 4, 5, 6]
 WORKDAYS = [0, 1, 2, 3, 4]
 
@@ -531,6 +534,7 @@ def make_wellbeing(schedule_payload=None, *, start, cache=None, ready=True,
     if with_source:
         runtime.notification_schedule = source
     service = WellbeingService(runtime, cache)
+    service.DEFAULT_MAX_PER_HOUR = UNCAPPED
     service._clock = CLOCK_START
     service._ist = start
     service._now_monotonic = lambda: service._clock
@@ -679,7 +683,7 @@ def test_a_custom_notification_is_shown_at_its_time_and_only_once_a_day():
     assert shown["level"] == "info"
     offset = (shown["ist"] - at(FRIDAY, 10, 25)).total_seconds()
     assert 0 <= offset <= 2, f"shown {offset}s after its time"
-    assert json.loads(cache.store[DAILY_STATE_KEY])["custom:abc123"] == "2026-09-11"
+    assert json.loads(cache.store[DAILY_STATE_KEY])["custom:abc123"] == "2026-09-11@10:25"
 
 
 def test_a_custom_notification_is_shown_again_the_next_day():
@@ -712,7 +716,7 @@ def test_a_custom_notification_more_than_the_grace_late_is_missed_not_shown():
     run_as_the_loop_does(service, 30)
 
     assert notifications.of("custom:abc123") == []
-    assert json.loads(cache.store[DAILY_STATE_KEY])["custom:abc123"] == "2026-09-11", (
+    assert json.loads(cache.store[DAILY_STATE_KEY])["custom:abc123"] == "2026-09-11@10:25", (
         "recorded as spent so it is not shown late on a later tick"
     )
 
@@ -830,6 +834,7 @@ def make_running_desktop(start):
         notifications=notifications, cache=cache, storage=None,
     )
     wellbeing = WellbeingService(runtime, cache)
+    wellbeing.DEFAULT_MAX_PER_HOUR = UNCAPPED
     wellbeing._clock = CLOCK_START
     wellbeing._ist = start
     wellbeing._now_monotonic = lambda: wellbeing._clock
