@@ -95,10 +95,14 @@ class TestImageStats:
 # ── Off macOS it does nothing ─────────────────────────────────────────────────
 
 class TestOffMacOS:
-    def test_it_is_disabled_here(self):
+    # The release suite also runs on macOS runners, where the host *is* a Mac:
+    # "off macOS" is stated, not assumed from the machine.
+    def test_it_is_disabled_here(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
         assert mac_diagnostics.enabled() is False
 
     def test_nothing_is_logged_or_imported(self, caplog, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setitem(sys.modules, "Quartz", None)   # would raise on import
         caplog.set_level(logging.DEBUG)
         mac_diagnostics.log_access(AccessStatus(ScreenAccess.NOT_REQUIRED))

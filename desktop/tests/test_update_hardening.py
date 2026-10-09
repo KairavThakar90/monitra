@@ -47,6 +47,18 @@ from tests.test_update_installer import (
 WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="Windows-only behaviour")
 INSTALLED = version.VERSION
 
+# Versions strictly newer than the installed one, derived from it rather than
+# written down, so that cutting a release (the only edit version.py takes)
+# cannot turn "the next patch" into "the version already installed".
+_MAJOR, _MINOR, _PATCH = (int(part) for part in INSTALLED.split("."))
+NEWER_THAN_INSTALLED = [
+    f"{_MAJOR}.{_MINOR}.{_PATCH + 1}",     # next patch
+    f"{_MAJOR}.{_MINOR}.{_PATCH + 10}",    # two-digit patch: numeric, not lexical
+    f"{_MAJOR}.{_MINOR + 1}.0",            # next minor
+    f"{_MAJOR + 1}.0.0",                   # next major
+    f"{_MAJOR + 9}.0.0",                   # two-digit major
+]
+
 
 @pytest.fixture
 def scratch(tmp_path, monkeypatch):
@@ -483,7 +495,7 @@ class TestNotAnUpdate:
         assert service.pending_count == 0
         assert service.force_update_pending is False
 
-    @pytest.mark.parametrize("latest", ["1.3.2", "1.3.10", "1.4.0", "2.0.0", "10.0.0"])
+    @pytest.mark.parametrize("latest", NEWER_THAN_INSTALLED)
     def test_a_newer_version_is_offered_across_the_semver_boundaries(self, latest):
         service, _api = checked_service(offered(latest_version=latest))
         offers = []

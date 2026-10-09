@@ -10,6 +10,7 @@ reports itself as Monitra to Windows.
 """
 from __future__ import annotations
 
+import os
 import struct
 import subprocess
 import sys
@@ -100,10 +101,13 @@ def test_a_wrongly_stamped_runner_is_corrected(tmp_path):
 
 
 def test_the_environment_lets_the_copy_find_the_library_and_the_apps_packages():
-    env = tool.runner_environment(["C:/extra"])
+    # A host-native path: "C:/extra" contains the POSIX path separator, so on
+    # the macOS release runners it split into "C" and "/extra".
+    extra = str(DESKTOP.parent / "extra")
+    env = tool.runner_environment([extra])
     assert env["PYTHONHOME"] == sys.base_prefix
-    paths = env["PYTHONPATH"].split(";" if sys.platform == "win32" else ":")
-    assert paths[0] == str(DESKTOP) and "C:/extra" in paths
+    paths = env["PYTHONPATH"].split(os.pathsep)
+    assert paths[0] == str(DESKTOP) and extra in paths
     assert len(paths) == len(set(paths))
 
 
@@ -147,7 +151,9 @@ def test_a_source_run_on_windows_relaunches(source_run):
     lambda mp: mp.setattr(sys, "frozen", True, raising=False),                      # the installed build
     lambda mp: mp.setenv(dev_identity.RELAUNCHED_ENV, "1"),                         # already the child
     lambda mp: mp.setenv(dev_identity.DISABLE_ENV, "1"),                            # a developer opted out
-    lambda mp: mp.setattr(sys, "executable", r"C:\Users\x\.monitra\dev-runner\Monitra.exe"),   # already the copy
+    # already the copy -- spelt for the host: Path() on the macOS runners does
+    # not split a backslash path and found no "Monitra.exe" in it
+    lambda mp: mp.setattr(sys, "executable", str(Path("~/.monitra/dev-runner/Monitra.exe").expanduser())),
 ], ids=["linux", "macos", "installed build", "child", "opted out", "already the copy"])
 def test_it_does_not_relaunch_when(source_run, monkeypatch, change):
     change(monkeypatch)

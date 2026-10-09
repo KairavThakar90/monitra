@@ -79,6 +79,17 @@ def _ns_window(widget) -> Optional[Any]:
     `winId()` of a top-level widget is its `NSView*`; creating it is what
     gives the widget a native window to configure before it is first shown.
     """
+    # Checked here, at the cast itself, and not only in `is_macos()`: a
+    # `winId()` that is not an NSView* (Qt's `offscreen` platform hands out a
+    # synthetic number) read as one is a segmentation fault, which no
+    # try/except can catch. The release suite found exactly that on a macOS
+    # runner, where a test stands in for `is_macos()` to exercise the macOS
+    # paths under the offscreen platform.
+    from PySide6.QtGui import QGuiApplication
+
+    if QGuiApplication.platformName() != "cocoa":
+        return None
+
     import ctypes
 
     import objc  # type: ignore

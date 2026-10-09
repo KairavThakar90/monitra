@@ -66,6 +66,15 @@ def dashboard(qapp, runtime):
     yield widget
     widget.close()
     widget.deleteLater()
+    # Actually destroy it now. deleteLater() only queues the deletion for an
+    # event loop that no test here runs, so every closed window survived to
+    # the end of the module, and the next test's qapp.setStyleSheet() then
+    # repolished all of them: each test slower than the last (0.6 s alone,
+    # 28 minutes for the module), which is what timed out the macOS Intel
+    # release runner.
+    from PySide6.QtCore import QEvent
+
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def _fill(dashboard, pump, count=12):

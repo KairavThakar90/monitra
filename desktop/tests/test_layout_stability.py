@@ -487,6 +487,10 @@ class TestUsageRowsDoNotWidenThePanel:
         longer.view_apps.set_mode(MODE_DATA)
         longer.view_urls.set_data([dict(u, title=LONG_APP * 9, url=LONG_URL * 5) for u in _urls()])
         longer.view_urls.set_mode(MODE_DATA)
+        # Same tab on both: the floor of a tab is the tab's own (on macOS the
+        # Apps and URLs tabs sit 2 px narrower than Screenshots), and the claim
+        # here is about the names, not the tab.
+        longer.switch_tab(tab)
         pump(10)
         assert section.minimumSizeHint().width() == longer.minimumSizeHint().width(), (width, tab)
         longer.close()

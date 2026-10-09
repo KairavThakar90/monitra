@@ -47,3 +47,6 @@ node_modules/
 /backend/test_live_api*.py
 /backend/test_local_api.py
 /backend/test_service_update.py
+
+# Local release staging (final artifacts + notes); artifacts are never committed.
+dist-release-*/

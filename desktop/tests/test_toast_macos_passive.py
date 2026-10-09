@@ -73,6 +73,17 @@ def service(qapp):
 
 
 class TestOnMacOS:
+    def test_describing_a_card_without_a_native_window_cannot_crash(self, qapp, native):
+        """With `is_macos()` faked true under the offscreen platform there is no
+        NSView behind `winId()`; reading it as one segfaulted the macOS release
+        runners inside `describe()` (via `log_card_state` on every show). The
+        cast is refused unless Qt is really drawing through Cocoa."""
+        card = ToastPopup()
+        assert mac_window._ns_window(card) is None
+        assert mac_window.describe(card) == "ns_window=None"
+        mac_window.log_card_state(card, "after_show")   # must not raise either
+        card.deleteLater()
+
     def test_the_card_refuses_key_window_status(self, qapp, native):
         card = ToastPopup()
         assert card.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus

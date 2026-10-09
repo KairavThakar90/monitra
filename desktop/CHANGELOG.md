@@ -20,6 +20,12 @@ re-grant a permission.
 
 ## [Unreleased]
 
+## [1.3.2]
+
+The installer and the macOS bundles are still unsigned: Windows SmartScreen
+will warn on first run ("More info" → "Run anyway"), and macOS will refuse
+the app until you allow it under System Settings → Privacy & Security.
+
 ### Added
 
 - **A second Add button: Add Non Billable Task.** If an administrator allows it for
