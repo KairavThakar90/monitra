@@ -622,8 +622,11 @@ export const V2Shell: React.FC<{
       {/* Main */}
       <div className="flex min-w-0 flex-grow flex-col">
         <ScreenNoticeBanner />
-        <header className="flex min-h-16 shrink-0 items-center gap-4 border-b border-[#E2E8F0] bg-white px-4 lg:px-8 py-3">
-          <button 
+        {/* flex-wrap: the title keeps a readable minimum width, and the actions
+            drop onto a row of their own when they would otherwise squeeze it
+            down to "P..". Wide screens never wrap, so desktop is unchanged. */}
+        <header className="flex min-h-16 shrink-0 flex-wrap items-center gap-x-4 gap-y-3 border-b border-[#E2E8F0] bg-white px-4 lg:px-8 py-3">
+          <button
             className="lg:hidden shrink-0 rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors"
             onClick={() => setMobileMenuOpen(true)}
           >
@@ -631,12 +634,12 @@ export const V2Shell: React.FC<{
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16" />
             </svg>
           </button>
-          <div className="min-w-0 flex-1">
+          <div className="min-w-[12rem] flex-1">
             {breadcrumb}
             <h1 className="truncate text-lg font-bold tracking-tight text-[#0F172A]">{title}</h1>
             {subtitle && <p className="mt-0.5 truncate text-xs text-[#64748B]">{subtitle}</p>}
           </div>
-          {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+          {actions && <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">{actions}</div>}
         </header>
 
         <main className="flex-grow overflow-y-auto p-4 lg:p-8">{children}</main>

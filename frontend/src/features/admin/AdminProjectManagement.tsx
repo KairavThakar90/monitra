@@ -470,7 +470,7 @@ const ToolbarSelect: React.FC<{
       aria-label={label}
       value={value}
       onChange={(event) => onChange(event.target.value)}
-      className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
+      className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-8 text-[13px] font-semibold text-slate-700 shadow-sm outline-none sm:pr-9 sm:text-sm transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
     >
       {children}
     </select>
@@ -968,7 +968,7 @@ export const AdminProjectManagement: React.FC = () => {
       title="Project Management"
       subtitle="Manage projects, deadlines, team assignments, and client billing."
       actions={
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
             <InlineRefreshIndicator active={isRevalidating || isUpdatingProject} />
             {/* Same button as the Reports page's "Export CSV". */}
             <button
@@ -1023,12 +1023,15 @@ export const AdminProjectManagement: React.FC = () => {
             <FieldError id="project-search-error" message={searchError} />
           </div>
 
-          <div className="flex w-full sm:w-auto items-center gap-3">
+          {/* Phones: a two-column grid, so each filter has a cell of its own and
+              nothing runs off the card. From `sm` up it is the original single
+              wrapping row, right-aligned. */}
+          <div className="grid w-full grid-cols-2 items-center gap-3 sm:flex sm:w-auto sm:flex-wrap sm:justify-end">
             <div className="relative">
               <button
                 type="button"
                 onClick={() => setShowColumnDropdown(!showColumnDropdown)}
-                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50 flex items-center gap-2"
+                className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50 sm:w-auto sm:justify-start"
               >
                 Columns
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1040,7 +1043,7 @@ export const AdminProjectManagement: React.FC = () => {
                   {/* Click-away: anywhere outside the panel closes it, the
                       same pattern the row Manage menu uses. */}
                   <div className="fixed inset-0 z-40" onClick={() => setShowColumnDropdown(false)} />
-                  <div className="absolute right-0 mt-2 w-48 rounded-xl bg-white p-3 shadow-xl border border-slate-100 z-50">
+                  <div className="absolute left-0 mt-2 w-48 rounded-xl sm:left-auto sm:right-0 bg-white p-3 shadow-xl border border-slate-100 z-50">
                   <div className="text-xs font-bold text-slate-400 mb-3 uppercase tracking-wider">Visible Columns</div>
                   <div className="space-y-2">
                     {COLUMNS.map(col => (
@@ -1067,7 +1070,7 @@ export const AdminProjectManagement: React.FC = () => {
                   ...(metadata?.project_statuses || [])
                 ]}
                 onChange={(val) => setFilterStatusId(val === 0 ? null : val)}
-                className="w-full sm:w-auto min-h-[38px] flex items-center"
+                className="min-h-[38px] flex items-center [&>button]:w-full sm:[&>button]:w-auto"
               />
             {/* Project type: Billing / Non Billing, then Fixed Hours / Flexible Time under Billing */}
             <ToolbarSelect
@@ -1100,7 +1103,7 @@ export const AdminProjectManagement: React.FC = () => {
                 aria-label="Filter by organization"
                 value={filterCategory}
                 onChange={(e) => { setFilterCategory(e.target.value as '' | ProjectCategory); setPage(1); }}
-                className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
+                className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-8 text-[13px] font-semibold text-slate-700 shadow-sm outline-none sm:pr-9 sm:text-sm transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
               >
                 <option value="">All Organizations</option>
                 {PROJECT_CATEGORY_OPTIONS.map((option) => (
@@ -1118,12 +1121,15 @@ export const AdminProjectManagement: React.FC = () => {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
               </svg>
             </div>
-            {/* Creation date -- the same picker as Assign Tasks, with All Time on offer. */}
-            <DateRangeFilter
-              allowAll
-              value={dateRange}
-              onChange={(range) => { setDateRange(range); setPage(1); }}
-            />
+            {/* Creation date -- the same picker as Assign Tasks, with All Time on offer.
+                Its label is a full date span, so on a phone it takes a row of its own. */}
+            <div className="col-span-2 sm:col-span-1">
+              <DateRangeFilter
+                allowAll
+                value={dateRange}
+                onChange={(range) => { setDateRange(range); setPage(1); }}
+              />
+            </div>
           </div>
         </div>
 
@@ -1146,7 +1152,7 @@ export const AdminProjectManagement: React.FC = () => {
                   value={bulkCategory}
                   disabled={isAssigningCategory}
                   onChange={(e) => setBulkCategory(e.target.value as '' | ProjectCategory)}
-                  className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 shadow-sm outline-none transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
+                  className="min-h-[38px] w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-8 text-[13px] font-semibold text-slate-700 shadow-sm outline-none sm:pr-9 sm:text-sm transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15 sm:w-auto"
                 >
                   <option value="">Choose organization...</option>
                   {PROJECT_CATEGORY_OPTIONS.map((option) => (
