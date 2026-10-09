@@ -69,7 +69,15 @@ def dashboard(qapp, runtime):
     )
     widget.api.run_in_background = lambda *a, **k: object()
     yield widget
+    widget.close()
     widget.deleteLater()
+    # Actually destroy it now: deleteLater() only queues the deletion for an
+    # event loop no test here runs, so every window survived to the end of
+    # the module and each later qapp.setStyleSheet() repolished all of them
+    # (see the same fixture in test_activity_splitter.py).
+    from PySide6.QtCore import QEvent
+
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 class TestWindowFloor:

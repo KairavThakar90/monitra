@@ -32,7 +32,6 @@ import time
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
 
 from tests.e2e.test_screenshot_lifecycle_e2e import (  # noqa: F401  (fixtures and helpers)
     BACKEND_ROOT, _capture_windows, _drain, _pump, _queue_row, _stored_rows,
@@ -100,6 +99,11 @@ def _signed_in(desktop, principal):
 
 @pytest.fixture
 def db(principal):
+    # Imported here, not at module level: the desktop environment has no
+    # SQLAlchemy, and a module-level import fails *collection* of the whole
+    # suite even though every test here is skipped without MONITRA_E2E=1.
+    from sqlalchemy import create_engine
+
     engine = create_engine(principal["database_url"], pool_pre_ping=True)
     yield engine
     engine.dispose()
