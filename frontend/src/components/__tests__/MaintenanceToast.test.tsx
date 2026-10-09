@@ -129,10 +129,12 @@ describe('MaintenanceNotice', () => {
     await mount(true);
     await flip(true);
 
-    // No overlay, no dialog, no acknowledgement.
+    // No overlay, no dialog, no acknowledgement. The one control it has
+    // minimizes it; there is nothing that dismisses or confirms it.
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(container.querySelector('[aria-modal="true"]')).toBeNull();
-    expect(toasts()[0].querySelector('button')).toBeNull();
+    const buttons = Array.from(toasts()[0].querySelectorAll('button'));
+    expect(buttons.map((b) => b.getAttribute('data-testid'))).toEqual(['maintenance-minimize']);
     const shell = toasts()[0] as HTMLElement;
     expect(shell.className).toContain('fixed');
     expect(shell.className).toContain('pointer-events-none');
@@ -189,6 +191,234 @@ describe('MaintenanceNotice', () => {
 
     expect(fetchMock.mock.calls.length).toBeGreaterThan(before);
     expect(toasts().length).toBe(1);
+  });
+
+  describe('minimizing and moving the notice', () => {
+    const pill = () => container.querySelector<HTMLButtonElement>('[data-testid="maintenance-expand"]');
+    const minimize = () => container.querySelector<HTMLButtonElement>('[data-testid="maintenance-minimize"]');
+    const dragArea = () => container.querySelector<HTMLElement>('[data-testid="maintenance-drag-area"]')!;
+    const transform = () => (toasts()[0] as HTMLElement).getAttribute('style') ?? '';
+
+    const press = async (el: Element, type: 'click' | 'pointerdown' | 'pointermove' | 'pointerup', x = 0, y = 0) => {
+      await act(async () => {
+        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }));
+      });
+    };
+    /** A press at (x, y), a move to (x + dx, y + dy), and the release there. */
+    const dragBy = async (el: Element, dx: number, dy: number) => {
+      await press(el, 'pointerdown', 500, 500);
+      await press(el, 'pointermove', 500 + dx, 500 + dy);
+      await press(el, 'pointerup', 500 + dx, 500 + dy);
+    };
+
+    /** A laid-out box in a 1280 x 800 window; jsdom has no layout of its own. */
+    const layOut = (box: { left: number; top: number; width: number; height: number }) => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
+      const el = toasts()[0] as HTMLElement;
+      el.getBoundingClientRect = () =>
+        ({
+          ...box,
+          right: box.left + box.width,
+          bottom: box.top + box.height,
+          x: box.left,
+          y: box.top,
+          toJSON: () => ({}),
+        }) as DOMRect;
+    };
+    const RESTING = { left: 900, top: 700, width: 360, height: 80 };
+
+    let originalWidth = 0;
+    let originalHeight = 0;
+    beforeEach(() => {
+      originalWidth = window.innerWidth;
+      originalHeight = window.innerHeight;
+    });
+    afterEach(() => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalHeight });
+    });
+
+    it('minimizes to a pill that is still the notice, and expands again', async () => {
+      await mount(true);
+      await flip(true);
+      expect(pill()).toBeNull();
+
+      await press(minimize()!, 'click');
+      // Still there -- the fact stays on screen -- but small, with no card text.
+      expect(toasts().length).toBe(1);
+      expect(pill()?.textContent).toContain('Under maintenance');
+      expect(minimize()).toBeNull();
+      expect(toasts()[0].textContent).not.toContain(MAINTENANCE_COPY.body);
+      expect(toasts()[0].getAttribute('role')).toBe('status');
+
+      await press(pill()!, 'click');
+      expect(pill()).toBeNull();
+      expect(toasts()[0].textContent).toContain(MAINTENANCE_COPY.body);
+    });
+
+    it('never hides the control underneath, minimized or not', async () => {
+      await mount(true);
+      await flip(true);
+      await press(minimize()!, 'click');
+      const under = container.querySelector<HTMLButtonElement>('#under')!;
+      await act(async () => { under.click(); });
+      expect(clicks).toBe(1);
+      expect((toasts()[0] as HTMLElement).className).toContain('pointer-events-none');
+    });
+
+    it('stays minimized across polls, and starts a new maintenance window open', async () => {
+      await mount(true);
+      await flip(true);
+      await press(minimize()!, 'click');
+
+      await flip(true);
+      expect(pill()).not.toBeNull();
+
+      await flip(false);
+      expect(toasts().length).toBe(0);
+      await flip(true);
+      expect(toasts().length).toBe(1);
+      expect(pill()).toBeNull();
+      expect(toasts()[0].textContent).toContain(MAINTENANCE_COPY.body);
+    });
+
+    it('starts in its corner, with no offset', async () => {
+      await mount(true);
+      await flip(true);
+      expect(transform()).toMatch(/translate3d\(0(px)?, 0(px)?, 0(px)?\)/);
+    });
+
+    it('is dragged by the distance the pointer moves', async () => {
+      await mount(true);
+      await flip(true);
+      layOut(RESTING);
+
+      await dragBy(dragArea(), -200, -100);
+      expect(transform()).toContain('-200px');
+      expect(transform()).toContain('-100px');
+    });
+
+    it('moves the pill too', async () => {
+      await mount(true);
+      await flip(true);
+      await press(minimize()!, 'click');
+      layOut({ left: 1080, top: 720, width: 180, height: 40 });
+
+      await dragBy(dragArea(), -300, -250);
+      expect(transform()).toContain('-300px');
+      expect(transform()).toContain('-250px');
+      // Still a pill after being moved.
+      expect(pill()).not.toBeNull();
+    });
+
+    it('keeps dragging when the pointer leaves the notice, which a quick flick of the small pill does', async () => {
+      await mount(true);
+      await flip(true);
+      await press(minimize()!, 'click');
+      layOut({ left: 1080, top: 720, width: 180, height: 40 });
+
+      // Pressed on the pill; every move and the release arrive on the page,
+      // not on the pill, exactly as when the pointer outruns a 36px target.
+      await press(pill()!, 'pointerdown', 500, 500);
+      await press(document.body, 'pointermove', 400, 450);
+      await press(document.body, 'pointerup', 400, 450);
+
+      expect(transform()).toContain('-100px');
+      expect(transform()).toContain('-50px');
+    });
+
+    it('stops following the pointer once it is released', async () => {
+      await mount(true);
+      await flip(true);
+      layOut(RESTING);
+
+      await dragBy(dragArea(), -100, -100);
+      const after = transform();
+      await press(document.body, 'pointermove', 100, 100);
+      expect(transform()).toBe(after);
+    });
+
+    it('leaves nothing listening on the window if it goes away mid-press', async () => {
+      const added = vi.spyOn(window, 'addEventListener');
+      const removed = vi.spyOn(window, 'removeEventListener');
+      await mount(true);
+      await flip(true);
+      layOut(RESTING);
+
+      await press(dragArea(), 'pointerdown', 500, 500);
+      const pointerAdds = added.mock.calls.filter(([type]) => String(type).startsWith('pointer')).length;
+      expect(pointerAdds).toBeGreaterThan(0);
+
+      await flip(false); // the notice is removed with the press still down
+      const pointerRemoves = removed.mock.calls.filter(([type]) => String(type).startsWith('pointer')).length;
+      expect(pointerRemoves).toBe(pointerAdds);
+      added.mockRestore();
+      removed.mockRestore();
+    });
+
+    it('a press that barely moves is a click, not a drag', async () => {
+      await mount(true);
+      await flip(true);
+      layOut(RESTING);
+
+      await dragBy(dragArea(), 2, 1);
+      expect(transform()).toMatch(/translate3d\(0(px)?, 0(px)?, 0(px)?\)/);
+    });
+
+    it('cannot be dragged off the screen', async () => {
+      await mount(true);
+      await flip(true);
+      layOut(RESTING);
+
+      // Far past the top-left corner: stops 8px from each edge.
+      await dragBy(dragArea(), -5000, -5000);
+      expect(transform()).toContain(`${8 - RESTING.left}px`);
+      expect(transform()).toContain(`${8 - RESTING.top}px`);
+    });
+
+    it('a drag that ends over a button does not press it', async () => {
+      await mount(true);
+      await flip(true);
+      layOut(RESTING);
+
+      // Pressed on the minimize button, dragged away, released: the click the
+      // browser sends afterwards must not collapse the card.
+      const button = minimize()!;
+      await press(button, 'pointerdown', 500, 500);
+      await press(button, 'pointermove', 400, 450);
+      await press(button, 'pointerup', 400, 450);
+      await press(button, 'click', 400, 450);
+
+      expect(pill()).toBeNull();
+      expect(minimize()).not.toBeNull();
+      expect(transform()).toContain('-100px');
+    });
+
+    it('a plain click on the minimize button still minimizes it', async () => {
+      await mount(true);
+      await flip(true);
+      layOut(RESTING);
+
+      const button = minimize()!;
+      await press(button, 'pointerdown', 500, 500);
+      await press(button, 'pointerup', 500, 500);
+      await press(button, 'click', 500, 500);
+
+      expect(pill()).not.toBeNull();
+    });
+
+    it('is brought back onto the screen when the window shrinks', async () => {
+      await mount(true);
+      await flip(true);
+      // The window is now narrower than where the notice sits.
+      layOut({ left: 1200, top: 700, width: 360, height: 80 });
+
+      await act(async () => { window.dispatchEvent(new Event('resize')); });
+
+      // 1280 - 8 - (1200 + 360) = -288 to the left.
+      expect(transform()).toContain('-288px');
+    });
   });
 
   it('re-asks when the browser comes back online', async () => {
