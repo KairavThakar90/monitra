@@ -19,7 +19,7 @@ import {
 import { useFeedback } from '../../components/FeedbackProvider';
 import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
-import { PaginationArrow } from '../../components/PaginationArrow';
+import { Pagination } from '../../components/Pagination';
 import { useAuth } from '../auth/authContext';
 import { isTeamScoped } from '../../utils/roles';
 import { ALL_TIME_RANGE, DateRangeFilter, type DateRange } from '../dashboard/v2/filters';
@@ -72,54 +72,6 @@ const RemainingHoursCell: React.FC<{ project: Project; usedSeconds: number }> = 
     );
   }
   return <span className="font-semibold text-slate-700">{formatHoursValue(remainingSeconds / 3600)} left</span>;
-};
-
-const Pagination: React.FC<{
-  page: number;
-  totalPages: number;
-  totalItems: number;
-  limit: number;
-  setPage: (page: number) => void;
-  setLimit: (limit: number) => void;
-}> = ({ page, totalPages, totalItems, limit, setPage, setLimit }) => {
-  const startItem = totalItems === 0 ? 0 : (page - 1) * limit + 1;
-  const endItem = Math.min(page * limit, totalItems);
-  const pages = totalPages <= 7
-    ? Array.from({ length: totalPages }, (_, index) => index + 1)
-    : page <= 4
-      ? [1, 2, 3, 4, 5, '...', totalPages]
-      : page >= totalPages - 3
-        ? [1, '...', totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages]
-        : [1, '...', page - 1, page, page + 1, '...', totalPages];
-
-  return (
-    <div className="mt-8 flex flex-col items-center justify-between gap-4 border-t border-slate-200 pt-5 text-sm text-slate-500 sm:flex-row">
-      <div>Showing {startItem} to {endItem} of {totalItems} projects</div>
-      <div className="flex items-center gap-3">
-        <select
-          value={limit}
-          onChange={(e) => { setLimit(Number(e.target.value)); setPage(1); }}
-          className="rounded-md border border-slate-300 py-1.5 pl-3 pr-8 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-        >
-          <option value={12}>12</option>
-          <option value={20}>20</option>
-          <option value={50}>50</option>
-          <option value={100}>100</option>
-        </select>
-        <div className="flex items-center gap-1">
-          <PaginationArrow direction="prev" disabled={page === 1} onClick={() => setPage(page - 1)} />
-          {pages.map((visiblePage, index) => visiblePage === '...' ? (
-            <span key={`ellipsis-${index}`} className="flex h-8 w-8 items-center justify-center text-slate-400">...</span>
-          ) : (
-            <button key={visiblePage} onClick={() => setPage(visiblePage as number)} className={`flex h-8 w-8 items-center justify-center rounded text-sm font-semibold transition ${visiblePage === page ? 'bg-blue-500 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>
-              {visiblePage}
-            </button>
-          ))}
-          <PaginationArrow direction="next" disabled={page === totalPages} onClick={() => setPage(page + 1)} />
-        </div>
-      </div>
-    </div>
-  );
 };
 
 // Exported so the click area and the open-direction math can be tested
@@ -1313,7 +1265,7 @@ export const AdminProjectManagement: React.FC = () => {
                         </span>
                       ) : (
                         <span className="inline-flex items-center rounded-md bg-white px-2.5 py-1 text-[11px] font-bold tracking-wider text-[#14B8A6] border border-[#14B8A6]">
-                          Free Time
+                          {billingTypeLabel('free')}
                         </span>
                       )}
                     </td>}
@@ -1369,7 +1321,7 @@ export const AdminProjectManagement: React.FC = () => {
           </div>
         )}
 
-        {totalPages > 1 && <Pagination page={page} totalPages={totalPages} totalItems={projectsData?.pagination?.total || 0} limit={pageSize} setPage={setPage} setLimit={setPageSize} />}
+        {totalPages > 1 && <Pagination page={page} totalPages={totalPages} totalItems={projectsData?.pagination?.total || 0} limit={pageSize} setPage={setPage} setLimit={setPageSize} noun="projects" />}
       </div>
 
       {viewingProject && (
@@ -1431,7 +1383,7 @@ export const AdminProjectManagement: React.FC = () => {
                   <p className="mt-3 rounded-xl border border-slate-100 bg-white p-4 text-sm font-semibold text-slate-700 shadow-sm">
                     {viewingProject.billing_type === 'fixed'
                       ? `${viewingProject.fixed_hours || 0} fixed hours`
-                      : viewingProject.billing_type === 'non_billing' ? 'Non billing' : 'Free time billing'}
+                      : viewingProject.billing_type === 'non_billing' ? 'Non billing' : billingTypeLabel('free')}
                   </p>
                 </section>
               </div>

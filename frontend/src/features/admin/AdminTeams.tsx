@@ -214,7 +214,7 @@ const LeadersView: React.FC<{ onOpen: (leaderId: string) => void }> = ({ onOpen 
           { label: 'Total Projects', val: summary?.total_projects || 0, Icon: FolderIcon },
           { label: 'Active Projects', val: summary?.active_projects || 0, Icon: RocketIcon },
         ].map((stat, i) => (
-          <div key={i} className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:shadow-md">
+          <div key={i} className="flex min-w-0 items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:shadow-md sm:gap-4 sm:p-5">
             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600 shadow-inner">
               <stat.Icon className="h-6 w-6" />
             </div>
@@ -226,7 +226,9 @@ const LeadersView: React.FC<{ onOpen: (leaderId: string) => void }> = ({ onOpen 
         ))}
       </div>
 
-      <div className="flex items-center justify-between">
+      {/* Phone: the heading, then a full-width search below it. Side by side, a
+          fixed 288px search box left the heading two words wide. */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
           <h2 className="text-xl font-bold tracking-tight text-[#0F172A]">Leadership Team</h2>
           <InlineRefreshIndicator active={isFetchingLeaders && !!leadersData} />
@@ -236,7 +238,7 @@ const LeadersView: React.FC<{ onOpen: (leaderId: string) => void }> = ({ onOpen 
           placeholder="Search leaders..."
           value={search}
           onChange={e => setSearch(e.target.value)}
-          className="w-72 rounded-lg border border-slate-300 px-4 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          className="w-full rounded-lg border border-slate-300 px-4 py-2 text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 sm:w-72 sm:text-sm"
         />
       </div>
 
@@ -245,7 +247,7 @@ const LeadersView: React.FC<{ onOpen: (leaderId: string) => void }> = ({ onOpen 
       ) : (
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
           {leaders.map(row => (
-            <div key={row.id} className="group relative flex flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white p-6 shadow-sm transition duration-300 hover:border-blue-400 hover:shadow-xl">
+            <div key={row.id} className="group relative flex min-w-0 flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6 transition duration-300 hover:border-blue-400 hover:shadow-xl">
               <div className="absolute top-0 left-0 h-1.5 w-full bg-gradient-to-r from-blue-500 to-indigo-500 opacity-0 transition-opacity group-hover:opacity-100" />
               
               <div className="flex items-start justify-between">
@@ -258,16 +260,16 @@ const LeadersView: React.FC<{ onOpen: (leaderId: string) => void }> = ({ onOpen 
                 </div>
               </div>
 
-              <div className="mt-6 grid grid-cols-2 gap-4 rounded-xl bg-slate-50 p-4">
+              <div className="mt-5 grid grid-cols-2 gap-3 rounded-xl bg-slate-50 p-3 sm:mt-6 sm:gap-4 sm:p-4">
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Projects</div>
                   <div className="mt-1 text-base font-bold text-[#0F172A]">
                     {row.active_projects} <span className="font-medium text-slate-500">active</span>
                   </div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Members</div>
-                  <div className="mt-1 flex items-center gap-2">
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
                     <span className="text-base font-bold text-[#0F172A]">{row.total_members}</span>
                     {row.members_preview?.length > 0 && (
                       <div className="flex -space-x-2">
@@ -339,12 +341,12 @@ const LeaderProjectsView: React.FC<{ leaderId: number; onOpen: (projectId: strin
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex items-center gap-5">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:gap-5 sm:p-6">
+        <div className="flex min-w-0 items-center gap-4 sm:gap-5">
           <Avatar name={leader?.name || '?'} color="#2563EB" size={64} />
-          <div>
-            <h2 className="text-2xl font-bold tracking-tight text-[#0F172A]">{leader?.name}</h2>
-            <div className="mt-1 flex items-center gap-3 text-sm font-medium text-slate-500">
+          <div className="min-w-0">
+            <h2 className="break-words text-xl font-bold tracking-tight text-[#0F172A] sm:text-2xl">{leader?.name}</h2>
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm font-medium text-slate-500">
               <span className="rounded-md bg-blue-50 px-2 py-0.5 font-bold text-blue-600">{leader?.designation || 'Leader'}</span>
               <span className="h-1 w-1 rounded-full bg-slate-300" />
               <span>{leader?.total_members} Team Members</span>
@@ -353,7 +355,7 @@ const LeaderProjectsView: React.FC<{ leaderId: number; onOpen: (projectId: strin
         </div>
         <button
           onClick={onBack}
-          className="rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-bold text-slate-600 shadow-sm transition hover:bg-slate-50"
+          className="w-full rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-bold text-slate-600 shadow-sm transition hover:bg-slate-50 md:w-auto"
         >
           &larr; Back to All Teams
         </button>
@@ -366,7 +368,7 @@ const LeaderProjectsView: React.FC<{ leaderId: number; onOpen: (projectId: strin
           placeholder="Search projects..."
           value={search}
           onChange={e => { setSearch(e.target.value); setPage(1); }}
-          className="w-64 rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          className="w-full rounded-lg border border-slate-300 px-3 py-2 text-base shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 sm:w-64 sm:text-sm"
         />
         <InlineRefreshIndicator active={isFetchingProjects && !!projectsData} />
         {search && (
@@ -620,7 +622,8 @@ export const AdminTeams: React.FC = () => {
 
   return (
     <V2Shell title={title} subtitle={subtitle} breadcrumb={breadcrumb}>
-      <div className="w-full px-4 sm:px-6 lg:px-8 pt-6 pb-20">{body}</div>
+      {/* No side padding of its own on a phone: the shell's <main> already gives 16px. */}
+      <div className="w-full px-0 sm:px-6 lg:px-8 pt-2 sm:pt-6 pb-20">{body}</div>
     </V2Shell>
   );
 };

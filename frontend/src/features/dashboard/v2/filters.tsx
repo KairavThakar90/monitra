@@ -22,6 +22,23 @@ const useClickOutside = (onClose: () => void, active: boolean) => {
   return ref;
 };
 
+/**
+ * A dropdown panel on a phone.
+ *
+ * Anchored to its button with `left-0` / `right-0` and a fixed width, a panel can
+ * only run off the screen when the button sits anywhere but the matching edge --
+ * "All members" at the left of a phone opened 190px past the left of the screen.
+ * Below `sm` the panel is instead pinned to the viewport, near the top (so it
+ * stays visible above the on-screen keyboard that its search box raises), with
+ * a dimmed backdrop (`DropdownBackdrop`) that closes it.
+ */
+const PHONE_PANEL = "max-sm:fixed max-sm:left-3 max-sm:right-3 max-sm:top-20 max-sm:mt-0 max-sm:w-auto max-sm:min-w-0";
+
+/** The dim layer behind a phone panel. Hidden from `sm` up, where the panel hangs from its button. */
+const DropdownBackdrop: React.FC<{ onClose: () => void }> = ({ onClose }) => (
+  <div className="fixed inset-0 z-30 bg-slate-900/30 sm:hidden" onClick={onClose} aria-hidden="true" />
+);
+
 /* ------------------------------------------------------------------ */
 /* Generic multi-select                                                */
 /* ------------------------------------------------------------------ */
@@ -85,15 +102,17 @@ export const MultiSelect: React.FC<{
         </svg>
       </button>
 
+      {open && <DropdownBackdrop onClose={() => setOpen(false)} />}
       {open && (
-        <div className="absolute right-0 z-30 mt-2 w-72 overflow-hidden rounded-xl border border-[#E2E8F0] bg-white shadow-xl">
+        <div className={`absolute right-0 z-30 mt-2 w-72 overflow-hidden rounded-xl border border-[#E2E8F0] bg-white shadow-xl ${PHONE_PANEL}`}>
           <div className="border-b border-[#F1F5F9] p-2.5">
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={`Search ${noun}s...`}
               maxLength={SEARCH_MAX_LENGTH}
-              className="w-full rounded-lg bg-[#F8FAFC] px-3 py-2 text-[13px] text-[#0F172A] outline-none placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#2563EB]/25"
+              // 16px on a phone: below that iOS zooms the whole page in when the box is tapped.
+              className="w-full rounded-lg bg-[#F8FAFC] px-3 py-2 text-[13px] text-[#0F172A] outline-none placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#2563EB]/25 max-sm:text-base"
             />
           </div>
 
@@ -115,7 +134,7 @@ export const MultiSelect: React.FC<{
             </button>
           </div>
 
-          <ul className="max-h-64 overflow-y-auto p-1.5">
+          <ul className="max-h-64 overflow-y-auto p-1.5 max-sm:max-h-[32dvh]">
             {filtered.length === 0 && (
               <li className="px-3 py-6 text-center text-[12px] text-[#94A3B8]">No {noun}s match.</li>
             )}
@@ -255,11 +274,15 @@ export const MemberMultiSelect: React.FC<{
         <svg className="h-3.5 w-3.5 text-[#94A3B8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
       </button>
 
+      {/* `single` is a form field whose panel already spans the field's own width. */}
+      {open && !single && <DropdownBackdrop onClose={() => setOpen(false)} />}
       {open && (
         <div
           className={
             "absolute z-40 mt-2 rounded-xl border border-[#E2E8F0] bg-white shadow-xl " +
-            (single ? "left-0 w-full min-w-[280px]" : align === "left" ? "left-0 w-[280px]" : "right-0 w-[280px]")
+            (single
+              ? "left-0 w-full min-w-[280px]"
+              : (align === "left" ? "left-0 w-[280px]" : "right-0 w-[280px]") + " " + PHONE_PANEL)
           }
         >
           <div className="border-b border-[#F1F5F9] p-2.5">
@@ -269,7 +292,8 @@ export const MemberMultiSelect: React.FC<{
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               maxLength={SEARCH_MAX_LENGTH}
-              className="w-full rounded-lg bg-[#F8FAFC] px-3 py-2 text-[13px] text-[#0F172A] outline-none placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#2563EB]/25"
+              // 16px on a phone: below that iOS zooms the whole page in when the box is tapped.
+              className="w-full rounded-lg bg-[#F8FAFC] px-3 py-2 text-[13px] text-[#0F172A] outline-none placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#2563EB]/25 max-sm:text-base"
             />
           </div>
 
@@ -293,7 +317,7 @@ export const MemberMultiSelect: React.FC<{
             </div>
           )}
 
-          <div className="max-h-64 overflow-y-auto p-1.5 custom-scrollbar">
+          <div className={"max-h-64 overflow-y-auto p-1.5 custom-scrollbar" + (single ? "" : " max-sm:max-h-[32dvh]")}>
             {filteredOptions.length > 0 ? (
               filteredOptions.map((emp) => {
                 const isSelected = selected.includes(String(emp.id));
@@ -623,11 +647,13 @@ export const CalendarPane: React.FC<{
   onHover: (iso: string | null) => void;
   onPrev?: () => void;
   onNext?: () => void;
-}> = ({ year, month, from, to, onPick, onHover, onPrev, onNext }) => {
+  /** Fill the width it is given (a phone's single calendar) instead of the fixed 248px of the desktop pair. */
+  fluid?: boolean;
+}> = ({ year, month, from, to, onPick, onHover, onPrev, onNext, fluid = false }) => {
   const todayIso = isoOf(istToday());
 
   return (
-    <div className="w-[248px]">
+    <div className={fluid ? "w-full" : "w-[248px]"}>
       <div className="mb-1 flex items-center justify-between">
         <button
           type="button"
@@ -735,12 +761,38 @@ const viewFor = (from: string) => {
   return { year: shown.getFullYear(), month: shown.getMonth() };
 };
 
+/** The month containing `iso` (today when empty), unclamped: what a single phone calendar opens on. */
+const monthOf = (iso: string) => {
+  const d = iso ? parseIso(iso) : istToday();
+  return { year: d.getFullYear(), month: d.getMonth() };
+};
+
+/** Below Tailwind's `sm` breakpoint: the width at which the two-month panel no longer fits the screen. */
+const NARROW_QUERY = "(max-width: 639px)";
+const matchesNarrow = () =>
+  typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(NARROW_QUERY).matches;
+
+/** True on a phone-width screen. Follows rotation and resizing; false wherever `matchMedia` does not exist. */
+const useIsNarrow = () => {
+  const [narrow, setNarrow] = useState(matchesNarrow);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(NARROW_QUERY);
+    const update = () => setNarrow(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return narrow;
+};
+
 export const DateRangeFilter: React.FC<{
   value: DateRange;
   onChange: (r: DateRange) => void;
   /** Offer "All Time" at the top of the presets. Off by default: most screens query a bounded span. */
   allowAll?: boolean;
 }> = ({ value, onChange, allowAll = false }) => {
+  const narrow = useIsNarrow();
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<string | null>(null);
   const [hover, setHover] = useState<string | null>(null);
@@ -769,7 +821,9 @@ export const DateRangeFilter: React.FC<{
   const wrapRef = useClickOutside(close, open);
 
   const openPicker = () => {
-    setView(viewFor(value.from));
+    // Two panes on a wide screen (the left one clamped so the right is never a
+    // future month); on a phone one pane, which opens on the range's own month.
+    setView(narrow ? monthOf(value.from) : viewFor(value.from));
     setAnchor(null);
     setHover(null);
     setOpen(true);
@@ -830,6 +884,10 @@ export const DateRangeFilter: React.FC<{
   const atLastMonth =
     right.getFullYear() > today.getFullYear() ||
     (right.getFullYear() === today.getFullYear() && right.getMonth() >= today.getMonth());
+  // The single phone calendar may reach the current month, and no further.
+  const rightIsFuture =
+    right.getFullYear() > today.getFullYear() ||
+    (right.getFullYear() === today.getFullYear() && right.getMonth() > today.getMonth());
 
   return (
     <div className="relative flex items-center gap-3" ref={wrapRef}>
@@ -837,11 +895,14 @@ export const DateRangeFilter: React.FC<{
         type="button"
         onClick={() => (open ? close() : openPicker())}
         className={
-          "flex h-9 items-center gap-3 rounded-lg border bg-white px-3.5 text-[13px] font-semibold text-[#0F172A] transition " +
+          // nowrap + min-h (not a fixed h): the label used to wrap onto three
+          // lines inside a fixed-height button on a phone. There the preset name
+          // sits above its date span (below), so the button is a tidy two lines.
+          "flex min-h-9 max-w-full items-center gap-3 whitespace-nowrap rounded-lg border bg-white px-3.5 py-1 text-[13px] font-semibold text-[#0F172A] transition " +
           (open ? "border-[#38BDF8] ring-2 ring-[#38BDF8]/20" : "border-[#E2E8F0] hover:border-[#CBD5E1]")
         }
       >
-        <span className="flex items-baseline gap-2">
+        <span className="flex flex-col items-start sm:flex-row sm:items-baseline sm:gap-2">
           <span>{presetLabel(value.preset)}</span>
           {value.preset !== "all" && (
             <span className="font-medium text-[#64748B]">
@@ -849,7 +910,7 @@ export const DateRangeFilter: React.FC<{
             </span>
           )}
         </span>
-        <svg className="h-4 w-4 text-[#38BDF8]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg className="h-4 w-4 shrink-0 text-[#38BDF8]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -859,15 +920,21 @@ export const DateRangeFilter: React.FC<{
         </svg>
       </button>
 
+      {/* Phone: the panel is ~700px of presets plus two months, so it ran off
+          the screen and the second month was out of reach. Below `sm` it is a
+          sheet pinned to the bottom of the viewport -- presets in a grid, then
+          a single calendar -- over a dimmed backdrop that closes it. */}
+      {open && narrow && <div className="fixed inset-0 z-30 bg-slate-900/30" onClick={close} aria-hidden="true" />}
       {open && (
         <div
           ref={panelRef}
           className={
-            "absolute top-full z-40 mt-2 flex max-w-[calc(100vw-2rem)] gap-5 overflow-x-auto rounded-xl border border-[#E2E8F0] bg-white p-4 shadow-2xl " +
+            "absolute top-full z-40 mt-2 flex gap-5 overflow-x-auto rounded-xl border border-[#E2E8F0] bg-white p-4 shadow-2xl sm:max-w-[calc(100vw-2rem)] " +
+            "max-sm:fixed max-sm:bottom-3 max-sm:left-3 max-sm:right-3 max-sm:top-auto max-sm:mt-0 max-sm:max-h-[85dvh] max-sm:flex-col max-sm:gap-4 max-sm:overflow-y-auto " +
             (alignRight ? "right-0" : "left-0")
           }
         >
-          <div className="flex w-[132px] flex-col gap-2">
+          <div className="grid grid-cols-3 gap-2 sm:flex sm:w-[132px] sm:flex-col">
             {(allowAll ? [{ id: "all" as RangePreset, label: "All Time" }, ...PRESETS] : PRESETS).map((p) => (
               <button
                 key={p.id}
@@ -877,7 +944,7 @@ export const DateRangeFilter: React.FC<{
                   close();
                 }}
                 className={
-                  "rounded-md border px-3 py-1.5 text-[13px] font-medium transition " +
+                  "rounded-md border px-2 py-1.5 text-[12px] font-medium transition sm:px-3 sm:text-[13px] " +
                   (value.preset === p.id
                     ? "border-[#38BDF8] bg-[#38BDF8]/10 text-[#0284C7]"
                     : "border-[#E2E8F0] text-[#0F172A] hover:border-[#CBD5E1] hover:bg-[#F8FAFC]")
@@ -888,8 +955,9 @@ export const DateRangeFilter: React.FC<{
             ))}
           </div>
 
-          <div className="flex gap-6">
+          {narrow ? (
             <CalendarPane
+              fluid
               year={view.year}
               month={view.month}
               from={preview.from}
@@ -897,17 +965,31 @@ export const DateRangeFilter: React.FC<{
               onPick={pick}
               onHover={setHover}
               onPrev={() => step(-1)}
+              // Nothing past this month is selectable, so no arrow towards it.
+              onNext={rightIsFuture ? undefined : () => step(1)}
             />
-            <CalendarPane
-              year={right.getFullYear()}
-              month={right.getMonth()}
-              from={preview.from}
-              to={preview.to}
-              onPick={pick}
-              onHover={setHover}
-              onNext={atLastMonth ? undefined : () => step(1)}
-            />
-          </div>
+          ) : (
+            <div className="flex gap-6">
+              <CalendarPane
+                year={view.year}
+                month={view.month}
+                from={preview.from}
+                to={preview.to}
+                onPick={pick}
+                onHover={setHover}
+                onPrev={() => step(-1)}
+              />
+              <CalendarPane
+                year={right.getFullYear()}
+                month={right.getMonth()}
+                from={preview.from}
+                to={preview.to}
+                onPick={pick}
+                onHover={setHover}
+                onNext={atLastMonth ? undefined : () => step(1)}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -159,7 +159,11 @@ const fillRequiredFields = async () => {
   await setValue(container.querySelector<HTMLSelectElement>('#project-owner')!, String(OWNER.id));
   await setValue(drawerField<HTMLSelectElement>('Leader'), String(LEADER.id));
   await setValue(drawerField<HTMLInputElement>('Deadline'), futureDate());
-  await click(byText('span', 'Flexible Time'));
+  // Looked up inside the form: a listed Flexible Time project's table chip carries the same words.
+  await click(
+    Array.from(container.querySelectorAll<HTMLElement>('#project-form span'))
+      .find((node) => node.textContent?.trim() === 'Flexible Time'),
+  );
 };
 
 const openCreateDrawer = async () => { await click(byText('button', '+ Create Project')); };

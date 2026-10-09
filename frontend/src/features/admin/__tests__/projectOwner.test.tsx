@@ -177,8 +177,12 @@ const fillRequiredFields = async () => {
   await setValue(field<HTMLInputElement>('Deadline'), futureDate());
   // The Organization is required to create a project.
   await setValue(container.querySelector<HTMLSelectElement>('#project-category')!, 'kyle');
-  // Free billing, so no hour budget is required.
-  await click(byText('span', 'Flexible Time'));
+  // Free billing, so no hour budget is required. Looked up inside the form: a
+  // listed Flexible Time project's table chip carries the same words.
+  await click(
+    Array.from(container.querySelectorAll<HTMLElement>('#project-form span'))
+      .find((node) => node.textContent?.trim() === 'Flexible Time'),
+  );
 };
 
 const openCreateDrawer = async () => {

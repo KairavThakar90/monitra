@@ -60,14 +60,14 @@ const AccessFilterSelect: React.FC<{
   value: AccessFilter;
   onChange: (value: AccessFilter) => void;
 }> = ({ label, value, onChange }) => (
-  <div className="flex items-center gap-3">
+  <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
     <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">{label}:</span>
     <div className="relative">
       <select
         aria-label={`Filter by ${label} access`}
         value={value}
         onChange={(e) => onChange(e.target.value as AccessFilter)}
-        className="appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 outline-none shadow-sm transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15"
+        className="w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 outline-none shadow-sm transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15"
       >
         <option value="All">All</option>
         <option value="allowed">Allowed</option>
@@ -922,9 +922,10 @@ export const AdminMembers: React.FC = () => {
         ) : undefined
       }
     >
-      <div className="w-full px-4 sm:px-6 lg:px-8 pt-6 space-y-6 pb-20">
+      {/* No side padding of its own on a phone: the shell's <main> already gives 16px. */}
+      <div className="w-full px-0 sm:px-6 lg:px-8 pt-2 sm:pt-6 space-y-6 pb-20">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex flex-1 items-center gap-2 px-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 lg:border-0 lg:bg-transparent lg:p-0 lg:px-2">
             <svg className="h-5 w-5 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
@@ -953,14 +954,17 @@ export const AdminMembers: React.FC = () => {
           
           <div className="h-8 w-px bg-slate-200 hidden lg:block"></div>
 
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-3 pr-2">
-            <div className="flex items-center gap-3">
+          {/* Phone: a two-column grid, each filter with its label above it so the
+              dropdowns line up (inline labels of different widths left them
+              ragged). From `sm` up it is the original wrapping row. */}
+          <div className="grid grid-cols-2 gap-x-3 gap-y-4 sm:flex sm:flex-wrap sm:items-center sm:gap-x-6 sm:gap-y-3 sm:pr-2">
+            <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
               <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">ROLE:</span>
               <div className="relative">
                 <select
                   value={filterRole}
                   onChange={(e) => { setFilterRole(e.target.value); setPage(1); }}
-                  className="appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 outline-none shadow-sm transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15"
+                  className="w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 outline-none shadow-sm transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15"
                 >
                   <option value="All">All Roles</option>
                   {roles.map(role => (

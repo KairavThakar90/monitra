@@ -712,10 +712,11 @@ export const AdminTimeTracking: React.FC = () => {
 
   return (
     <V2Shell title="Time Tracking" subtitle="Monitor and manage employee time logs">
-      <div className="w-full px-4 sm:px-6 lg:px-8 pt-6 space-y-6 pb-20">
-      
+      {/* No side padding of its own on a phone: the shell's <main> already gives 16px. */}
+      <div className="w-full px-0 sm:px-6 lg:px-8 pt-2 sm:pt-6 space-y-6 pb-20">
+
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="flex flex-1 items-center gap-2 px-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 lg:border-0 lg:bg-transparent lg:p-0 lg:px-2">
           <svg className="h-5 w-5 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
@@ -755,7 +756,7 @@ export const AdminTimeTracking: React.FC = () => {
 
           <button
             onClick={openDrawer}
-            className={`rounded-lg px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90 ${GRADIENT_CYAN_PURPLE}`}
+            className={`w-full rounded-lg px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90 sm:w-auto ${GRADIENT_CYAN_PURPLE}`}
           >
             + Add Manually Time
           </button>

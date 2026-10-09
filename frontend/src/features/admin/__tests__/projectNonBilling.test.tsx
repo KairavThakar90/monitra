@@ -339,10 +339,13 @@ describe('Billing / Non Billing — list and edit', () => {
       Array.from(container.querySelectorAll('tbody tr')).find((item) => item.textContent?.includes(name))!;
 
     expect(rowOf('Fixed one').textContent).toContain('40 Hours');
-    expect(rowOf('Flexible one').textContent).toContain('Free Time');
+    // The column says "Flexible Time" -- the name the filter and the Create
+    // Project form use -- not the old "Free Time".
+    expect(rowOf('Flexible one').textContent).toContain('Flexible Time');
+    expect(rowOf('Flexible one').textContent).not.toContain('Free Time');
     expect(rowOf('Flexible one').textContent).not.toContain('Non Billing');
     expect(rowOf('Internal one').textContent).toContain('Non Billing');
-    expect(rowOf('Internal one').textContent).not.toContain('Free Time');
+    expect(rowOf('Internal one').textContent).not.toContain('Flexible Time');
   });
 
   it('reopens a non-billing project on Non Billing and saves it unchanged', async () => {

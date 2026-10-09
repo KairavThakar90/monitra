@@ -33,8 +33,11 @@ export const Pagination: React.FC<{
 
   return (
     <div className={`${className} flex flex-col items-center justify-between gap-4 border-t border-slate-200 pt-5 text-sm text-slate-500 sm:flex-row`}>
-      <div>Showing {startItem} to {endItem} of {totalItems} {noun}</div>
-      <div className="flex items-center gap-3">
+      <div className="text-center">Showing {startItem} to {endItem} of {totalItems} {noun}</div>
+      {/* flex-wrap + centred: on a phone the page-size picker and the pager are
+          wider than the screen together, so the picker sits on a row above the
+          pager instead of pushing it off the edge. */}
+      <div className="flex flex-wrap items-center justify-center gap-3">
         <select
           aria-label="Rows per page"
           value={limit}
@@ -45,16 +48,18 @@ export const Pagination: React.FC<{
             <option key={size} value={size}>{size}</option>
           ))}
         </select>
-        <div className="flex items-center gap-1">
+        {/* Seven page buttons plus two arrows is 292px at w-8/gap-1: more than a
+            320px phone has. Slightly narrower buttons below `sm` bring it to 276px. */}
+        <div className="flex items-center gap-0.5 sm:gap-1">
           <PaginationArrow direction="prev" disabled={page === 1} onClick={() => setPage(page - 1)} />
           {pages.map((visiblePage, index) => visiblePage === '...' ? (
-            <span key={`ellipsis-${index}`} className="flex h-8 w-8 items-center justify-center text-slate-400">...</span>
+            <span key={`ellipsis-${index}`} className="flex h-8 w-7 items-center justify-center text-slate-400 sm:w-8">...</span>
           ) : (
             <button
               key={visiblePage}
               type="button"
               onClick={() => setPage(visiblePage)}
-              className={`flex h-8 w-8 items-center justify-center rounded text-sm font-semibold transition ${visiblePage === page ? 'bg-blue-500 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}
+              className={`flex h-8 w-7 items-center justify-center rounded text-sm sm:w-8 font-semibold transition ${visiblePage === page ? 'bg-blue-500 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}
             >
               {visiblePage}
             </button>

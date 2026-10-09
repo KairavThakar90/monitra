@@ -563,7 +563,8 @@ export const AdminTaskListing: React.FC = () => {
         </div>
       }
     >
-      <div className="w-full px-4 py-8 sm:px-6 lg:px-8">
+      {/* No side padding of its own on a phone: the shell's <main> already gives 16px. */}
+      <div className="w-full px-0 py-4 sm:px-6 sm:py-8 lg:px-8">
         {/* Filters: the same bar the Reports page uses -- the calendar on the left,
             Members, Projects and the rest on the right, every control one height. */}
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E2E8F0] bg-white p-2 pl-4 shadow-sm">
@@ -665,16 +666,22 @@ export const AdminTaskListing: React.FC = () => {
                     className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden transition-all"
                   >
                     {/* Header */}
+                    {/* Phone: the title and chevron share the first row and
+                        "Created ..." drops onto a row of its own below, so the
+                        project name keeps the width it needs (it was squeezed
+                        to a few characters per line beside the date). From `sm`
+                        up it is the original single row. The date and chevron
+                        are direct children so `order` can move them. */}
                     <div
                       onClick={() => toggleProject(project.id)}
-                      className="flex cursor-pointer items-center justify-between bg-slate-50 p-6 transition hover:bg-slate-100"
+                      className="flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-2 bg-slate-50 p-4 transition hover:bg-slate-100 sm:gap-x-6 sm:p-6"
                     >
-                      <div className="flex items-center gap-4">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] text-sm font-bold text-white shadow-sm">
+                      <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] text-sm font-bold text-white shadow-sm">
                           {project.project_name ? project.project_name.charAt(0).toUpperCase() : 'P'}
                         </div>
-                        <div>
-                          <h3 className="text-lg font-black text-slate-800">
+                        <div className="min-w-0">
+                          <h3 className="break-words text-base font-black text-slate-800 sm:text-lg">
                             {project.project_name}
                           </h3>
                           <div className="mt-0.5 flex flex-wrap items-center gap-2">
@@ -706,22 +713,20 @@ export const AdminTaskListing: React.FC = () => {
                           <BudgetUsage project={project} />
                         </div>
                       </div>
-                      <div className="flex items-center gap-6">
-                        <span className="text-xs font-bold text-slate-400">Created {formatDate(project.created_date)}</span>
-                        <svg
-                          className={`h-5 w-5 text-slate-400 transition-transform ${isExpanded ? "rotate-180" : ""}`}
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth="2"
-                            d="M19 9l-7 7-7-7"
-                          />
-                        </svg>
-                      </div>
+                      <span className="order-3 w-full whitespace-nowrap pl-[52px] text-[11px] font-bold text-slate-400 sm:order-none sm:w-auto sm:pl-0 sm:text-xs">Created {formatDate(project.created_date)}</span>
+                      <svg
+                        className={`order-2 h-5 w-5 shrink-0 text-slate-400 transition-transform sm:order-none ${isExpanded ? "rotate-180" : ""}`}
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="2"
+                          d="M19 9l-7 7-7-7"
+                        />
+                      </svg>
                     </div>
 
                     {/* Tasks List */}
@@ -735,11 +740,11 @@ export const AdminTaskListing: React.FC = () => {
                           project.tasks.map((task) => (
                             <div
                               key={task.id}
-                              className="flex items-center justify-between p-6 transition hover:bg-slate-50/50"
+                              className="flex flex-col gap-3 p-4 transition hover:bg-slate-50/50 sm:flex-row sm:items-center sm:justify-between sm:p-6"
                             >
-                              <div className="flex items-start gap-4">
+                              <div className="flex min-w-0 items-start gap-3 sm:gap-4">
                                 <svg
-                                  className="mt-0.5 h-5 w-5 text-slate-400"
+                                  className="mt-0.5 h-5 w-5 shrink-0 text-slate-400"
                                   fill="none"
                                   stroke="currentColor"
                                   viewBox="0 0 24 24"
@@ -762,7 +767,7 @@ export const AdminTaskListing: React.FC = () => {
                                   </div>
                                 </div>
                               </div>
-                              <div className="flex items-center gap-4 text-right">
+                              <div className="flex items-center justify-between gap-4 pl-8 text-right sm:justify-end sm:pl-0">
                                 <TaskBudgetCell projectId={project.id} task={task} />
                                 <div className="text-sm font-bold text-slate-800">
                                   {formatHMS(task.total_tracked_seconds)}

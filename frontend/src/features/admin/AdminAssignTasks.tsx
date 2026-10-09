@@ -186,7 +186,10 @@ export const AdminAssignTasks: React.FC = () => {
         </div>
       }
     >
-      <div className="w-full px-4 py-8 sm:px-6 lg:px-8">
+      {/* No side padding of its own on a phone: the shell's <main> already gives
+          16px, and a second 16px here made every card 32px narrower than the
+          screen needs. */}
+      <div className="w-full px-0 py-4 sm:px-6 sm:py-8 lg:px-8">
         {/* Search and filters: the same card as Project Management's toolbar. */}
         <div className="mb-6 flex flex-col items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row">
           <div className="relative w-full sm:min-w-[12rem] sm:max-w-md sm:flex-1">
@@ -272,9 +275,9 @@ export const AdminAssignTasks: React.FC = () => {
                     type="button"
                     aria-expanded={open}
                     onClick={() => setCollapsed((previous) => ({ ...previous, [project.id]: open }))}
-                    className="flex w-full items-center justify-between bg-slate-50 p-5 text-left transition hover:bg-slate-100"
+                    className="flex w-full items-center justify-between gap-3 bg-slate-50 p-4 text-left transition hover:bg-slate-100 sm:p-5"
                   >
-                    <div className="flex min-w-0 items-center gap-4">
+                    <div className="flex min-w-0 items-center gap-3 sm:gap-4">
                       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] text-sm font-bold text-white shadow-sm">
                         {project.project_name ? project.project_name.charAt(0).toUpperCase() : 'P'}
                       </div>
@@ -302,14 +305,17 @@ export const AdminAssignTasks: React.FC = () => {
                         <li className="p-6 text-center text-sm font-semibold text-slate-500">No tasks in this project.</li>
                       ) : (
                         tasks.map((task) => (
-                          <li key={task.id} className="flex flex-wrap items-center justify-between gap-4 px-5 py-4 transition hover:bg-slate-50/50">
-                            <div className="min-w-0 flex-1 basis-56">
-                              <h4 className="truncate text-sm font-bold text-slate-700" title={task.name}>{task.name}</h4>
+                          // Phone: a stacked card -- name, then who holds it, then the
+                          // status with Edit at the far end. From `sm` up it is the
+                          // original single wrapping row.
+                          <li key={task.id} className="flex flex-col gap-2 px-4 py-3 transition hover:bg-slate-50/50 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-4 sm:px-5 sm:py-4">
+                            <div className="min-w-0 sm:flex-1 sm:basis-56">
+                              <h4 className="break-words text-sm font-bold text-slate-700 sm:truncate" title={task.name}>{task.name}</h4>
                             </div>
-                            <div className="min-w-0 basis-56">
+                            <div className="min-w-0 sm:basis-56">
                               <Holders people={holdersOf(task)} />
                             </div>
-                            <div className="flex items-center gap-3">
+                            <div className="flex w-full items-center justify-between gap-3 sm:w-auto sm:justify-start">
                               <StatusPill task={task} />
                               <button
                                 type="button"

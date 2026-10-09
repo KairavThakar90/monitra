@@ -28,6 +28,16 @@ const StatusBadge: React.FC<{ status: ClientListItem['status'] }> = ({ status })
   </span>
 );
 
+/**
+ * A table cell as a labelled line of a card, below `md` only. The label is the
+ * cell's `data-label`, drawn as `::before` so it is not text in the DOM; a
+ * cell without one (the name) is the card's title and uses none of this.
+ */
+const CARD_FIELD =
+  'max-md:flex max-md:items-start max-md:gap-3 max-md:p-0 max-md:[overflow-wrap:anywhere] ' +
+  'max-md:before:w-20 max-md:before:shrink-0 max-md:before:pt-0.5 max-md:before:text-[11px] max-md:before:font-bold ' +
+  'max-md:before:uppercase max-md:before:tracking-wider max-md:before:text-[#64748B] max-md:before:content-[attr(data-label)]';
+
 /** How many project names a client's row shows before "See all". */
 const PROJECT_PREVIEW_COUNT = 3;
 
@@ -55,7 +65,7 @@ const ClientProjectsCell: React.FC<{ clientId: number; projects: ClientProjectRe
   const listId = `client-projects-${clientId}`;
 
   return (
-    <div className="min-w-[240px] max-w-[560px]">
+    <div className="min-w-0 flex-1 md:min-w-[240px] md:max-w-[560px] md:flex-none">
       <ul
         id={listId}
         aria-label="Projects"
@@ -446,9 +456,14 @@ export const AdminClients: React.FC = () => {
             />
           </Card>
         ) : (
-          <div className={`overflow-hidden rounded-xl border border-[#E2E8F0] bg-white shadow-sm transition-opacity ${isFetching ? 'opacity-60' : ''}`}>
-            <table className="w-full text-left text-sm">
-              <thead className="bg-[#F8FAFC] text-[11px] font-bold uppercase tracking-wider text-[#64748B]">
+          <div className={`overflow-x-auto rounded-xl border border-[#E2E8F0] bg-white shadow-sm transition-opacity ${isFetching ? 'opacity-60' : ''}`}>
+            {/* Six columns do not fit a phone, and this card clips overflow, so
+                the last ones -- including the Edit / Deactivate actions -- were
+                unreachable there. Below `md` every row becomes a card whose
+                fields carry their column's name (`data-label`, drawn by CSS, so
+                the table's markup is the same at every width). */}
+            <table className="w-full text-left text-sm max-md:block">
+              <thead className="bg-[#F8FAFC] text-[11px] font-bold uppercase tracking-wider text-[#64748B] max-md:hidden">
                 <tr>
                   <th className="px-4 py-3">Client Name</th>
                   <th className="px-4 py-3">Email</th>
@@ -458,21 +473,21 @@ export const AdminClients: React.FC = () => {
                   <th className="px-4 py-3">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[#F1F5F9]">
+              <tbody className="divide-y divide-[#F1F5F9] max-md:block">
                 {items.map((client) => (
-                  <tr key={client.id}>
-                    <td className="px-4 py-3 font-medium text-[#0F172A]">{client.name}</td>
-                    <td className="px-4 py-3 text-[#475569]">{client.email}</td>
-                    <td className="px-4 py-3 text-[#475569]">
+                  <tr key={client.id} className="max-md:flex max-md:flex-col max-md:gap-3 max-md:px-4 max-md:py-4">
+                    <td className="px-4 py-3 font-medium text-[#0F172A] max-md:p-0 max-md:text-base max-md:font-bold">{client.name}</td>
+                    <td className={`${CARD_FIELD} px-4 py-3 text-[#475569]`} data-label="Email">{client.email}</td>
+                    <td className={`${CARD_FIELD} px-4 py-3 text-[#475569]`} data-label="Projects">
                       <ClientProjectsCell clientId={client.id} projects={client.projects} />
                     </td>
-                    <td className="px-4 py-3"><StatusBadge status={client.status} /></td>
-                    <td className="px-4 py-3 text-[#475569]">
+                    <td className={`${CARD_FIELD} px-4 py-3`} data-label="Status"><StatusBadge status={client.status} /></td>
+                    <td className={`${CARD_FIELD} px-4 py-3 text-[#475569]`} data-label="Created">
                       {new Date(client.created_at).toLocaleDateString()}
                     </td>
-                    <td className="px-4 py-3">
+                    <td className={`${CARD_FIELD} px-4 py-3`} data-label="Actions">
                       {/* The same bordered-pill actions the Members table uses. */}
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <button
                           onClick={() => setEditingClient(client)}
                           className="rounded px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-[#14B8A6] border border-[#14B8A6]/30 transition hover:bg-[#14B8A6]/10"

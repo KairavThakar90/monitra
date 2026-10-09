@@ -323,18 +323,32 @@ export const AssignTaskDialog: React.FC<{
 
             <div>
               <label className={labelClass}>Status</label>
-              <select
-                value={statusId}
-                onChange={(event) => setStatusId(Number(event.target.value))}
-                disabled={!ready}
-                className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-[#3B82F6] disabled:bg-slate-50 disabled:text-slate-400"
-              >
-                {statuses.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.task_status}
-                  </option>
-                ))}
-              </select>
+              {/* `appearance-none` + our own chevron: the native arrow is dark, sits
+                  at a different inset on every OS (iOS draws it hard against the
+                  edge) and does not match the Project and Task pickers above. */}
+              <div className="relative">
+                <select
+                  value={statusId}
+                  onChange={(event) => setStatusId(Number(event.target.value))}
+                  disabled={!ready}
+                  className="w-full appearance-none rounded-lg border border-slate-200 bg-white py-3 pl-4 pr-11 text-sm font-semibold text-slate-700 outline-none transition hover:border-slate-300 focus:border-[#3B82F6] focus:ring-2 focus:ring-[#3B82F6]/15 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+                >
+                  {statuses.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.task_status}
+                    </option>
+                  ))}
+                </select>
+                <svg
+                  className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  aria-hidden="true"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </div>
             </div>
           </form>
 
