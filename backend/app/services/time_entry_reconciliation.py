@@ -58,6 +58,8 @@ def _aware(value: datetime) -> datetime:
 
 #: How long a closure waits for a row somebody else holds (a user's Stop, an idle answer).
 LOCK_WAIT_MILLISECONDS = 5000
+#: A gap between the application's clock and the database's worth saying out loud.
+CLOCK_SKEW_WARNING_SECONDS = 60
 
 
 def _bound_lock_wait(db: Session) -> None:
@@ -316,7 +318,16 @@ class TimeEntryReconciliationService:
         that has no evidence of life, however it is configured.
         """
         policy = TimerPolicy.current()
-        now = now or TimeEntryLivenessRepository.db_now(db)
+        skew: Optional[float] = None
+        if now is None:
+            now = TimeEntryLivenessRepository.db_now(db)
+            skew = round((datetime.now(timezone.utc) - now).total_seconds(), 3)
+            if abs(skew) > CLOCK_SKEW_WARNING_SECONDS:
+                log.warning(
+                    "RECONCILE_CLOCK_SKEW the application clock is %+.0fs from the database's; "
+                    "closures are unaffected (they use the database's clock) but anything "
+                    "computed on the application's will disagree with the reports", skew,
+                )
         limit = limit or settings.TIMER_RECONCILER_BATCH_SIZE
         if include_unreported and not entry_ids:
             raise ValueError("include_unreported requires explicit entry_ids")
@@ -334,6 +345,7 @@ class TimeEntryReconciliationService:
             "skipped": 0,
             "failed": 0,
             "unreported_running": 0,
+            "clock_skew_seconds": skew,
             "policy": policy.as_dict(),
             "items": [],
         }

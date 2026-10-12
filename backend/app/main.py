@@ -276,9 +276,14 @@ def health_check(deep: bool = False):
         # What the server does about a timer whose desktop has gone quiet. `applies`
         # is false until the deployment turns the scheduled run on: it then only
         # reports (docs/TIMING_MODEL.md section 9).
+        from app.api.time_entry_reconcile import last_run_snapshot
+
         payload["timer_reconciler"] = {
             "applies": bool(settings.TIMER_RECONCILER_ENABLED),
             **TimerPolicy.current().as_dict(),
+            # None until the scheduler has called this process: proof, or the lack of it,
+            # that the installed task actually runs.
+            "last_run": last_run_snapshot(),
         }
     except Exception:  # noqa: BLE001
         logger.warning("Could not report the timer policy in /health", exc_info=True)
@@ -315,8 +320,20 @@ def _probe_database() -> dict:
     started = _time.perf_counter()
     try:
         with get_engine().connect() as connection:
-            connection.execute(text("SELECT 1"))
-        return {"status": "ok", "latency_ms": int((_time.perf_counter() - started) * 1000)}
+            database_now = connection.execute(text("SELECT now()")).scalar()
+        result = {"status": "ok", "latency_ms": int((_time.perf_counter() - started) * 1000)}
+        from datetime import datetime, timezone
+
+        if isinstance(database_now, datetime):
+            # Application clock minus the database's. `last_seen_at` and every report's
+            # "now" are the database's; the figures a response computes in Python are the
+            # application's. A few seconds is nothing; minutes means they will disagree.
+            if database_now.tzinfo is None:
+                database_now = database_now.replace(tzinfo=timezone.utc)
+            result["clock_skew_seconds"] = round(
+                (datetime.now(timezone.utc) - database_now).total_seconds(), 3
+            )
+        return result
     except Exception as exc:  # noqa: BLE001
         logger.warning("HEALTH_DB_PROBE_FAILED: %s", type(exc).__name__)
         return {"status": "unreachable", "error": type(exc).__name__,

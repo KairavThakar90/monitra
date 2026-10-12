@@ -224,5 +224,11 @@ class ReconcileRunResult(BaseModel):
     #: never touches them (silence from a client that never speaks proves
     #: nothing); they are counted so the owner can see how many there are.
     unreported_running: int = 0
+    #: Application clock minus database clock, in seconds, measured by this run. None when
+    #: the run was pinned to an instant (an operator replaying a moment is not measuring
+    #: clocks). The decision itself compares the database's clock with itself; a large figure
+    #: means displays computed on the application's clock will disagree with the reports
+    #: computed on the database's.
+    clock_skew_seconds: float | None = None
     policy: dict
     items: list[dict] = []

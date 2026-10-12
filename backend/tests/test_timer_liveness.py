@@ -878,8 +878,12 @@ class RouteTests(unittest.TestCase):
         self.assertFalse(run.call_args.kwargs["apply"])
         self.assertTrue(run.call_args.kwargs["include_unreported"])
 
-    def test_the_get_alias_runs_the_scheduled_pass_but_not_an_operator_closure(self):
-        with patch("app.api.time_entry_reconcile.TimeEntryReconciliationService.run",
+    def test_the_get_alias_only_ever_reports(self):
+        """A GET is a safe method: whatever a crawler, a prefetch or a cron-style scheduler that
+        can only issue one does with it, it reads. Applying -- the scheduled pass or an operator
+        closure -- is a POST, even with the job enabled."""
+        with patch("app.api.time_entry_reconcile.settings.TIMER_RECONCILER_ENABLED", True), \
+             patch("app.api.time_entry_reconcile.TimeEntryReconciliationService.run",
                    return_value={"dry_run": True, "policy": POLICY.as_dict()}) as run:
             plain = self.client.get("/internal/time-entries/reconcile", headers=self._headers())
             forced = self.client.get("/internal/time-entries/reconcile?dry_run=false", headers=self._headers())
@@ -889,7 +893,30 @@ class RouteTests(unittest.TestCase):
             )
         self.assertEqual(plain.status_code, 200, plain.text)
         self.assertEqual((forced.status_code, named.status_code), (400, 400))
-        self.assertEqual(run.call_count, 1, "only the plain scheduled pass ran")
+        self.assertEqual(run.call_count, 1, "only the plain report ran")
+        self.assertFalse(run.call_args.kwargs["apply"], "and it applied nothing, though the job is enabled")
+
+    def test_the_post_still_applies_when_the_job_is_enabled(self):
+        _, run = self._run(enabled=True)
+        self.assertTrue(run.call_args.kwargs["apply"])
+
+    def test_the_last_run_is_remembered_for_health_to_show(self):
+        from app.api import time_entry_reconcile as route
+
+        route._LAST_RUN.clear()
+        self.assertIsNone(route.last_run_snapshot(), "nothing has run in this process yet")
+        report = {"dry_run": True, "examined": 7, "candidates": 2, "closed": 0, "skipped": 0,
+                  "failed": 0, "unreported_running": 1, "policy": POLICY.as_dict()}
+        with patch("app.api.time_entry_reconcile.TimeEntryReconciliationService.run", return_value=report):
+            self.client.post("/internal/time-entries/reconcile", headers=self._headers())
+        seen = route.last_run_snapshot()
+        self.assertEqual(
+            {k: seen[k] for k in ("dry_run", "examined", "candidates", "closed", "failed")},
+            {"dry_run": True, "examined": 7, "candidates": 2, "closed": 0, "failed": 0},
+        )
+        self.assertIn("at", seen)
+        self.assertNotIn("items", seen, "counts only: no entry, user or project leaves through /health")
+        route._LAST_RUN.clear()
 
 
 if __name__ == "__main__":

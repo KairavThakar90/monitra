@@ -28,9 +28,33 @@ from app.services.time_entry_reconciliation import TimeEntryReconciliationServic
 router = APIRouter(tags=["Time entries"])
 
 
+#: What the last run in THIS process saw -- counts only, never an entry, a user or a project.
+#: It is what `/health` shows, so an operator can tell that the scheduler is actually calling
+#: the endpoint (an installed task is not evidence that it runs). Per process: with several
+#: workers each answers for the runs it served.
+_LAST_RUN: dict = {}
+
+
+def last_run_snapshot() -> Optional[dict]:
+    return dict(_LAST_RUN) if _LAST_RUN else None
+
+
+def _remember(result: ReconcileRunResult) -> None:
+    from datetime import datetime, timezone
+
+    _LAST_RUN.clear()
+    _LAST_RUN.update(
+        at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        dry_run=result.dry_run, examined=result.examined, candidates=result.candidates,
+        closed=result.closed, skipped=result.skipped, failed=result.failed,
+        unreported_running=result.unreported_running,
+    )
+
+
 def _run(
     db: Session, dry_run: Optional[bool], user_id: Optional[int], entry_id: Optional[List[int]],
     include_unreported: bool, limit: Optional[int], *, operator_allowed: bool = True,
+    read_only: bool = False,
 ) -> ReconcileRunResult:
     if (include_unreported or dry_run is False) and not operator_allowed:
         raise HTTPException(
@@ -55,13 +79,15 @@ def _run(
         )
     # Applies when explicitly asked (`dry_run=false`) or when the deployment
     # has switched the scheduled run on; otherwise it only reports.
-    apply = dry_run is False or (dry_run is None and settings.TIMER_RECONCILER_ENABLED)
+    apply = dry_run is False or (dry_run is None and settings.TIMER_RECONCILER_ENABLED and not read_only)
     result = TimeEntryReconciliationService.run(
         db, apply=apply, limit=limit, user_id=user_id, entry_ids=entry_id,
         include_unreported=include_unreported,
         decided_by="operator" if (include_unreported or dry_run is False) else "system:reconciler",
     )
-    return ReconcileRunResult(**result)
+    result = ReconcileRunResult(**result)
+    _remember(result)
+    return result
 
 
 @router.post(
@@ -115,8 +141,12 @@ def reconcile_time_entries_get(
     _: None = Depends(require_dispatch_token),
     db: Session = Depends(get_db, scope="function"),
 ):
-    """GET alias for schedulers that can only issue a GET (Vercel Cron).
-    Kept out of the OpenAPI schema; it is the same authenticated,
-    side-effecting scheduled pass as the POST -- but not the operator's
-    named-entry closure, which is a POST only."""
-    return _run(db, dry_run, user_id, entry_id, include_unreported, limit, operator_allowed=False)
+    """GET alias for schedulers that can only issue a GET (Vercel Cron). Kept out of the
+    OpenAPI schema. A GET is a safe method, so this one only ever REPORTS -- the same body as a
+    dry run, even with `TIMER_RECONCILER_ENABLED` on. Applying (the scheduled pass or an
+    operator's closure) is a POST: a deployment whose only scheduler can GET reports and leaves
+    the closing to one that can POST."""
+    return _run(
+        db, dry_run, user_id, entry_id, include_unreported, limit,
+        operator_allowed=False, read_only=True,
+    )

@@ -118,6 +118,34 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
         self.assertEqual((report["candidates"], report["closed"]), (0, 0), report)
         self.assertIsNone(self._reload(entry.id).end_time)
 
+    def test_the_run_reports_how_far_the_application_clock_is_from_the_databases(self):
+        class FastClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.now(tz) + timedelta(hours=3)
+
+        quiet = self._reconcile(apply=False)
+        self.assertLess(abs(quiet["clock_skew_seconds"]), 5, "same machine, same clock")
+
+        with patch("app.services.time_entry_reconciliation.datetime", FastClock), \
+             self.assertLogs("app.services.time_entry_reconciliation", level="WARNING") as logs:
+            skewed = self._reconcile(apply=False)
+        self.assertAlmostEqual(skewed["clock_skew_seconds"], 3 * 3600, delta=5)
+        self.assertTrue(any("CLOCK_SKEW" in line for line in logs.output))
+
+    def test_a_pinned_instant_has_no_skew_to_report(self):
+        """An operator replaying a past moment (`now=`) is not measuring the clocks."""
+        report = self._reconcile(apply=False, now=datetime(2026, 10, 12, 5, 25, 54, tzinfo=UTC))
+        self.assertIsNone(report["clock_skew_seconds"])
+
+    def test_the_deep_health_probe_names_the_skew_between_the_application_and_the_database(self):
+        from app import main as main_module
+
+        with patch("app.core.database.get_engine", return_value=self.engine):
+            result = main_module._probe_database()
+        self.assertEqual(result["status"], "ok")
+        self.assertLess(abs(result["clock_skew_seconds"]), 5)
+
     def test_a_second_run_changes_nothing(self):
         start = datetime(2026, 10, 9, 11, 53, 21, tzinfo=UTC)
         entry = self._running(start, last_seen=start + timedelta(minutes=27))
