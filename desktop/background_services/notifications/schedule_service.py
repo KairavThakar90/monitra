@@ -69,6 +69,25 @@ response as a whole is ignored. Nothing raises out of this module. Times go
 through the shared validation catalogue (`validate_time_of_day`); there is no
 second time-of-day rule here.
 
+**It tells the scheduler what time it is.** The schedule's times are IST wall-clock
+times, and the scheduler compares them with this machine's clock. A machine whose
+clock -- or whose time zone, set wrong while the displayed time was corrected by hand
+-- is out by minutes or hours would then show "13:30" at the wrong moment, or beyond
+its ten-minute grace and not at all. Every response carries the server's clock
+(`server_time`); the offset between it and this machine's (`clock_offset_seconds`,
+measured at the midpoint of the request so the round trip cancels) is what
+`WellbeingService` adds to its own reading. The server is the reference, as for tracked
+time (docs/TIMING_MODEL.md). No offset is known until the first answer, and the
+scheduler then uses the machine's clock as it always did.
+
+**It does not let the scheduler run on a guess.** With nothing persisted -- the first
+sign-in on a machine, or the first after a sign-out, which wipes it -- the schedule is
+None until the backend answers, and a daily reminder already inside its grace window
+would be shown at its *default* time even though the administrator moved or switched it
+off. So `ready` stays False after sign-in until the first answer arrives (a failure
+counts: the desktop is then genuinely working from defaults), or `SETTLE_SECONDS`
+pass, so an offline start is not held for ever.
+
 Not exported from `background_services.notifications.__init__`: this module
 reads the wellbeing catalogue for the set of known keys, and that package
 imports `notifications` itself, so re-exporting it there would make the two
@@ -80,6 +99,7 @@ import json
 import random
 import time as _time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from datetime import time as dtime
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -94,6 +114,7 @@ from background_services.wellbeing.reminders import (
     PUSH_TTL_SECONDS,
 )
 from core.service import LoopService, ServiceState
+from core.time_format import parse_utc
 from core.validation import validate_time_of_day
 
 #: Where the last good schedule is kept, so a start while offline can use it.
@@ -381,6 +402,17 @@ class NotificationScheduleService(LoopService):
     #: Against a backend without the route (404): an older deployment, a normal
     #: state during a rollout.
     STREAM_ABSENT_MS = 5 * 60 * 1000
+    #: After sign-in, how long the scheduler waits for the first answer when it
+    #: has no schedule at all (see `ready`). Long enough for a slow first
+    #: request on a poor connection, short enough that a machine that cannot
+    #: reach the backend still gets its reminders from the defaults.
+    SETTLE_SECONDS = 20.0
+    #: A clock offset beyond this is not a skewed clock, it is a response this
+    #: desktop cannot use (a year-old timestamp, a wrong year): ignored.
+    MAX_CLOCK_OFFSET_SECONDS = 366 * 24 * 3600
+    #: An offset this large is worth a line in the log; smaller ones are the
+    #: ordinary difference between two clocks and a round trip.
+    CLOCK_SKEW_NOTICE_SECONDS = 60
     interval_ms = POLL_INTERVAL_MS
     error_interval_ms = 60 * 1000
     #: One TIMEOUT_FAST request is the whole blocking budget of a tick; the
@@ -418,6 +450,17 @@ class NotificationScheduleService(LoopService):
         self._stream_failures = 0
         self._last_event_version: Optional[int] = None
         self._stream_up = False
+        #: Whether the backend has answered (or failed to) since this service
+        #: started: the end of "nothing is known yet" (see `ready`).
+        self._answered = False
+        #: Monotonic instant at which "nothing is known yet" stops holding the
+        #: scheduler, set the first time it is asked while signed in.
+        self._settle_deadline: Optional[float] = None
+        #: Seconds to add to this machine's clock to get the server's. Rebound
+        #: whole on each answer; 0.0 until the first.
+        self._clock_offset = 0.0
+        #: Whether a large offset is already in the log (reported on the edge).
+        self._skew_logged = False
 
     # ── Read side ─────────────────────────────────────────────────────────────
 
@@ -431,13 +474,35 @@ class NotificationScheduleService(LoopService):
     def ready(self) -> bool:
         """Whether a consumer may trust `schedule` (including its being None).
 
-        False only between the service being asked to start and its first
-        tick having read the persisted record, so the scheduler does not run
-        its first tick -- and show a reminder an administrator switched off --
-        against a snapshot that is merely not loaded yet. A service that
-        failed to start, or is stopping, never holds the scheduler up.
+        False until the first tick has read the persisted record, so the scheduler
+        does not run -- and show a reminder an administrator switched off --
+        against a snapshot that is merely not loaded yet. And, with nothing
+        persisted, False until the backend has answered (or failed to) after
+        sign-in, or `SETTLE_SECONDS` have passed: `None` means "every reminder on
+        at its default time", which is wrong for a first sign-in on a machine whose
+        administrator has moved or switched one off. A service that failed to start,
+        or is stopping, never holds the scheduler up.
         """
-        return self._loaded or self.stopping or self.state == ServiceState.FAILED
+        if self.stopping or self.state == ServiceState.FAILED:
+            return True
+        if not self._loaded:
+            return False
+        if self._schedule is not None or self._answered:
+            return True
+        # Nothing is known and the backend has not yet been asked, or has not
+        # answered: wait for it, but not for ever. Asked of the scheduler only
+        # while signed in, so the deadline starts at the sign-in.
+        now = self._monotonic()
+        if self._settle_deadline is None:
+            self._settle_deadline = now + self.SETTLE_SECONDS
+        return now >= self._settle_deadline
+
+    @property
+    def clock_offset_seconds(self) -> float:
+        """Seconds to add to this machine's clock to read the server's, as of the
+        last answer; 0.0 before the first. Positive means this machine is behind.
+        Safe from any thread (a float, rebound whole)."""
+        return self._clock_offset
 
     # ── Requests from the runtime ─────────────────────────────────────────────
 
@@ -489,6 +554,7 @@ class NotificationScheduleService(LoopService):
             or self._last_fetch_at is None
             or (now - self._last_fetch_at) * 1000 >= self.LEVEL_CHECK_MS
         ):
+            sent = datetime.now(timezone.utc)
             try:
                 payload = self._api.get_schedule()
             except ApiError as exc:
@@ -497,20 +563,63 @@ class NotificationScheduleService(LoopService):
                 # is a blip, and the next poll is soon.
                 self.log.debug("notification schedule poll failed: %s", exc)
                 self.heartbeat(success=False)
+                self._note_answered()
                 absent = getattr(exc, "status_code", None) == 404
                 return self._jittered(self.ABSENT_INTERVAL_MS if absent else self.RETRY_INTERVAL_MS)
 
+            received = datetime.now(timezone.utc)
             self._last_fetch_at = now
             self._need_fetch = False
             self.heartbeat()
             if self.state == ServiceState.DEGRADED:
                 self._set_state(ServiceState.RUNNING)
             self._note_version(payload)
+            self._note_clock(payload, sent, received)
             self._apply(payload, source="fetched")
+            self._note_answered()
             if not streaming:
                 return self._jittered(self.POLL_INTERVAL_MS)
 
         return self._listen()
+
+    def _note_answered(self) -> None:
+        """The backend has been heard from (or has failed to be): the scheduler may
+        stop waiting for it (`ready`). It is woken to say so only if it can have been
+        waiting -- with a schedule in hand it never was, and a version edge has already
+        woken it."""
+        if self._answered:
+            return
+        self._answered = True
+        if self._schedule is None:
+            self._wake_scheduler()
+
+    def _note_clock(self, payload: Any, sent: datetime, received: datetime) -> None:
+        """Measure this machine's clock against the server's from one answer.
+
+        `server_time` was stamped somewhere between the request leaving and the
+        answer arriving; the midpoint is the best guess at when, and the error
+        is at most half the round trip. An answer without a usable `server_time`
+        (an older backend) changes nothing: the last offset stands, and 0.0 if
+        there never was one.
+        """
+        server = parse_utc(payload.get("server_time")) if isinstance(payload, dict) else None
+        if server is None:
+            return
+        offset = (server - (sent + (received - sent) / 2)).total_seconds()
+        if abs(offset) > self.MAX_CLOCK_OFFSET_SECONDS:
+            return
+        self._clock_offset = offset
+        large = abs(offset) >= self.CLOCK_SKEW_NOTICE_SECONDS
+        if large != self._skew_logged:
+            self._skew_logged = large
+            if large:
+                self.log.warning(
+                    "NOTIFICATION_CLOCK_SKEW: this computer's clock is %.0f s %s the server's; "
+                    "reminders are timed by the server's clock",
+                    abs(offset), "behind" if offset > 0 else "ahead of",
+                )
+            else:
+                self.log.info("NOTIFICATION_CLOCK_SKEW cleared: this computer's clock agrees with the server's")
 
     # ── The change stream ─────────────────────────────────────────────────────
 

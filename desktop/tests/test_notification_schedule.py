@@ -250,15 +250,21 @@ def make_service(response=None, error=None, *, signed_in=True,
     return service, api, cache, wakes, capture
 
 
+def _persisted(**kwargs):
+    """A cache that already holds a schedule, as the last session left it."""
+    return FakeCache({SCHEDULE_STATE_KEY: json.dumps(parse_schedule(payload(**kwargs)).to_json())})
+
+
 def test_the_first_tick_loads_what_was_persisted_and_asks_nothing():
-    service, api, _cache, _wakes, _log = make_service(payload())
+    service, api, _cache, _wakes, _log = make_service(payload(), cache=_persisted())
 
     assert api.calls == 0
+    assert service.schedule is not None
     assert service.ready
 
 
 def test_it_is_not_ready_until_the_persisted_record_has_been_read():
-    service, *_ = make_service(payload(), first_tick=False)
+    service, *_ = make_service(payload(), first_tick=False, cache=_persisted())
 
     assert not service.ready
     service.tick()
@@ -470,7 +476,7 @@ def test_an_unusable_persisted_record_is_ignored_not_trusted():
     service, *_ = make_service(cache=cache)
 
     assert service.schedule is None
-    assert service.ready
+    assert not service.ready     # nothing usable is known: it waits for the backend's first answer
 
 
 def test_logout_wiping_app_state_is_repaired_by_the_next_poll():

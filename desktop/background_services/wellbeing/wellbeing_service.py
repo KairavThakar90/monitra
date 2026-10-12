@@ -277,7 +277,23 @@ class WellbeingService(LoopService):
         return _time.monotonic()
 
     def _now_ist(self) -> datetime:
-        return datetime.now(IST)
+        """The time of day the schedule is written in, by the server's clock.
+
+        This machine's clock plus the offset the schedule service measured against the
+        server's on its last answer. The administrator's times are IST wall-clock times, and
+        on a computer whose clock -- or time zone, set wrong while the displayed time was
+        corrected by hand -- is out by minutes or hours, the machine's own reading showed
+        "13:30" at the wrong moment, or beyond the grace window and not at all. 0 until the
+        first answer, and on an older backend that sends no `server_time`: then, exactly as
+        before, the machine's clock.
+        """
+        return datetime.now(IST) + timedelta(seconds=self._server_clock_offset())
+
+    def _server_clock_offset(self) -> float:
+        offset = getattr(self._schedule_source(), "clock_offset_seconds", 0.0)
+        if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not math.isfinite(offset):
+            return 0.0
+        return float(offset)
 
     def _gap_since_last_tick(self, now: float, now_ist: datetime) -> Optional[float]:
         """Seconds since the previous tick, by whichever clock saw more.
