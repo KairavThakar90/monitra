@@ -81,16 +81,30 @@ REANCHOR_TOLERANCE_SECONDS = 5
 RECOVERY_CAP_SECONDS = 15 * 60
 
 #: An IST midnight is normally split at within a second of passing -- the tick
-#: runs every second. A boundary found more than this far behind `now` was
-#: crossed while the machine was asleep (or the process suspended), and the first
-#: tick after it wakes would split the session once per slept-through day, a
-#: stopped entry for each, which the backend accepts however long the weekend
-#: was. Before doing that the backend is asked whether the entry is still
-#: running: if it has ended it (the abandoned-timer policy,
-#: docs/TIMING_MODEL.md section 9) the local session ends with it and nothing is
-#: split; if it says "running", or does not answer within
-#: `ROLLOVER_VERIFY_WAIT_SECONDS`, the split proceeds exactly as it always has.
+#: runs every second. One found more than this far behind `now` was crossed while
+#: the machine was asleep (or the process suspended).
 ROLLOVER_VERIFY_AFTER_SECONDS = 120.0
+
+#: How many IST midnights a machine may have slept through and still have its
+#: session split at them when it wakes (the owner's design: split at midnight and
+#: continue). Beyond that -- a weekend -- or when the machine was quiet for longer
+#: than `RECOVERY_CAP_SECONDS` and the backend does not confirm the entry is still
+#: running, the session is ended at the last instant the machine was known awake plus
+#: the cap, exactly as a crash recovered after that long is
+#: (`_force_stop_capped`). Nobody works through a night, still less a weekend, on a
+#: machine that is asleep, and the split used to book each slept-through day as a
+#: stopped entry of up to 24 hours that the backend accepts (a backdated start is
+#: honoured for seven days) however it had treated the original.
+#:
+#: 1 keeps the owner's split-and-continue for a single night when the backend says
+#: the entry is running. 0 never books a slept-through night, whatever the backend
+#: says -- the setting the review of 2026-10-12 recommends, pending the owner's
+#: decision (docs/TIMER_ABANDONMENT_ROLLOUT.md section 7).
+ROLLOVER_MAX_SLEPT_BOUNDARIES = 1
+
+#: Before splitting at a slept-through midnight the backend is asked whether the
+#: entry is still running, and the tick waits at most this long for the answer.
+#: Not hearing is not a confirmation.
 ROLLOVER_VERIFY_WAIT_SECONDS = 30.0
 
 
@@ -295,8 +309,11 @@ class TimerService(BaseService):
         self._trackers: list = []
         self._sync_connected = False
         self._closed_connected = False
-        #: The late-midnight check in flight (see `_rollover_confirmed`). In memory only.
+        #: The late-midnight check in flight (see `_rollover_verdict`). In memory only.
         self._rollover_gate: Optional[Dict[str, Any]] = None
+        #: The last instant a tick ran: the last time this machine was known awake while
+        #: a session ran. A gap before the next tick longer than the cap is a sleep.
+        self._last_tick_utc: Optional[datetime] = None
 
         #: The break-resume reference (see `BreakStatus`). Never persisted.
         self._break_status = BreakStatus.NONE
@@ -556,6 +573,7 @@ class TimerService(BaseService):
         if self._session is not None:
             self._maybe_roll_over_midnight()
         self.timer_tick.emit(self.elapsed_seconds())
+        self._last_tick_utc = _utc_now()
 
     def _timing(self, event: str, **fields: Any) -> None:
         """One key=value line per lifecycle outcome, mirroring the backend's
@@ -920,6 +938,7 @@ class TimerService(BaseService):
         """
         if self._refuse_for_date(for_date, "stop"):
             return
+        self._settle_late_midnight()
         if not self.is_running() or self._session is None:
             return
         if self._status == TimerStatus.STOPPING:
@@ -1085,73 +1104,201 @@ class TimerService(BaseService):
     # and `recover()`, for a session recovered into a new IST day. One
     # implementation, two callers -- never two implementations of a split.
 
-    def _maybe_roll_over_midnight(self, *, emit_started: bool = True, verify: bool = True) -> bool:
-        """Split the running session if it has crossed an IST day boundary.
+    def _maybe_roll_over_midnight(
+        self, *, emit_started: bool = True, verify: bool = True, act_now: bool = False,
+    ) -> bool:
+        """Split the running session if it has crossed an IST day boundary -- or, when the
+        machine slept through it, end the session instead of booking the sleep.
 
         `verify=False` is for `recover()`, whose gap is already bounded by
         `RECOVERY_CAP_SECONDS` and so cannot span more than one boundary.
+        `act_now` is a person acting (Stop, switch) on a session whose slept-through
+        midnight the tick has not settled: they cannot wait for the backend's answer.
 
-        :return: True if a rollover happened.
+        :return: True if the session was split or ended.
         """
-        if self._session is None:
+        session = self._session
+        if session is None:
             return False
-        started = parse_utc(self._session.get("started_at_utc"))
+        started = parse_utc(session.get("started_at_utc"))
         if started is None:
             return False
         boundary = ist_day_bounds_utc(to_ist(started).date())[1]
         now = _utc_now()
         if now < boundary:
             return False
-        if verify and (now - boundary).total_seconds() > ROLLOVER_VERIFY_AFTER_SECONDS:
-            if not self._rollover_confirmed(now):
+        if verify:
+            outcome = self._late_midnight_outcome(started, boundary, now, act_now)
+            if outcome == "wait":
                 return False
+            if outcome == "cap":
+                return True
         self._roll_over_at(boundary, emit_started=emit_started)
         return True
 
-    def _rollover_confirmed(self, now: datetime) -> bool:
-        """May a split this late go ahead? Asks the backend first, once.
+    def _late_midnight_outcome(
+        self, started: datetime, boundary: datetime, now: datetime, act_now: bool,
+    ) -> str:
+        """What a midnight that has passed means for this session: `split`, `wait`, or `cap`
+        (the session has been ended here).
 
-        True when there is no one to ask (the session's start has not reached
-        the backend yet, so there is no entry to ask about) or the backend has
-        said the entry is still running; also after `ROLLOVER_VERIFY_WAIT_SECONDS`
-        without an answer, so a backend that cannot be reached delays the split
-        by half a minute and no more. While this returns False the tick tries
-        again -- no timer of its own, no thread, one heartbeat requested.
+        A midnight crossed by a machine that stayed awake is split at the boundary as
+        always. One found hours late means the machine was asleep, and the gap is not
+        work: past the allowance, or without the backend's word that the entry is still
+        running, the session ends at the last awake instant + the cap, which needs no
+        answer from anyone and so holds offline too.
+        """
+        gate = self._rollover_gate_for(self._session)
+        if gate is not None and gate.get("confirmed"):
+            return "split"                       # the backend's own word (an adoption)
+        if gate is None:
+            if (now - boundary).total_seconds() <= ROLLOVER_VERIFY_AFTER_SECONDS:
+                return "split"
+            quiet_since = max(started, self._last_tick_utc or started)
+            if (now - quiet_since).total_seconds() <= RECOVERY_CAP_SECONDS:
+                return "split"                   # a short sleep: at most a quarter hour is booked
+        else:
+            quiet_since = gate["quiet_since"]
+        slept = self._midnights_between(quiet_since, now)
+        if slept > ROLLOVER_MAX_SLEPT_BOUNDARIES:
+            self._end_session_after_sleep(quiet_since, now, f"slept through {slept} midnights")
+            return "cap"
+        verdict = self._rollover_verdict(now, quiet_since, act_now)
+        if verdict == "go":
+            return "split"
+        if verdict == "wait":
+            return "wait"
+        self._end_session_after_sleep(quiet_since, now, "the backend did not confirm the entry is still running")
+        return "cap"
 
-        An answer saying the entry has *ended* never confirms anything: it
-        reaches `end_session_closed_remotely` through the sync service's
-        `entry_closed_by_server`, which ends the local session, and there is then
-        nothing left to split.
+    @staticmethod
+    def _midnights_between(after: datetime, until: datetime) -> int:
+        """How many IST midnights m satisfy `after < m <= until`."""
+        first = ist_day_bounds_utc(to_ist(after).date())[1]
+        if until < first:
+            return 0
+        return 1 + int((until - first) // timedelta(days=1))
+
+    def _rollover_gate_for(self, session: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        gate = self._rollover_gate
+        if gate is None or not session:
+            return None
+        return gate if gate["key"] == (session.get("client_op"), session.get("entry_id")) else None
+
+    def _rollover_verdict(self, now: datetime, quiet_since: datetime, act_now: bool) -> str:
+        """`go` (the backend says the entry is running, or there is no one to ask),
+        `wait` (asked; no answer yet) or `unconfirmed` (it cannot be confirmed).
+
+        Asks the sync service for a heartbeat, once. No timer of its own, no thread: the
+        tick polls. An answer saying the entry has *ended* never confirms anything -- it
+        reaches `end_session_closed_remotely` through `entry_closed_by_server`, which ends
+        the local session, and there is then nothing left to decide.
         """
         session = self._session or {}
         entry_id = session.get("entry_id")
         sync = getattr(self.runtime, "sync", None)
         ask = getattr(sync, "request_heartbeat", None)
         confirmed = getattr(sync, "confirmed_running_since", None)
-        if not entry_id or not callable(ask) or not callable(confirmed):
-            return True
-        key = (session.get("client_op"), entry_id)
-        gate = self._rollover_gate
-        if gate is not None and gate["key"] == key and gate.get("confirmed"):
-            return True
-        if gate is None or gate["key"] != key:
-            self._rollover_gate = {"key": key, "since": now, "monotonic": time.monotonic()}
+        if not callable(ask) or not callable(confirmed):
+            return "go"                          # nothing to ask (a test double, or no sync service)
+        if not entry_id:
+            return "unconfirmed"                 # the backend has never heard of this session
+        gate = self._rollover_gate_for(session)
+        if gate is None:
+            if act_now:
+                return "unconfirmed"             # a person cannot wait for an answer nobody has asked for
+            self._rollover_gate = gate = {
+                "key": (session.get("client_op"), entry_id), "since": now,
+                "monotonic": time.monotonic(), "quiet_since": quiet_since,
+            }
             self._timing("rollover.verify", reason="midnight passed while the application was not running")
             self.log.info(
-                "an IST midnight passed while this application was not running; asking the "
-                "backend about entry %s before splitting the session", entry_id,
+                "an IST midnight passed while this machine was quiet since %s; asking the backend "
+                "about entry %s before deciding what the gap is worth", quiet_since.isoformat(), entry_id,
             )
             ask()
-            return False
+            return "wait"
         if confirmed(entry_id, gate["monotonic"]):
-            return True
+            return "go"
+        if act_now:
+            return "unconfirmed"
         if (now - gate["since"]).total_seconds() >= ROLLOVER_VERIFY_WAIT_SECONDS:
             self.log.warning(
-                "the backend did not answer about entry %s within %ds; splitting at midnight "
-                "as usual", entry_id, int(ROLLOVER_VERIFY_WAIT_SECONDS),
+                "the backend did not answer about entry %s within %ds", entry_id,
+                int(ROLLOVER_VERIFY_WAIT_SECONDS),
             )
-            return True
-        return False
+            return "unconfirmed"
+        return "wait"
+
+    def _settle_late_midnight(self) -> None:
+        """A person is about to stop or switch a session whose slept-through midnight the
+        tick has not settled (it is waiting on the backend, or no tick has run since the
+        wake). Settle it first, as the tick would have, so that their Stop books what the
+        rule says and not the whole sleep in one entry."""
+        for _ in range(4):
+            if not self.is_running() or not self._maybe_roll_over_midnight(act_now=True):
+                return
+
+    def _end_session_after_sleep(self, quiet_since: datetime, now: datetime, why: str) -> None:
+        """End the running session at `quiet_since` + the cap: the instant the owner's crash
+        recovery would have stopped it, never `now`."""
+        session = self._session
+        started = parse_utc(session.get("started_at_utc")) if session else None
+        if session is None or started is None:
+            return
+        self._rollover_gate = None
+        stopped_dt = min(max(started, quiet_since + timedelta(seconds=RECOVERY_CAP_SECONDS)), now)
+        day_end = ist_day_bounds_utc(to_ist(started).date())[1]
+        if stopped_dt > day_end:
+            # The quarter hour reaches past a midnight: split there first, as an awake machine
+            # would have, so the minutes after it are not billed to the day before.
+            self._roll_over_at(day_end, emit_started=True)
+        self._stop_locally_at(stopped_dt, why)
+
+    def _stop_locally_at(self, stopped_dt: datetime, why: str) -> None:
+        """Stop the running session at a given instant, durably, and tell the person why.
+
+        The same steps as `stop_tracking` -- the stop is queued before the record is
+        cleared -- with an instant the machine's clock did not produce, and the notice the
+        backend's own closure for silence uses ("Monitra stopped your timer at 6:15 pm ...").
+        """
+        session = dict(self._session or {})
+        started = parse_utc(session.get("started_at_utc"))
+        if not session or started is None:
+            return
+        measured = max(0, int((stopped_dt - started).total_seconds()))
+        elapsed = max(0, measured + self._adjustment_in(session))
+        stopped_at = stopped_dt.isoformat()
+        entry_id, task_id = session.get("entry_id"), session.get("task_id")
+
+        self._set_status(TimerStatus.STOPPING)
+        self._tick_timer.stop()
+        self._stop_trackers()
+        self._timing("sleep.capped", stopped_at=stopped_at, elapsed_seconds=elapsed, reason=why)
+        self.log.warning(
+            "session for task %s ended at %s (%s); the time after it was not counted",
+            task_id, stopped_at, why,
+        )
+        self._enqueue_stop(session, stopped_at, elapsed)
+        self._session = None
+        self._rollover_gate = None
+        self._persist()
+        self._set_status(TimerStatus.IDLE)
+        if self._cache and elapsed > 0:
+            try:
+                day = to_ist(stopped_dt - timedelta(seconds=1)).date().isoformat()
+                self._cache.add_elapsed_to_cached_time_entry(
+                    day, task_id, elapsed, entry_id=entry_id, stopped_at=stopped_at, measured_seconds=measured,
+                )
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not fold the capped session's time into the cache")
+        self.timer_stopped.emit({
+            "session": session, "elapsed_seconds": elapsed, "result": {"slept": True, "reason": why},
+        })
+        self.timer_closed_by_server.emit({
+            "reason": "no_signal", "ended_at": stopped_at, "total_seconds": elapsed,
+            "task_name": session.get("task_name"),
+        })
 
     def _note_server_confirms_running(self) -> None:
         """The backend has just told us this session's entry is running (an adoption
@@ -1161,6 +1308,7 @@ class TimerService(BaseService):
             self._rollover_gate = {
                 "key": (session.get("client_op"), session.get("entry_id")),
                 "since": _utc_now(), "monotonic": time.monotonic(), "confirmed": True,
+                "quiet_since": None,
             }
 
     def _roll_over_at(self, boundary: datetime, *, emit_started: bool = True) -> None:

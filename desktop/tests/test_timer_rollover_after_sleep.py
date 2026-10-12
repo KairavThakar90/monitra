@@ -1,20 +1,26 @@
 """
-A midnight found hours late is not split until the backend has been asked.
+A machine that sleeps through midnight does not book the night -- or the weekend.
 
-Friday 17:23 IST a timer starts. The lid is closed at 18:00 and opened on Monday
-09:00 IST; nothing ticked in between (the OS was suspended). The first tick finds
-the Friday-night boundary 57 hours behind it. Split at once -- which is what it
-did -- it queues a stop at Saturday 00:00, a start there, a stop at Sunday 00:00,
-and so on to Monday: three stopped entries of up to 24 hours that the backend
-accepts (it honours a backdated start for a week), booked for a machine that was
-switched off, whatever the backend had decided about the original entry meanwhile.
+The cascade, as it was: a laptop closed Friday 18:00 and opened Monday 09:00 made the
+first ticks queue a stop and a start at every slept-through midnight -- three stopped
+entries of up to 24 hours, which the backend accepts (a backdated start is honoured for
+seven days), even when the backend had closed the original entry long before. And a person
+who pressed Stop in the first moments after waking booked the whole sleep into one entry.
 
-Now the first such tick asks the sync service for a heartbeat and waits -- for at
-most `ROLLOVER_VERIFY_WAIT_SECONDS` -- for the backend to say the entry is still
-running. If the backend ended it (the abandoned-timer policy,
-docs/TIMING_MODEL.md section 9) the existing closure path ends the local session
-and there is nothing to split; if it says "running", or never answers, the split
-goes ahead exactly as the rollover tests in test_timer_midnight_rollover.py pin it.
+The rule now (docs/TIMING_MODEL.md section 9.6), in terms of the owner's own cap:
+
+* A tick that finds the machine was quiet for longer than `RECOVERY_CAP_SECONDS` and
+  crossed more than `ROLLOVER_MAX_SLEPT_BOUNDARIES` midnights ends the session at the last
+  instant it was known awake + the cap -- exactly what a crash recovered after that long
+  does (`test_the_cap_takes_precedence_over_rollover_for_a_gap_spanning_midnight`). It needs
+  no answer from the backend, so it holds offline too.
+* Within that allowance (one night, by default -- the owner's design: the session is split at
+  midnight and continues) the split goes ahead only if the backend *confirms the entry is still
+  running*. An entry the backend ended ends the local session; no answer in
+  `ROLLOVER_VERIFY_WAIT_SECONDS`, or a person acting before one arrives, is not a confirmation
+  and the night is not booked.
+* A short sleep (within the cap) and a machine that stayed awake across midnight split at
+  the boundary exactly as always, without asking anyone.
 """
 from __future__ import annotations
 
@@ -22,9 +28,9 @@ from datetime import datetime, timedelta, timezone
 
 from background_services.timer import timer_service as timer_module
 from background_services.timer.timer_service import (
-    ROLLOVER_VERIFY_AFTER_SECONDS, ROLLOVER_VERIFY_WAIT_SECONDS,
+    RECOVERY_CAP_SECONDS, ROLLOVER_VERIFY_WAIT_SECONDS, TIMER_STATE_KEY,
 )
-from core.time_format import IST, ist_day_bounds_utc, parse_utc
+from core.time_format import IST, parse_utc
 from tests.test_timer_lifecycle_reliability import FakeClock, _new_timer, _queued
 from tests.test_timer_service import FakeSync, FakeTimeEntryService
 
@@ -46,12 +52,13 @@ class AskingSync(FakeSync):
         return self.running
 
 
-def _ist(year, month, day, hour, minute) -> datetime:
-    return datetime(year, month, day, hour, minute, tzinfo=IST).astimezone(UTC)
+def _ist(year, month, day, hour, minute, second=0) -> datetime:
+    return datetime(year, month, day, hour, minute, second, tzinfo=IST).astimezone(UTC)
 
 
-def _friday_evening(cache, monkeypatch, *, sync=True, backend=None):
-    clock = FakeClock(_ist(2026, 10, 9, 17, 23))
+def _session(cache, monkeypatch, started, *, sync=True, backend=None):
+    """A running session that was last known awake at `started`."""
+    clock = FakeClock(started)
     monkeypatch.setattr(timer_module, "_utc_now", clock)
     timer = _new_timer(cache, backend or FakeTimeEntryService(entry_id=42))
     asking = AskingSync() if sync else None
@@ -61,110 +68,280 @@ def _friday_evening(cache, monkeypatch, *, sync=True, backend=None):
     return clock, timer, asking
 
 
-def _monday_morning(clock):
-    clock.now = _ist(2026, 10, 12, 9, 0)
+def _awake_until(clock, timer, moment):
+    """The machine runs (ticks every second) until `moment`, then the lid closes."""
+    clock.now = moment
+    timer._emit_tick()
 
 
-def test_a_midnight_found_hours_late_asks_the_backend_before_splitting(qapp, cache, monkeypatch):
-    clock, timer, sync = _friday_evening(cache, monkeypatch)
+def _stopped_instants(timer):
+    return [parse_utc(s["stopped_at"]) for s in _queued(timer.runtime, "stop_timer")]
+
+
+# ── a weekend ─────────────────────────────────────────────────────────────────
+
+def test_a_weekend_asleep_ends_the_session_at_the_last_awake_instant_plus_the_cap(qapp, cache, monkeypatch):
+    clock, timer, sync = _session(cache, monkeypatch, _ist(2026, 10, 9, 17, 23))
+    told, stopped = [], []
+    timer.timer_closed_by_server.connect(told.append)
+    timer.timer_stopped.connect(stopped.append)
     try:
         assert timer.entry_id == 42
-        _monday_morning(clock)
+        _awake_until(clock, timer, _ist(2026, 10, 9, 18, 0))
+        clock.now = _ist(2026, 10, 12, 9, 0)                    # the lid is opened on Monday
         timer._emit_tick()
-        timer._emit_tick()
-        timer._emit_tick()
-
-        assert sync.asked == 1, "asked once, not on every tick"
-        assert _queued(timer.runtime, "stop_timer") == [], "nothing is split while the backend is asked"
-        assert _queued(timer.runtime, "start_timer") == []
-        assert timer.active_session()["started_at_utc"] == _ist(2026, 10, 9, 17, 23).isoformat()
-    finally:
-        timer.stop(timeout_ms=500)
-
-
-def test_a_backend_that_says_running_lets_the_split_go_ahead_as_it_always_did(qapp, cache, monkeypatch):
-    clock, timer, sync = _friday_evening(cache, monkeypatch)
-    try:
-        _monday_morning(clock)
-        timer._emit_tick()
-        sync.running = True                                  # the answer arrives
-        for _ in range(6):
-            timer._emit_tick()
-
-        stops = _queued(timer.runtime, "stop_timer")
-        assert [parse_utc(s["stopped_at"]) for s in stops] == [
-            _ist(2026, 10, 10, 0, 0), _ist(2026, 10, 11, 0, 0), _ist(2026, 10, 12, 0, 0),
-        ], "unchanged: one split per boundary, at the boundary"
-        assert stops[0]["entry_id"] == 42
-        assert timer.active_session()["started_at_utc"] == _ist(2026, 10, 12, 0, 0).isoformat()
-        assert sync.asked == 1, "the later boundaries belong to sessions the backend has no id for yet"
-    finally:
-        timer.stop(timeout_ms=500)
-
-
-def test_a_backend_that_closed_the_entry_means_nothing_is_split_at_all(qapp, cache, monkeypatch):
-    clock, timer, sync = _friday_evening(cache, monkeypatch)
-    try:
-        _monday_morning(clock)
-        timer._emit_tick()
-        # The heartbeat answer: the abandoned-timer policy closed the entry on Friday night.
-        ended = _ist(2026, 10, 9, 18, 15)
-        assert timer.end_session_closed_remotely(
-            {"id": 42, "end_time": ended.isoformat(), "total_seconds": 52 * 60}, reason="no_signal",
-        )
-        for _ in range(6):
-            timer._emit_tick()
 
         assert not timer.is_running()
-        assert _queued(timer.runtime, "stop_timer") == [], "no stopped entry was booked for the weekend"
-        assert _queued(timer.runtime, "start_timer") == [], "and no start for any slept-through day"
+        assert _stopped_instants(timer) == [_ist(2026, 10, 9, 18, 15)], "last awake 18:00 + 15 minutes"
+        assert _queued(timer.runtime, "stop_timer")[0]["entry_id"] == 42
+        assert _queued(timer.runtime, "start_timer") == [], "no entry is started for any slept-through day"
+        assert stopped[0]["elapsed_seconds"] == 52 * 60
+        assert told == [{
+            "reason": "no_signal", "ended_at": _ist(2026, 10, 9, 18, 15).isoformat(),
+            "total_seconds": 52 * 60, "task_name": "Task",
+        }]
+        assert sync.asked == 0, "no answer from the backend is needed"
+        assert cache.load_app_state(TIMER_STATE_KEY) is None
     finally:
         timer.stop(timeout_ms=500)
 
 
-def test_a_backend_that_cannot_be_reached_delays_the_split_by_half_a_minute_and_no_more(qapp, cache, monkeypatch):
-    clock, timer, sync = _friday_evening(cache, monkeypatch)
+def test_the_same_weekend_with_no_sync_service_at_all(qapp, cache, monkeypatch):
+    """Offline, or a build with nothing to ask: the rule does not depend on the backend."""
+    clock, timer, _ = _session(cache, monkeypatch, _ist(2026, 10, 9, 17, 23), sync=False)
     try:
-        _monday_morning(clock)
+        _awake_until(clock, timer, _ist(2026, 10, 9, 18, 0))
+        clock.now = _ist(2026, 10, 12, 9, 0)
+        timer._emit_tick()
+        assert not timer.is_running()
+        assert _stopped_instants(timer) == [_ist(2026, 10, 9, 18, 15)]
+    finally:
+        timer.stop(timeout_ms=500)
+
+
+def test_waking_twice_changes_nothing(qapp, cache, monkeypatch):
+    """Duplicate wake and reconnect events: the session is gone after the first."""
+    clock, timer, sync = _session(cache, monkeypatch, _ist(2026, 10, 9, 17, 23))
+    try:
+        _awake_until(clock, timer, _ist(2026, 10, 9, 18, 0))
+        clock.now = _ist(2026, 10, 12, 9, 0)
+        for _ in range(4):
+            timer._emit_tick()
+        assert len(_queued(timer.runtime, "stop_timer")) == 1
+        assert _queued(timer.runtime, "start_timer") == []
+    finally:
+        timer.stop(timeout_ms=500)
+
+
+def test_pressing_stop_the_instant_the_lid_opens_books_the_quarter_hour_not_the_weekend(qapp, cache, monkeypatch):
+    clock, timer, _ = _session(cache, monkeypatch, _ist(2026, 10, 9, 17, 23))
+    try:
+        _awake_until(clock, timer, _ist(2026, 10, 9, 18, 0))
+        clock.now = _ist(2026, 10, 12, 9, 0, 5)                 # no tick has run since the wake
+        timer.stop_tracking()
+
+        assert _stopped_instants(timer) == [_ist(2026, 10, 9, 18, 15)], "and one stop, not two"
+        assert not timer.is_running()
+    finally:
+        timer.stop(timeout_ms=500)
+
+
+def test_switching_project_right_after_waking_ends_the_old_one_at_the_cap_and_starts_the_new_one_now(qapp, cache, monkeypatch):
+    clock, timer, _ = _session(cache, monkeypatch, _ist(2026, 10, 9, 17, 23))
+    try:
+        _awake_until(clock, timer, _ist(2026, 10, 9, 18, 0))
+        wake = _ist(2026, 10, 12, 9, 0, 5)
+        clock.now = wake
+        timer.switch_tracking(1, 8, "Another task")
+
+        assert _stopped_instants(timer) == [_ist(2026, 10, 9, 18, 15)]
+        assert timer.is_running() and timer.task_id == 8
+        assert parse_utc(timer.active_session()["started_at_utc"]) == wake
+        assert timer.elapsed_seconds() == 0, "the new task's clock begins now"
+    finally:
+        timer.stop(timeout_ms=500)
+
+
+# ── one night ─────────────────────────────────────────────────────────────────
+
+def _sunday_night(cache, monkeypatch, **kwargs):
+    """Started Sunday 17:00; last awake 19:00; the lid is opened Monday 09:00."""
+    clock, timer, sync = _session(cache, monkeypatch, _ist(2026, 10, 11, 17, 0), **kwargs)
+    _awake_until(clock, timer, _ist(2026, 10, 11, 19, 0))
+    clock.now = _ist(2026, 10, 12, 9, 0)
+    return clock, timer, sync
+
+
+def test_one_night_asks_the_backend_and_waits_before_booking_anything(qapp, cache, monkeypatch):
+    clock, timer, sync = _sunday_night(cache, monkeypatch)
+    try:
+        for _ in range(3):
+            timer._emit_tick()
+
+        assert sync.asked == 1, "asked once, not on every tick"
+        assert _queued(timer.runtime, "stop_timer") == [], "nothing is split or stopped while it waits"
+        assert timer.is_running()
+    finally:
+        timer.stop(timeout_ms=500)
+
+
+def test_one_night_the_backend_says_running_so_the_night_is_split_as_the_owner_designed(qapp, cache, monkeypatch):
+    clock, timer, sync = _sunday_night(cache, monkeypatch)
+    try:
+        timer._emit_tick()
+        sync.running = True                                      # the heartbeat answer
+        timer._emit_tick()
+        assert _stopped_instants(timer) == [_ist(2026, 10, 12, 0, 0)], "split at midnight"
+        assert timer.is_running()
+        assert timer.active_session()["started_at_utc"] == _ist(2026, 10, 12, 0, 0).isoformat()
+    finally:
+        timer.stop(timeout_ms=500)
+
+
+def test_one_night_the_backend_had_ended_the_entry_so_nothing_is_split(qapp, cache, monkeypatch):
+    clock, timer, sync = _sunday_night(cache, monkeypatch)
+    try:
+        timer._emit_tick()
+        ended = _ist(2026, 10, 11, 19, 15)
+        assert timer.end_session_closed_remotely(
+            {"id": 42, "end_time": ended.isoformat(), "total_seconds": 135 * 60}, reason="no_signal",
+        )
+        for _ in range(3):
+            timer._emit_tick()
+        assert not timer.is_running()
+        assert _queued(timer.runtime, "stop_timer") == [] and _queued(timer.runtime, "start_timer") == []
+    finally:
+        timer.stop(timeout_ms=500)
+
+
+def test_one_night_with_no_answer_the_night_is_not_booked(qapp, cache, monkeypatch):
+    """Half a minute without the backend confirming the entry is running is not a confirmation."""
+    clock, timer, sync = _sunday_night(cache, monkeypatch)
+    try:
         timer._emit_tick()
         clock.advance(seconds=ROLLOVER_VERIFY_WAIT_SECONDS - 1)
         timer._emit_tick()
         assert _queued(timer.runtime, "stop_timer") == []
         clock.advance(seconds=2)
         timer._emit_tick()
-        assert len(_queued(timer.runtime, "stop_timer")) >= 1, "after the wait the split goes ahead"
+
+        assert not timer.is_running()
+        assert _stopped_instants(timer) == [_ist(2026, 10, 11, 19, 15)]
+        assert _queued(timer.runtime, "start_timer") == []
     finally:
         timer.stop(timeout_ms=500)
 
 
-def test_a_midnight_crossed_while_awake_is_split_at_once_without_asking(qapp, cache, monkeypatch):
-    clock = FakeClock(_ist(2026, 10, 9, 23, 58))
-    monkeypatch.setattr(timer_module, "_utc_now", clock)
-    timer = _new_timer(cache, FakeTimeEntryService(entry_id=42))
-    timer.runtime.sync = sync = AskingSync()
+def test_one_night_a_person_acting_before_the_backend_answers_does_not_book_the_night(qapp, cache, monkeypatch):
+    clock, timer, sync = _sunday_night(cache, monkeypatch)
     try:
-        timer.start_tracking(1, 7, "Task")
-        boundary = ist_day_bounds_utc(_ist(2026, 10, 9, 23, 58).astimezone(IST).date())[1]
-        clock.now = boundary + timedelta(seconds=ROLLOVER_VERIFY_AFTER_SECONDS - 1)
-        timer._emit_tick()
-
-        assert sync.asked == 0
-        assert [parse_utc(s["stopped_at"]) for s in _queued(timer.runtime, "stop_timer")] == [boundary]
+        timer._emit_tick()                                       # asks; no answer yet
+        timer.stop_tracking()
+        assert _stopped_instants(timer) == [_ist(2026, 10, 11, 19, 15)]
+        assert not timer.is_running()
     finally:
         timer.stop(timeout_ms=500)
 
 
-def test_a_session_the_backend_has_not_heard_of_yet_is_not_held(qapp, cache, monkeypatch):
-    """Started offline: no entry id, so there is nothing to ask about."""
+def test_one_night_a_person_acting_after_the_backend_confirmed_gets_the_owners_split(qapp, cache, monkeypatch):
+    clock, timer, sync = _sunday_night(cache, monkeypatch)
+    try:
+        timer._emit_tick()
+        sync.running = True
+        timer.stop_tracking()                                    # the tick has not run since the answer
+        assert _stopped_instants(timer) == [_ist(2026, 10, 12, 0, 0), _ist(2026, 10, 12, 9, 0)]
+    finally:
+        timer.stop(timeout_ms=500)
+
+
+def test_a_session_the_backend_has_never_heard_of_cannot_be_confirmed_so_the_night_is_not_booked(qapp, cache, monkeypatch):
+    """Started offline: there is no entry to ask about, so nothing says it is still running."""
     backend = FakeTimeEntryService(entry_id=None, fail=True)
-    clock, timer, sync = _friday_evening(cache, monkeypatch, backend=backend)
+    clock, timer, sync = _sunday_night(cache, monkeypatch, backend=backend)
     try:
         assert timer.entry_id is None
-        _monday_morning(clock)
+        timer._emit_tick()
+        assert sync.asked == 0
+        assert not timer.is_running()
+        assert _stopped_instants(timer) == [_ist(2026, 10, 11, 19, 15)]
+        starts = _queued(timer.runtime, "start_timer")
+        assert starts and len({s["client_op"] for s in starts}) == 1, (
+            "its own start is queued beside the stop -- one session, however often it is queued"
+        )
+        assert parse_utc(starts[0]["started_at"]) == _ist(2026, 10, 11, 17, 0)
+    finally:
+        timer.stop(timeout_ms=500)
+
+
+def test_strict_mode_never_books_a_slept_through_night_even_when_the_backend_says_running(qapp, cache, monkeypatch):
+    """`ROLLOVER_MAX_SLEPT_BOUNDARIES = 0`: the setting the review recommends."""
+    monkeypatch.setattr(timer_module, "ROLLOVER_MAX_SLEPT_BOUNDARIES", 0)
+    clock, timer, sync = _sunday_night(cache, monkeypatch)
+    sync.running = True
+    try:
+        timer._emit_tick()
+        assert sync.asked == 0
+        assert _stopped_instants(timer) == [_ist(2026, 10, 11, 19, 15)]
+        assert not timer.is_running()
+    finally:
+        timer.stop(timeout_ms=500)
+
+
+def test_the_quarter_hour_after_waking_up_to_midnight_keeps_the_split_the_reports_key_on(qapp, cache, monkeypatch):
+    """Last awake 23:55: the cap runs to 00:10, past the midnight. The entry is split there
+    first, so the ten minutes after midnight are not billed to the day before."""
+    monkeypatch.setattr(timer_module, "ROLLOVER_MAX_SLEPT_BOUNDARIES", 0)
+    clock, timer, sync = _session(cache, monkeypatch, _ist(2026, 10, 11, 17, 0))
+    try:
+        _awake_until(clock, timer, _ist(2026, 10, 11, 23, 55))
+        clock.now = _ist(2026, 10, 12, 1, 0)
+        timer._emit_tick()
+
+        assert _stopped_instants(timer) == [_ist(2026, 10, 12, 0, 0), _ist(2026, 10, 12, 0, 10)]
+        starts = _queued(timer.runtime, "start_timer")
+        assert {parse_utc(s["started_at"]) for s in starts} == {_ist(2026, 10, 12, 0, 0)}, "one new session, from midnight"
+        assert len({s["client_op"] for s in starts}) == 1
+        assert not timer.is_running()
+    finally:
+        timer.stop(timeout_ms=500)
+
+
+# ── what must not change ──────────────────────────────────────────────────────
+
+def test_a_short_sleep_across_midnight_splits_at_the_boundary_without_asking(qapp, cache, monkeypatch):
+    clock, timer, sync = _session(cache, monkeypatch, _ist(2026, 10, 11, 23, 0))
+    try:
+        _awake_until(clock, timer, _ist(2026, 10, 11, 23, 55))
+        clock.now = _ist(2026, 10, 12, 0, 5)                     # ten minutes: inside the cap
         timer._emit_tick()
 
         assert sync.asked == 0
-        assert len(_queued(timer.runtime, "stop_timer")) >= 1, "split as before"
+        assert _stopped_instants(timer) == [_ist(2026, 10, 12, 0, 0)]
+        assert timer.is_running()
+    finally:
+        timer.stop(timeout_ms=500)
+
+
+def test_a_machine_awake_across_midnight_splits_exactly_once_at_the_boundary(qapp, cache, monkeypatch):
+    clock, timer, sync = _session(cache, monkeypatch, _ist(2026, 10, 11, 23, 58))
+    try:
+        for seconds in range(0, 180):                            # a tick every second
+            clock.now = _ist(2026, 10, 11, 23, 58) + timedelta(seconds=seconds)
+            timer._emit_tick()
+        assert sync.asked == 0
+        assert _stopped_instants(timer) == [_ist(2026, 10, 12, 0, 0)]
+        assert timer.is_running()
+    finally:
+        timer.stop(timeout_ms=500)
+
+
+def test_without_a_sync_service_to_ask_one_night_is_split_as_before(qapp, cache, monkeypatch):
+    """The shared fake sync has nothing to ask; the owner's rollover tests rely on that."""
+    clock, timer, _ = _sunday_night(cache, monkeypatch, sync=False)
+    try:
+        timer._emit_tick()
+        assert _stopped_instants(timer) == [_ist(2026, 10, 12, 0, 0)]
+        assert timer.is_running()
     finally:
         timer.stop(timeout_ms=500)
 
@@ -185,16 +362,11 @@ def test_an_entry_the_backend_has_just_handed_over_is_not_asked_about_again(qapp
 
         assert sync.asked == 0, "the backend's own answer is the confirmation"
         assert len(_queued(timer.runtime, "stop_timer")) == 1
+        assert timer.is_running()
     finally:
         timer.stop(timeout_ms=500)
 
 
-def test_without_a_sync_service_to_ask_the_split_is_as_before(qapp, cache, monkeypatch):
-    """The shared fake sync has nothing to ask; the rollover tests rely on that."""
-    clock, timer, _ = _friday_evening(cache, monkeypatch, sync=False)
-    try:
-        _monday_morning(clock)
-        timer._emit_tick()
-        assert len(_queued(timer.runtime, "stop_timer")) >= 1
-    finally:
-        timer.stop(timeout_ms=500)
+def test_the_cap_here_is_the_owners_recovery_cap():
+    """One number, used by a crash recovered at launch, an adoption, and now a wake."""
+    assert RECOVERY_CAP_SECONDS == 15 * 60
