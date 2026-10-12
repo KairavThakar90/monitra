@@ -156,6 +156,29 @@ def test_a_resume_from_sleep_asks_for_a_beat_now(beat):
     assert beat.backend.send_heartbeat.call_count == 2
 
 
+def test_the_runtime_asks_for_a_beat_when_the_machine_wakes(qapp, runtime):
+    """A resume is when the backend has heard nothing for as long as the sleep
+    and this machine most wants to know whether its entry survived it."""
+    beats, probes = [], []
+    runtime.network.check_now = lambda: probes.append(True)
+    runtime.sync.request_heartbeat = lambda: beats.append(True)
+    runtime._on_system_resumed(3 * 3600.0)
+    assert beats == [True] and probes == [True]
+
+
+def test_the_backend_becoming_reachable_again_brings_the_next_beat_forward(beat):
+    from background_services.network import NetworkState
+
+    beat.tick()
+    beat.sync.runtime.network.network_state = NetworkState.BACKEND_REACHABLE
+    beat.sync._set_state(sync_module.ServiceState.DEGRADED, "network NO_NETWORK")
+    beat.sync._heartbeat_due_at = beat.now + 3600
+    beat.sync.tick()                              # the hold has ended: this tick leaves DEGRADED
+    assert beat.sync._heartbeat_due_at == 0.0, "the next tick beats at once"
+    beat.tick(advance=1)
+    assert beat.backend.send_heartbeat.call_count == 2
+
+
 def test_an_entry_the_backend_closed_is_reported_once(beat):
     beat.backend.send_heartbeat.return_value = {
         "entry": {"id": 42, "end_time": "2026-10-09T12:08:21+00:00", "total_seconds": 900},
