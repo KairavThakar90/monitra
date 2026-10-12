@@ -193,15 +193,24 @@ class PostgresDaySegmentsTests(unittest.TestCase):
         cls.engine.dispose()
 
     def _run(self, rows, lo, hi):
-        from sqlalchemy import TIMESTAMP, BigInteger, Float, Integer, column, func, select, values
+        from sqlalchemy import TIMESTAMP, BigInteger, Float, Integer, cast, column, func, select, values
 
+        # Postgres types a VALUES column from its rows, and one holding only NULLs becomes
+        # text; the explicit cast keeps `end_time` and `last_seen_at` timestamps whether
+        # or not any row carries one.
+        never = cast(None, TIMESTAMP(timezone=True))
         entries = values(
             column("id", BigInteger), column("user_id", BigInteger),
             column("start_time", TIMESTAMP(timezone=True)),
             column("end_time", TIMESTAMP(timezone=True)),
+            column("last_seen_at", TIMESTAMP(timezone=True)),
             column("total_seconds", Integer), column("adj_seconds", Float),
             name="tracked_entries",
-        ).data(rows)
+        ).data([
+            # A row may carry its last heartbeat as a seventh value; most do not.
+            (*row[:3], never if row[3] is None else row[3], row[6] if len(row) > 6 else never, row[4], row[5])
+            for row in rows
+        ])
         segments = TimeTrackingRepository.day_segments(entries, lo, hi)
         query = (
             select(
@@ -258,6 +267,24 @@ class PostgresDaySegmentsTests(unittest.TestCase):
         for day, value in running.items():
             if day != last_day:
                 self.assertIsNotNone(value[2], f"{day} closed at its midnight")
+
+    def test_a_running_entry_that_went_quiet_contributes_only_up_to_its_evidence(self):
+        """`day_segments` measures a running entry to `effective_now`, so a desktop that
+        stopped reporting stops adding days: thirty hours after it started, last heard from
+        29 hours ago, it is worth the hour and a quarter between its start and
+        last signal + 15 minutes -- wherever the midnights fall -- and a live one is worth
+        all thirty."""
+        now = self.now
+        rows = [
+            (1, 20, now - timedelta(hours=30), None, 0, None, now - timedelta(hours=29)),
+            (2, 21, now - timedelta(hours=30), None, 0, None, now - timedelta(seconds=20)),
+        ]
+        today = now.astimezone(IST).date()
+        got = self._run(rows, ist(2026, 10, 1), ist_day_end_utc(max(today, date(2026, 10, 7))))
+        silent = sum(v[0] for (user, _), v in got.items() if user == 20)
+        live = sum(v[0] for (user, _), v in got.items() if user == 21)
+        self.assertAlmostEqual(silent, 3600 + 15 * 60, delta=5)
+        self.assertAlmostEqual(live, 30 * 3600, delta=5)
 
 
 if __name__ == "__main__":
