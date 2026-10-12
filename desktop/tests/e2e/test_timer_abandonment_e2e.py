@@ -42,6 +42,8 @@ pytestmark = pytest.mark.skipif(
 
 UTC = timezone.utc
 JOB_TOKEN = "e2e-reconcile-token"
+#: The second secret that closing an entry by hand needs; the scheduler never has it.
+OPERATOR_TOKEN = "e2e-operator-token"
 
 
 @pytest.fixture(scope="module")
@@ -50,7 +52,7 @@ def backend():
     can be called the way the scheduled job calls it."""
     port = _free_port()
     env = dict(os.environ, ENV="development", PYTHONUNBUFFERED="1", EMAIL_DISPATCH_TOKEN=JOB_TOKEN,
-               TIMER_RECONCILER_ENABLED="false")
+               TIMER_OPERATOR_TOKEN=OPERATOR_TOKEN, TIMER_RECONCILER_ENABLED="false")
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1",
          "--port", str(port), "--log-level", "warning"],
@@ -78,11 +80,12 @@ def backend():
 
 
 def _job(backend: str, query: str = "") -> dict:
-    """Call the scheduled job's endpoint exactly as the scheduler does."""
-    response = httpx.post(
-        f"{backend}/internal/time-entries/reconcile{query}",
-        headers={"X-Email-Dispatch-Token": JOB_TOKEN}, timeout=60,
-    )
+    """Call the reconcile endpoint. A plain call is the scheduler's; one that applies by hand
+    (`dry_run=false`) also presents the operator's secret, as an approved correction does."""
+    headers = {"X-Email-Dispatch-Token": JOB_TOKEN}
+    if "dry_run=false" in query:
+        headers["X-Timer-Operator-Token"] = OPERATOR_TOKEN
+    response = httpx.post(f"{backend}/internal/time-entries/reconcile{query}", headers=headers, timeout=60)
     assert response.status_code == 200, response.text
     return response.json()
 

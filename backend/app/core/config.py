@@ -217,6 +217,13 @@ class Settings(BaseSettings):
     TIMER_RECONCILER_ENABLED: bool = False
     # Most entries one run will close.
     TIMER_RECONCILER_BATCH_SIZE: int = 200
+    # A second secret, held by the operator and not by the scheduler, that closing an
+    # entry BY HAND needs (`dry_run=false` on the reconcile endpoint). The scheduler's
+    # own token (EMAIL_DISPATCH_TOKEN) is enough to run the scheduled pass and to read a
+    # report, never to close a named entry. Empty (the default) disables closing by hand
+    # altogether; it must differ from EMAIL_DISPATCH_TOKEN. Set it only for the moment a
+    # correction has been approved (docs/TIMER_ENTRY_5958_RECONCILIATION_PLAN.md).
+    TIMER_OPERATOR_TOKEN: str = ""
 
     @property
     def google_drive_configured(self) -> bool:

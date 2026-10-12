@@ -831,13 +831,22 @@ class RouteTests(unittest.TestCase):
                              headers={"X-Email-Dispatch-Token": "wrong"}).status_code, 401,
         )
 
-    def _run(self, query="", **settings):
+    OPERATOR = "operator-secret-for-tests"
+
+    def _run(self, query="", operator=True, **settings):
+        """`operator=True` presents the configured operator secret; a string presents that one;
+        None presents none."""
         from app.core.config import settings as app_settings
 
         report = {"dry_run": True, "policy": POLICY.as_dict()}
-        with patch.object(app_settings, "TIMER_RECONCILER_ENABLED", settings.get("enabled", False)),              patch("app.api.time_entry_reconcile.TimeEntryReconciliationService.run",
+        headers = self._headers()
+        if operator is True:
+            headers["X-Timer-Operator-Token"] = self.OPERATOR
+        elif operator:
+            headers["X-Timer-Operator-Token"] = operator
+        with patch.object(app_settings, "TIMER_RECONCILER_ENABLED", settings.get("enabled", False)),              patch.object(app_settings, "TIMER_OPERATOR_TOKEN", settings.get("configured", self.OPERATOR)),              patch("app.api.time_entry_reconcile.TimeEntryReconciliationService.run",
                    return_value=report) as run:
-            response = self.client.post(f"/internal/time-entries/reconcile{query}", headers=self._headers())
+            response = self.client.post(f"/internal/time-entries/reconcile{query}", headers=headers)
         return response, run
 
     def test_the_scheduled_run_only_reports_until_the_deployment_turns_it_on(self):
@@ -895,6 +904,49 @@ class RouteTests(unittest.TestCase):
         self.assertEqual((forced.status_code, named.status_code), (400, 400))
         self.assertEqual(run.call_count, 1, "only the plain report ran")
         self.assertFalse(run.call_args.kwargs["apply"], "and it applied nothing, though the job is enabled")
+
+    # ── closing a named entry needs a second secret, held by the operator and not the scheduler ──
+
+    def test_the_scheduled_pass_needs_no_operator_secret(self):
+        response, run = self._run(enabled=True, operator=None, configured="")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(run.call_args.kwargs["apply"])
+
+    def test_an_explicit_apply_without_the_operator_secret_is_refused_and_writes_nothing(self):
+        response, run = self._run("?dry_run=false&entry_id=5958", operator=None)
+        self.assertEqual(response.status_code, 403, response.text)
+        run.assert_not_called()
+
+    def test_a_wrong_operator_secret_is_refused(self):
+        response, run = self._run("?dry_run=false&entry_id=5958", operator="not-the-secret")
+        self.assertEqual(response.status_code, 403, response.text)
+        run.assert_not_called()
+
+    def test_with_no_operator_secret_configured_closing_by_hand_is_disabled(self):
+        response, run = self._run("?dry_run=false&entry_id=5958", operator="anything", configured="")
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertIn("TIMER_OPERATOR_TOKEN", response.text)
+        run.assert_not_called()
+
+    def test_the_operator_secret_must_not_be_the_schedulers(self):
+        response, run = self._run("?dry_run=false&entry_id=5958", operator=self.TOKEN, configured=self.TOKEN)
+        self.assertEqual(response.status_code, 403, response.text)
+        run.assert_not_called()
+
+    def test_the_right_operator_secret_applies_as_the_operator(self):
+        response, run = self._run("?dry_run=false&include_unreported=true&entry_id=5958")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(run.call_args.kwargs["apply"])
+        self.assertEqual(run.call_args.kwargs["decided_by"], "operator")
+
+    def test_a_look_at_a_named_entry_needs_only_the_dispatch_token(self):
+        response, run = self._run("?dry_run=true&include_unreported=true&entry_id=5958", operator=None)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(run.call_args.kwargs["apply"])
+
+    def test_a_malformed_request_is_a_400_before_the_secret_is_asked_for(self):
+        response, _ = self._run("?dry_run=false&include_unreported=true", operator=None)
+        self.assertEqual(response.status_code, 400, response.text)
 
     def test_the_post_still_applies_when_the_job_is_enabled(self):
         _, run = self._run(enabled=True)

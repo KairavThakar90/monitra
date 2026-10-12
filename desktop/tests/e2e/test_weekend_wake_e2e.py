@@ -256,9 +256,13 @@ def test_switching_project_right_after_waking_books_a_quarter_hour_and_starts_th
 
 def test_a_logout_before_the_replay_holds_the_stop_for_its_owner(weekend, principal):
     entry_id = weekend.start_friday()
+    # Offline at the wake, so the stop is queued (stamped with its owner) but not yet delivered:
+    # an online consumer sends a signed-in owner's stop within milliseconds, before any logout.
+    weekend.desktop.sync._awaiting_auth = True
     weekend.wake()
     _pump(weekend.qapp, lambda: not weekend.timer.is_running(), 20, "the session to end")
-    weekend.desktop.sync._awaiting_auth = False
+    assert weekend.desktop.cache.has_pending_stop_for_entry(entry_id)
+    weekend.desktop.sync._awaiting_auth = False          # connectivity returns -- with nobody signed in
 
     # Signed out, then somebody else signed in: the stop is neither sent nor lost.
     for who in (None, {"id": principal["user_id"] + 100000, "name": "someone else"}):

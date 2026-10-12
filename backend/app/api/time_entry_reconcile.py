@@ -16,7 +16,10 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import hmac
+import logging
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.email_notifications import require_dispatch_token
@@ -26,6 +29,34 @@ from app.schemas.time_entry import ReconcileRunResult
 from app.services.time_entry_reconciliation import TimeEntryReconciliationService
 
 router = APIRouter(tags=["Time entries"])
+logger = logging.getLogger(__name__)
+
+
+def _require_operator_token(presented: Optional[str]) -> None:
+    """Closing an entry by hand is the operator's act, not the scheduler's.
+
+    The scheduler's token runs the scheduled pass and reads reports. An explicit
+    `dry_run=false` -- the way a named entry is closed -- also needs this second secret,
+    which exists only while somebody has approved a correction. Compared in constant
+    time; refused (403) when none is configured, when it is absent or wrong, and when it
+    is the scheduler's own, which would make it no second secret at all.
+    """
+    expected = (settings.TIMER_OPERATOR_TOKEN or "").strip()
+    if not expected:
+        logger.warning("RECONCILE_OPERATOR_DISABLED: TIMER_OPERATOR_TOKEN is not configured")
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Closing entries by hand is disabled: TIMER_OPERATOR_TOKEN is not set.",
+        )
+    if hmac.compare_digest(expected, (settings.EMAIL_DISPATCH_TOKEN or "").strip()):
+        logger.warning("RECONCILE_OPERATOR_REFUSED: TIMER_OPERATOR_TOKEN equals EMAIL_DISPATCH_TOKEN")
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "TIMER_OPERATOR_TOKEN must differ from EMAIL_DISPATCH_TOKEN.",
+        )
+    if not presented or not hmac.compare_digest(presented.strip(), expected):
+        logger.warning("RECONCILE_OPERATOR_REFUSED: missing or incorrect operator token")
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "The operator token is missing or incorrect.")
 
 
 #: What the last run in THIS process saw -- counts only, never an entry, a user or a project.
@@ -54,7 +85,7 @@ def _remember(result: ReconcileRunResult) -> None:
 def _run(
     db: Session, dry_run: Optional[bool], user_id: Optional[int], entry_id: Optional[List[int]],
     include_unreported: bool, limit: Optional[int], *, operator_allowed: bool = True,
-    read_only: bool = False,
+    read_only: bool = False, operator_token: Optional[str] = None,
 ) -> ReconcileRunResult:
     if (include_unreported or dry_run is False) and not operator_allowed:
         raise HTTPException(
@@ -77,6 +108,8 @@ def _run(
             "include_unreported must say what it means: dry_run=true to look, "
             "dry_run=false to close the named entries.",
         )
+    if dry_run is False:
+        _require_operator_token(operator_token)
     # Applies when explicitly asked (`dry_run=false`) or when the deployment
     # has switched the scheduled run on; otherwise it only reports.
     apply = dry_run is False or (dry_run is None and settings.TIMER_RECONCILER_ENABLED and not read_only)
@@ -121,10 +154,14 @@ def reconcile_time_entries(
     entry_id: Optional[List[int]] = Query(None, description="Restrict to these entries."),
     include_unreported: bool = Query(False),
     limit: Optional[int] = Query(None, ge=1, le=1000, description="Most entries to close."),
+    x_timer_operator_token: Optional[str] = Header(
+        default=None,
+        description="Required with dry_run=false: the operator secret (TIMER_OPERATOR_TOKEN).",
+    ),
     _: None = Depends(require_dispatch_token),
     db: Session = Depends(get_db, scope="function"),
 ):
-    return _run(db, dry_run, user_id, entry_id, include_unreported, limit)
+    return _run(db, dry_run, user_id, entry_id, include_unreported, limit, operator_token=x_timer_operator_token)
 
 
 @router.get(
