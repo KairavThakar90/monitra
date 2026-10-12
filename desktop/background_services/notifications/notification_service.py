@@ -39,11 +39,14 @@ five seconds by default). `NATIVE_BY_DEFAULT` is the switch, and
 `notify(..., native=False)` still draws a card for a caller that needs the
 thirty seconds. One surface per notification, never both; a machine with no
 tray, or a platform that refuses the toast, gets the card instead of nothing.
-The name at the top of the toast is the running program's own (its file
-description): `version.NOTIFICATION_HEADER_NAME` ("Monitra — Staff Management")
-for the installed build, "Python" when run from source -- so `main.py` hands over
-to a stamped copy of the interpreter when run from source (`core/dev_identity.py`).
-Beside it Windows draws the tray icon, the Monitra logo. Below, the toast has the
+The name at the top of the toast is `version.NOTIFICATION_HEADER_NAME` ("Monitra — Staff
+Management") and beside it Windows draws the Monitra logo. Both come from the identity
+registered in `toast_identity` at start-up, which holds whichever way Windows attributes the
+toast. (They used to come from the program's file description and tray icon, which Windows
+reads only for a notification that carries no icon of its own: putting the Monitra circle
+on the toast turned the header into the bare "Monitra". The stamped file description, and
+`core/dev_identity.py` that gives a source run one, remain the fallback for a machine where the
+registration cannot be written.) Below, the toast has the
 Monitra logo in a circle (not the platform's blue "i"), the notification's own title and its text: a caller that gives
 no title gets none -- never the application's name again under its own header.
 
@@ -67,9 +70,9 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from core.service import BaseService
-from version import APP_NAME
+from version import APP_NAME, NOTIFICATION_HEADER_NAME
 
-from . import mac_window, os_toast
+from . import mac_window, os_toast, toast_identity
 from .toast_popup import ToastPopup
 
 #: Stable identity for Windows toast attribution.
@@ -322,6 +325,10 @@ class NotificationService(BaseService):
 
     def on_start(self) -> None:
         set_windows_app_identity()
+        # Describe that identity to Windows -- the name and logo at the top of every toast.
+        # Without it a notification carrying the Monitra circle is headed by the bare id
+        # ("Monitra", no icon): see toast_identity. Idempotent, and never fatal.
+        toast_identity.register(APP_USER_MODEL_ID, NOTIFICATION_HEADER_NAME)
 
         self._available = QSystemTrayIcon.isSystemTrayAvailable()
         if not self._available:

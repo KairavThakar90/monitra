@@ -42,6 +42,10 @@ def changed_pixels(before, after) -> int:
     return sum(1 for value in diff.getdata() if value > 24)
 
 
+def _is_png(path: Path) -> bool:
+    return path.is_file() and path.read_bytes()[1:4] == b"PNG"
+
+
 def settle(ms):
     deadline = time.monotonic() + ms / 1000
     while time.monotonic() < deadline:
@@ -50,8 +54,14 @@ def settle(ms):
 
 
 def main() -> None:
-    from background_services.notifications import os_toast
-    from background_services.notifications.notification_service import NotificationService, APP_USER_MODEL_ID
+    # The icon file goes to the photograph directory, and the notification identity is a throwaway
+    # one that the test removes again: the probe must not touch the developer's real registration.
+    os.environ["MONITRA_DATA_DIR"] = str(OUT)
+    from background_services.notifications import notification_service as module, os_toast, toast_identity
+    from background_services.notifications.notification_service import NotificationService
+
+    module.APP_USER_MODEL_ID = os.environ.get("PROBE_APP_ID", module.APP_USER_MODEL_ID)
+    APP_USER_MODEL_ID = module.APP_USER_MODEL_ID
 
     app = QApplication(sys.argv)
     service = NotificationService(SimpleNamespace())
@@ -60,6 +70,9 @@ def main() -> None:
         "tray_available": QSystemTrayIcon.isSystemTrayAvailable(),
         "os_suppression": os_toast.suppression_reason(APP_USER_MODEL_ID),
         "quiet_state": os_toast.quiet_state(),
+        "app_id": APP_USER_MODEL_ID,
+        "identity": toast_identity._read_values(APP_USER_MODEL_ID),
+        "icon_file_is_png": _is_png(OUT / toast_identity.ICON_FILE_NAME),
         "scenarios": {},
     }
     if service._tray is None:

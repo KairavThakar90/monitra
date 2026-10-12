@@ -159,7 +159,7 @@ def logo_pixmap(size: int) -> QPixmap:
 NOTIFICATION_ICON_SIZES = (32, 48, 64, 96, 128)
 
 
-def logo_badge_pixmap(tile_size: int, *, mark_ratio: float = 0.72) -> QPixmap:
+def logo_badge_pixmap(tile_size: int, *, mark_ratio: float = 0.76) -> QPixmap:
     """The Monitra mark centered on a soft circular badge.
 
     Every place the mark needs to read as a small *app icon* -- a
@@ -194,8 +194,8 @@ def logo_badge_pixmap(tile_size: int, *, mark_ratio: float = 0.72) -> QPixmap:
     # A hairline in the brand blue keeps the disc's edge visible on a white
     # card or a white toast, where the tint alone would dissolve into the
     # background. Inset by half its width so the stroke is not clipped.
-    ring = max(1.0, tile_size / 40.0)
-    painter.setPen(QPen(QColor(79, 107, 255, 56), ring))
+    ring = max(1.0, tile_size / 32.0)
+    painter.setPen(QPen(QColor(79, 107, 255, 120), ring))
     painter.setBrush(gradient)
     # A QRectF: the four-number overload takes integers, so half a pixel of inset
     # was truncated to nothing on the near sides and the disc sat off-centre.

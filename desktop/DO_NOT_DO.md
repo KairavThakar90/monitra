@@ -993,6 +993,25 @@ duration to it expecting it to be honoured, do not use a card for an ordinary
 notification to get thirty seconds without asking, and do not show a card as
 well as the toast.
 
+### ❌ Do not give a toast its own icon without describing the identity it will be attributed to
+
+```python
+self._tray.showMessage(title, message, QIcon(...), ms)     # the Monitra circle instead of the blue "i"
+```
+
+**What it caused:** the header of the notification -- "Monitra — Staff Management" beside the
+Monitra logo, which the owner asked to keep -- vanished and read just "Monitra", with no
+logo. Windows takes the header of a plain balloon from the program's file description and tray
+icon, but attributes a balloon that carries an icon of its own to the process's *explicit*
+application id, and an explicit id nobody has described is shown as its bare id. Found by
+photographing real toasts, not by any test that could see a header.
+
+**Instead:** `toast_identity.register` describes the id (`DisplayName`, `IconUri` under
+`HKCU\Software\Classes\AppUserModelId\Monitra`) at start-up, so the header is the same whichever
+way Windows attributes the toast. The `IconUri` path must use **backslashes**: a slashed path is
+accepted silently and no icon is drawn. Do not remove the registration, change the id without
+changing the installer's `[Registry]` entry, or give a toast an icon and photograph only its body.
+
 ### ❌ Do not assume a platform toast was shown
 
 ```python

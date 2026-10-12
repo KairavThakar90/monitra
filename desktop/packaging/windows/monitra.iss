@@ -106,6 +106,13 @@ Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 Name: "{userstartup}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: startupicon
 
+[Registry]
+; The program describes its notification identity to Windows when it starts -- the name
+; and logo at the top of every toast -- under this key (background_services/notifications/
+; toast_identity.py; the id is APP_USER_MODEL_ID in notification_service.py). The installer
+; never creates it, so `dontcreatekey`; it only removes what the program wrote, on uninstall.
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\{#AppName}"; Flags: dontcreatekey uninsdeletekey
+
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
 

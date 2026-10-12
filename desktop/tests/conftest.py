@@ -82,6 +82,25 @@ def _host_windows_toast_settings_are_not_under_test(monkeypatch):
     monkeypatch.setattr(os_toast, "quiet_state", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def _host_windows_toast_registration_is_not_under_test(monkeypatch, tmp_path_factory):
+    """
+    Never write the host's Windows notification identity from a test.
+
+    `NotificationService.on_start` registers Monitra's name and logo under
+    `HKCU\Software\Classes\AppUserModelId` and renders the icon into the data directory
+    (`notifications/toast_identity.py`). A test that starts the service -- and many do, through
+    the runtime -- would otherwise rewrite the developer's real registration and drop a PNG into
+    their real `~/.monitra`. The registry is unreadable and unwritable here, and the icon goes
+    to the pytest temp tree; `tests/test_toast_identity.py` supplies its own fake registry.
+    """
+    from background_services.notifications import toast_identity
+
+    monkeypatch.setattr(toast_identity, "_read_values", lambda app_id: {})
+    monkeypatch.setattr(toast_identity, "_write_values", lambda app_id, values: None)
+    monkeypatch.setattr(toast_identity, "icon_path", lambda: tmp_path_factory.getbasetemp() / "notification-icon.png")
+
+
 @pytest.fixture(scope="session")
 def qapp():
     """A single QApplication for the whole session."""

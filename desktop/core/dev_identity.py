@@ -9,7 +9,10 @@ same thing the installed app does, for developers trying notifications:
 * `prepare_runner` copies the interpreter to ``~/.monitra/dev-runner/Monitra.exe``
   (with the DLLs it needs) and stamps that copy's version resource. The real
   interpreter is never touched, nothing is installed and nothing is written to the
-  registry (a registry name was tried: it changes nothing).
+  registry. (Since 2026-10-12 `notifications/toast_identity.py` registers the name and logo
+  under the notification identity at start-up, which is what a toast carrying its own icon is
+  headed by; this copy remains what a plain balloon -- and any machine where that
+  registration cannot be written -- is headed by.)
 * `relaunch_if_needed` is called first thing by ``main.py``: on Windows, from source,
   it runs the app through that copy and hands back its exit code. Anywhere else, in
   an installed build, in the copy itself, with ``MONITRA_NO_DEV_RELAUNCH=1`` set, or

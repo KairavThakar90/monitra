@@ -232,6 +232,11 @@ A field that is sent is validated in full — an explicit `null` or a blank is
   `version.py`) and kept in the Action Center afterwards. The platform decides how
   long it stays on screen (the user's accessibility setting, five seconds by
   default). A machine with no tray gets the in-app card instead.
+* **The header is Monitra's own, registered with Windows.** "Monitra — Staff Management" beside
+  the Monitra logo is the notification identity `NotificationService.on_start` registers
+  (`notifications/toast_identity.py`, under `HKCU\Software\Classes\AppUserModelId\Monitra`,
+  written only when it is wrong, removed by the uninstaller). Without it a toast carrying the
+  Monitra circle is headed by the bare id ("Monitra", no logo). `IconUri` must be a backslashed path.
 * **When a toast would not deliver it, the in-app card does.** `showMessage` is silent
   whether the toast was drawn or thrown away, so two cases that were found on real machines
   are decided up front (`NotificationService._native_declined`):
@@ -327,6 +332,7 @@ and logs `DESKTOP_NOTIFICATIONS_CHANGED`. Setting the limit is audited the same 
 * `desktop/tests/test_notification_service.py`, `test_os_toast.py` — the circular badge a
   toast carries, the card for a message a toast would cut or Windows would not show (fake
   registry), and the delivery log lines.
+* `desktop/tests/test_toast_identity.py` -- the registration and its icon file (fake registry).
 * `desktop/tests/test_notification_schedule_settle_and_clock.py`,
   `test_wellbeing_server_clock.py` — `ready` until the first answer, the clock offset and the
   scheduler acting on it (a clock an hour behind, a time zone 13.5 hours out).

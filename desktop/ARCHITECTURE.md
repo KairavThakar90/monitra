@@ -1108,16 +1108,23 @@ tabs show honest empty states.
   their log. The trade-off is the one in DO_NOT_DO: the platform
   decides how long a toast stays on screen (the user's accessibility setting,
   five seconds by default), so a native notification is not on screen for
-  `DISPLAY_MS`. The name at the top of the toast is the running program's file
-  description: the installed build is stamped `version.NOTIFICATION_HEADER_NAME`,
-  "Monitra — Staff Management" (`monitra.spec`), and beside it Windows draws the tray
-  icon, the Monitra logo; run from source it would read "Python", so
-  `main.py`, first thing and before its heavy imports, hands over to a copy of the
-  interpreter stamped the same (`core/dev_identity.py`; Windows, from source only --
-  never an installed build -- and `MONITRA_NO_DEV_RELAUNCH=1` opts out; if the copy
-  cannot be prepared the app simply runs in place; the parent only waits, so a second
-  Ctrl+C cannot cut the child's shutdown short; the
-  registry has no say in it -- tried, and it changed nothing).
+  `DISPLAY_MS`. The name and logo at the top of the toast --
+  "Monitra — Staff Management" beside the Monitra mark -- come from the notification
+  identity `NotificationService.on_start` registers with Windows
+  ([toast_identity.py](background_services/notifications/toast_identity.py):
+  `DisplayName` and `IconUri` under `HKCU\Software\Classes\AppUserModelId\Monitra`,
+  written only when wrong, never fatal, removed by the uninstaller). That is what keeps the header
+  when the toast carries its own icon (the Monitra circle in place of Windows' blue "i"):
+  Windows takes the header for a plain balloon from the program's file description and tray
+  icon, but for one that carries an icon of its own it uses the process's *explicit* identity,
+  and an explicit identity nobody has described reads as its bare id -- "Monitra", no logo.
+  Measured on a real Windows 11 toast (2026-10-12). `IconUri` must be a backslashed path:
+  `C:/Users/...` is accepted and no icon is drawn. The file description the installed build is
+  stamped with (`version.NOTIFICATION_HEADER_NAME`, `monitra.spec`) and the stamped interpreter
+  copy a source run goes through (`core/dev_identity.py`: Windows, from source only,
+  `MONITRA_NO_DEV_RELAUNCH=1` opts out; the parent only waits, so a second Ctrl+C cannot cut the
+  child's shutdown short) remain the fallback for a machine where the registration cannot be
+  written.
 - **Each notification gets its own card.** One that arrives while another is
   still up is stacked above it, for its own thirty seconds, and closing one
   (its ×) leaves the others. There used to be a single card whose text was
