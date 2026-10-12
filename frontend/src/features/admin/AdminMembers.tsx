@@ -243,14 +243,6 @@ const MemberProfileView: React.FC<{ member: Member }> = ({ member }) => {
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Email</span>
                 <span className="text-sm font-semibold text-slate-700">{memberDetails.email}</span>
               </div>
-              <div className="py-3 flex justify-between items-center">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Date of Joining</span>
-                <span className="text-sm font-semibold text-slate-700">{formatDate(memberDetails.date_of_joining)}</span>
-              </div>
-              <div className="py-3 flex justify-between items-center">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Date of Birth</span>
-                <span className="text-sm font-semibold text-slate-700">{formatDate(memberDetails.date_of_birth)}</span>
-              </div>
               {memberDetails.organization && (
                 <div className="py-3 flex justify-between items-center">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Organization</span>
@@ -872,7 +864,7 @@ export const AdminMembers: React.FC = () => {
       return on !== target;
     });
   // Placeholder rows span every column, including the optional ones.
-  const columnCount = 9 + (canManageAccess ? 1 : 0) + (canManageMembers ? 1 : 0);
+  const columnCount = 7 + (canManageAccess ? 1 : 0) + (canManageMembers ? 1 : 0);
 
 
   const selectedMember = selectedProfileId ? data?.items?.find(m => m.id === selectedProfileId) : null;
@@ -899,7 +891,7 @@ export const AdminMembers: React.FC = () => {
 
   return (
     <V2Shell
-      title="Members Directory"
+      title={data && !isError ? `Members Directory (${totalMembers})` : 'Members Directory'}
       subtitle={canManageMembers
         ? "Manage employees, their roles, and company details."
         : isTeamScoped(currentUser)
@@ -1095,8 +1087,6 @@ export const AdminMembers: React.FC = () => {
                   <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Role</th>
                   <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Status</th>
                   <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Designation</th>
-                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Date of Joining</th>
-                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Date of Birth</th>
                   <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">
                     Add Task<HeaderCount value={accessSummary?.add_task_allowed} meaning="allowed to add tasks" />
                   </th>
@@ -1162,8 +1152,6 @@ export const AdminMembers: React.FC = () => {
                         <StatusBadge status={member.status} />
                       </td>
                       <td className="px-4 py-4 font-medium text-slate-600">{member.designation || '-'}</td>
-                      <td className="px-4 py-4 font-medium text-slate-600">{formatDate(member.date_of_joining)}</td>
-                      <td className="px-4 py-4 font-medium text-slate-600">{formatDate(member.date_of_birth)}</td>
                       <td className="px-4 py-4">
                         <AddTaskSwitch
                           allowed={member.can_add_tasks !== false}
