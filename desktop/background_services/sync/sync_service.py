@@ -237,6 +237,18 @@ class SyncService(LoopService):
     def resume_after_auth(self) -> None:
         """Release the hold placed by a 401 once the user has re-authenticated."""
         self._awaiting_auth = False
+        # A timer action held for this account -- queued under it, then deferred 60 s
+        # at a time while another account or nobody was signed in -- is attempted now
+        # that its account is back, not up to a minute later: until it lands the entry
+        # runs on the backend. (A hold that ends does the same in `tick`; this path
+        # never entered a hold.)
+        try:
+            brought_forward = self._cache.make_timer_actions_ready()
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not bring timer actions forward after re-authentication")
+        else:
+            if brought_forward:
+                self.log.info("signed in again; %d timer action(s) retried now", brought_forward)
         # A screenshot parked on the 401 is retried at once with the new
         # session, rather than at the next launch or the next hourly revival.
         try:

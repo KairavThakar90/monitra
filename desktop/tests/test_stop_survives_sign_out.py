@@ -48,6 +48,17 @@ def _status(cache):
     return [(r["status"], r["retry_count"]) for r in rows]
 
 
+def _ready_now(cache):
+    """Queued timer actions that could be claimed this instant (claims nothing)."""
+    import time
+
+    row = cache.storage.query_all(
+        "SELECT COUNT(*) AS n FROM pending_actions WHERE status IN ('pending', 'retry') AND next_retry_at <= ?",
+        (time.time(),),
+    )
+    return row[0]["n"]
+
+
 def _run_once(sync, cache):
     action = cache.get_next_pending_action()
     assert action is not None
@@ -103,7 +114,7 @@ def _sign_in(runtime, user_id):
 
 
 def _queue_owned_stop(cache, owner, key="stop:42", entry_id=42):
-    cache.enqueue_action(
+    return cache.enqueue_action(
         "stop_timer",
         {"entry_id": entry_id, "task_id": 7, "client_op": f"timer:7:{owner}", "user_id": owner,
          "stopped_at": "2026-10-09T12:20:00+00:00"},
@@ -160,6 +171,66 @@ def test_the_owners_next_sign_in_delivers_it_with_the_instant_it_was_pressed(run
 
     assert backend.stopped == [{"entry_id": 42, "stopped_at": "2026-10-09T12:20:00+00:00"}]
     assert cache.get_pending_count() == 0
+
+
+def test_a_stop_is_not_swallowed_by_a_cancelled_row_with_the_same_key(runtime):
+    """The queue's key is unique over every row, but the "already queued?" check only
+    looked at live ones: a stop that had been cancelled (the generation fence, an
+    unresolvable one) and is kept for a day made the INSERT of a new stop for the same
+    entry fail, and the fallback answered with the dead row's id -- as if queued. The
+    entry, adopted again from the backend while still running, then had no stop at all."""
+    sync, cache = runtime.sync, runtime.cache
+    backend = RecordingBackend(entry_id=42)
+    sync._time_entry_service = backend
+    _sign_in(runtime, 11)
+    first = cache.enqueue_action(
+        "stop_timer", {"entry_id": 42, "task_id": 7, "client_op": "timer:7:a", "user_id": 11,
+                       "stopped_at": "2026-10-09T12:20:00+00:00"},
+        priority=1, idempotency_key="stop:42",
+    )
+    cache.cancel_action(first, "stale session generation")
+    assert _status(cache) == [("cancelled", 0)]
+
+    second = cache.enqueue_action(
+        "stop_timer", {"entry_id": 42, "task_id": 7, "client_op": "timer:7:b", "user_id": 11,
+                       "stopped_at": "2026-10-12T04:00:00+00:00"},
+        priority=1, idempotency_key="stop:42",
+    )
+
+    assert _status(cache) == [("pending", 0)], "the new stop is a live row, not the dead one"
+    _run_once(sync, cache)
+    assert backend.stopped == [{"entry_id": 42, "stopped_at": "2026-10-12T04:00:00+00:00"}], (
+        "and it carries the NEW stop's instant, not the cancelled one's"
+    )
+    assert second == first, "the dead row itself is re-armed, so there is still exactly one"
+
+
+def test_a_live_duplicate_is_still_one_row(runtime):
+    cache = runtime.cache
+    first = _queue_owned_stop(cache, owner=11)
+    again = _queue_owned_stop(cache, owner=11)
+    assert first == again and _status(cache) == [("pending", 0)]
+
+
+def test_signing_back_in_brings_the_held_stop_forward_without_anyone_pushing_it(runtime):
+    """The two sign-in tests above push the retry time forward by hand, which hides
+    this: a stop held for another account is deferred 60 s each time it is looked at,
+    and nothing but a hold ending ever brought it forward, so after the owner signed
+    back in it could still sit out most of a minute while the entry ran on."""
+    sync, cache = runtime.sync, runtime.cache
+    backend = RecordingBackend(entry_id=42)
+    sync._time_entry_service = backend
+    _queue_owned_stop(cache, owner=11)
+    _sign_in(runtime, 22)
+    _run_once(sync, cache)                       # deferred: another account is signed in
+    assert _ready_now(cache) == 0, "still waiting out its deferral"
+
+    _sign_in(runtime, 11)
+    sync.resume_after_auth()                     # what the runtime calls after a sign-in
+
+    assert _ready_now(cache) == 1, "the owner is back: attempt it now"
+    _run_once(sync, cache)
+    assert [s["entry_id"] for s in backend.stopped] == [42]
 
 
 def test_a_sign_out_does_not_cancel_the_stop_that_has_to_end_the_entry(runtime):

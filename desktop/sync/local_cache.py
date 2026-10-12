@@ -513,9 +513,27 @@ class LocalCache:
             )
         except Exception:  # sqlite3.IntegrityError on the unique index
             row = self._storage.query_one(
-                "SELECT id FROM pending_actions WHERE idempotency_key = ?", (idempotency_key,)
+                "SELECT id, status FROM pending_actions WHERE idempotency_key = ?", (idempotency_key,)
             )
             if row:
+                if row["status"] in ("failed", "cancelled") and action_type in self.TIMER_ACTION_TYPES:
+                    # The pre-check above only looks at live rows, but the key is
+                    # unique over every row and a dead one is kept for a day. Answering
+                    # with its id made a stop that was asked for *now* vanish -- the
+                    # entry, adopted again while still running, then had nothing to end
+                    # it. Re-arm the row with the new request (its `created_at` stays,
+                    # so a start queued meanwhile still waits for it, as it should).
+                    self._storage.execute(
+                        "UPDATE pending_actions SET status = 'pending', retry_count = 0, "
+                        "error_message = NULL, payload = ?, priority = ?, next_retry_at = ?, "
+                        "updated_at = ?, session_generation = ? "
+                        "WHERE id = ? AND status IN ('failed', 'cancelled')",
+                        (json.dumps(payload), priority, now, now, session_generation(), row["id"]),
+                    )
+                    log.warning(
+                        "re-armed a %s row that had been %s: the same key was asked for again",
+                        action_type, row["status"], extra={"op": row["id"]},
+                    )
                 return row["id"]
             raise
         log.info("enqueued %s priority=%d", action_type, priority, extra={"op": action_id})
