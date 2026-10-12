@@ -216,6 +216,10 @@ class TimeEntryService:
         if active_timer:
             TimeEntryService._raise_active_conflict(active_timer, current_user, client_op, request_id)
 
+        start_time = TimeEntryService._clear_of_recorded_time(
+            db, current_user, start_time, client_op=client_op, request_id=request_id,
+        )
+
         # 4. Create time entry resolving organization_id from current_user
         try:
             entry = TimeEntryRepository.create(
@@ -266,6 +270,37 @@ class TimeEntryService:
             "created_at": start_time,
         })
         return entry, True
+
+    @staticmethod
+    def _clear_of_recorded_time(
+        db: Session, current_user: User, start_time: datetime, *,
+        client_op: Optional[str], request_id: Optional[str],
+    ) -> datetime:
+        """A start never begins inside time the user already has recorded.
+
+        A backdated start is honoured (up to seven days) so a start queued offline records
+        when the timer really began. One that lands inside a finalized entry of the same
+        user -- an obsolete queued start, a desktop that sat on it while the user carried on
+        elsewhere or the server closed the original -- would book that stretch twice. It
+        begins where the recorded time ends instead. It is moved, never refused: a refused
+        start would sit in the desktop's queue for ever with its stop waiting behind it.
+        The milliseconds by which a rollover's start can land inside its own stop are
+        absorbed the same way.
+        """
+        moved = start_time
+        for _ in range(8):                                  # a chain of overlapping entries
+            end = TimeEntryRepository.latest_end_covering(db, current_user.id, moved)
+            if not isinstance(end, datetime) or end <= moved:   # a stand-in session answers otherwise
+                break
+            moved = end
+        if moved != start_time:
+            timing_log.info(
+                "event=start.clamped user=%s client_op=%s request_id=%s requested=%s begins=%s "
+                "moved_seconds=%.3f",
+                current_user.id, client_op, request_id, start_time.isoformat(), moved.isoformat(),
+                (moved - start_time).total_seconds(),
+            )
+        return moved
 
     @staticmethod
     def _raise_active_conflict(

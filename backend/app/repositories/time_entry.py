@@ -1,8 +1,9 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, func, update
+from sqlalchemy import select, and_, exists, func, update
 from typing import List, Optional, Tuple
 from datetime import datetime
 from app.models.time_entry import TimeEntry
+from app.models.time_entry_idle_period import TimeEntryIdlePeriod
 
 class TimeEntryRepository:
     @staticmethod
@@ -19,6 +20,25 @@ class TimeEntryRepository:
                 TimeEntry.user_id == user_id,
                 TimeEntry.end_time.is_(None)
             ).order_by(TimeEntry.start_time.desc(), TimeEntry.id.desc())
+        )
+
+    @staticmethod
+    def latest_end_covering(db: Session, user_id: int, instant: datetime) -> Optional[datetime]:
+        """The latest end among this user's finalized entries that contain `instant`
+        (`start <= instant < end`), or None when no recorded time does.
+
+        Entries created by reassigning idle time to another task are left out: each one
+        covers the idle slice of the entry that was running, which carries the matching
+        deduction, so that overlap is the design and not a double booking.
+        """
+        return db.scalar(
+            select(func.max(TimeEntry.end_time)).where(
+                TimeEntry.user_id == user_id,
+                TimeEntry.end_time.is_not(None),
+                TimeEntry.start_time <= instant,
+                TimeEntry.end_time > instant,
+                ~exists().where(TimeEntryIdlePeriod.reassigned_time_entry_id == TimeEntry.id),
+            )
         )
 
     @staticmethod
