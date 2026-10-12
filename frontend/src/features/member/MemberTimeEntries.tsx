@@ -225,9 +225,18 @@ const EntryRow: React.FC<{ entry: TimeEntry; projects: ProjectOption[]; onTransf
     <td className="px-4 py-3 text-[#64748B]">{formatISTTime(entry.start_time)}</td>
     <td className="px-4 py-3 text-[#64748B]">
       {entry.is_running ? (
-        <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
-          Tracking now
-        </span>
+        entry.liveness === 'stale' ? (
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-700"
+            title="Monitra has stopped reporting in for this timer, so the time shown stops at the last signal. It is ended automatically if that continues."
+          >
+            No signal
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
+            Tracking now
+          </span>
+        )
       ) : (
         formatISTTime(entry.end_time)
       )}

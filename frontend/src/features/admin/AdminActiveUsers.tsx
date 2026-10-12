@@ -51,12 +51,16 @@ const startedLabel = (startIso: string, serverIso: string | undefined) => {
   return startDay && startDay !== formatISTDate(serverIso) ? `${startDay}, ${time}` : time;
 };
 
-/** "6:05 pm", or "09 Oct 2026, 6:05 pm" when the instant is on an earlier IST day than the answer. */
+/**
+ * "6:05 pm", or "09 Oct, 6:05 pm" when the instant is on an earlier IST day than the
+ * answer. The year is left off: a signal older than a year is not a state this page
+ * needs to be precise about, and the column is narrow.
+ */
 const sinceLabel = (iso: string, serverIso: string | undefined) => {
   const time = formatISTTime12(iso);
   if (!serverIso) return time;
   const day = formatISTDate(iso);
-  return day && day !== formatISTDate(serverIso) ? `${day}, ${time}` : time;
+  return day && day !== formatISTDate(serverIso) ? `${day.replace(/ \d{4}$/, "")}, ${time}` : time;
 };
 
 /** A row whose desktop has stopped reporting in. */
@@ -209,7 +213,7 @@ export const AdminActiveUsers: React.FC = () => {
                       <th className="px-3 py-2.5 text-right" title="Today's activity, weighted by time measured">
                         Activity
                       </th>
-                      <th className="px-3 py-2.5 text-right">Running for</th>
+                      <th className="whitespace-nowrap px-3 py-2.5 text-right">Running for</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -264,7 +268,7 @@ export const AdminActiveUsers: React.FC = () => {
                           {item.elapsed_time}
                           {item.liveness === "unknown" && (
                             <div
-                              className="font-sans text-[11px] font-medium text-[#94A3B8]"
+                              className="ml-auto max-w-[150px] whitespace-normal text-right font-sans text-[11px] font-medium leading-tight text-[#94A3B8]"
                               data-testid="active-user-unverified"
                               title="This member's Monitra has not reported in for this timer (an older version, or it was started before reporting began), so the server cannot tell whether it is still running. The figure is the time since it started."
                             >
@@ -273,7 +277,7 @@ export const AdminActiveUsers: React.FC = () => {
                           )}
                           {isNoSignal(item) && (
                             <div
-                              className="font-sans text-[11px] font-semibold text-amber-700"
+                              className="ml-auto max-w-[170px] whitespace-normal text-right font-sans text-[11px] font-semibold leading-tight text-amber-700"
                               data-testid="active-user-no-signal"
                               title="This timer is still running on the server, but this member's desktop has stopped reporting in. The time shown stops at the last signal; the server closes the timer on its own if it stays silent."
                             >

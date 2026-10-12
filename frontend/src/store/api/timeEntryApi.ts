@@ -28,6 +28,13 @@ export interface TimeEntry {
   is_running: boolean;
   elapsed_seconds: number;
   elapsed_time: string;
+  /**
+   * For a running entry: whether its desktop is still reporting in (`stale`: it
+   * has gone quiet, and `elapsed_seconds` has stopped growing where the evidence
+   * stops -- docs/TIMING_MODEL.md section 9). Absent from an older backend.
+   */
+  liveness?: 'live' | 'stale' | 'unknown' | null;
+  last_seen_at?: string | null;
 }
 
 export interface TimeEntryTransfer {

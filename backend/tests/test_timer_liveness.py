@@ -661,6 +661,64 @@ class OldStopTests(unittest.TestCase):
         self.assertGreaterEqual(end, start)
 
 
+# ── Time Tracking's drill-down ───────────────────────────────────────────────
+
+class DrillDownTests(unittest.TestCase):
+    """The member drill-down shows a silent entry ending where its figure ends."""
+
+    def _detail(self, entry, duration, day):
+        from app.schemas.time_tracking import TimeTrackingDetailResponse
+        from app.services.time_tracking import TimeTrackingService
+
+        user = SimpleNamespace(
+            id=10, organization_id=1, role_name="administrator", permissions={"time_entries:view_all": True},
+            name="Kunal Vaghela", email="kunal@example.invalid", designation="Developer",
+        )
+        project = SimpleNamespace(id=1, project_name="Coach Companion")
+        task = SimpleNamespace(id=2, task_name="Mobile Application Development")
+        rows = [(entry, project, task, None, None, duration)]
+        with patch("app.services.time_tracking.TimeTrackingRepository.get_employee", return_value=user),              patch("app.services.time_tracking.TimeTrackingRepository.detail_entries", return_value=rows):
+            return TimeTrackingDetailResponse.model_validate(
+                TimeTrackingService.detail(None, user, 10, None, day, None, None)
+            )
+
+    def test_a_silent_running_entry_ends_at_its_last_evidence_on_the_day_it_started(self):
+        from datetime import date
+
+        seen = FRIDAY_START + timedelta(minutes=27)
+        entry = SimpleNamespace(
+            id=5958, start_time=FRIDAY_START, end_time=None, last_seen_at=seen, is_manual=False,
+        )
+        shown = self._detail(entry, 42 * 60, date(2026, 10, 9)).projects[0].tasks[0].entries[0]
+        self.assertEqual(shown.end_time, seen + timedelta(minutes=15), "Clock Out is where the figure ends")
+        self.assertEqual(shown.duration_seconds, 42 * 60)
+        self.assertTrue(shown.is_running, "it is still open on the server; the page says where it stops")
+
+    def test_a_silent_entry_adds_nothing_to_the_days_after_its_evidence(self):
+        from datetime import date
+
+        seen = FRIDAY_START + timedelta(minutes=27)
+        entry = SimpleNamespace(
+            id=5958, start_time=FRIDAY_START, end_time=None, last_seen_at=seen, is_manual=False,
+        )
+        saturday = self._detail(entry, 0, date(2026, 10, 10))
+        self.assertEqual(saturday.summary.total_seconds, 0)
+
+    def test_a_running_entry_that_reports_in_is_open_as_before(self):
+        from datetime import date
+
+        today = datetime.now(UTC)
+        entry = SimpleNamespace(
+            id=1, start_time=today - timedelta(hours=1), end_time=None,
+            last_seen_at=today - timedelta(seconds=30), is_manual=False,
+        )
+        from app.core.time_format import ist_today
+
+        shown = self._detail(entry, 3600, ist_today()).projects[0].tasks[0].entries[0]
+        self.assertIsNone(shown.end_time)
+        self.assertTrue(shown.is_running)
+
+
 # ── the routes ───────────────────────────────────────────────────────────────
 
 class RouteTests(unittest.TestCase):

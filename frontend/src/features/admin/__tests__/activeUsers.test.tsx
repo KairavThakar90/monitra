@@ -154,7 +154,7 @@ describe('AdminActiveUsers', () => {
       expect(row.textContent).toContain('00:42:00');
       expect(row.textContent).not.toContain('65:');
       const note = row.querySelector('[data-testid="active-user-no-signal"]')!;
-      expect(note.textContent).toBe('No signal since 09 Oct 2026, 5:50 pm');
+      expect(note.textContent).toBe('No signal since 09 Oct, 5:50 pm');
     });
 
     it('keeps the member on the page rather than hiding them', async () => {
