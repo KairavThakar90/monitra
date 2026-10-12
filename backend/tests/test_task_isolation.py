@@ -545,6 +545,8 @@ class TimerAuthorizationTests(TaskIsolationCase):
         with patch("app.services.task.ProjectService.get_project"), \
              patch("app.services.time_entry.TimeEntryRepository.get_active_for_user",
                    return_value=None), \
+             patch("app.services.time_entry.TimeEntryRepository.latest_end_covering",
+                   return_value=None), \
              patch("app.services.time_entry.TimeEntryRepository.create",
                    return_value="entry") as created:
             result = TimeEntryService.start_timer(
@@ -558,6 +560,8 @@ class TimerAuthorizationTests(TaskIsolationCase):
 
         with patch("app.services.task.ProjectService.get_project"), \
              patch("app.services.time_entry.TimeEntryRepository.get_active_for_user",
+                   return_value=None), \
+             patch("app.services.time_entry.TimeEntryRepository.latest_end_covering",
                    return_value=None), \
              patch("app.services.time_entry.TimeEntryRepository.create",
                    return_value="entry"):

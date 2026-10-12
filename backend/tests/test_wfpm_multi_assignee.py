@@ -362,8 +362,11 @@ class TimeTrackingTests(_AssigneeDb):
     def setUp(self):
         super().setUp()
         from app.models.activity_log import ActivityLog
+        from app.models.time_entry_idle_period import TimeEntryIdlePeriod
         from app.WFPM.models import WfpmTimerEvent
-        _sqlite_schema(self.engine, TimeEntry, ActivityLog, WfpmTimerEvent)
+        # A start looks at the user's recorded time (and which entries idle time was
+        # reassigned into), so the idle-period table has to exist beside the entries.
+        _sqlite_schema(self.engine, TimeEntry, TimeEntryIdlePeriod, ActivityLog, WfpmTimerEvent)
         # Nothing here may reach a real WFPM.
         off = patch.multiple("app.core.config.settings", WFPM_TIMER_START_URL="", WFPM_TIMER_STOP_URL="")
         off.start()
