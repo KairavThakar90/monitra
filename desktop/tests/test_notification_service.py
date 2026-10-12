@@ -653,8 +653,8 @@ def test_stopping_the_service_takes_the_card_down(popup_service):
 # time, kept in the Action Center afterwards. The application's own messages keep
 # their card. One surface per notification, never both.
 
-def test_a_native_notification_is_the_platforms_own_with_the_standard_icon(popup_service):
-    from PySide6.QtWidgets import QSystemTrayIcon
+def test_a_native_notification_is_the_platforms_own_with_the_monitra_circle(popup_service):
+    from PySide6.QtGui import QIcon
 
     assert popup_service.notify("Please save your work.", NotificationLevel.INFO, title="Server restart",
                                 key="push:1", native=True) is True
@@ -662,20 +662,58 @@ def test_a_native_notification_is_the_platforms_own_with_the_standard_icon(popup
     popup_service._tray.showMessage.assert_called_once()
     title, message, icon, _ms = popup_service._tray.showMessage.call_args.args
     assert (title, message) == ("Server restart", "Please save your work.")
-    assert icon == QSystemTrayIcon.MessageIcon.Information        # the blue "i", not the brand mark
+    # The Monitra logo in a circle, not the platform's blue "i" (the standard-icon enum).
+    assert isinstance(icon, QIcon) and not icon.isNull()
     assert popup_service._cards == []                              # and no card as well
 
 
-def test_the_icon_is_the_blue_i_whatever_the_level(popup_service):
+def test_the_circle_is_the_icon_whatever_the_level(popup_service):
     """The owner's design: every notification has the same look -- the application's header on top,
-    then the information icon, the title and the text."""
-    from PySide6.QtWidgets import QSystemTrayIcon
+    then the Monitra logo in a circle, the title and the text."""
+    from PySide6.QtGui import QIcon
 
     for level in (NotificationLevel.INFO, NotificationLevel.SUCCESS, NotificationLevel.WARNING, NotificationLevel.ERROR):
         popup_service.notify(f"A {level} message", level, key=f"k-{level}", native=True)
 
     icons = [call.args[2] for call in popup_service._tray.showMessage.call_args_list]
-    assert icons == [QSystemTrayIcon.MessageIcon.Information] * 4
+    assert len(icons) == 4
+    assert all(isinstance(icon, QIcon) and not icon.isNull() for icon in icons)
+    assert len({icon.cacheKey() for icon in icons}) == 1            # one badge, built once
+
+
+def test_the_toast_icon_is_a_circle_with_the_monitra_mark_in_it(popup_service):
+    """What Windows is handed: transparent corners (so it reads as a circle on the toast's own
+    background), an opaque centre, and the mark itself -- not an empty disc."""
+    popup_service.notify("Please save your work.", key="push:1", native=True)
+    icon = popup_service._tray.showMessage.call_args.args[2]
+
+    for size in (32, 48, 64, 96, 128):
+        image = icon.pixmap(size, size).toImage()
+        assert (image.width(), image.height()) == (size, size)
+        assert image.pixelColor(0, 0).alpha() == 0                  # the corner is outside the circle
+        assert image.pixelColor(size - 1, size - 1).alpha() == 0
+        assert image.pixelColor(size // 2, 2).alpha() > 0           # the rim is inside it
+        assert image.pixelColor(size // 2, size // 2).alpha() == 255
+
+    big = icon.pixmap(128, 128).toImage()
+    disc = big.pixelColor(20, 64)                                   # the plain tint beside the mark
+    assert any(big.pixelColor(x, 64) != disc for x in range(30, 100))   # the mark is drawn on it
+
+
+def test_a_badge_that_cannot_be_built_leaves_the_platforms_own_icon(popup_service, monkeypatch):
+    """A toast is never shown without an icon: if the drawing fails, the platform's information icon."""
+    from PySide6.QtWidgets import QSystemTrayIcon
+
+    def broken():
+        raise RuntimeError("no svg renderer")
+
+    monkeypatch.setattr("core.branding.logo_badge_icon", broken)
+    popup_service._toast_icon = None
+    popup_service.notify("Please save your work.", key="push:1", native=True)
+    popup_service.notify("Please save your work again.", key="push:2", native=True)
+
+    icons = [call.args[2] for call in popup_service._tray.showMessage.call_args_list]
+    assert icons == [QSystemTrayIcon.MessageIcon.Information] * 2   # and both were still shown
 
 
 def test_a_notification_gives_its_own_title_and_text_and_never_the_application_name(native_service):
@@ -843,3 +881,150 @@ def test_stopping_clears_a_native_notifications_link(popup_service):
     popup_service.on_stop(1000)
 
     assert popup_service._pending_link is None
+
+
+# ── When the platform toast would not deliver it ─────────────────────────────
+#
+# A platform toast cannot be seen to fail: `showMessage` returns nothing whether the
+# toast was drawn or thrown away. Two ways it was thrown away or spoilt were found on
+# real machines and are covered here: Windows cuts a long message off mid-word (a real
+# 300-character administrator message arrived as its first two sentences), and Windows
+# shows nothing at all when the user has switched Monitra's notifications off. In both,
+# the card -- which is whole and which no operating-system setting can swallow -- is
+# what delivers it.
+
+def _long(n):
+    return "x" * n
+
+
+def test_a_message_the_platform_would_cut_short_is_drawn_as_a_card_in_full(native_service):
+    words = " ".join(f"word{i:03d}" for i in range(1, 45))          # ~350 characters, as an administrator may write
+    assert native_service.notify(words, title="Server restart", key="push:long", native=True) is True
+
+    native_service._tray.showMessage.assert_not_called()
+    assert native_service._popup.isVisible()
+    assert native_service._popup._message.text() == words           # every word, not the first two lines
+
+
+def test_a_title_the_platform_would_cut_short_is_drawn_as_a_card_in_full(native_service):
+    title = "A very long administrator title that goes on and on to exceed the limit"
+    native_service.notify("Short body.", title=title, key="push:long-title", native=True)
+
+    native_service._tray.showMessage.assert_not_called()
+    assert native_service._popup._title.text() == title
+
+
+def test_the_limits_are_exact_at_the_edge(native_service):
+    native_service.notify(_long(NotificationService.NATIVE_MESSAGE_MAX), title=_long(NotificationService.NATIVE_TITLE_MAX),
+                          key="edge-ok", native=True)
+    native_service.notify(_long(NotificationService.NATIVE_MESSAGE_MAX + 1), key="edge-message", native=True)
+    native_service.notify("body", title=_long(NotificationService.NATIVE_TITLE_MAX + 1), key="edge-title", native=True)
+
+    assert native_service._tray.showMessage.call_count == 1         # only the one that fits
+    assert len(native_service._cards) == 2
+
+
+def test_every_built_in_reminder_still_fits_a_platform_toast():
+    """The wellbeing catalogue is the notifications most users see. An edit that makes one
+    longer than a toast can carry would quietly move it to the card; fail here instead."""
+    from background_services.wellbeing.reminders import DAILY_REMINDERS, INTERVAL_REMINDERS
+
+    for reminder in (*INTERVAL_REMINDERS, *DAILY_REMINDERS):
+        assert len(reminder.title) <= NotificationService.NATIVE_TITLE_MAX, reminder.key
+        assert len(reminder.body) <= NotificationService.NATIVE_MESSAGE_MAX, reminder.key
+
+
+def test_a_toast_windows_would_not_show_is_drawn_as_a_card(native_service, monkeypatch):
+    from background_services.notifications import os_toast
+
+    monkeypatch.setattr(
+        os_toast, "suppression_reason", lambda app_id: "notifications from Monitra are switched off in Windows settings",
+    )
+    assert native_service.notify("Take your lunch break.", title="Lunch", key="wellbeing:lunch", native=True) is True
+
+    native_service._tray.showMessage.assert_not_called()
+    assert native_service._popup.isVisible()
+    assert native_service._popup._message.text() == "Take your lunch break."
+
+
+def test_the_suppression_is_reported_once_when_it_starts_and_once_when_it_ends(native_service, monkeypatch, caplog):
+    import logging
+
+    from background_services.notifications import os_toast
+
+    reason = {"now": "Windows notifications are switched off for this account"}
+    monkeypatch.setattr(os_toast, "suppression_reason", lambda app_id: reason["now"])
+
+    with caplog.at_level(logging.INFO, logger="monitra.notifications"):
+        for index in range(3):
+            native_service.notify(f"message {index}", key=f"k{index}", native=True)
+        reason["now"] = None
+        native_service.notify("after", key="after", native=True)
+        native_service.notify("after again", key="after2", native=True)
+
+    started = [r for r in caplog.records if "NOTIFICATION_OS_SUPPRESSED" in r.getMessage()]
+    ended = [r for r in caplog.records if "NOTIFICATION_OS_SUPPRESSION_CLEARED" in r.getMessage()]
+    assert len(started) == 1 and "switched off for this account" in started[0].getMessage()
+    assert started[0].levelno == logging.WARNING
+    assert len(ended) == 1
+    assert native_service._tray.showMessage.call_count == 2         # native again once Windows allows it
+
+
+def test_when_windows_suppresses_and_no_card_can_be_built_the_toast_is_still_tried(native_service, monkeypatch):
+    """Falling back must never lose a notification: with no card, the platform toast is the last resort."""
+    from background_services.notifications import os_toast
+
+    monkeypatch.setattr(os_toast, "suppression_reason", lambda app_id: "a Windows policy turns toast notifications off")
+    native_service._popup_enabled = False
+
+    assert native_service.notify("Please save your work.", key="push:1", native=True) is True
+    native_service._tray.showMessage.assert_called_once()
+
+
+def test_every_delivery_names_its_surface_in_the_log(native_service, caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="monitra.notifications"):
+        native_service.notify("Toast", key="a", native=True)
+        native_service.notify("Card", key="b", native=False)
+        native_service._popup_enabled = False
+        native_service.notify("Fallback", key="c", native=False)
+
+    surfaces = [r.getMessage() for r in caplog.records if "NOTIFICATION_DELIVERED" in r.getMessage()]
+    assert surfaces == [
+        "NOTIFICATION_DELIVERED surface=native key=a",
+        "NOTIFICATION_DELIVERED surface=card key=b",
+        "NOTIFICATION_DELIVERED surface=platform-fallback key=c",
+    ]
+
+
+def test_a_notification_that_could_not_be_shown_anywhere_is_logged_not_silent(qapp, caplog):
+    import logging
+
+    svc = NotificationService(MagicMock())
+    svc._available = False
+    svc._tray = None
+    svc._popup_enabled = False
+    try:
+        with caplog.at_level(logging.INFO, logger="monitra.notifications"):
+            assert svc.notify("Nowhere to show this", key="lost", native=True) is False
+        assert any("NOTIFICATION_NOT_DELIVERED key=lost" in r.getMessage() for r in caplog.records)
+    finally:
+        svc._dismiss_timer.stop()
+
+
+def test_a_toast_delivered_while_windows_is_holding_notifications_back_says_so_in_the_log(native_service, monkeypatch, caplog):
+    """Focus assist is the user's own request to be left alone, so it is not overridden -- but it is the answer
+    to "I never saw it", so the delivery line names it."""
+    import logging
+
+    from background_services.notifications import os_toast
+
+    monkeypatch.setattr(os_toast, "quiet_state", lambda: "quiet time (Focus assist / Do not disturb)")
+    with caplog.at_level(logging.INFO, logger="monitra.notifications"):
+        native_service.notify("Take your lunch break.", key="wellbeing:lunch", native=True)
+
+    native_service._tray.showMessage.assert_called_once()           # still handed to the platform, not a card
+    assert native_service._cards == []
+    lines = [r.getMessage() for r in caplog.records if "NOTIFICATION_DELIVERED" in r.getMessage()]
+    assert lines == ["NOTIFICATION_DELIVERED surface=native key=wellbeing:lunch os_state=quiet time (Focus assist / Do not disturb)"]

@@ -89,6 +89,27 @@ def test_the_badge_tile_is_square_and_carries_the_mark(qapp):
     assert tile.toImage() != flat.toImage()
 
 
+def test_the_badge_is_a_circle(qapp):
+    """The owner asked for the Monitra logo in a circle on every notification (2026-10-12): the
+    four corners are outside the disc, the middle of each edge is on its rim, and the middle is solid."""
+    for size in (24, 40, 64, 128):
+        image = branding.logo_badge_pixmap(size).toImage()
+        for corner in ((0, 0), (size - 1, 0), (0, size - 1), (size - 1, size - 1)):
+            assert image.pixelColor(*corner).alpha() == 0, (size, corner)
+        for edge_middle in ((size // 2, 0), (size // 2, size - 1), (0, size // 2), (size - 1, size // 2)):
+            assert image.pixelColor(*edge_middle).alpha() > 0, (size, edge_middle)
+        assert image.pixelColor(size // 2, size // 2).alpha() == 255
+
+
+def test_the_badge_icon_carries_one_crisp_pixmap_per_size(qapp):
+    icon = branding.logo_badge_icon()
+    assert not icon.isNull()
+    assert sorted(size.width() for size in icon.availableSizes()) == sorted(branding.NOTIFICATION_ICON_SIZES)
+    for size in branding.NOTIFICATION_ICON_SIZES:
+        # The pixmap at that size is the shared badge itself, never a stretched smaller one.
+        assert icon.pixmap(size, size).toImage() == branding.logo_badge_pixmap(size).toImage()
+
+
 def test_badge_tiles_are_cached_per_size(qapp):
     assert branding.logo_badge_pixmap(36) is branding.logo_badge_pixmap(36)
 

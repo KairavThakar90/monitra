@@ -64,6 +64,24 @@ def _host_screen_recording_permission_is_not_under_test(monkeypatch):
     screen_access.reset_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _host_windows_toast_settings_are_not_under_test(monkeypatch):
+    """
+    Keep the host's Windows notification settings out of every test.
+
+    `notifications.os_toast` reads the registry to learn whether Windows would put a
+    toast on screen, and `NotificationService` draws a card instead when it would not.
+    A developer who has switched Monitra's notifications off in Settings -- or a machine
+    under a policy that does -- would see every test that expects a platform toast fail
+    for a reason that has nothing to do with the code under test. Nothing is readable
+    here; `tests/test_os_toast.py` supplies a fake registry and is what exercises it.
+    """
+    from background_services.notifications import os_toast
+
+    monkeypatch.setattr(os_toast, "_read_dword", lambda root, subkey, value: None)
+    monkeypatch.setattr(os_toast, "quiet_state", lambda: None)
+
+
 @pytest.fixture(scope="session")
 def qapp():
     """A single QApplication for the whole session."""

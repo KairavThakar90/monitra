@@ -44,7 +44,7 @@ description): `version.NOTIFICATION_HEADER_NAME` ("Monitra — Staff Management"
 for the installed build, "Python" when run from source -- so `main.py` hands over
 to a stamped copy of the interpreter when run from source (`core/dev_identity.py`).
 Beside it Windows draws the tray icon, the Monitra logo. Below, the toast has the
-platform's blue "i", the notification's own title and its text: a caller that gives
+Monitra logo in a circle (not the platform's blue "i"), the notification's own title and its text: a caller that gives
 no title gets none -- never the application's name again under its own header.
 
 **Duplicate / lost tray icons.** The tray icon is created once, owned by this
@@ -69,7 +69,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from core.service import BaseService
 from version import APP_NAME
 
-from . import mac_window
+from . import mac_window, os_toast
 from .toast_popup import ToastPopup
 
 #: Stable identity for Windows toast attribution.
@@ -81,14 +81,6 @@ class NotificationLevel:
     SUCCESS = "success"
     WARNING = "warning"
     ERROR = "error"
-
-
-_LEVEL_ICONS = {
-    NotificationLevel.INFO: QSystemTrayIcon.MessageIcon.Information,
-    NotificationLevel.SUCCESS: QSystemTrayIcon.MessageIcon.Information,
-    NotificationLevel.WARNING: QSystemTrayIcon.MessageIcon.Warning,
-    NotificationLevel.ERROR: QSystemTrayIcon.MessageIcon.Critical,
-}
 
 
 #: Base size the artwork is defined at. There is exactly one definition of
@@ -239,6 +231,17 @@ class NotificationService(BaseService):
     #: the corner of the screen when the next thing happens.
     DISPLAY_MS = 30_000
 
+    #: The most a platform toast can carry before the platform cuts it, so a
+    #: notification longer than this is drawn as a card, which shows every word.
+    #: Measured on a real Windows 11 toast (2026-10-12): the title stops at 63
+    #: characters (`szInfoTitle`), and the body shows four lines -- about 130
+    #: characters, ending mid-word -- whatever `szInfo` could hold. An
+    #: administrator may write up to 80 and 300; a 300-character message was
+    #: arriving as its first two sentences. The limits sit under what was
+    #: measured, because a wide font or a narrow toast fits less.
+    NATIVE_TITLE_MAX = 60
+    NATIVE_MESSAGE_MAX = 110
+
     #: The most cards on screen at once. A notification that would make one
     #: more retires the oldest: a column of cards up the side of the screen
     #: is not something anybody reads, and the oldest has had the longest.
@@ -251,6 +254,11 @@ class NotificationService(BaseService):
         self._tray: Optional[QSystemTrayIcon] = None
         self._menu: Optional[QMenu] = None
         self._icon: Optional[QIcon] = None
+        #: The circular Monitra badge handed to the platform toast (`showMessage`)
+        #: as its icon. Built on first use, once a GUI application exists; a null
+        #: icon records that it could not be built, so that is not retried (and
+        #: logged) for every notification.
+        self._toast_icon: Optional[QIcon] = None
         self._recent: Dict[str, float] = {}
         self._shown_times: list = []
         # Admission state is read and written by whichever thread calls
@@ -297,6 +305,10 @@ class NotificationService(BaseService):
         #: cleared when it is retired, so a click can never open the link of
         #: a notification that is no longer on screen.
         self._pending_link: Optional[str] = None
+        #: The reason last written to the log for the operating system
+        #: suppressing Monitra's toasts, so it is reported when it changes and
+        #: not once per notification.
+        self._os_suppression_logged: Optional[str] = None
         #: When the platform toast's lifecycle ends, or None if none is up.
         self._toast_deadline: Optional[float] = None
         # A queued connection to self: whatever thread emits this signal, the
@@ -673,9 +685,23 @@ class NotificationService(BaseService):
         task creation, with no feedback at all.
         """
         # Asked for the platform's own notification: it is shown instead of a
-        # card, and the card is what a machine with no tray gets.
-        if native and self._present_native(message, level, title, link):
-            return True
+        # card, and the card is what a machine with no tray gets -- and what a
+        # notification the platform would cut short or throw away gets, so that
+        # what the administrator wrote reaches the person it was written for.
+        if native:
+            declined = self._native_declined(title, message)
+            if declined is None and self._present_native(message, level, title, link):
+                # Windows may be holding notifications back for the user (Focus assist, a
+                # full-screen application, a presentation). That is theirs to decide and is
+                # not overridden, but it is the answer to "I never saw it", so it is logged.
+                held = os_toast.quiet_state()
+                self.log.info(
+                    "NOTIFICATION_DELIVERED surface=native key=%s%s", key,
+                    f" os_state={held}" if held else "",
+                )
+                return True
+            if declined is not None:
+                self.log.info("NOTIFICATION_NATIVE_DECLINED key=%s reason=%s; using the card", key, declined)
 
         # A card (and the platform's fallback toast) always has a heading: the
         # application's name when the caller gave none.
@@ -686,6 +712,8 @@ class NotificationService(BaseService):
         # card could not be — never both, or one event would notify the user
         # twice.
         shown = self._show_card(title, message, level, link, key or f"{level}:{message}")
+        if shown:
+            self.log.info("NOTIFICATION_DELIVERED surface=card key=%s", key)
         if mac_window.is_macos():
             self.log.info(
                 "MACDIAG_NOTIFY delivered_as=%s level=%s key=%s popup_enabled=%s "
@@ -700,13 +728,15 @@ class NotificationService(BaseService):
         if not self._available or self._tray is None:
             if mac_window.is_macos():
                 self.log.warning("MACDIAG_NOTIFY no card and no tray: notification not displayed")
+            self.log.warning(
+                "NOTIFICATION_NOT_DELIVERED key=%s reason=no card could be shown and there is no system tray", key,
+            )
             return False
         # Set before showing: on a fast click the platform can deliver
         # `messageClicked` the instant the toast appears.
         self._pending_link = link or None
         try:
-            # Use Monitra brand QIcon so Windows system toast displays Monitra logo
-            tray_icon = self._icon if self._icon and not self._icon.isNull() else _LEVEL_ICONS.get(level, QSystemTrayIcon.MessageIcon.Information)
+            tray_icon = self._platform_toast_icon()
             if mac_window.is_macos():
                 self.log.info("MACDIAG_NOTIFY falling back to the platform banner (showMessage)")
             self._tray.showMessage(
@@ -723,7 +753,44 @@ class NotificationService(BaseService):
         # while the toast is still up. A card gets the display time exactly.
         self._toast_deadline = self._clock() + (self.DISPLAY_MS + 500) / 1000.0
         self._arm_timer()
+        self.log.info("NOTIFICATION_DELIVERED surface=platform-fallback key=%s", key)
         return True
+
+    def _native_declined(self, title: str, message: str) -> Optional[str]:
+        """Why this notification should not go to the platform's own toast, or
+        None if it should. Either it would arrive cut short, or the operating
+        system would not put it on screen at all (`os_toast`). Either way the
+        card is the surface that delivers it whole, and the reason is returned
+        in words for the log."""
+        if len(title or "") > self.NATIVE_TITLE_MAX or len(message or "") > self.NATIVE_MESSAGE_MAX:
+            return "too long for a platform toast, which would cut it"
+        reason = os_toast.suppression_reason(APP_USER_MODEL_ID)
+        if reason != self._os_suppression_logged:
+            if reason is not None:
+                self.log.warning(
+                    "NOTIFICATION_OS_SUPPRESSED: %s; Monitra's own card is used instead of the platform toast", reason,
+                )
+            elif self._os_suppression_logged is not None:
+                self.log.info("NOTIFICATION_OS_SUPPRESSION_CLEARED: platform toasts are allowed again")
+            self._os_suppression_logged = reason
+        return reason
+
+    def _platform_toast_icon(self):
+        """What the platform's toast shows beside its text: the circular Monitra
+        badge, whatever the level. Only if that badge could not be built -- it is
+        a drawing, so this is a belt-and-braces case -- the platform's own
+        information icon, so a toast is never shown without one."""
+        if self._toast_icon is None:
+            try:
+                from core.branding import logo_badge_icon  # local: Qt GUI at import time
+
+                self._toast_icon = logo_badge_icon()
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not build the notification badge")
+                self._toast_icon = QIcon()
+        if not self._toast_icon.isNull():
+            return self._toast_icon
+        return QSystemTrayIcon.MessageIcon.Information
 
     def _present_native(self, message: str, level: str, title: str, link: str) -> bool:
         """Show this as the platform's own notification. Runs on this service's
@@ -731,9 +798,10 @@ class NotificationService(BaseService):
         refused), and the caller falls back to a card.
 
         The look is the same for every notification: the application's header (the
-        Monitra logo and name) on top, then the platform's blue "i", the title and
-        the text. The icon is the information icon whatever the level -- the
-        owner's design -- and `title` may be empty, which shows the text alone. A
+        Monitra logo and name) on top, then the Monitra logo in a circle, the title
+        and the text. The icon is the circular badge whatever the level -- the
+        owner's design (it was the platform's blue "i" until 2026-10-12) -- and
+        `title` may be empty, which shows the text alone. A
         click opens the link, or the window if there is none, exactly as a click
         on the card does.
         """
@@ -742,13 +810,12 @@ class NotificationService(BaseService):
         self._pending_link = link or None
         try:
             self._tray.showMessage(
-                title, message, QSystemTrayIcon.MessageIcon.Information, self.DISPLAY_MS,
+                title, message, self._platform_toast_icon(), self.DISPLAY_MS,
             )
         except Exception:  # noqa: BLE001
             self.log.exception("failed to display the native notification")
             self._pending_link = None
             return False
-        self.log.info("notification shown natively")
         # Only the link's lifetime is tracked: the platform owns the toast.
         self._toast_deadline = self._clock() + (self.DISPLAY_MS + 500) / 1000.0
         self._arm_timer()

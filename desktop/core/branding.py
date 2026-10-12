@@ -20,8 +20,8 @@ import os
 import sys
 from typing import Optional
 
-from PySide6.QtCore import QByteArray, Qt
-from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPixmap
+from PySide6.QtCore import QByteArray, QRectF, Qt
+from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
 def _assets_dir() -> str:
@@ -152,19 +152,31 @@ def logo_pixmap(size: int) -> QPixmap:
     return pixmap
 
 
-def logo_badge_pixmap(tile_size: int, *, mark_ratio: float = 0.82) -> QPixmap:
-    """The Monitra mark centered on a soft rounded-square tile.
+#: Edges the operating system's own notification icon is supplied at. Windows
+#: draws a balloon's icon at the system "large icon" size (32 px at 100% scaling)
+#: and scales that with the display, so a QIcon carrying only one size is
+#: stretched on a high-DPI screen.
+NOTIFICATION_ICON_SIZES = (32, 48, 64, 96, 128)
+
+
+def logo_badge_pixmap(tile_size: int, *, mark_ratio: float = 0.72) -> QPixmap:
+    """The Monitra mark centered on a soft circular badge.
 
     Every place the mark needs to read as a small *app icon* -- a
-    notification card, the maintenance notice -- draws this instead of the
-    bare mark floating directly on the surface's own background. One shared
-    tile is what keeps those surfaces looking like one notification system
-    instead of each inventing its own framing (a plain 20px icon on one
-    card, a bare 40px icon on another, no two notifications matching).
+    notification card, the maintenance notice, the operating system's own
+    toast -- draws this instead of the bare mark floating directly on the
+    surface's own background. One shared badge is what keeps those surfaces
+    looking like one notification system instead of each inventing its own
+    framing (a plain 20px icon on one card, a bare 40px icon on another, the
+    platform's blue "i" on a toast: no two notifications matching).
 
-    The tile is a light brand-tinted rounded square -- not the mark's own
-    saturated gradient -- so the coloured mark stays legible on top of it
-    rather than fighting a background in the same hue.
+    The badge is a light brand-tinted disc -- not the mark's own saturated
+    gradient -- so the coloured mark stays legible on top of it rather than
+    fighting a background in the same hue. It is a circle, with transparent
+    corners, because that is the shape the owner asked every Monitra
+    notification to carry (2026-10-12; it was a rounded square). The mark's
+    `mark_ratio` is smaller than it was for the square so that its corners sit
+    inside the circle.
     """
     cache_key = (tile_size, mark_ratio)
     cached = _badge_cache.get(cache_key)
@@ -179,10 +191,15 @@ def logo_badge_pixmap(tile_size: int, *, mark_ratio: float = 0.82) -> QPixmap:
     gradient = QLinearGradient(0, 0, tile_size, tile_size)
     gradient.setColorAt(0.0, QColor("#E7EFFF"))
     gradient.setColorAt(1.0, QColor("#F1EAFF"))
-    painter.setPen(Qt.PenStyle.NoPen)
+    # A hairline in the brand blue keeps the disc's edge visible on a white
+    # card or a white toast, where the tint alone would dissolve into the
+    # background. Inset by half its width so the stroke is not clipped.
+    ring = max(1.0, tile_size / 40.0)
+    painter.setPen(QPen(QColor(79, 107, 255, 56), ring))
     painter.setBrush(gradient)
-    radius = tile_size * 0.28
-    painter.drawRoundedRect(0, 0, tile_size, tile_size, radius, radius)
+    # A QRectF: the four-number overload takes integers, so half a pixel of inset
+    # was truncated to nothing on the near sides and the disc sat off-centre.
+    painter.drawEllipse(QRectF(ring / 2, ring / 2, tile_size - ring, tile_size - ring))
 
     mark_size = round(tile_size * mark_ratio)
     offset = (tile_size - mark_size) // 2
@@ -191,6 +208,19 @@ def logo_badge_pixmap(tile_size: int, *, mark_ratio: float = 0.82) -> QPixmap:
     painter.end()
     _badge_cache[cache_key] = pixmap
     return pixmap
+
+
+def logo_badge_icon(sizes: tuple = NOTIFICATION_ICON_SIZES) -> QIcon:
+    """The circular badge as a `QIcon` carrying one crisp pixmap per size.
+
+    What the operating system's own notification is given in place of its blue
+    "i" (`QSystemTrayIcon.showMessage`'s icon argument): the same badge the
+    in-app cards draw, so there is still exactly one drawing of it.
+    """
+    icon = QIcon()
+    for size in sizes:
+        icon.addPixmap(logo_badge_pixmap(size))
+    return icon
 
 
 def _render_svg(renderer: QSvgRenderer, size: int) -> QPixmap:
