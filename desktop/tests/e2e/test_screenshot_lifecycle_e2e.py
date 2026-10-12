@@ -342,7 +342,7 @@ def test_a_tracked_session_reaches_drive_the_database_and_the_timeline(
         assert day.startswith(year)
         assert name.startswith("screenshot_") and name.endswith(".webp")
         # Stored geometry is what the backend enforces and the grid lays out.
-        assert (row["width"], row["height"]) == (1000, 1000)
+        assert (row["width"], row["height"]) == (1500, 1500)
         assert row["mime_type"] == "image/webp"
         assert row["file_size_bytes"] > 0
 
@@ -574,7 +574,7 @@ def test_a_two_display_desk_produces_one_merged_screenshot_end_to_end(
     # The stored geometry is the merged one, and it really is wider than the
     # single-display square rather than the same desk letterboxed into it.
     assert row["width"] > row["height"], "the merged image should be wide"
-    assert row["width"] == 2000, f"unexpected merged width {row['width']}"
+    assert row["width"] == 3000, f"unexpected merged width {row['width']}"
 
     # The bytes come back through the API as one readable WebP of that size.
     view = api.get(f"/time-entry-screenshots/{row['id']}/view")
@@ -624,7 +624,9 @@ def test_a_three_display_desk_is_still_a_single_screenshot(
     rows = _stored_rows(db, entry_id)
     assert len(rows) == 1, f"a three-display capture stored {len(rows)} rows"
     assert rows[0]["display_count"] == 3
-    assert rows[0]["width"] == 3000
+    # Three displays would be 4500 wide at 1500px; the canvas is held to the 4000px long edge
+    # the backend accepts, so the desk is scaled down a little rather than refused.
+    assert rows[0]["width"] == 4000
     drive_litter.append(rows[0]["google_drive_file_id"])
 
     timer.stop_tracking()

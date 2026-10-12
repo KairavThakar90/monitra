@@ -59,7 +59,7 @@ def _webp() -> bytes:
     from PIL import Image
 
     buffer = io.BytesIO()
-    Image.new("RGB", (1000, 1000), (10, 20, 30)).save(buffer, format="WEBP", quality=50)
+    Image.new("RGB", (1500, 1500), (10, 20, 30)).save(buffer, format="WEBP", quality=50)
     return buffer.getvalue()
 
 

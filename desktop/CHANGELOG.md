@@ -20,6 +20,14 @@ re-grant a permission.
 
 ## [Unreleased]
 
+### Changed
+
+- **Screenshots are sharper.** Each capture is now 1500 by 1500 pixels instead of
+  1000 by 1000, so small text on your screen can be read when the screenshot is
+  reviewed. Files are a little larger to match (about 2.25 times the pixels, and the
+  size limit grows with them, so the quality is not squeezed back down). Screenshots
+  already taken keep their original size.
+
 ### Fixed
 
 - **A forgotten timer no longer runs through the night or the weekend.** Monitra now

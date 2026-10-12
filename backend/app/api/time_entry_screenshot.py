@@ -94,7 +94,7 @@ def upload_screenshot(
     file: UploadFile = File(
         ...,
         description=(
-            "The WebP image. 1000x1000 for a single display; a merged "
+            "The WebP image. 1500x1500 for a single display; a merged "
             "multi-display capture keeps the desk's real aspect ratio."
         ),
     ),

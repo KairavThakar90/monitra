@@ -29,18 +29,33 @@ WINDOW_DURATION_MINUTES = 10
 SCREENSHOTS_PER_WINDOW = 1
 
 #: Final image geometry for a single-display capture: exactly this, square.
-#: A one-monitor machine — which is most of them — produces byte-for-byte what
-#: it always has, so nothing about the existing grid, timeline or stored
-#: history changes.
+#: 1500 since 2026-10-12 (it was 1000): sharper text for the person reviewing a
+#: capture. Images already stored stay as they are -- the backend accepts both
+#: edges (see `time_entry_screenshot._validate_geometry`), and every consumer
+#: reads `width`/`height` from the row rather than assuming this number.
 #:
 #: On a multi-display machine this is no longer the finished size but the
 #: *scale reference*: the merged image is sized so the primary display inside
 #: it occupies the same pixels it would have occupied alone (see
+#: it would have occupied alone (see
 #: `compositor.output_size`). Two 1920x1080 monitors therefore produce a
-#: 2000x563 image rather than a 1000x1000 one in which neither screen can be
+#: 3000x844 image rather than a 1500x1500 one in which neither screen can be
 #: read. Consumers read `width`/`height` from the row; nothing may assume the
 #: stored image is square.
-IMAGE_SIZE = 1000
+IMAGE_SIZE = 1500
+
+#: The edge the byte budgets below were tuned at. A bigger image holds more
+#: pixels, and the same byte budget would mean compressing it harder: 60 KB for
+#: 1500x1500 is 2.25x fewer bytes per pixel than it was for 1000x1000, which
+#: throws away the sharpness the bigger canvas was meant to buy. So every byte
+#: figure below is written as its 1000px value and scaled by canvas *area*.
+_BUDGETS_TUNED_AT_EDGE = 1000
+_AREA_SCALE = (IMAGE_SIZE / _BUDGETS_TUNED_AT_EDGE) ** 2
+
+
+def _scaled_kb(kilobytes: int) -> int:
+    """`kilobytes` (as tuned at 1000px) scaled to this image size, in bytes."""
+    return int(round(kilobytes * _AREA_SCALE)) * 1024
 
 #: Hard ceiling on the long edge of a merged multi-display image. Reached only
 #: by an unusual wall of screens: three 4K monitors side by side scale to
@@ -51,7 +66,7 @@ MAX_CANVAS_LONG_EDGE = 4000
 #: Upper bound on the scaled compression target (see
 #: `compositor.target_file_bytes`). The target grows with canvas area so a
 #: multi-monitor capture is not compressed into illegibility, and stops here.
-MAX_TARGET_FILE_BYTES = 420 * 1024
+MAX_TARGET_FILE_BYTES = _scaled_kb(420)
 
 #: How many times a display that failed to capture is retried inside one
 #: screenshot event, before the event proceeds without it. A grab can fail for
@@ -75,7 +90,7 @@ WEBP_METHOD = 5  # 0 (fast) .. 6 (slowest, smallest)
 
 #: Size the compressor aims for. Not a hard cap: if the floor quality is still
 #: larger than this, the larger file is kept rather than the image destroyed.
-TARGET_FILE_BYTES = 120 * 1024
+TARGET_FILE_BYTES = _scaled_kb(120)
 
 #: --- Fallback compression -------------------------------------------------
 #:
@@ -94,18 +109,18 @@ TARGET_FILE_BYTES = 120 * 1024
 FALLBACK_ENABLED = True
 
 #: Size above which the fallback engages. Deliberately lower than
-#: `TARGET_FILE_BYTES`: the primary pass is content to stop at 120 KB, but a
+#: `TARGET_FILE_BYTES`: the primary pass is content to stop at 270 KB, but a
 #: screenshot every ten minutes per user adds up in Drive, so anything over
-#: 60 KB is worth a second look. The two figures answer different questions —
+#: 135 KB is worth a second look. The two figures answer different questions —
 #: "when may the primary stop trying" and "when is the result worth
 #: recompressing" — and are independent on purpose.
-FALLBACK_TRIGGER_BYTES = 60 * 1024
+FALLBACK_TRIGGER_BYTES = _scaled_kb(60)
 
 #: How much of the primary-compressed size the fallback tries to remove.
 #: 40 means "aim for 60% of the primary size".
 FALLBACK_REDUCTION_PERCENT = 40
 
-#: Hard ceiling on re-encodes. Each one is a full WebP encode of a 1000x1000
+#: Hard ceiling on re-encodes. Each one is a full WebP encode of a 1500x1500
 #: image, so this bounds the CPU one capture can cost.
 FALLBACK_MAX_ATTEMPTS = 5
 
@@ -121,7 +136,7 @@ FALLBACK_QUALITY_MIN = 22
 #: hope: after the normal passes, an image still over it is re-encoded at lower and lower
 #: quality -- below `FALLBACK_QUALITY_MIN`, down to `HARD_LIMIT_QUALITY_MIN` -- until it fits.
 #: Only a dense screen ever gets there; the readable-quality floors above protect everything else.
-MAX_IMAGE_BYTES = 60 * 1024
+MAX_IMAGE_BYTES = _scaled_kb(60)
 
 #: The lowest quality the hard limit may use, and the most re-encodes it may spend on one image.
 HARD_LIMIT_QUALITY_MIN = 10

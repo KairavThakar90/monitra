@@ -41,7 +41,7 @@ def _entry(**overrides) -> TimeEntry:
     return TimeEntry(**defaults)
 
 
-def _webp(width: int = 1000, height: int = 1000) -> bytes:
+def _webp(width: int = 1500, height: int = 1500) -> bytes:
     """A real WebP of the given size, so the format and dimension checks see
     genuine bytes rather than a hand-built header."""
     from PIL import Image
@@ -124,7 +124,7 @@ class ValidationTests(unittest.TestCase):
 
     def test_an_image_larger_than_the_edge_limit_is_rejected(self):
         with self.assertRaises(HTTPException) as raised:
-            self._upload(_webp(4200, 1000))
+            self._upload(_webp(4200, 1500))
         self.assertEqual(raised.exception.status_code, 422)
         self.drive.upload_file.assert_not_called()
 
@@ -136,23 +136,38 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 422)
         self.drive.upload_file.assert_not_called()
 
-    def test_the_single_display_square_is_still_accepted(self):
+    def test_the_single_display_square_is_accepted(self):
+        self._upload_expecting_success(_webp(1500, 1500))
+        self.drive.upload_file_idempotent.assert_called_once()
+
+    def test_the_previous_1000px_square_is_still_accepted(self):
+        # A desktop that has not updated yet keeps sending 1000px squares, and a
+        # capture queued before the update is uploaded after it. Refusing either
+        # would park a good screenshot as permanently failed.
         self._upload_expecting_success(_webp(1000, 1000))
         self.drive.upload_file_idempotent.assert_called_once()
+
+    def test_the_edge_limit_sits_just_above_the_widest_desk_the_desktop_builds(self):
+        # The desktop holds its merged canvas to this long edge; the server's
+        # bound is the same number, written independently.
+        self._upload_expecting_success(_webp(4000, 750))
+        with self.assertRaises(HTTPException) as raised:
+            self._upload(_webp(4001, 750))
+        self.assertEqual(raised.exception.status_code, 422)
 
     def test_a_merged_two_display_capture_is_accepted(self):
         # The geometry a two-monitor desk actually produces. Under the old
         # exact-square rule every one of these was refused with a 422 and the
         # desktop parked it as permanently failed.
-        self._upload_expecting_success(_webp(2000, 562))
+        self._upload_expecting_success(_webp(3000, 844))
         self.drive.upload_file_idempotent.assert_called_once()
 
     def test_a_merged_three_display_capture_is_accepted(self):
-        self._upload_expecting_success(_webp(3000, 562))
+        self._upload_expecting_success(_webp(4000, 750))
         self.drive.upload_file_idempotent.assert_called_once()
 
     def test_a_portrait_secondary_monitors_geometry_is_accepted(self):
-        self._upload_expecting_success(_webp(1562, 1000))
+        self._upload_expecting_success(_webp(2344, 1500))
         self.drive.upload_file_idempotent.assert_called_once()
 
     def test_an_oversized_body_is_rejected(self):
@@ -352,8 +367,8 @@ class StorageTests(unittest.TestCase):
             captured[0]["file_path"].startswith("2026/September/User_1/2026-09-07/")
         )
         self.assertEqual(captured[0]["google_drive_file_id"], "file-1")
-        self.assertEqual(captured[0]["width"], 1000)
-        self.assertEqual(captured[0]["height"], 1000)
+        self.assertEqual(captured[0]["width"], 1500)
+        self.assertEqual(captured[0]["height"], 1500)
 
 
 class DriveConfigurationTests(unittest.TestCase):

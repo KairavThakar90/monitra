@@ -162,7 +162,7 @@ class Settings(BaseSettings):
     GOOGLE_SERVICE_ACCOUNT_JSON: str = ""
     GOOGLE_SERVICE_ACCOUNT_JSON_PATH: str = ""
     #: Largest screenshot the upload endpoint accepts. The desktop targets
-    #: ~120 KB and produces a fixed 1000x1000 image, so this is a guard against
+    #: ~270 KB and produces a fixed 1500x1500 image, so this is a guard against
     #: a malformed or hostile client, not a normal-path limit.
     SCREENSHOT_MAX_UPLOAD_BYTES: int = 5 * 1024 * 1024
     #: The window the screenshot timeline groups by. Must match the desktop's

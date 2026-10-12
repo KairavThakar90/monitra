@@ -76,16 +76,16 @@ def _single_display_merge(width: int, height: int) -> MergedCapture:
 
 
 class TestImageProcessing:
-    def test_the_output_is_always_exactly_1000x1000_webp(self):
+    def test_the_output_is_always_exactly_1500x1500_webp(self):
         from PIL import Image
 
         for geometry in ((1920, 1080), (1366, 768), (2560, 1440), (800, 1280)):
             processed = image_processor.process(_raw(*geometry))
             assert processed is not None
-            assert (processed.width, processed.height) == (1000, 1000)
+            assert (processed.width, processed.height) == (1500, 1500)
             assert processed.mime_type == "image/webp"
             with Image.open(__import__("io").BytesIO(processed.data)) as image:
-                assert image.size == (1000, 1000)
+                assert image.size == (1500, 1500)
                 assert image.format == "WEBP"
 
     def test_a_widescreen_desktop_is_letterboxed_rather_than_squashed(self):
@@ -126,12 +126,12 @@ class TestFallbackCompression:
 
     def test_the_trigger_is_independent_of_the_primary_target(self):
         # These answer different questions — "when may the primary stop
-        # trying" (120 KB) versus "when is the result worth recompressing"
-        # (60 KB) — so tying the trigger back to TARGET_FILE_BYTES would
+        # trying" (270 KB) versus "when is the result worth recompressing"
+        # (135 KB) — so tying the trigger back to TARGET_FILE_BYTES would
         # silently stop the fallback ever firing on a normal capture.
-        assert config.FALLBACK_TRIGGER_BYTES == 60 * 1024
+        assert config.FALLBACK_TRIGGER_BYTES == 135 * 1024
         assert config.FALLBACK_TRIGGER_BYTES < config.TARGET_FILE_BYTES
-        assert config.fallback_trigger_bytes() == 60 * 1024
+        assert config.fallback_trigger_bytes() == 135 * 1024
 
     def test_a_screenshot_within_the_threshold_is_left_byte_for_byte_alone(self, monkeypatch):
         # The common case by far. A fallback that "helpfully" recompressed
@@ -166,7 +166,7 @@ class TestFallbackCompression:
         assert processed.size_bytes != processed.primary_size_bytes
 
     def test_the_fallback_never_changes_the_geometry_or_the_format(self, monkeypatch):
-        # A single-display capture is stored at exactly 1000x1000, and the
+        # A single-display capture is stored at exactly 1500x1500, and the
         # queue row, the upload metadata and the grid all carry that geometry.
         # A fallback that resized would make every one of them disagree with
         # the bytes. (The backend no longer demands that exact square -- a
@@ -177,10 +177,10 @@ class TestFallbackCompression:
 
         monkeypatch.setenv("MONITRA_SCREENSHOT_FALLBACK_TRIGGER_BYTES", "1024")
         processed = image_processor.process(_noisy(1600, 900))
-        assert (processed.width, processed.height) == (1000, 1000)
+        assert (processed.width, processed.height) == (1500, 1500)
         assert processed.mime_type == "image/webp"
         with Image.open(io.BytesIO(processed.data)) as image:
-            assert image.size == (1000, 1000)
+            assert image.size == (1500, 1500)
             assert image.format == "WEBP"
 
     def test_the_attempt_count_is_bounded_by_configuration(self, monkeypatch):
@@ -247,13 +247,13 @@ class TestQualityAndTheHardSizeLimit:
         for new, old in ((79, 72), (50, 45), (22, 20)):
             assert 1.09 <= new / old <= 1.12
 
-    def test_the_limit_is_sixty_kilobytes_per_display_and_scales_with_the_displays(self):
-        assert config.MAX_IMAGE_BYTES == 60 * 1024
-        assert compositor.max_image_bytes(1) == 60 * 1024
-        assert compositor.max_image_bytes(2) == 120 * 1024
-        assert compositor.max_image_bytes(3) == 180 * 1024
+    def test_the_limit_is_135_kilobytes_per_display_and_scales_with_the_displays(self):
+        assert config.MAX_IMAGE_BYTES == 135 * 1024
+        assert compositor.max_image_bytes(1) == 135 * 1024
+        assert compositor.max_image_bytes(2) == 270 * 1024
+        assert compositor.max_image_bytes(3) == 405 * 1024
         assert compositor.max_image_bytes(500) == config.MAX_TARGET_FILE_BYTES       # a wall of screens stays storable
-        assert compositor.max_image_bytes(0) == 60 * 1024                             # nonsense counts as one
+        assert compositor.max_image_bytes(0) == 135 * 1024                             # nonsense counts as one
 
     def test_the_limit_can_be_changed_by_environment(self, monkeypatch):
         monkeypatch.setenv("MONITRA_SCREENSHOT_MAX_IMAGE_BYTES", str(90 * 1024))
@@ -347,7 +347,7 @@ class TestQualityAndTheHardSizeLimit:
 
         assert image_processor._enforce_size_limit(canvas, image, 1024) is image
 
-    def test_the_limit_handed_to_the_enforcer_is_sixty_kilobytes_per_display(self, monkeypatch):
+    def test_the_limit_handed_to_the_enforcer_is_135_kilobytes_per_display(self, monkeypatch):
         handed = []
         monkeypatch.setattr(
             image_processor, "_enforce_size_limit",
@@ -365,7 +365,7 @@ class TestQualityAndTheHardSizeLimit:
         for count in (1, 2, 3):
             image_processor.process_merged(merge(count))
 
-        assert handed == [60 * 1024, 120 * 1024, 180 * 1024]
+        assert handed == [135 * 1024, 270 * 1024, 405 * 1024]
 
     def test_a_two_display_image_keeps_its_display_count_when_the_limit_acts(self, monkeypatch):
         rng = random.Random(20261008)
@@ -409,11 +409,11 @@ class TestMultiDisplayImage:
             displays=displays,
         )
 
-    def test_a_single_display_still_produces_the_1000x1000_square(self):
+    def test_a_single_display_still_produces_the_1500x1500_square(self):
         # The backward-compatibility guarantee: a one-monitor machine, which
         # is most of them, gets exactly what it always got.
         processed = image_processor.process_merged(self._merge([(0, 0, 1920, 1080)]))
-        assert (processed.width, processed.height) == (1000, 1000)
+        assert (processed.width, processed.height) == (1500, 1500)
         assert processed.display_count == 1
 
     def test_two_displays_produce_one_image_at_the_desks_aspect_ratio(self):
@@ -421,17 +421,17 @@ class TestMultiDisplayImage:
             self._merge([(0, 0, 1920, 1080), (1920, 0, 1920, 1080)])
         )
         assert processed.display_count == 2
-        assert (processed.width, processed.height) == (2000, 562)
+        assert (processed.width, processed.height) == (3000, 844)
         with io.BytesIO(processed.data) as buffer:
             from PIL import Image
-            assert Image.open(buffer).size == (2000, 562)
+            assert Image.open(buffer).size == (3000, 844)
 
     def test_three_displays_are_still_exactly_one_image(self):
         processed = image_processor.process_merged(self._merge([
             (0, 0, 1920, 1080), (1920, 0, 1920, 1080), (3840, 0, 1920, 1080),
         ]))
         assert processed.display_count == 3
-        assert (processed.width, processed.height) == (3000, 562)
+        assert (processed.width, processed.height) == (4000, 750)   # 4500 wide, held to the 4000 long-edge cap
 
     def test_each_display_keeps_the_width_it_would_have_had_on_its_own(self):
         # The legibility contract, stated as arithmetic: adding a monitor must
@@ -446,14 +446,14 @@ class TestMultiDisplayImage:
         processed = image_processor.process_merged(
             self._merge([(0, 0, 1920, 1080), (-1920, 0, 1920, 1080)])
         )
-        assert (processed.width, processed.height) == (2000, 562)
+        assert (processed.width, processed.height) == (3000, 844)
 
     def test_a_portrait_second_monitor_keeps_the_canvas_tall(self):
         processed = image_processor.process_merged(
             self._merge([(0, 0, 1920, 1080), (1920, 0, 1080, 1920)])
         )
-        # 3000x1920 of desk, scaled by 1000/1920.
-        assert (processed.width, processed.height) == (1562, 1000)
+        # 3000x1920 of desk, scaled by 1500/1920.
+        assert (processed.width, processed.height) == (2344, 1500)
 
     def _deskish(self, width: int, height: int, seed: int) -> bytes:
         """A frame that encodes like a desktop rather than like static.
@@ -539,7 +539,7 @@ class TestMultiDisplayImage:
         assert processed is not None
         # The surviving screen at full size, honestly labelled as one display,
         # rather than half a canvas of grey at half the resolution.
-        assert (processed.width, processed.height) == (1000, 1000)
+        assert (processed.width, processed.height) == (1500, 1500)
         assert processed.display_count == 1
 
     def test_with_three_displays_a_failed_one_leaves_its_region_blank(self):
@@ -550,7 +550,7 @@ class TestMultiDisplayImage:
         processed = image_processor.process_merged(merged)
         # Still the full three-display canvas: the middle screen is missing,
         # and its area is pad colour rather than anything invented.
-        assert (processed.width, processed.height) == (3000, 562)
+        assert (processed.width, processed.height) == (4000, 750)   # 4500 wide, held to the 4000 long-edge cap
         assert processed.display_count == 2
 
     def test_a_capture_where_every_display_failed_produces_nothing(self):
@@ -1075,7 +1075,7 @@ class TestTimerIntegration:
         pending = cache.get_pending_screenshots()
         assert len(pending) == 1
         assert pending[0]["time_entry_id"] == 100
-        assert pending[0]["width"] == 1000 and pending[0]["height"] == 1000
+        assert pending[0]["width"] == 1500 and pending[0]["height"] == 1500
         assert Path(pending[0]["local_file_path"]).exists()
 
     def test_stopping_the_timer_stops_capture_immediately(self, service, cache):

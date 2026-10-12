@@ -72,9 +72,19 @@ _RIFF = b"RIFF"
 _WEBP = b"WEBP"
 
 
-def _expected_dimensions() -> int:
-    """The edge length of a single-display capture's square canvas."""
-    return 1000
+#: The edge of a single-display capture's square canvas. 1500 since 2026-10-12;
+#: the desktop's `screenshot/config.IMAGE_SIZE` is the other half of this number.
+SINGLE_DISPLAY_EDGE = 1500
+
+#: Square edges stored before that change. Captures at these edges are still
+#: valid -- an older desktop keeps uploading 1000px squares until it updates, and
+#: a queued capture taken before the update is uploaded after it.
+LEGACY_SINGLE_DISPLAY_EDGES = (1000,)
+
+#: The shortest side accepted. It was a quarter of the 1000px square and stays
+#: there: raising it with the canvas would make the server stricter than the
+#: clients that already upload, and a capture refused here is parked as failed.
+MIN_IMAGE_EDGE = 250
 
 
 #: Hard ceiling on either edge of an accepted screenshot. A merged
@@ -96,17 +106,16 @@ def _validate_geometry(width: int, height: int) -> Optional[str]:
 
     The rule used to be "exactly 1000x1000", which was right while every
     capture was one letterboxed display. A merged multi-display capture keeps
-    the desk's real aspect ratio — two 1080p monitors produce 2000x562 — so an
+    the desk's real aspect ratio — two 1080p monitors produce 3000x844 — so an
     exact-square test would reject every multi-monitor screenshot with a 422,
     and the desktop would park each one as permanently failed.
 
     What actually needs enforcing is that the image is a plausible screenshot
     and is bounded: the client's geometry is not trusted, it is checked. The
-    single-display square stays explicitly valid so nothing about existing
-    clients changes.
+    single-display square -- 1500px, or the 1000px an older desktop still sends
+    -- stays explicitly valid so nothing about existing clients changes.
     """
-    edge = _expected_dimensions()
-    if width == edge and height == edge:
+    if width == height and width in (SINGLE_DISPLAY_EDGE, *LEGACY_SINGLE_DISPLAY_EDGES):
         return None
     if width <= 0 or height <= 0:
         return f"Screenshot has a non-positive dimension ({width}x{height})"
@@ -115,7 +124,7 @@ def _validate_geometry(width: int, height: int) -> Optional[str]:
             f"Screenshot exceeds the {MAX_IMAGE_EDGE}px limit on either edge; "
             f"received {width}x{height}"
         )
-    if min(width, height) < edge // 4:
+    if min(width, height) < MIN_IMAGE_EDGE:
         return (
             f"Screenshot is too small to be readable; received {width}x{height}"
         )

@@ -84,9 +84,9 @@ def _tiny_webp() -> bytes:
     from PIL import Image
 
     buffer = io.BytesIO()
-    image = Image.new("RGB", (1000, 1000), (24, 24, 27))
+    image = Image.new("RGB", (1500, 1500), (24, 24, 27))
     # A few distinct pixels so the file is not degenerate.
-    for x in range(0, 1000, 97):
+    for x in range(0, 1500, 97):
         image.putpixel((x, x), (200, 60, 60))
     image.save(buffer, format="WEBP", quality=60)
     return buffer.getvalue()

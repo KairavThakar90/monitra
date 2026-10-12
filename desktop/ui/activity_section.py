@@ -58,8 +58,8 @@ SCREENSHOT_THUMB_HEIGHT = 120
 #: URLs tabs. A multiple of every column count the grid can have (1, 2, 3, 4),
 #: so a page never leaves a ragged part-row above the button.
 SCREENSHOT_PAGE_SIZE = 12
-#: The longest edge a card keeps of the stored image. The image is 1000px, and
-#: holding it decoded costs 4 MB a card -- 48 MB for a page of twelve, rebuilt
+#: The longest edge a card keeps of the stored image. The image is 1500px (1000px for
+#: older captures), and holding it decoded costs 9 MB a card -- 108 MB for a page of twelve, rebuilt
 #: whenever a card is -- to draw a strip about 300x120 logical pixels. Cards
 #: keep a 640px master (1.6 MB) and a cached pixmap of what is on screen; the
 #: lightbox, which shows the whole picture, keeps it at full size.

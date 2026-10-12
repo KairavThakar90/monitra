@@ -38,8 +38,8 @@ Scaling
 The merged image is scaled by the factor the **primary display alone** would
 have been given, so every display inside it is rendered at exactly the pixel
 density a single-display capture has always produced. Two 1920x1080 monitors
-do not become a 1000-pixel-wide image in which neither is readable; they become
-a 2000x563 image in which each is as legible as a single-monitor capture. This
+do not become a 1500-pixel-wide image in which neither is readable; they become
+a 3000x844 image in which each is as legible as a single-monitor capture. This
 is the reason the old capture path refused to use `mss.monitors[0]` at all (see
 `capture.py`'s original note: "a two-monitor desktop letterboxed into 1000x1000
 is unreadable") — the fix is to size the canvas to the content, not to squeeze
@@ -254,7 +254,7 @@ def max_image_bytes(display_count: int) -> int:
     """
     The most bytes a finished image may have, given how many displays are in it.
 
-    The hard limit (`config.MAX_IMAGE_BYTES`, 60 KB) is per display, for the same reason the
+    The hard limit (`config.MAX_IMAGE_BYTES`, 135 KB) is per display, for the same reason the
     compression target is: a two-monitor image carries twice the desktop. Never above
     `MAX_TARGET_FILE_BYTES`, so a wall of screens stays storable.
     """

@@ -14,9 +14,10 @@ being legible, which is the entire reason the image is captured.
 Two geometries, one pipeline
 ----------------------------
 * **One display** — unchanged in every respect: scaled to fit and centred on a
-  1000x1000 square, encoded exactly as before. A single-monitor machine
-  produces the same bytes it produced before merging existed, so nothing about
-  the stored history, the grid or the timeline shifts underneath it.
+  `config.IMAGE_SIZE` square (1500x1500), encoded exactly as before. A single-monitor
+  machine's geometry does not depend on how many displays the code can handle, and
+  images stored at the earlier 1000x1000 stay valid -- consumers read the row's
+  `width`/`height`.
 
 * **Several displays** — the merged canvas keeps the desk's real aspect ratio
   and is scaled so the primary display inside it has the pixel density it would
@@ -284,7 +285,7 @@ def _encode(canvas, width: int, height: int, target_bytes: int) -> ProcessedImag
 
 def _enforce_size_limit(canvas, image: ProcessedImage, max_bytes: int) -> ProcessedImage:
     """
-    Guarantee the hard size limit (`config.MAX_IMAGE_BYTES`, 60 KB per display).
+    Guarantee the hard size limit (`config.MAX_IMAGE_BYTES`, 135 KB per display).
 
     The normal passes aim for sizes and protect readability with quality floors, so a very dense
     screen can leave them still over the limit. This is the last step, and the only one allowed
