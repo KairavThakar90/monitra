@@ -664,6 +664,106 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
             (proposed - datetime.fromisoformat(operator["would_end_at"])).total_seconds(), 0, delta=2,
         )
 
+    def test_the_silence_evidence_script_separates_an_outage_from_a_sleeping_machine(self):
+        """`scripts/timer_silence_evidence.sql` is what the owner runs on production to choose the
+        no-signal threshold from their own data, so it is executed here on known silences."""
+        import pathlib
+
+        from app.models.time_entry_activity import TimeEntryActivity
+
+        sql = (pathlib.Path(__file__).resolve().parents[1] / "scripts" / "timer_silence_evidence.sql"
+               ).read_text(encoding="utf-8")
+        now = self._db_now()
+        t0 = now - timedelta(days=3)
+        users = {}
+        for name in ("outage", "asleep", "lunch"):
+            users[name] = self.db.execute(text(
+                "INSERT INTO users (organization_id, username, email, name, role_name, capture_frequency) "
+                "VALUES (1, :n, :e, :n, 'employee', 3) RETURNING id"
+            ), {"n": name, "e": f"{name}@example.invalid"}).scalar()
+        self.db.commit()
+
+        def entry_with_windows(name, received):
+            entry = self._running(t0, last_seen=None, user_id=users[name])
+            for received_at, recorded_at in received:
+                self.db.add(TimeEntryActivity(
+                    organization_id=1, time_entry_id=entry.id, recorded_at=recorded_at, created_at=received_at,
+                    keyboard_strokes=1, mouse_clicks=1, mouse_movements=1, activity_percentage=50, window_seconds=60,
+                ))
+            self.db.commit()
+            return entry
+
+        three_hours = timedelta(hours=3)
+        # A 3 h outage: the window that finally arrives was recorded long before (it was queued).
+        entry_with_windows("outage", [
+            (t0, t0), (t0 + timedelta(minutes=1), t0 + timedelta(minutes=1)),
+            (t0 + three_hours + timedelta(minutes=1), t0 + timedelta(minutes=5)),
+        ])
+        # A 3 h sleep: the first window after the wake is fresh.
+        entry_with_windows("asleep", [
+            (t0, t0), (t0 + timedelta(minutes=1), t0 + timedelta(minutes=1)),
+            (t0 + three_hours + timedelta(minutes=1), t0 + three_hours + timedelta(minutes=1)),
+        ])
+        # A 40 minute lunch.
+        entry_with_windows("lunch", [(t0, t0), (t0 + timedelta(minutes=40), t0 + timedelta(minutes=40))])
+
+        rows = {str(r["threshold"]): r for r in self.db.execute(text(sql)).mappings().all()}
+        ten = rows["0:10:00"]
+        self.assertEqual((ten["silences_longer"], ten["entries"], ten["members"]), (3, 3, 3))
+        self.assertEqual((ten["alive_but_offline"], ten["asleep_or_off"]), (1, 2))
+        two_hours = rows["2:00:00"]
+        self.assertEqual((two_hours["silences_longer"], two_hours["alive_but_offline"], two_hours["asleep_or_off"]),
+                         (2, 1, 1), "the lunch is not cut at 2 h; the outage is, and so is the sleep")
+        self.assertAlmostEqual(float(two_hours["hours_past_the_grace"]), 5.5, delta=0.11)
+        self.assertEqual(rows["4:00:00"]["silences_longer"], 0, "nothing in this data is cut at 4 h")
+
+    def test_the_entry_preview_script_reproduces_the_incident_and_shows_the_effect_on_every_report(self):
+        """The 5958 plan's numbers: started Friday 17:23:21 IST, never stopped, measured on Monday
+        10:55:54 IST -- the 65:32:33 on the Active Users screenshot -- and what closing it changes."""
+        import pathlib
+        import re
+
+        from app.models.time_entry_activity import TimeEntryActivity
+
+        sql = (pathlib.Path(__file__).resolve().parents[1] / "scripts" / "entry_reconciliation_preview.sql"
+               ).read_text(encoding="utf-8")
+        start = datetime(2026, 10, 9, 11, 53, 21, tzinfo=UTC)
+        monday = datetime(2026, 10, 12, 5, 25, 54, tzinfo=UTC)
+        entry = self._running(start, last_seen=None)
+        self.db.add(TimeEntryActivity(
+            organization_id=1, time_entry_id=entry.id, recorded_at=start + timedelta(minutes=30),
+            keyboard_strokes=10, mouse_clicks=2, mouse_movements=40, activity_percentage=50, window_seconds=60,
+        ))
+        self.db.commit()
+        sql = re.sub(r"5958::bigint", f"{entry.id}::bigint", sql)
+        sql = re.sub(r"now\(\)\s+AS as_of", "TIMESTAMPTZ '2026-10-12 05:25:54+00' AS as_of", sql)
+
+        rows = self.db.execute(text(sql)).mappings().all()
+        by = {}
+        for r in rows:
+            by.setdefault(r["report"], []).append(r)
+
+        facts = by["entry"][0]["detail"]
+        self.assertIn("started 2026-10-09 17:23 IST", facts)
+        self.assertIn("would end 2026-10-09 18:09 IST", facts, "newest evidence 17:54 + 15 minutes")
+
+        report_day = by["reports_day"][0]
+        self.assertEqual((str(report_day["period"]), report_day["before_hms"], report_day["after_hms"]),
+                         ("2026-10-09", "65:32:33", "00:46:00"),
+                         "the whole 65:32:33 sits on the day it started; closing leaves 46 minutes there")
+        self.assertEqual(str(by["reports_week"][0]["period"]), "2026-10-05")
+        self.assertEqual(str(by["reports_month"][0]["period"]), "2026-10-01")
+        self.assertEqual((by["reports_week"][0]["before_seconds"], by["reports_month"][0]["after_seconds"]),
+                         (235953, 2760))
+
+        apportioned = {str(r["period"]): (r["before_seconds"], r["after_seconds"]) for r in by["time_tracking_day"]}
+        self.assertEqual(apportioned, {
+            "2026-10-09": (23799, 2760), "2026-10-10": (86400, 0),
+            "2026-10-11": (86400, 0), "2026-10-12": (39354, 0),
+        })
+        self.assertEqual(sum(b for b, _ in apportioned.values()), 235953, "the days add up to the one figure")
+        self.assertIsNone(self._reload(entry.id).end_time, "the preview wrote nothing")
+
     def test_a_closure_across_midnight_is_apportioned_to_both_days(self):
         """Midnight splitting and the policy together: started Friday 23:50
         IST, last heard from at 00:05 Saturday, closed 00:20. The day list

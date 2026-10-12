@@ -74,6 +74,16 @@ re-grant a permission.
 - **A timer left on the server is no longer handed back as the one you just started.**
   Starting a task on Monday used to bring back Friday's timer, 65 hours long; if the
   computer that was running it has gone quiet, it is now ended and your new task starts.
+- **Waking a computer after a weekend no longer books the weekend.** If your computer was
+  asleep through midnight, Monitra used to split the timer at every midnight it slept
+  through the moment it woke, saving up to 24 hours for each day. It now asks the server
+  first. If the server had already ended the timer (because the computer went quiet), your
+  timer simply ends there; the days in between are not saved. If the server cannot be
+  reached, the timer is split half a minute later, as before.
+- **Quitting after Windows asked to shut down and was refused works normally.** If another
+  program stopped a shutdown, Monitra still thought Windows was shutting down: a Quit you chose
+  afterwards did nothing at all, and a restart to install an update stopped your timer. Monitra
+  now remembers the question for a short time only.
 
 ## [1.3.2]
 

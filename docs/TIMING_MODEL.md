@@ -276,7 +276,17 @@ carried out (`WM_ENDSESSION` emits `aboutToQuit` and the process is killed
 moments later) and the question had been asked, `MainWindow.on_about_to_quit`
 stops the running timer the way a Quit does -- queued durably *before* the
 session record is cleared, carrying the instant of the shutdown, the consumer
-woken -- and then runs the ordinary teardown. A stop that cannot be sent in the
+woken -- and then runs the ordinary teardown. Qt says nothing when a shutdown
+is **refused**, so the memory of the question is bounded and consumed: it
+expires after 15 minutes for the exit and after 30 seconds for a window close
+(the OS closes the window inside the question's own message), and one question
+answers one exit. Without that, found with the real messages sent to a real Qt
+window (`desktop/tests/e2e/real_os_session_end_probe.py`), a Quit or an update
+restart after a refused shutdown was misread -- the first stopped the timer and
+the second did nothing at all. That probe shows how Qt and Monitra answer the
+two messages; it does **not** show that Windows sends them to this process, in
+this order and in time, at a real shutdown. Only a person shutting a machine
+down with a timer running can (section 9.7). A stop that cannot be sent in the
 moments that remain is sent by the next launch with that instant; one the
 machine never launches again is closed by the backend after two hours of
 silence (section 9). An **update restart is not this**: it relaunches at once,
@@ -338,8 +348,14 @@ reopen nor alter an ended entry, nor touch another member's:
   the heartbeat) is asked again an hour later, not every beat.
 * Any upload that names the entry -- an activity window, an application-usage
   batch, a screenshot, an idle report. They prove the same thing, which is what
-  makes the policy work for desktops that predate the heartbeat: they upload
-  activity every minute they run.
+  makes the policy work for desktops that predate the heartbeat: every tagged
+  release (1.0.0 to 1.3.2) writes an activity window for each 60 sampled seconds
+  of a running timer -- input or no input -- and uploads it, to the per-entry
+  route, once the entry has an id. That is on Windows; elsewhere a window needs
+  the input counter, which on macOS needs Input Monitoring. While the backend is
+  unreachable nothing arrives, which is exactly what a silence is. The routes
+  that count are the four per-entry ones; the id-less fallback
+  (`/time-entry-activities/batch`) names no single entry and does not.
 * `POST /time-entries/start` with `reports_liveness: true` starts the entry's
   clock at creation (a desktop that dies in its first minutes is not mistaken
   for one that never reported).
@@ -403,7 +419,22 @@ scheduled run on (9.5).
 A **start** that finds a stale entry closes it and proceeds. Before, it was
 refused with `409 active_entry`, and the desktop adopted Friday's entry as the
 session it had just started. A live entry (or one that never reported) is still
-refused exactly as before.
+refused exactly as before. If closing the old entry fails (a lock timeout, a
+deadlock), the start is answered with that same 409 -- closing is a kindness to
+the start, never its precondition.
+
+**Concurrency.** A closure takes the entry's idle-period rows first and the
+entry second, the order the user's own Stop (`resolve_pending_for_stop`, then
+the compare-and-set) and an idle answer take them in. Entry-first was a
+deadlock when a late Stop raced the reconcile of an entry with a pending
+prompt, each holding what the other wanted; a test holds the stop side by hand
+and fails on the old order. The lock wait is bounded (5 s), so a stuck
+transaction costs one failed closure that the next run retries. The decision
+compares the database's clock with itself (`last_seen_at` is the database's
+`now()`): an application server three hours fast closed an entry that had been
+silent for thirty minutes. The rest of the timing model keeps the application
+server's clock as its reference; a few seconds of skew between the two moves a
+displayed figure by a few seconds and decides nothing.
 
 ### 9.4 The choice of numbers, and what they cost
 
@@ -439,6 +470,50 @@ whose desktop *kept* running is the one honest loss: the server cannot tell it
 from a dead one, and the activity the desktop captured meanwhile is still
 uploaded and still attributed to the (closed) entry.
 
+**The threshold is also the most unattended time a wake can add back.** While
+an entry is stale its figure is frozen at `last signal + 15 min`; the moment its
+desktop speaks again it is `live` and measured to now, so a laptop that slept
+for 1 h 50 m and wakes counts the whole 1 h 50 m (the desktop's wake-gap prompt,
+if idle detection is on, lets the person discard it). Only a silence past the
+threshold is closed first. So lengthening the threshold lets a wake add back
+more unattended time, up to the new value; shortening it cuts more
+offline-but-working time. Neither direction is free, which is why no change is
+recommended without evidence.
+
+#### Realistic scenarios against the shipped numbers
+
+| Scenario | What the server sees | What happens | What it costs |
+|---|---|---|---|
+| Outage of 2 h or more, desktop working offline | silence | reports freeze at last signal + 15 min after 10 min; with the job on, closed at that instant after 2 h. On reconnect the heartbeat says `closed_by_server`; the desktop ends its session and says why; the queued windows still upload to the closed entry | Work after last signal + 15 min is not counted until claimed by a manual-time request. **The honest loss.** |
+| Laptop asleep for under 2 h | stale, not closed | on wake the heartbeat makes it live again and the figure resumes from now | The whole sleep counts unless the wake-gap prompt discards it (needs idle detection on and a gap past its threshold) |
+| Asleep overnight or over a weekend | stale, then closed at last signal + 15 min (job on) | the desktop wakes, asks the backend first (9.6), hears `closed_by_server`, ends the session; nothing is split | With the job **off**, the entry is still open: the wake revives it and the desktop's midnight split books the days (9.7) -- the reason the job must be enabled after the report-only period |
+| App left open, timer stopped | no running entry | nothing to close | none |
+| A long session that keeps reporting in | live | never closed; no maximum session length exists | A person who leaves a running timer on an open app with idle detection off is counted until they return. Flagged `manual_review` after 24 h in the SQL report only. **A business decision** |
+| Idle prompt never answered, desktop alive | live, a pending idle period | closed at the prompt after 4 h; the idle stretch is discarded | none beyond the owner's own rule |
+| A desktop that was closed resumes | `end_time` set | the heartbeat answers with the entry and the reason; no field of an ended entry is written; a late upload is stored and attributed | none |
+| Two machines, one stale | one running entry per user | the second machine's start closes the stale one (`replaced_by_start`) at its last signal + 15 min | An alive-but-offline first machine is cut as above |
+
+**Recommendation.** Ship the numbers as they are (stale 10 min, grace 15 min,
+no-signal stop 2 h, idle prompt 4 h) and ship the job **report-only**. Decide
+the 2 h from the owner's own data, not from this document:
+`backend/scripts/timer_silence_evidence.sql` lists, for each candidate
+threshold, the silences of the last 60 days split into `alive_but_offline` (a
+window queued during the silence arrived afterwards: closing there would have
+cut real work) and `asleep_or_off` (the first window after was fresh: closing
+there would have been right), and the hours a closure would not have counted.
+If `alive_but_offline` at 2 h is more than a handful a month, raise
+`TIMER_NO_SIGNAL_STOP_AFTER_SECONDS` -- a setting, not a code change -- after
+reading what `asleep_or_off` says a longer value would let a wake add back.
+
+**Safe recovery for a cut that was wrong** (designed; not built, because it
+needs the manual-time dialog and a product decision): when a desktop learns that
+the server closed an entry it kept working in -- it knows, because its own queue
+holds activity windows for the gap -- offer a manual-time request prefilled with
+that task and the span from the server's end to the last window's end, through
+the existing approval flow. A finalized entry is never reopened: reopening is
+what lets a late request resurrect a closed day, and the unique-running-entry
+index would make it race the person's next Start.
+
 ### 9.5 Switching it on
 
 `TIMER_RECONCILER_ENABLED` is **off** by default. The job
@@ -456,11 +531,21 @@ uploaded and still attributed to the (closed) entry.
    figure it would correct.
    The same picture, as a plain read-only query for pgAdmin (no token, no
    application involved): `backend/scripts/stale_running_entries_report.sql`.
-   It lists every running entry with its silence, the newest evidence that names
-   it, what Active Users showed (`measured_now_seconds`), what the policy would
-   write (`proposed_end`, `proposed_seconds`) and who may close it.
-3. Set `TIMER_RECONCILER_ENABLED=true`, or approve a single run with
-   `?dry_run=false`.
+   It sorts every running entry into **confirmed_active** (heard from within
+   the stale window), **potentially_stale** (heard from, not lately -- not proof
+   it is dead), **unverified** (nothing names it, so no evidence either way) or
+   **manual_review** (an impossible timestamp, or reporting in for over a day),
+   with the reason in words, the project and task, the last signal and where it
+   came from, the desktop version last seen, whether this person's desktop has
+   demonstrably uploaded lately (`can_report_liveness`, from data, not a version
+   guess), what Active Users showed before the policy and shows now, and the
+   closing instant the policy would write. A test runs it against real rows and
+   checks its proposals against the application's own dry run.
+3. Choose the threshold from data: `backend/scripts/timer_silence_evidence.sql`
+   (9.4). Nothing here needs changing if its answer is acceptable.
+4. Set `TIMER_RECONCILER_ENABLED=true`, or approve a single run with
+   `?dry_run=false`. The deployment order, the client compatibility and the
+   rollback are in `docs/TIMER_ABANDONMENT_ROLLOUT.md`.
 
 **Legacy rows.** Entries that were running before the deploy have
 `last_seen_at NULL` and are reported (`unreported_running`) but not closed by
@@ -469,7 +554,14 @@ uploads something. Closing one is the owner's explicit, per-entry decision:
 `?dry_run=false&include_unreported=true&entry_id=5958`, which uses the newest
 activity / screenshot / application-usage row that names the entry as the last
 evidence (else the start) and records `decided_by = operator` and the evidence
-in the audit row. Read the dry-run for the same parameters first.
+in the audit row. Read the dry-run for the same parameters first
+(`dry_run=true`): `include_unreported` must say which it means -- an omitted
+`dry_run` follows `TIMER_RECONCILER_ENABLED`, which would turn a look at one
+legacy row into its closure the day the job is switched on -- and only a POST
+may carry it; the GET alias for cron-style schedulers runs the scheduled pass
+and nothing else. What closing one entry changes in every report, for the
+entry in the incident: `docs/TIMER_ENTRY_5958_RECONCILIATION_PLAN.md`
+(`backend/scripts/entry_reconciliation_preview.sql` for any other).
 
 ### 9.6 What the desktop does
 
@@ -492,6 +584,29 @@ in the audit row. Read the dry-run for the same parameters first.
 * **A stop is honoured however old it is** (backend `_event_time(trust_age=True)`):
   the seven-day ceiling is for backdated *starts*; applied to a stop its
   fallback ("use the server clock") was the latest instant the stop could take.
+* **A midnight found hours late asks the backend before splitting**
+  (`TimerService._rollover_confirmed`). The desktop splits a session at IST
+  midnight on a one-second tick. A boundary found more than two minutes behind
+  `now` was crossed while the machine slept, and the first tick after the wake
+  used to queue a stop and a start at *every* slept-through midnight -- three
+  stopped entries of up to 24 hours after a weekend, which the backend accepts
+  (it honours a backdated start for seven days) even when it had already closed
+  the original entry. Now that tick asks the sync service for a heartbeat and
+  waits at most 30 s for a "still running" answer: if the backend ended the
+  entry, the local session ends with it (`end_session_closed_remotely`) and
+  nothing is split; if it says running, or does not answer, the split goes ahead
+  as it always did. An adoption (the backend's own word) and a crash recovery
+  (bounded by the 15-minute cap) are not held. No new thread, timer or signal:
+  the tick polls, and the sync service remembers the last "running" answer.
+* **A manual-time request is no longer refused by a silent entry.** The overlap
+  check treated a running entry as open-ended, so a forgotten timer refused every
+  request after it -- the one way its owner can claim the hours they really
+  worked. It now uses the measured end (`effective_now`), the same instant every
+  report uses; a live or never-reported entry still overlaps as before.
+* **Reads that used to close a running entry at "now"** -- the screenshots
+  page's "time worked" (both interval queries) and the member activity log --
+  now use the same measured end, so the page, Active Users and Time Tracking
+  agree.
 
 ### 9.7 What is not covered
 
@@ -500,4 +615,29 @@ in the audit row. Read the dry-run for the same parameters first.
   (see the final report); each is reproduced by a test.
 * The OS-shutdown stop, the tray, the real display and a real sleep/wake are
   verified by tests and doubles, not on hardware (`CLAUDE.md` section 5, item 4).
-* macOS has not run any of this.
+  What *was* measured is Qt's answer to the two Windows messages, by sending the
+  real `WM_QUERYENDSESSION` / `WM_ENDSESSION` to a real window handle
+  (`desktop/tests/e2e/test_os_session_end_real_messages_e2e.py`, opt-in). That is
+  not a shutdown: only a person shutting a machine down with a timer running can
+  show that Windows sends them to this process, in this order, before it kills
+  it.
+* macOS has not run any of this. A legacy macOS desktop only uploads activity
+  windows when Input Monitoring is granted, so without it the server has no signal
+  from it (`unknown`, never auto-closed); the new desktop's heartbeat does not
+  depend on that permission.
+* **A desktop the server still believes is running splits at every midnight it
+  slept through** (the owner's design, pinned by
+  `test_switching_task_after_a_midnight_split_uses_the_instant_of_the_change`).
+  After the confirmation in 9.6 that is the case only when the job is off or the
+  desktop is unreachable. Whether a sleep of days should be booked at all, even
+  with the person at the keyboard to discard it, is a decision for the owner.
+* The wake-gap prompt (idle detection) is the only thing that takes an unattended
+  sleep under the no-signal threshold back out; it is withdrawn when the timer
+  stops, which a midnight split counts as. A user with idle detection off keeps
+  that time.
+* An `adopt_remote_session` decline stops a backend entry silent for over the
+  15-minute cap, which is shorter than the server's 2 hours: a second machine
+  signing in during a long outage can end an alive-but-offline first machine's
+  entry. That is the owner's cap, applied consistently with crash recovery.
+* The staging order and everything a rollout must prove first:
+  `docs/TIMER_ABANDONMENT_ROLLOUT.md`.

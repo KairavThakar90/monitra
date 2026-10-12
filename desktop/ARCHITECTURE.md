@@ -135,8 +135,11 @@ leaves the session record for recovery: an update restart
 
 **An OS shutdown or sign-out that goes ahead stops the timer too.** Windows
 asks first (`commitDataRequest`, `WM_QUERYENDSESSION`) and any application may
-refuse, so `MainWindow.on_os_session_ending` only notes the question. When the
-shutdown is carried out `aboutToQuit` fires, and `MainWindow.on_about_to_quit`
+refuse, so `MainWindow.on_os_session_ending` only notes the question -- and
+when it was asked, because Qt says nothing when a shutdown is refused: the
+memory expires (15 minutes for the exit, 30 seconds for a window close) and one
+question answers one exit. When the shutdown is carried out `aboutToQuit`
+fires, and `MainWindow.on_about_to_quit`
 -- the one shutdown path -- calls `ApplicationRuntime.stop_for_os_shutdown()`
 first: `TimerService.stop_tracking()` (the stop queued durably *before* the
 record is cleared, carrying the instant of the shutdown) and a wake of the

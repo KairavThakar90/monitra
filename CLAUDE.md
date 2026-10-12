@@ -267,7 +267,12 @@ These are **unimplemented features**, deliberately left out of the stability wor
    **[docs/TIMING_MODEL.md](docs/TIMING_MODEL.md) section 9 is authoritative**, including
    the thresholds, the alternatives and what it costs. The desktop cap
    (`RECOVERY_CAP_SECONDS`) and the backend grace are one number written twice; a test
-   keeps them equal.
+   keeps them equal. **[docs/TIMER_ABANDONMENT_ROLLOUT.md](docs/TIMER_ABANDONMENT_ROLLOUT.md)**
+   is the deployment order, the client compatibility and what was proven;
+   **[docs/TIMER_ENTRY_5958_RECONCILIATION_PLAN.md](docs/TIMER_ENTRY_5958_RECONCILIATION_PLAN.md)**
+   is the plan for the one legacy row. `include_unreported` on the reconcile endpoint must
+   state `dry_run` and is a POST; a closure takes the idle-period rows before the entry (the
+   order a user's own Stop takes them), so do not reorder those locks.
 
 ---
 

@@ -265,6 +265,17 @@ machine is next launched or, if it never is, for ever. The question is noted
 (`on_os_session_ending`); the answer stops the timer durably
 (`on_about_to_quit` -> `stop_for_os_shutdown`). An update restart is neither.
 
+Do not keep the question as a bare flag. Qt emits nothing when a shutdown is
+refused, so a flag set by `commitDataRequest` stays set for the life of the
+process: measured with the real Windows messages, a Quit after a refused
+shutdown was accepted by `closeEvent` as "the OS closing the window" (nothing
+stopped, nothing exited) and an update restart after one stopped the timer. The
+question carries its time (`OS_SESSION_QUESTION_MAX_AGE_SECONDS`,
+`OS_SESSION_CLOSE_MAX_AGE_SECONDS`), a restart is never a shutdown, and one
+question answers one exit. A test that freezes the clock must replace
+`main.time`, never `time.monotonic` itself -- every other deadline in the
+process, including a fixture teardown's event pump, reads that one.
+
 ### ❌ Do not adopt a backend entry on faith
 
 ```python
@@ -279,6 +290,25 @@ session recovered from disk and to nothing else. The cap is now one rule:
 `adopt_remote_session` declines an entry whose `last_seen_at` is more than
 `RECOVERY_CAP_SECONDS` before the backend's clock, queues its stop at last
 evidence + the cap and tells the user.
+
+### ❌ Do not split a midnight the machine slept through without asking the backend
+
+`_maybe_roll_over_midnight` runs on a one-second tick, so a boundary found more
+than `ROLLOVER_VERIFY_AFTER_SECONDS` behind `now` was crossed while the machine
+slept. Splitting at once queued a stop and a start at *every* slept-through
+midnight -- three stopped entries of up to 24 hours after a weekend, which the
+backend accepts (a backdated start is honoured for seven days) even when it had
+already ended the original under the abandoned-timer policy -- and the idle
+service, which treats any `timer_stopped` as a stop, withdrew the wake-gap prompt
+that would have taken the time back out. The first such tick now asks the sync
+service for a heartbeat and waits at most `ROLLOVER_VERIFY_WAIT_SECONDS` for a
+"still running" answer (`SyncService.confirmed_running_since`, pulled by the tick:
+no new signal, timer or thread). An ended entry ends the local session through
+the ordinary closure path; a running one, or no answer, splits as always.
+Adoption and crash recovery are not held. Do not make the split unconditional
+again, and do not "fix" it by never splitting a late boundary: the owner's own
+tests (`test_switching_task_after_a_midnight_split_uses_the_instant_of_the_change`)
+require the split for an entry the backend still considers running.
 
 ### ❌ Do not write the cap twice
 
