@@ -17,6 +17,7 @@ vector mark is the real mark, not a stand-in for a missing one.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from typing import Optional
 
@@ -82,6 +83,7 @@ MONITRA_MARK_SVG = """
 _logo_path_cache: Optional[str] = None
 _logo_path_resolved = False
 _pixmap_cache: dict[int, QPixmap] = {}
+_small_cache: dict[int, QPixmap] = {}
 _badge_cache: dict[int, QPixmap] = {}
 
 
@@ -157,6 +159,40 @@ def logo_pixmap(size: int) -> QPixmap:
 #: and scales that with the display, so a QIcon carrying only one size is
 #: stretched on a high-DPI screen.
 NOTIFICATION_ICON_SIZES = (32, 48, 64, 96, 128)
+
+
+def _small_mark_svg() -> str:
+    """The mark as it is drawn at icon sizes: the vendored artwork with the orbit left out, the
+    M a little bolder, and the canvas trimmed to the mark so it fills the icon.
+
+    Derived from `MONITRA_MARK_SVG` rather than copied from it, so the one definition of the mark
+    stays the one definition. At 16-24 px the orbit's two-pixel-thin stroke and its dot are not
+    drawn, they are smudged -- the header of a notification showed a fuzzy blob where the M should
+    be (photographed on a real Windows 11 toast, 2026-10-12). Without it the M, the figure
+    in its valley and the brand gradient are what remain, and they read.
+    """
+    svg = re.sub(r"<!-- orbit -->.*?<!-- M -->", "<!-- M -->", MONITRA_MARK_SVG, flags=re.S)
+    svg = svg.replace('stroke-width="7.5"', 'stroke-width="9"')
+    return svg.replace('viewBox="0 0 64 64"', 'viewBox="5 5 54 54"')
+
+
+def logo_small_pixmap(size: int) -> QPixmap:
+    """The mark for a small icon (header of a notification, 16-64 px), rendered at exactly `size`.
+
+    A bundled logo file wins, as for `logo_pixmap`: its artwork is whatever the owner supplied
+    and is not simplified here. Otherwise the vendored mark in its small-size form
+    (`_small_mark_svg`), drawn natively at `size` -- never a larger bitmap left to the
+    operating system to shrink, which is what made the header icon soft.
+    """
+    cached = _small_cache.get(size)
+    if cached is not None:
+        return cached
+    if logo_file_path():
+        pixmap = logo_pixmap(size)
+    else:
+        pixmap = _render_svg(QSvgRenderer(QByteArray(_small_mark_svg().encode())), size)
+    _small_cache[size] = pixmap
+    return pixmap
 
 
 def logo_badge_pixmap(tile_size: int, *, mark_ratio: float = 0.76) -> QPixmap:

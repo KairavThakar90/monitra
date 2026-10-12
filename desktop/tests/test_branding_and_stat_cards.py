@@ -121,6 +121,48 @@ def test_the_badge_tile_scales_with_the_requested_size(qapp):
     assert large.width() == 48
 
 
+# ── the small-size mark (the header icon of a notification) ──────────────────
+
+def test_the_small_mark_is_derived_from_the_one_mark_without_its_orbit():
+    """At 16-24 px the orbit's two-pixel stroke and its dot are smudges, not drawing."""
+    svg = branding._small_mark_svg()
+
+    assert "<ellipse" not in svg                                  # the orbit is gone
+    assert svg.count("<circle") == 1                              # ...with its dot; the figure's head stays
+    assert "<path" in svg and 'stroke-width="9"' in svg           # the M, a little bolder
+    assert 'viewBox="5 5 54 54"' in svg                           # trimmed to the mark so it fills the icon
+    # Derived, not copied: the gradients and the M are the vendored artwork's own.
+    assert 'id="mg"' in svg and 'M13 50V20.5' in branding.MONITRA_MARK_SVG and 'M13 50V20.5' in svg
+
+
+def test_the_small_mark_is_drawn_at_exactly_the_requested_size(qapp):
+    for size in (16, 20, 24, 32, 48):
+        pixmap = branding.logo_small_pixmap(size)
+        assert (pixmap.width(), pixmap.height()) == (size, size)
+        assert pixmap.toImage().pixelColor(0, 0).alpha() == 0     # transparent ground
+        assert any(pixmap.toImage().pixelColor(x, size // 2).alpha() > 200 for x in range(size))   # and the mark in it
+
+
+def test_the_small_mark_differs_from_the_full_mark_at_small_sizes(qapp):
+    assert branding.logo_small_pixmap(16).toImage() != branding.logo_pixmap(16).toImage()
+
+
+def test_small_marks_are_cached_per_size(qapp):
+    assert branding.logo_small_pixmap(20) is branding.logo_small_pixmap(20)
+
+
+def test_a_bundled_logo_file_wins_over_the_simplified_mark(qapp, monkeypatch):
+    """The owner can drop a real logo into assets/; at small sizes it is used as supplied, not simplified."""
+    sentinel = branding.logo_pixmap(24)
+    monkeypatch.setattr(branding, "logo_file_path", lambda: "C:/assets/monitra_logo.svg")
+    monkeypatch.setattr(branding, "logo_pixmap", lambda size: sentinel)
+    branding._small_cache.pop(24, None)
+    try:
+        assert branding.logo_small_pixmap(24) is sentinel
+    finally:
+        branding._small_cache.pop(24, None)
+
+
 # ── stat cards ───────────────────────────────────────────────────────────────
 
 def test_reset_states_are_honest_not_zeroed(qapp):

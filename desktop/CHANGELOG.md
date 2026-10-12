@@ -26,7 +26,8 @@ re-grant a permission.
   blue "i". The header of the notification -- "Monitra — Staff Management" beside the
   Monitra logo -- stays exactly as it was: Monitra now describes itself to Windows when it
   starts so that both are always shown together. (The uninstaller removes that
-  description again.)
+  description again.) The small logo in that header is drawn at its own size, in a simpler
+  form that stays sharp at that size, instead of a large image shrunk by Windows into a blur.
 - **A message too long for a Windows notification is shown whole.** Windows cuts a
   notification's title at about 60 characters and its text after about four lines, in the
   middle of a word, so a longer message from your administrator arrived as its first

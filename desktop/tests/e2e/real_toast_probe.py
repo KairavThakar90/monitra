@@ -42,8 +42,8 @@ def changed_pixels(before, after) -> int:
     return sum(1 for value in diff.getdata() if value > 24)
 
 
-def _is_png(path: Path) -> bool:
-    return path.is_file() and path.read_bytes()[1:4] == b"PNG"
+def _is_ico(path: Path) -> bool:
+    return path.is_file() and path.read_bytes()[:4] == b"\x00\x00\x01\x00"
 
 
 def settle(ms):
@@ -72,7 +72,7 @@ def main() -> None:
         "quiet_state": os_toast.quiet_state(),
         "app_id": APP_USER_MODEL_ID,
         "identity": toast_identity._read_values(APP_USER_MODEL_ID),
-        "icon_file_is_png": _is_png(OUT / toast_identity.ICON_FILE_NAME),
+        "icon_file_is_ico": _is_ico(OUT / toast_identity.ICON_FILE_NAME),
         "scenarios": {},
     }
     if service._tray is None:

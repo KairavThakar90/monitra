@@ -1012,6 +1012,22 @@ way Windows attributes the toast. The `IconUri` path must use **backslashes**: a
 accepted silently and no icon is drawn. Do not remove the registration, change the id without
 changing the installer's `[Registry]` entry, or give a toast an icon and photograph only its body.
 
+### ❌ Do not hand Windows one large bitmap for a small icon
+
+```python
+logo_pixmap(128).save("notification-icon.png")        # IconUri: "Windows will shrink it"
+```
+
+**What it caused:** the logo in the header of a notification (16 px at 100% scaling, about 20-24 on a
+typical laptop) arrived as a fuzzy, jagged blob, and the owner asked for it to be made proper. Windows
+shrinks a big bitmap crudely; and the Monitra mark's orbit is a two-pixel line that no scaler keeps.
+Native-size frames of the *full* mark were better but still soft; only the small-size mark (the M and
+its figure, no orbit) read -- compared at actual size on real toasts.
+
+**Instead:** an `.ico` with a frame per size (`toast_identity.ICON_SIZES`), each rendered natively by
+`core/branding.logo_small_pixmap` -- derived from the vendored mark, never a second copy of it, and
+yielding to a logo file dropped into `assets/`. Judge a small icon at its real size, not zoomed in.
+
 ### ❌ Do not assume a platform toast was shown
 
 ```python

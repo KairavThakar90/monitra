@@ -14,7 +14,7 @@ What is checked, against the real platform and not a stand-in:
   (a `QIcon` with a crisp pixmap per size), not the platform's blue "i", and something really
   appears in the corner of the screen;
 * the notification's identity is registered with Windows -- "Monitra — Staff Management" and the
-  Monitra mark as a PNG at a backslashed path -- which is what keeps the header of a toast that
+  Monitra mark as an .ico with a frame at each size, at a backslashed path -- which is what keeps the header of a toast that
   carries its own icon (without it the header reads just "Monitra", with no logo: look at
   `short.png`);
 * one too long for a toast to carry (it would be cut off mid-word) is not handed to the platform
@@ -91,9 +91,9 @@ def test_the_notification_identity_is_registered_so_the_header_keeps_its_name_an
 
     assert identity.get("DisplayName") == NOTIFICATION_HEADER_NAME
     icon = identity.get("IconUri", "")
-    assert icon.endswith("notification-icon.png")
+    assert icon.endswith("notification-icon.ico")
     assert "/" not in icon, "Windows draws no header icon for a slashed path"
-    assert report["icon_file_is_png"], "the registered icon file is not a PNG"
+    assert report["icon_file_is_ico"], "the registered icon file is not an .ico"
 
 
 def test_a_message_that_fits_is_a_platform_toast_with_the_monitra_circle(report):

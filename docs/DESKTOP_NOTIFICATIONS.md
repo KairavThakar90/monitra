@@ -236,7 +236,10 @@ A field that is sent is validated in full — an explicit `null` or a blank is
   the Monitra logo is the notification identity `NotificationService.on_start` registers
   (`notifications/toast_identity.py`, under `HKCU\Software\Classes\AppUserModelId\Monitra`,
   written only when it is wrong, removed by the uninstaller). Without it a toast carrying the
-  Monitra circle is headed by the bare id ("Monitra", no logo). `IconUri` must be a backslashed path.
+  Monitra circle is headed by the bare id ("Monitra", no logo). `IconUri` must be a backslashed path, and
+  it is an `.ico` with a native frame for each size (16-64 px) in the small-size mark -- the M and its
+  figure without the orbit (`core/branding.logo_small_pixmap`), which stays legible where the full mark
+  turns to a smudge.
 * **When a toast would not deliver it, the in-app card does.** `showMessage` is silent
   whether the toast was drawn or thrown away, so two cases that were found on real machines
   are decided up front (`NotificationService._native_declined`):

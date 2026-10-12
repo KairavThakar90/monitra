@@ -1119,7 +1119,11 @@ tabs show honest empty states.
   icon, but for one that carries an icon of its own it uses the process's *explicit* identity,
   and an explicit identity nobody has described reads as its bare id -- "Monitra", no logo.
   Measured on a real Windows 11 toast (2026-10-12). `IconUri` must be a backslashed path:
-  `C:/Users/...` is accepted and no icon is drawn. The file description the installed build is
+  `C:/Users/...` is accepted and no icon is drawn. It points at an `.ico` with a frame for each
+  size the header can ask for (16-64 px), each drawn at its own size in the small-size form of the
+  mark (`core/branding.logo_small_pixmap`: the M and its figure without the orbit, whose thin
+  stroke smudges at 16-24 px): one large PNG left Windows to shrink it and the header logo was a
+  fuzzy blob. The file description the installed build is
   stamped with (`version.NOTIFICATION_HEADER_NAME`, `monitra.spec`) and the stamped interpreter
   copy a source run goes through (`core/dev_identity.py`: Windows, from source only,
   `MONITRA_NO_DEV_RELAUNCH=1` opts out; the parent only waits, so a second Ctrl+C cannot cut the
