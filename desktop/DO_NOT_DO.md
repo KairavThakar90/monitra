@@ -993,10 +993,63 @@ duration to it expecting it to be honoured, do not use a card for an ordinary
 notification to get thirty seconds without asking, and do not show a card as
 well as the toast.
 
+### ❌ Do not assume a platform toast was shown
+
+```python
+self._tray.showMessage(title, message, icon, ms)     # returns None; raises nothing; shows... maybe
+```
+
+**What it caused:** `showMessage` is silent whether the toast was drawn or thrown
+away, and Windows throws it away -- or spoils it -- in ways the application can read
+but was not reading. A user who had switched Monitra's notifications off in Windows
+settings (or the whole account's, or a group policy had) never saw a reminder, a timer
+message or an update notice, and the log said the notification had been shown. An
+administrator's 300-character message arrived as its first two sentences, cut mid-word,
+because a toast carries a 63-character title and about four lines of body. Both were
+"notifications don't work for some users", and neither could be told apart from a bug in
+the scheduler.
+
+**Instead:** `NotificationService._native_declined` sends a notification the platform
+would cut short (`NATIVE_TITLE_MAX`, `NATIVE_MESSAGE_MAX`) or not show
+(`notifications/os_toast.py`, read-only registry reads) to the card, which is whole and which
+no operating-system setting can swallow, and every delivery logs its surface
+(`NOTIFICATION_DELIVERED`). Do not raise the limits without photographing a real toast, and
+do not make Focus assist or a full-screen app a reason for a card: that is the user's own
+request to be left alone, and the toast still lands in the Action Center.
+
+### ❌ Do not time an administrator's schedule by this machine's clock alone
+
+```python
+now_ist = datetime.now(IST)       # the schedule says "13:30"; whose 13:30?
+```
+
+**What it caused (by reasoning, not yet by a report -- the symptom is indistinguishable
+from "the reminder did not come"):** the schedule is IST wall-clock times, and a computer
+whose clock is minutes out, or whose time zone was set wrong while the displayed time was
+corrected by hand (which puts the real instant hours out), showed "lunch" at the wrong
+moment, or past its ten-minute grace and not at all.
+
+**Instead:** `WellbeingService._now_ist` adds `NotificationScheduleService.clock_offset_seconds`,
+measured against the `server_time` of every schedule answer at the midpoint of the request.
+The server is the reference, as for tracked time. Interval reminders still run on the
+monotonic clock -- they are "every N minutes of this session" and a corrected clock must not
+hand a user every reminder at once.
+
+### ❌ Do not let the scheduler run on a schedule it has not heard yet
+
+With nothing persisted (a first sign-in, or the first after a sign-out, which wipes
+`app_state`) the schedule is `None` until the backend answers, and `None` means "every
+reminder on, at its default time". A daily reminder already inside its grace window was
+shown on that default although the administrator had moved it or switched it off.
+`NotificationScheduleService.ready` stays false after sign-in until the first answer (a
+failure counts) or `SETTLE_SECONDS`, so a machine that cannot reach the backend is not
+held for ever.
+
 ### ❌ Do not emit a notification per state transition without throttling
 
 Network flapping produced a burst of toasts. Notifications are de-duplicated by
-key within 20 seconds and capped at 6 per minute.
+key within 2 seconds (`DEDUPE_SECONDS`) and capped at 30 per minute
+(`MAX_PER_MINUTE`).
 
 ### ❌ Do not overwrite a notification that is still on screen
 

@@ -22,6 +22,13 @@ re-grant a permission.
 
 ### Changed
 
+- **Notifications carry the Monitra logo in a circle** where Windows used to put its own
+  blue "i".
+- **A message too long for a Windows notification is shown whole.** Windows cuts a
+  notification's title at about 60 characters and its text after about four lines, in the
+  middle of a word, so a longer message from your administrator arrived as its first
+  sentence or two. Monitra now shows such a message in its own notification card in the
+  corner of the screen, with every word.
 - **Screenshots are sharper.** Each capture is now 1500 by 1500 pixels instead of
   1000 by 1000, so small text on your screen can be read when the screenshot is
   reviewed. Files are a little larger to match (about 2.25 times the pixels, and the
@@ -30,6 +37,20 @@ re-grant a permission.
 
 ### Fixed
 
+- **Notifications still reach you if Windows has switched them off for Monitra.** If
+  notifications were turned off for Monitra in Windows settings (or for the whole account,
+  or by a policy), Windows silently threw away every reminder, timer message and update
+  notice and Monitra had no way to know. It now notices and shows them in its own
+  notification card instead. Windows' Focus assist and full-screen modes are still
+  respected: those are you asking not to be disturbed.
+- **Reminders arrive at the time your administrator set, even if this computer's clock
+  is wrong.** An administrator's times ("lunch at 1:30 pm") are now measured by the
+  company's clock, not only your computer's, so a computer that is a few minutes out -- or
+  whose time zone was set wrongly -- no longer shows a reminder at the wrong moment or not
+  at all.
+- **A reminder your administrator moved or turned off is no longer shown at its old time
+  right after you sign in.** Until the first answer from the server arrives, Monitra now
+  waits (at most twenty seconds) instead of assuming every reminder is on at its usual time.
 - **A forgotten timer no longer runs through the night or the weekend.** Monitra now
   tells the server it is still there while a timer runs, so the server can tell a
   timer you are working on from one on a computer that has been switched off, asleep or

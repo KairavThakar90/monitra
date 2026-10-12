@@ -185,6 +185,22 @@ A field that is sent is validated in full — an explicit `null` or a blank is
     with no progress counts as failing -- there is no reconnect loop;
   * `NOTIFICATION_STREAM_UP` / `_EVENT` / `_FAILED` / `_UNAVAILABLE` log lines
     are written on the edge, never per listen.
+* **The schedule service also tells the scheduler what time it is.** Every response carries
+  `server_time`; the offset between it and this machine's clock, measured at the midpoint of the
+  request (`clock_offset_seconds`), is added by `WellbeingService._now_ist`. A computer whose
+  clock is minutes out, or whose time zone was set wrong while the displayed time was corrected by
+  hand (the real instant is then hours out), therefore shows a daily notification at the server's
+  time of day -- not at a moment the administrator never chose, or past its grace window and not at
+  all. A skew of a minute or more is logged once (`NOTIFICATION_CLOCK_SKEW`). An answer without
+  `server_time` changes nothing: the machine's own clock, as before. Interval reminders stay on the
+  monotonic clock.
+* **And it does not let the scheduler run on a guess.** With nothing persisted (the first sign-in
+  on a machine, or the first after a sign-out, which wipes `app_state`) the schedule is `None`
+  until the backend answers, and `None` means "every reminder on, at its default time": a daily
+  reminder already inside its grace window would be shown at its default although the
+  administrator had moved or switched it off. `ready` therefore stays false after sign-in until the
+  first answer (a failed one counts: the desktop is then genuinely on defaults) or
+  `SETTLE_SECONDS` (20), so a machine that cannot reach the backend is not held for ever.
 * **`WellbeingService`** stays the scheduler and stays free of network work. It
   reads the current schedule on every tick:
   * an **interval** reminder repeats only if it is on, today's IST weekday is
@@ -210,11 +226,29 @@ A field that is sent is validated in full — an explicit `null` or a blank is
     before it could be shown.
 * **Every notification is the platform's own by default**, the schedule's
   included (`NotificationService.NATIVE_BY_DEFAULT`): on Windows a toast with the
-  standard information icon, the title, the message and the time, headed
+  Monitra logo in a circle (it was the platform's blue "i" until 2026-10-12), the
+  title, the message and the time, headed
   "Monitra — Staff Management" beside the Monitra logo (the executable's file description, `NOTIFICATION_HEADER_NAME` in
   `version.py`) and kept in the Action Center afterwards. The platform decides how
   long it stays on screen (the user's accessibility setting, five seconds by
   default). A machine with no tray gets the in-app card instead.
+* **When a toast would not deliver it, the in-app card does.** `showMessage` is silent
+  whether the toast was drawn or thrown away, so two cases that were found on real machines
+  are decided up front (`NotificationService._native_declined`):
+  * **Too long.** A Windows toast cuts the title at 63 characters and shows about four lines of
+    body, ending mid-word (measured on a real Windows 11 toast; the title and message limits an
+    administrator may write are 80 and 300). A title over `NATIVE_TITLE_MAX` (60) or a message
+    over `NATIVE_MESSAGE_MAX` (110) is shown as a card, which carries every word. Every built-in
+    reminder fits a toast (a test pins it).
+  * **Windows would not show it.** Notifications switched off for the account, for Monitra, or
+    its banners switched off, or the "turn off toast notifications" policy
+    (`notifications/os_toast.py`, read-only registry reads). Focus assist, a full-screen
+    application and a presentation are deliberately *not* overridden: that is the user asking to be
+    left alone, and the toast still reaches the Action Center.
+  Every delivery is logged -- `NOTIFICATION_DELIVERED surface=native|card|platform-fallback`, a
+  refusal `NOTIFICATION_NOT_DELIVERED`, and the OS suppression starting and ending
+  `NOTIFICATION_OS_SUPPRESSED` / `NOTIFICATION_OS_SUPPRESSION_CLEARED` -- so "this person sees
+  nothing" can be answered from their log.
 * The existing rules still apply: a daily reminder more than
   `DAILY_GRACE_SECONDS` late is recorded as missed and not shown; nothing is
   shown while signed out; nothing is shown within `MIN_SPACING_SECONDS` of the
@@ -290,5 +324,17 @@ and logs `DESKTOP_NOTIFICATIONS_CHANGED`. Setting the limit is audited the same 
   behaviour and the scheduler's use of the schedule.
 * `desktop/tests/test_notification_hourly_limit.py` — a moved notification re-arms; the
   hourly limit, its reserved places, fairness and the schedule's `max_per_hour`.
+* `desktop/tests/test_notification_service.py`, `test_os_toast.py` — the circular badge a
+  toast carries, the card for a message a toast would cut or Windows would not show (fake
+  registry), and the delivery log lines.
+* `desktop/tests/test_notification_schedule_settle_and_clock.py`,
+  `test_wellbeing_server_clock.py` — `ready` until the first answer, the clock offset and the
+  scheduler acting on it (a clock an hour behind, a time zone 13.5 hours out).
+* `desktop/tests/e2e/test_notification_schedule_e2e.py` — opt-in, real backend and database:
+  an administrator sets a custom notification and moves a built-in one through the API, switches
+  another off, and the signed-in desktop shows them at their minute, in order, the switched-off one
+  never; a pushed message arrives within seconds.
+* `desktop/tests/e2e/test_native_toast_e2e.py` — opt-in, a real Windows desktop: the toast carries
+  the Monitra circle and appears on screen; a message too long for a toast is a whole card.
 * `frontend/src/features/admin/__tests__/desktopNotifications.test.tsx` — the
   admin page.
