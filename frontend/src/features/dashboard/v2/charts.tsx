@@ -470,7 +470,8 @@ export const SliceTooltip: React.FC<{
   <div role="tooltip" className="min-w-[160px] max-w-[260px] rounded-xl border border-[#E2E8F0] bg-white px-3 py-2 shadow-lg">
     <div className="flex items-center gap-2">
       <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: color }} />
-      <span className="truncate text-[12px] font-semibold text-[#0F172A]">{label}</span>
+      {/* The legend row truncates a long label; this is where it is shown in full. */}
+      <span className="min-w-0 break-all text-[12px] font-semibold text-[#0F172A]">{label}</span>
     </div>
     <div className="mt-1 flex items-baseline gap-2">
       <span className="font-mono text-[12px] font-bold text-[#0F172A]">{value}</span>
@@ -667,19 +668,25 @@ export const Legend: React.FC<{
 }> = ({ items, activeLabel = null, onActiveChange }) => {
   const total = items.reduce((sum, i) => sum + (i.rawValue ?? 0), 0);
   return (
-    <ul className="flex flex-wrap items-center gap-x-5 gap-y-2">
+    // A label can be arbitrarily long (a URL is), so every row is capped at the
+    // legend's own width and its label truncates; the swatch, icon and value
+    // keep their size. Without the cap one long address pushed the row out of
+    // its card and over its neighbour.
+    <ul className="flex max-w-full min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
       {items.map((i) => {
         const content = (
           <>
-            <span className="h-2.5 w-2.5 rounded-sm" style={{ background: i.color }} />
+            <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: i.color }} />
             {i.icon}
-            <span className="text-[12px] text-[#64748B]">{i.label}</span>
-            {i.value && <span className="text-[12px] font-bold text-[#0F172A]">{i.value}</span>}
+            <span className="min-w-0 truncate text-[12px] text-[#64748B]" title={i.label}>
+              {i.label}
+            </span>
+            {i.value && <span className="shrink-0 text-[12px] font-bold text-[#0F172A]">{i.value}</span>}
           </>
         );
         if (!onActiveChange) {
           return (
-            <li key={i.label} className="flex items-center gap-2">
+            <li key={i.label} className="flex min-w-0 max-w-full items-center gap-2">
               {content}
             </li>
           );
@@ -691,7 +698,7 @@ export const Legend: React.FC<{
             sliceLabel={i.label}
             activeLabel={activeLabel}
             onActiveChange={onActiveChange}
-            className="-mx-1.5 flex items-center gap-2 px-1.5 py-0.5"
+            className="-mx-1.5 flex min-w-0 max-w-full items-center gap-2 px-1.5 py-0.5"
             tooltip={
               <SliceTooltip
                 label={i.label}

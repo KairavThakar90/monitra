@@ -163,6 +163,38 @@ describe('donut and list hover', () => {
     expect(arcs()[1].getAttribute('opacity')).toBe('1');
   });
 
+  it('keeps a very long label inside the legend: the row is capped, the label truncates and keeps its full text', async () => {
+    const url = 'https://replit.com/t/qewaai/repls/cvinai/task/733acb1f-591a-4b5d-99a3-7f4ebaec60e5';
+    const items = [{ label: url, color: '#2563EB', value: '01:30:44', rawValue: 1 }];
+
+    // Linked legend (the member and admin report pages) ...
+    await act(async () => root.render(<Legend items={items} activeLabel={null} onActiveChange={() => {}} />));
+    let row = container.querySelector('li')!;
+    expect(row.className).toContain('max-w-full');
+    expect(row.className).toContain('min-w-0');
+    let label = container.querySelector<HTMLElement>(`[title="${url}"]`)!;
+    expect(label.className).toContain('truncate');
+    expect(label.textContent).toBe(url);
+    expect(container.querySelector('ul')!.className).toContain('max-w-full');
+
+    // ... and the static one.
+    await act(async () => root.render(<Legend items={items} />));
+    row = container.querySelector('li')!;
+    expect(row.className).toContain('max-w-full');
+    label = container.querySelector<HTMLElement>(`[title="${url}"]`)!;
+    expect(label.className).toContain('truncate');
+  });
+
+  it('shows the full label in the tooltip, where the legend row had to truncate it', async () => {
+    const url = 'https://app.asana.com/1/467867240684588/inbox/1211001925836904/item/1219171502056569';
+    await act(async () =>
+      root.render(<SliceTooltip label={url} color="#2563EB" value="00:42:08" share={0.1} />),
+    );
+    const text = container.querySelector('[role="tooltip"] span.break-all')!;
+    expect(text.textContent).toBe(url);
+    expect(text.className).not.toContain('truncate');
+  });
+
   it('leaves a legend without onActiveChange static', async () => {
     await act(async () =>
       root.render(<Legend items={[{ label: 'Alpha', color: '#2563EB', value: '1h', rawValue: 1 }]} />),

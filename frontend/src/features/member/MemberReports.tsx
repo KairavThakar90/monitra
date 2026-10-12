@@ -429,7 +429,8 @@ export const MemberReports: React.FC = () => {
                   {rows.map((row, index) => (
                     <tr key={`${row.id}-${index}`} className="border-b border-[#F1F5F9] last:border-0">
                       <td className="px-3 py-3 text-[#94A3B8]">{index + 1}</td>
-                      <td className="px-3 py-3 font-semibold text-[#0F172A]">{row.name}</td>
+                      {/* A URL has no spaces to wrap at; break-all keeps a long one inside the table. */}
+                      <td className="break-all px-3 py-3 font-semibold text-[#0F172A]">{row.name}</td>
                       <td className="px-3 py-3 text-right font-mono font-bold text-[#0F172A]">
                         {formatHMS(row.seconds)}
                       </td>
