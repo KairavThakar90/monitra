@@ -23,6 +23,23 @@ def valid_member(**overrides):
 
 
 class MemberSchemaTests(unittest.TestCase):
+    def test_a_member_can_be_created_without_either_date(self):
+        # The Add Member form no longer asks for them; both columns are nullable.
+        values = valid_member()
+        del values["date_of_joining"], values["date_of_birth"]
+        member = MemberCreate(**values)
+        self.assertIsNone(member.date_of_joining)
+        self.assertIsNone(member.date_of_birth)
+        self.assertIsNone(member.model_dump()["date_of_joining"])
+
+    def test_a_date_that_is_given_must_still_not_be_in_the_future(self):
+        from datetime import timedelta
+        future = date.today() + timedelta(days=1)
+        with self.assertRaises(ValueError):
+            MemberCreate(**valid_member(date_of_joining=future))
+        with self.assertRaises(ValueError):
+            MemberCreate(**valid_member(date_of_birth=future))
+
     def test_member_input_is_normalized(self):
         member = MemberCreate(**valid_member())
         self.assertEqual(member.name, "Ada Lovelace")

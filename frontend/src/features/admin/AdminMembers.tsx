@@ -557,8 +557,6 @@ export const AdminMembers: React.FC = () => {
   const [formEmail, setFormEmail] = useState('');
   const [formRole, setFormRole] = useState('employee');
   const [formStatus, setFormStatus] = useState('active');
-  const [formDOJ, setFormDOJ] = useState('');
-  const [formDOB, setFormDOB] = useState('');
   const [formDesignation, setFormDesignation] = useState('');
   const [formFloor, setFormFloor] = useState<MemberFloor | ''>('');
 
@@ -577,8 +575,6 @@ export const AdminMembers: React.FC = () => {
     role: { rule: 'enum', label: 'Role', required: true, allowed: allowedRoles },
     status: { rule: 'enum', label: 'Status', required: true, allowed: ['active', 'inactive'] },
     designation: { rule: 'name', label: 'Designation' },
-    dateOfJoining: { rule: 'date', label: 'Date of joining' },
-    dateOfBirth: { rule: 'date', label: 'Date of birth' },
     floor: { rule: 'enum', label: 'Floor', allowed: MEMBER_FLOORS },
   });
 
@@ -589,8 +585,6 @@ export const AdminMembers: React.FC = () => {
     setFormEmail('');
     setFormRole('employee');
     setFormStatus('active');
-    setFormDOJ('');
-    setFormDOB('');
     setFormDesignation('');
     setFormFloor('');
     memberForm.clear();
@@ -604,8 +598,6 @@ export const AdminMembers: React.FC = () => {
     setFormEmail(member.email);
     setFormRole(member.role);
     setFormStatus(member.status);
-    setFormDOJ(member.date_of_joining || '');
-    setFormDOB(member.date_of_birth || '');
     setFormDesignation(member.designation || '');
     setFormFloor(member.floor || '');
     memberForm.clear();
@@ -624,8 +616,6 @@ export const AdminMembers: React.FC = () => {
       role: formRole,
       status: formStatus,
       designation: formDesignation,
-      dateOfJoining: formDOJ,
-      dateOfBirth: formDOB,
       floor: formFloor,
     });
     if (!check.ok) {
@@ -641,8 +631,8 @@ export const AdminMembers: React.FC = () => {
       email: check.values.email as string,
       role: formRole,
       status: formStatus,
-      date_of_joining: (check.values.dateOfJoining as string) || null,
-      date_of_birth: (check.values.dateOfBirth as string) || null,
+      // No dates: the form does not ask for them, and leaving the keys out
+      // means an edit keeps whatever dates a member already has.
       designation: check.values.designation as string,
       floor: (check.values.floor as MemberFloor) || null,
     };
@@ -1402,38 +1392,6 @@ export const AdminMembers: React.FC = () => {
                   <FieldError id={memberForm.errorId('floor')} message={memberForm.errors.floor} />
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-100">
-                  <div>
-                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Date of Joining</label>
-                    <input
-                      type="date"
-                      value={formDOJ}
-                      onChange={e => setFormDOJ(e.target.value)}
-                      onBlur={() => memberForm.validateField('dateOfJoining', formDOJ)}
-                      {...memberForm.fieldProps('dateOfJoining')}
-                      className="w-full rounded-lg border border-slate-300 px-4 py-2.5 outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6] text-sm font-medium text-slate-700"
-                    />
-                    <FieldError
-                      id={memberForm.errorId('dateOfJoining')}
-                      message={memberForm.errors.dateOfJoining}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Date of Birth</label>
-                    <input
-                      type="date"
-                      value={formDOB}
-                      onChange={e => setFormDOB(e.target.value)}
-                      onBlur={() => memberForm.validateField('dateOfBirth', formDOB)}
-                      {...memberForm.fieldProps('dateOfBirth')}
-                      className="w-full rounded-lg border border-slate-300 px-4 py-2.5 outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6] text-sm font-medium text-slate-700"
-                    />
-                    <FieldError
-                      id={memberForm.errorId('dateOfBirth')}
-                      message={memberForm.errors.dateOfBirth}
-                    />
-                  </div>
-                </div>
               </form>
             </div>
             

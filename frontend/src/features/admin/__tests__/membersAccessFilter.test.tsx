@@ -245,10 +245,8 @@ describe('AdminMembers Add Task / Login filters', () => {
     await setInput('input[placeholder="E.g. John Doe"]', 'New Member');
     await setInput('input[type="email"]', 'new-member@example.invalid');
     await setInput('input[placeholder="e.g. Full Stack Developer"]', 'Developer');
-    await setInput('input[type="date"]', '2026-01-01');
-    const dates = container.querySelectorAll('input[type="date"]');
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(dates[1], '1990-01-01');
-    await act(async () => dates[1].dispatchEvent(new Event('input', { bubbles: true })));
+    // The form no longer asks for a date of joining or of birth.
+    expect(container.querySelector('#member-form input[type="date"]')).toBeNull();
     await pickFormFloor('6th floor');
     await submitForm();
 

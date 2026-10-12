@@ -82,8 +82,11 @@ class MemberCreate(BaseModel):
     email: str = Field(..., max_length=254)
     role: MemberRole
     status: MemberStatus = MemberStatus.active
-    date_of_joining: date
-    date_of_birth: date
+    #: Optional: the Add Member form no longer asks for either date (both
+    #: columns are nullable, and an edit can still set them through
+    #: `MemberUpdate`). Still refused when given and in the future.
+    date_of_joining: Optional[date] = None
+    date_of_birth: Optional[date] = None
     designation: str = Field(..., max_length=150)
     floor: Optional[MemberFloor] = None
 
@@ -103,9 +106,9 @@ class MemberCreate(BaseModel):
     @model_validator(mode="after")
     def validate_dates(self):
         today = date.today()
-        if self.date_of_birth > today:
+        if self.date_of_birth is not None and self.date_of_birth > today:
             raise ValueError("Date of birth cannot be in the future")
-        if self.date_of_joining > today:
+        if self.date_of_joining is not None and self.date_of_joining > today:
             raise ValueError("Date of joining cannot be in the future")
         return self
 
