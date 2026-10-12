@@ -291,24 +291,50 @@ session recovered from disk and to nothing else. The cap is now one rule:
 `RECOVERY_CAP_SECONDS` before the backend's clock, queues its stop at last
 evidence + the cap and tells the user.
 
-### ❌ Do not split a midnight the machine slept through without asking the backend
+### ❌ Do not book a midnight the machine slept through
 
-`_maybe_roll_over_midnight` runs on a one-second tick, so a boundary found more
-than `ROLLOVER_VERIFY_AFTER_SECONDS` behind `now` was crossed while the machine
-slept. Splitting at once queued a stop and a start at *every* slept-through
-midnight -- three stopped entries of up to 24 hours after a weekend, which the
-backend accepts (a backdated start is honoured for seven days) even when it had
-already ended the original under the abandoned-timer policy -- and the idle
-service, which treats any `timer_stopped` as a stop, withdrew the wake-gap prompt
-that would have taken the time back out. The first such tick now asks the sync
-service for a heartbeat and waits at most `ROLLOVER_VERIFY_WAIT_SECONDS` for a
-"still running" answer (`SyncService.confirmed_running_since`, pulled by the tick:
-no new signal, timer or thread). An ended entry ends the local session through
-the ordinary closure path; a running one, or no answer, splits as always.
-Adoption and crash recovery are not held. Do not make the split unconditional
-again, and do not "fix" it by never splitting a late boundary: the owner's own
-tests (`test_switching_task_after_a_midnight_split_uses_the_instant_of_the_change`)
-require the split for an entry the backend still considers running.
+`_maybe_roll_over_midnight` runs on a one-second tick, so a boundary found more than
+`ROLLOVER_VERIFY_AFTER_SECONDS` behind `now` was crossed while the machine slept.
+Splitting at every such midnight queued a stop and a start for each -- three stopped
+entries of up to 24 hours after a weekend, which the backend accepts (a backdated start
+is honoured for seven days) however it had treated the original -- and the idle service,
+which treats any `timer_stopped` as a stop, withdrew the wake-gap prompt that would have
+taken the time back out. A person pressing Stop in the first moments after waking booked the
+whole sleep into one entry. The rule (`_late_midnight_outcome`) is the owner's cap applied
+to a live session: quiet for longer than `RECOVERY_CAP_SECONDS` and past more than
+`ROLLOVER_MAX_SLEPT_BOUNDARIES` midnights, the session ends at the last awake instant + the
+cap, needing no answer from the backend; within the allowance the split goes ahead only if
+`SyncService.confirmed_running_since` says the entry is running. Do not make the split
+unconditional again; do not reason from a "quiet since" figure that every held tick
+refreshes (the gate stores it); and do not let Stop or switch skip `_settle_late_midnight`.
+`ROLLOVER_MAX_SLEPT_BOUNDARIES = 0` is the recommended setting and the owner's decision: one
+night is still split when the backend confirms the entry is running, because
+`test_switching_task_after_a_midnight_split_uses_the_instant_of_the_change` says so.
+
+### ❌ Do not read `self._session` twice in an accessor another thread calls
+
+Six services read `active_session()`, `entry_id`, `task_id` and the elapsed figures from their
+own threads while the GUI thread's stop sets `self._session` to `None`. `x.get(...) if x else None`
+written over `self._session` is two reads: the stop lands between them and the reader gets
+`dict(None)` or `None.get(...)` -- an exception inside a tick, and `elapsed_seconds()` returned 0 instead of the
+figure. Take one snapshot (`session = self._session`) and use it.
+`tests/test_timer_thread_visibility.py` makes the interleaving deterministic.
+
+### ❌ Do not take a 404 on a stop for "the entry is over"
+
+The backend answers a stop with 404 for an entry that does not exist *or is not the caller's*,
+and the API layer drops the body, so a proxy or deploy-time 404 is identical. Deleting the queued
+stop on any 404 deleted the only thing that would ever end the entry. `_stop_404_is_final` asks
+the backend what is running for the account; it is final only when no entry, or a different
+one, is. A confirmation that cannot be made, or a 401, leaves the stop queued, and a 404/409
+that arrives after the signed-in account changed is held for its owner.
+
+### ❌ Do not retry at a constant rate
+
+The heartbeat retried every 30 s for as long as a reachable backend kept failing: 25 desktops are
+nothing, a fleet is a self-inflicted load test. It backs off 30 s, 60 s, then the heartbeat interval
+(a longer silence is what the server reads as abandonment), each 50-150%; `request_heartbeat`, a
+reconnect and a delivered beat reset it. Every retry needs backoff with jitter.
 
 ### ❌ Do not write the cap twice
 

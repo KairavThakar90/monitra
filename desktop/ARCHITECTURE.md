@@ -450,6 +450,20 @@ ended, `entry_closed_by_server` fires once and `TimerService`
 figure and tells the user why (`timer_closed_by_server`). What the backend does
 with the signal is docs/TIMING_MODEL.md section 9.
 
+A failing heartbeat backs off (30 s, 60 s, then the interval, each 50-150%) and
+resets on a resume, a reconnect or a delivered beat; a longer silence is what
+the server reads as abandonment, so the interval is the ceiling. The same
+channel answers one question for `TimerService`: `confirmed_running_since` is
+the last instant the backend said this entry is running, and a midnight the
+machine slept through is split only when it is recent
+(`TimerService._late_midnight_outcome`). A machine quiet for longer than
+`RECOVERY_CAP_SECONDS` over more than `ROLLOVER_MAX_SLEPT_BOUNDARIES`
+midnights ends its session at the last awake instant + the cap and asks
+nobody; Stop, switch and Break In settle that first. A 404 on a queued stop is
+final only when `_stop_404_is_final` finds no such entry running for the
+account -- a proxy 404 looks identical, and the stop is the only thing that
+would end the entry.
+
 Every queued `start_timer` / `stop_timer` names the account that queued it
 (`user_id`, from `TimerService._owned`) and is sent only under that account's
 token (`SyncService._require_owner`). Another account -- or nobody -- being

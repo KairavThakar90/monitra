@@ -74,12 +74,21 @@ re-grant a permission.
 - **A timer left on the server is no longer handed back as the one you just started.**
   Starting a task on Monday used to bring back Friday's timer, 65 hours long; if the
   computer that was running it has gone quiet, it is now ended and your new task starts.
-- **Waking a computer after a weekend no longer books the weekend.** If your computer was
-  asleep through midnight, Monitra used to split the timer at every midnight it slept
-  through the moment it woke, saving up to 24 hours for each day. It now asks the server
-  first. If the server had already ended the timer (because the computer went quiet), your
-  timer simply ends there; the days in between are not saved. If the server cannot be
-  reached, the timer is split half a minute later, as before.
+- **Waking a computer after a weekend no longer books the weekend, or the night.** If your
+  computer was asleep through midnight, Monitra used to split the timer at every midnight it
+  slept through the moment it woke, saving up to 24 hours for each day -- and pressing Stop at
+  once saved the whole sleep in one entry. Now a timer on a computer that was asleep for more
+  than a quarter of an hour over a weekend ends a quarter of an hour after the computer was last
+  in use, whether or not the server can be reached, and you are told when. Over a single
+  night the timer still carries on past midnight, but only if the server confirms it is running.
+  Anything you really worked in the gap can be requested as manual time.
+- **A stop is no longer thrown away when the server answers "not found".** A stop pressed for a
+  timer that is still running used to be forgotten if a proxy or a deployment in progress
+  answered 404; Monitra now checks what the server says is running before it believes a 404.
+- **Monitra retries a failing server less and less often** instead of every thirty seconds.
+- **Monitra's background services no longer trip over a timer that has just stopped.** Reading
+  the running timer from another service at the instant it stopped could raise an error in that
+  service and lose a moment of its work.
 - **Quitting after Windows asked to shut down and was refused works normally.** If another
   program stopped a shutdown, Monitra still thought Windows was shutting down: a Quit you chose
   afterwards did nothing at all, and a restart to install an update stopped your timer. Monitra

@@ -68,11 +68,20 @@ Whichever is chosen, record it here before running anything:
 
 ## 5. The write (only after approval)
 
-```
-POST /internal/time-entries/reconcile?dry_run=false&include_unreported=true&entry_id=5958
-```
+Closing an entry by hand needs a second secret that the scheduler does not hold. It is the mechanical form of
+the approval above: it exists only while somebody has set it.
 
-The same request as step 3 with `dry_run=false`. It writes, in one transaction
+1. Set `TIMER_OPERATOR_TOKEN` in the backend's environment to a fresh random value that differs from
+   `EMAIL_DISPATCH_TOKEN`, and restart the backend. (Unset, closing by hand answers 403.)
+2. ```
+   POST /internal/time-entries/reconcile?dry_run=false&include_unreported=true&entry_id=5958
+   X-Email-Dispatch-Token: <EMAIL_DISPATCH_TOKEN>
+   X-Timer-Operator-Token: <TIMER_OPERATOR_TOKEN>
+   ```
+   The same request as step 3 with `dry_run=false`, from a POST (a GET only ever reports).
+3. Unset `TIMER_OPERATOR_TOKEN` and restart. Neither secret goes in a chat, a ticket or a log.
+
+It writes, in one transaction
 under a row lock that is skipped rather than waited for:
 
 * `time_entries`: `end_time`, `total_seconds = round(end - start)`, `status = stopped`.
@@ -115,7 +124,14 @@ was emailed on Monday after the entry had grown, it contains the inflated figure
 and closing the entry does not resend it. Whether to send a corrected one is a
 separate decision.
 
-## 7. After
+## 7. The neighbouring question: weekends an older desktop already booked
+
+Entry 5958 is one open row. Desktops 1.0.0 to 1.3.2 also book a slept-through weekend as *closed* entries -- a run
+of contiguous 24-hour entries on the IST midnights with no activity in them -- which no closure fixes and no
+report shows as open. `backend/scripts/suspected_slept_through_days.sql` (read-only) lists them as evidence for a
+person to review; correcting one is a manual-time or administrator decision, entry by entry.
+
+## 8. After
 
 1. Re-run the report script: 5958 is no longer listed; re-run the preview: before
    and after now agree.
@@ -127,7 +143,7 @@ separate decision.
 4. Tell the member what was done and that any time actually worked after the
    closing instant can be requested as manual time.
 
-## 8. Undo
+## 9. Undo
 
 There is no automated undo, deliberately: reopening a finalized entry is what lets a
 late request resurrect a closed day, and the unique running-entry index makes it race

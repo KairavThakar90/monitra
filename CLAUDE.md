@@ -271,8 +271,12 @@ These are **unimplemented features**, deliberately left out of the stability wor
    is the deployment order, the client compatibility and what was proven;
    **[docs/TIMER_ENTRY_5958_RECONCILIATION_PLAN.md](docs/TIMER_ENTRY_5958_RECONCILIATION_PLAN.md)**
    is the plan for the one legacy row. `include_unreported` on the reconcile endpoint must
-   state `dry_run` and is a POST; a closure takes the idle-period rows before the entry (the
-   order a user's own Stop takes them), so do not reorder those locks.
+   state `dry_run` and is a POST; closing by hand (`dry_run=false`) also needs `TIMER_OPERATOR_TOKEN`
+   (a second secret the scheduler does not hold, empty = disabled, never in a chat or a log); the
+   GET alias only reports; a closure takes the idle-period rows before the entry (the order a
+   user's own Stop takes them), so do not reorder those locks. A start never begins inside time the
+   user already has recorded, and a machine that sleeps through a weekend ends its session at the last
+   awake instant + 15 minutes (`ROLLOVER_MAX_SLEPT_BOUNDARIES`, the owner's decision for one night).
 
 ---
 

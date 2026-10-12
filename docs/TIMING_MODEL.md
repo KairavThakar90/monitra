@@ -486,7 +486,8 @@ recommended without evidence.
 |---|---|---|---|
 | Outage of 2 h or more, desktop working offline | silence | reports freeze at last signal + 15 min after 10 min; with the job on, closed at that instant after 2 h. On reconnect the heartbeat says `closed_by_server`; the desktop ends its session and says why; the queued windows still upload to the closed entry | Work after last signal + 15 min is not counted until claimed by a manual-time request. **The honest loss.** |
 | Laptop asleep for under 2 h | stale, not closed | on wake the heartbeat makes it live again and the figure resumes from now | The whole sleep counts unless the wake-gap prompt discards it (needs idle detection on and a gap past its threshold) |
-| Asleep overnight or over a weekend | stale, then closed at last signal + 15 min (job on) | the desktop wakes, asks the backend first (9.6), hears `closed_by_server`, ends the session; nothing is split | With the job **off**, the entry is still open: the wake revives it and the desktop's midnight split books the days (9.7) -- the reason the job must be enabled after the report-only period |
+| Asleep over a weekend | stale, then closed at last signal + 15 min (job on) | the desktop wakes and ends the session at the last instant it was awake + 15 min, without asking anyone (9.6); the server's closure is the same instant | none beyond the quarter hour |
+| Asleep for one night | stale, then closed (job on) or still open (job off) | the desktop asks the backend: `closed_by_server` ends the session; "running" splits at midnight as the owner designed; no answer or a person acting first ends it at last awake + 15 min | with the job off and the entry alive, the night is booked (9.7) |
 | App left open, timer stopped | no running entry | nothing to close | none |
 | A long session that keeps reporting in | live | never closed; no maximum session length exists | A person who leaves a running timer on an open app with idle detection off is counted until they return. Flagged `manual_review` after 24 h in the SQL report only. **A business decision** |
 | Idle prompt never answered, desktop alive | live, a pending idle period | closed at the prompt after 4 h; the idle stretch is discarded | none beyond the owner's own rule |
@@ -557,9 +558,13 @@ evidence (else the start) and records `decided_by = operator` and the evidence
 in the audit row. Read the dry-run for the same parameters first
 (`dry_run=true`): `include_unreported` must say which it means -- an omitted
 `dry_run` follows `TIMER_RECONCILER_ENABLED`, which would turn a look at one
-legacy row into its closure the day the job is switched on -- and only a POST
-may carry it; the GET alias for cron-style schedulers runs the scheduled pass
-and nothing else. What closing one entry changes in every report, for the
+legacy row into its closure the day the job is switched on. Closing by hand
+(`dry_run=false`) also needs a **second secret the scheduler does not hold**,
+`TIMER_OPERATOR_TOKEN` (sent as `X-Timer-Operator-Token`): empty by default, which
+disables it, and it must differ from `EMAIL_DISPATCH_TOKEN`. The scheduled pass and
+a look need only the dispatch token. The GET alias for cron-style schedulers only
+ever reports, even with the job on: a GET is a safe method, and applying is a
+POST. What closing one entry changes in every report, for the
 entry in the incident: `docs/TIMER_ENTRY_5958_RECONCILIATION_PLAN.md`
 (`backend/scripts/entry_reconciliation_preview.sql` for any other).
 
@@ -584,20 +589,64 @@ entry in the incident: `docs/TIMER_ENTRY_5958_RECONCILIATION_PLAN.md`
 * **A stop is honoured however old it is** (backend `_event_time(trust_age=True)`):
   the seven-day ceiling is for backdated *starts*; applied to a stop its
   fallback ("use the server clock") was the latest instant the stop could take.
-* **A midnight found hours late asks the backend before splitting**
-  (`TimerService._rollover_confirmed`). The desktop splits a session at IST
+* **A machine that sleeps through midnight does not book the night or the weekend**
+  (`TimerService._late_midnight_outcome`). The desktop splits a session at IST
   midnight on a one-second tick. A boundary found more than two minutes behind
-  `now` was crossed while the machine slept, and the first tick after the wake
-  used to queue a stop and a start at *every* slept-through midnight -- three
-  stopped entries of up to 24 hours after a weekend, which the backend accepts
-  (it honours a backdated start for seven days) even when it had already closed
-  the original entry. Now that tick asks the sync service for a heartbeat and
-  waits at most 30 s for a "still running" answer: if the backend ended the
-  entry, the local session ends with it (`end_session_closed_remotely`) and
-  nothing is split; if it says running, or does not answer, the split goes ahead
-  as it always did. An adoption (the backend's own word) and a crash recovery
-  (bounded by the 15-minute cap) are not held. No new thread, timer or signal:
-  the tick polls, and the sync service remembers the last "running" answer.
+  `now` was crossed while the machine slept, and the first tick after the wake used
+  to queue a stop and a start at *every* slept-through midnight -- three stopped
+  entries of up to 24 hours after a weekend, which the backend accepts (it honours
+  a backdated start for seven days) even when it had already closed the original
+  entry; a person who pressed Stop in the first moments after waking booked the
+  whole sleep into one entry; and the idle service, taking the rollover's stop for a
+  user stop, withdrew the wake-gap prompt. The rule now uses the owner's own cap
+  (`RECOVERY_CAP_SECONDS`, which crash recovery already applies):
+  * quiet for longer than 15 minutes and past more than
+    `ROLLOVER_MAX_SLEPT_BOUNDARIES` (default 1) midnights -- a weekend -- the
+    session ends at **the last instant the machine was known awake + 15 minutes**.
+    No answer from the backend is needed, so it holds offline; the backend's own
+    closure lands at the same instant, to within a heartbeat, and either replays
+    harmlessly over the other;
+  * within the allowance (one night) the owner's split-and-continue stands **only if
+    the backend confirms the entry is still running**: the tick asks the sync service
+    for a heartbeat once and waits at most 30 s. An entry the backend ended ends the
+    local session (`end_session_closed_remotely`); no answer, an entry the backend has
+    never heard of, or a person acting before the answer arrives is not a
+    confirmation, and the night is not booked;
+  * a short sleep (inside the cap) and a machine awake across midnight split at the
+    boundary exactly as always, without asking;
+  * Stop, switch and Break In settle a pending slept-through midnight first;
+  * if the quarter hour reaches past a midnight, the session is split there first, so
+    the reports that key on the start date are not mis-billed;
+  * an adoption (the backend's own word) and a crash recovery (bounded by the cap) are
+    unchanged. No new thread, timer or signal: the tick polls, and the sync service
+    remembers the last "running" answer.
+
+  `ROLLOVER_MAX_SLEPT_BOUNDARIES = 0` never books a slept-through night even when the
+  backend says running. It is the recommended setting and the owner's decision: it
+  overrides the setup of `test_switching_task_after_a_midnight_split_uses_the_instant_of_the_change`
+  for a production sync service (docs/TIMER_ABANDONMENT_ROLLOUT.md section 8).
+* **A start never begins inside time the user already has recorded.** The backend
+  honours a backdated start, which is what lets a start queued offline record when the
+  timer really began; it also honoured one that landed inside a finalized entry of the
+  same user, double-booking the stretch (reproduced on PostgreSQL). It now begins where
+  the recorded time containing it ends (chains resolved), logged as `event=start.clamped`.
+  Moved, never refused -- a refused start would sit in the desktop's queue for ever with
+  its stop waiting behind it. Entries created by reassigning idle time to another task
+  are the one overlap by design and are excluded. This does **not** stop a fresh
+  backdated start into *unrecorded* time: the server cannot tell a slept-through day
+  from a worked one, so an older desktop's cascade is made visible
+  (`backend/scripts/suspected_slept_through_days.sql`), not prevented.
+* **A 404 on a stop is checked before it counts as done.** The backend answers a stop
+  with 404 for an entry that does not exist *or is not the caller's*, and the API layer
+  drops the body, so a proxy or deploy-time 404 looked identical and the queued stop --
+  the only thing that would ever end the entry -- was deleted. The consumer now asks the
+  backend what is running for the account: final only when no entry, or a different one,
+  is. A confirmation it cannot make, or a 401, leaves the stop queued; a 404/409 that
+  arrives after the signed-in account changed is held for its owner.
+* **The heartbeat backs off under failure**: 30 s, 60 s, then the heartbeat interval
+  (the ceiling, since a longer silence is what the server reads as abandonment), each
+  50-150%; a resume, a reconnect and a delivered beat reset it. The hourly probe of a
+  backend without the route is jittered.
 * **A manual-time request is no longer refused by a silent entry.** The overlap
   check treated a running entry as open-ended, so a forgotten timer refused every
   request after it -- the one way its owner can claim the hours they really
@@ -625,16 +674,16 @@ entry in the incident: `docs/TIMER_ENTRY_5958_RECONCILIATION_PLAN.md`
   windows when Input Monitoring is granted, so without it the server has no signal
   from it (`unknown`, never auto-closed); the new desktop's heartbeat does not
   depend on that permission.
-* **A desktop the server still believes is running splits at every midnight it
-  slept through** (the owner's design, pinned by
-  `test_switching_task_after_a_midnight_split_uses_the_instant_of_the_change`).
-  After the confirmation in 9.6 that is the case only when the job is off or the
-  desktop is unreachable. Whether a sleep of days should be booked at all, even
-  with the person at the keyboard to discard it, is a decision for the owner.
-* The wake-gap prompt (idle detection) is the only thing that takes an unattended
-  sleep under the no-signal threshold back out; it is withdrawn when the timer
-  stops, which a midnight split counts as. A user with idle detection off keeps
-  that time.
+* **One slept-through night is still booked when the backend confirms the entry is
+  running** (the owner's design, pinned by
+  `test_switching_task_after_a_midnight_split_uses_the_instant_of_the_change`): the job
+  off, or the entry alive. A weekend is not, and a night the backend cannot confirm is
+  not. Whether a single night should be booked at all is the owner's decision
+  (`ROLLOVER_MAX_SLEPT_BOUNDARIES`, section 9.6; docs/TIMER_ABANDONMENT_ROLLOUT.md
+  section 8).
+* The wake-gap prompt (idle detection) is what takes an unattended sleep under the
+  no-signal threshold back out; it is withdrawn when the timer stops, which a midnight
+  split counts as. A user with idle detection off keeps that time.
 * An `adopt_remote_session` decline stops a backend entry silent for over the
   15-minute cap, which is shorter than the server's 2 hours: a second machine
   signing in during a long outage can end an alive-but-offline first machine's
