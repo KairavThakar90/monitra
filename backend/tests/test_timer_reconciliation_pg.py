@@ -711,6 +711,98 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
         TimeEntryLivenessService.touch(self.db, entry.id, self.ids.user_id)
         self.assertIsNotNone(self._reload(entry.id).last_seen_at)
 
+    # ── the real upload routes (not the service call) ─────────────────────────
+
+    def _client(self):
+        """The real app, its real routes and dependency chain, on this database."""
+        from fastapi.testclient import TestClient
+
+        from app.core.database import get_db
+        from app.core.security import get_current_user
+        from app.main import app
+
+        app.dependency_overrides[get_db] = lambda: self.db
+        app.dependency_overrides[get_current_user] = lambda: self.user
+        self.addCleanup(app.dependency_overrides.clear)
+        return TestClient(app)
+
+    def test_an_activity_window_posted_to_the_real_route_counts_as_proof_of_life(self):
+        """What a desktop that predates the heartbeat does every minute it runs."""
+        now = self._db_now()
+        entry = self._running(now - timedelta(hours=2), last_seen=None)
+        response = self._client().post(f"/api/v1/time-entries/{entry.id}/activity/batch", json={"samples": [{
+            "recorded_at": (now - timedelta(seconds=60)).isoformat(), "keyboard_strokes": 3,
+            "mouse_clicks": 1, "mouse_movements": 10, "activity_percentage": 40, "window_seconds": 60,
+            "client_event_id": "window-1",
+        }]})
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertIsNotNone(self._reload(entry.id).last_seen_at)
+
+    def test_an_application_usage_batch_posted_to_the_real_route_counts_as_proof_of_life(self):
+        now = self._db_now()
+        entry = self._running(now - timedelta(hours=2), last_seen=None)
+        response = self._client().post(f"/api/v1/time-entries/{entry.id}/app-usage/batch", json={"records": [{
+            "application_name": "Code", "window_title": "main.py", "duration_seconds": 30,
+            "recorded_at": (now - timedelta(seconds=40)).isoformat(),
+        }]})
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertIsNotNone(self._reload(entry.id).last_seen_at)
+
+    def test_an_idle_report_posted_to_the_real_route_counts_as_proof_of_life(self):
+        now = self._db_now()
+        entry = self._running(now - timedelta(hours=2), last_seen=None)
+        response = self._client().post("/api/v1/idle-periods", json={
+            "time_entry_id": entry.id,
+            "idle_started_at": (now - timedelta(minutes=30)).isoformat(),
+            "idle_detected_at": (now - timedelta(minutes=1)).isoformat(),
+            "client_event_id": f"idle:{entry.id}:1",
+        })
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertIsNotNone(self._reload(entry.id).last_seen_at)
+
+    def test_a_late_upload_for_an_entry_the_server_already_closed_does_not_reopen_it(self):
+        """The backlog drains after the outage: the windows are kept, the entry stays closed."""
+        start = datetime(2026, 10, 9, 11, 53, 21, tzinfo=UTC)
+        seen = start + timedelta(minutes=27)
+        entry = self._running(start, last_seen=seen)
+        self._reconcile(now=datetime(2026, 10, 12, 5, 25, 54, tzinfo=UTC))
+        closed = self._reload(entry.id)
+        end, last_seen = closed.end_time, closed.last_seen_at
+        self.assertIsNotNone(end)
+
+        self._client().post(f"/api/v1/time-entries/{entry.id}/activity/batch", json={"samples": [{
+            "recorded_at": (start + timedelta(minutes=20)).isoformat(), "keyboard_strokes": 3,
+            "mouse_clicks": 1, "mouse_movements": 10, "activity_percentage": 40, "window_seconds": 60,
+            "client_event_id": "late-window",
+        }]})
+        after = self._reload(entry.id)
+        self.assertEqual((after.end_time, after.last_seen_at, after.status), (end, last_seen, "stopped"))
+
+    def test_a_heartbeat_for_somebody_elses_entry_is_a_404_and_touches_nothing(self):
+        other = self.db.execute(text(
+            "INSERT INTO users (organization_id, username, email, name, role_name, capture_frequency) "
+            "VALUES (1, 'asha', 'asha@example.invalid', 'Asha', 'employee', 3) RETURNING id"
+        )).scalar()
+        self.db.commit()
+        entry = self._running(self._db_now() - timedelta(hours=1), last_seen=None, user_id=other)
+        response = self._client().post(f"/api/v1/time-entries/{entry.id}/heartbeat")
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertIsNone(self._reload(entry.id).last_seen_at)
+
+    def test_a_delayed_heartbeat_for_an_entry_the_server_closed_says_so_and_changes_nothing(self):
+        start = datetime(2026, 10, 9, 11, 53, 21, tzinfo=UTC)
+        entry = self._running(start, last_seen=start + timedelta(minutes=27))
+        self._reconcile(now=datetime(2026, 10, 12, 5, 25, 54, tzinfo=UTC))
+        closed = self._reload(entry.id)
+        response = self._client().post(f"/api/v1/time-entries/{entry.id}/heartbeat")
+        body = response.json()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(body["closed_by_server"])
+        self.assertEqual(body["closed_reason"], "no_signal")
+        self.assertIsNotNone(body["entry"]["end_time"])
+        after = self._reload(entry.id)
+        self.assertEqual((after.end_time, after.last_seen_at), (closed.end_time, closed.last_seen_at))
+
     def test_an_upload_for_somebody_elses_entry_proves_nothing(self):
         from app.services.time_entry_liveness import TimeEntryLivenessService
 

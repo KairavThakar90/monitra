@@ -602,6 +602,29 @@ class HeartbeatTests(unittest.TestCase):
 
 
 class TouchTests(unittest.TestCase):
+    def test_a_screenshot_upload_counts_as_proof_of_life_only_after_it_is_stored(self):
+        """The one upload that cannot run against a database without Google Drive: the route
+        function is called directly with the storage layer patched, and the order is the point
+        -- a touch before the upload would credit a desktop for a request that then failed."""
+        import io
+
+        from app.api import time_entry_screenshot as route
+
+        order = MagicMock()
+        user = SimpleNamespace(id=260, organization_id=1)
+        db = object()
+        upload = SimpleNamespace(file=io.BytesIO(b"webp"), content_type="image/webp")
+        with patch.object(route.TimeEntryScreenshotService, "upload_screenshot", order.upload), \
+             patch.object(route.TimeEntryLivenessService, "touch", order.touch), \
+             patch.object(route, "TimeEntryScreenshotRead", MagicMock()):
+            order.upload.return_value = (SimpleNamespace(), False)
+            route.upload_screenshot(
+                time_entry_id=5958, file=upload, client_screenshot_id="shot-1", captured_at=None,
+                monitor_number=1, display_count=1, current_user=user, db=db,
+            )
+        self.assertEqual([c[0] for c in order.mock_calls], ["upload", "touch"])
+        self.assertEqual(order.touch.call_args.args, (db, 5958, 260))
+
     def test_a_stand_in_database_is_not_asked_anything(self):
         db = MagicMock()
         TimeEntryLivenessService.touch(db, 5958, 260)
