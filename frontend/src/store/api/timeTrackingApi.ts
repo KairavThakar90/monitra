@@ -76,6 +76,19 @@ export interface ActiveTimeTrackingItem {
    * no activity has been measured yet today: unknown, which is not 0%.
    */
   activity_percentage: number | null;
+  /**
+   * Whether the member's desktop is still reporting in (docs/TIMING_MODEL.md
+   * section 9). `live`: it has within the stale window. `stale`: it has gone
+   * quiet, and `elapsed_seconds` has stopped growing at `measured_until` -- this
+   * is a timer nobody is vouching for, not live work. `unknown`: it has never
+   * reported (a desktop older than the heartbeat), measured to now as before.
+   * Absent from a backend that predates the field.
+   */
+  liveness?: 'live' | 'stale' | 'unknown' | null;
+  /** The last instant the member's desktop proved it was alive (UTC). */
+  last_seen_at?: string | null;
+  /** The instant `elapsed_seconds` is measured to (UTC). */
+  measured_until?: string | null;
 }
 
 export interface ActiveTimeTrackingResponse {

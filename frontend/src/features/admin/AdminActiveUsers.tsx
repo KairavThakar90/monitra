@@ -18,6 +18,17 @@ import { formatISTDate, formatISTTime12 } from "../../utils/duration";
  * the member's duration-weighted activity today, or a dash when none has been
  * measured yet (never a made-up 0%).
  *
+ * A row is only as live as its desktop. The server keeps the instant each
+ * running entry's desktop last reported in; once it has been silent past the
+ * stale window the row says so ("No signal since 6:05 pm") and its figure stops
+ * where the evidence stops, instead of presenting a machine that is switched off
+ * as someone at work. A row whose desktop has never reported (an older Monitra, or
+ * a timer started before reporting began) is marked "Unverified": the server can
+ * say nothing about it either way, and the page does not pretend otherwise. The
+ * row is not hidden: an administrator needs to see it,
+ * and the server closes it on its own after a longer silence
+ * (docs/TIMING_MODEL.md section 9).
+ *
  * The backend scopes the list to what the caller may see: the organization, a
  * leader's team, or just the caller.
  */
@@ -39,6 +50,17 @@ const startedLabel = (startIso: string, serverIso: string | undefined) => {
   const startDay = formatISTDate(startIso);
   return startDay && startDay !== formatISTDate(serverIso) ? `${startDay}, ${time}` : time;
 };
+
+/** "6:05 pm", or "09 Oct 2026, 6:05 pm" when the instant is on an earlier IST day than the answer. */
+const sinceLabel = (iso: string, serverIso: string | undefined) => {
+  const time = formatISTTime12(iso);
+  if (!serverIso) return time;
+  const day = formatISTDate(iso);
+  return day && day !== formatISTDate(serverIso) ? `${day}, ${time}` : time;
+};
+
+/** A row whose desktop has stopped reporting in. */
+const isNoSignal = (item: ActiveTimeTrackingItem) => item.liveness === "stale";
 
 type SortOrder = "asc" | "desc";
 
@@ -98,6 +120,8 @@ export const AdminActiveUsers: React.FC = () => {
   // the order the page opens in; the header flips it.
   const [startedOrder, setStartedOrder] = React.useState<SortOrder>("asc");
   const items = React.useMemo(() => sortByStarted(data?.items ?? [], startedOrder), [data?.items, startedOrder]);
+  const noSignalCount = items.filter(isNoSignal).length;
+  const workingCount = items.length - noSignalCount;
 
   return (
     <V2Shell title="Active Users" subtitle="Members with a timer running right now">
@@ -142,8 +166,18 @@ export const AdminActiveUsers: React.FC = () => {
                   <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
                 </span>
                 <span className="text-[13px] font-bold text-[#0F172A]" data-testid="active-users-count">
-                  {data?.total ?? items.length} {(data?.total ?? items.length) === 1 ? "member" : "members"} active
+                  {noSignalCount === 0 ? (data?.total ?? items.length) : workingCount}{" "}
+                  {(noSignalCount === 0 ? (data?.total ?? items.length) : workingCount) === 1 ? "member" : "members"} active
                 </span>
+                {noSignalCount > 0 && (
+                  <span
+                    className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800"
+                    data-testid="active-users-no-signal-count"
+                    title="Their timer is running on the server but their desktop has stopped reporting in"
+                  >
+                    {noSignalCount} with no signal
+                  </span>
+                )}
               </div>
 
               <div
@@ -183,6 +217,7 @@ export const AdminActiveUsers: React.FC = () => {
                       <tr
                         key={item.time_entry_id}
                         data-testid="active-user-row"
+                        data-liveness={item.liveness ?? "unknown"}
                         className="border-b border-[#F1F5F9] last:border-0 hover:bg-slate-50/60"
                       >
                         <td className="px-3 py-3">
@@ -221,8 +256,30 @@ export const AdminActiveUsers: React.FC = () => {
                             `${item.activity_percentage}%`
                           )}
                         </td>
-                        <td className="whitespace-nowrap px-3 py-3 text-right font-mono font-semibold text-[#0F172A]">
+                        <td
+                          className={`whitespace-nowrap px-3 py-3 text-right font-mono font-semibold ${
+                            isNoSignal(item) ? "text-[#64748B]" : "text-[#0F172A]"
+                          }`}
+                        >
                           {item.elapsed_time}
+                          {item.liveness === "unknown" && (
+                            <div
+                              className="font-sans text-[11px] font-medium text-[#94A3B8]"
+                              data-testid="active-user-unverified"
+                              title="This member's Monitra has not reported in for this timer (an older version, or it was started before reporting began), so the server cannot tell whether it is still running. The figure is the time since it started."
+                            >
+                              Unverified
+                            </div>
+                          )}
+                          {isNoSignal(item) && (
+                            <div
+                              className="font-sans text-[11px] font-semibold text-amber-700"
+                              data-testid="active-user-no-signal"
+                              title="This timer is still running on the server, but this member's desktop has stopped reporting in. The time shown stops at the last signal; the server closes the timer on its own if it stays silent."
+                            >
+                              No signal{item.last_seen_at ? ` since ${sinceLabel(item.last_seen_at, data?.server_time)}` : ""}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     ))}

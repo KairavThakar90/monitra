@@ -131,6 +131,79 @@ describe('AdminActiveUsers', () => {
     expect(container.querySelector('[data-testid="active-users-count"]')!.textContent).toContain('2 members active');
   });
 
+  describe('a timer whose desktop has gone quiet', () => {
+    // The production row: started Friday 17:23 IST, last heard from at 17:50, and the
+    // page read "65:32:33" on Monday morning. The server now freezes the figure at the
+    // last evidence and says the desktop has stopped reporting in.
+    const friday = () =>
+      item({
+        time_entry_id: 5958, employee_id: 260, name: 'Kunal Vaghela', designation: 'Flutter Developer',
+        project_name: 'Coach Companion - Kyle Projects', task_name: 'Mobile Application Development',
+        start_time: '2026-10-09T11:53:21Z', // 17:23 IST on Friday
+        elapsed_seconds: 2520, elapsed_time: '00:42:00', activity_percentage: null,
+        liveness: 'stale', last_seen_at: '2026-10-09T12:20:21Z', measured_until: '2026-10-09T12:35:21Z',
+      });
+    const monday = '2026-10-12T05:25:54Z'; // 10:55 am IST
+
+    it('says there is no signal, since when, and shows the frozen figure -- not 65 hours', async () => {
+      respond = () => json({ items: [friday()], total: 1, server_time: monday });
+      await mount();
+
+      const row = rows()[0] as HTMLElement;
+      expect(row.getAttribute('data-liveness')).toBe('stale');
+      expect(row.textContent).toContain('00:42:00');
+      expect(row.textContent).not.toContain('65:');
+      const note = row.querySelector('[data-testid="active-user-no-signal"]')!;
+      expect(note.textContent).toBe('No signal since 09 Oct 2026, 5:50 pm');
+    });
+
+    it('keeps the member on the page rather than hiding them', async () => {
+      respond = () => json({ items: [friday()], total: 1, server_time: monday });
+      await mount();
+      expect(rows()).toHaveLength(1);
+      expect(rows()[0].textContent).toContain('Kunal Vaghela');
+    });
+
+    it('counts members who are working apart from those with no signal', async () => {
+      respond = () =>
+        json({
+          items: [item({ liveness: 'live', last_seen_at: '2026-10-12T05:25:00Z' }), friday()],
+          total: 2,
+          server_time: monday,
+        });
+      await mount();
+      expect(container.querySelector('[data-testid="active-users-count"]')!.textContent).toContain('1 member active');
+      expect(container.querySelector('[data-testid="active-users-no-signal-count"]')!.textContent).toBe('1 with no signal');
+    });
+
+    it('marks a timer whose desktop never reported as unverified, and says nothing for a live row', async () => {
+      respond = () =>
+        json({
+          items: [
+            item({ time_entry_id: 1, name: 'Live Lena', liveness: 'live', last_seen_at: '2026-10-12T05:25:30Z' }),
+            item({ time_entry_id: 2, name: 'Unknown Uma', liveness: 'unknown', last_seen_at: null }),
+            item({ time_entry_id: 3, name: 'Older Omar' }), // a backend that predates the field
+          ],
+          total: 3,
+          server_time: monday,
+        });
+      await mount();
+      expect(container.querySelectorAll('[data-testid="active-user-no-signal"]')).toHaveLength(0);
+      expect(container.querySelector('[data-testid="active-users-no-signal-count"]')).toBeNull();
+      expect(container.querySelector('[data-testid="active-users-count"]')!.textContent).toContain('3 members active');
+      // Only the row the server could not verify says so: not the live one, and not a backend
+      // that predates the field (which has said nothing about any row).
+      const unverified = rows().filter((row) => row.querySelector('[data-testid="active-user-unverified"]'));
+      expect(unverified.map((row) => row.textContent)).toEqual([expect.stringContaining('Unknown Uma')]);
+    });
+
+    it('says "no signal" without a time when the server did not give one', async () => {
+      respond = () => json({ items: [friday()].map((i) => ({ ...i, last_seen_at: null })), total: 1, server_time: monday });
+      await mount();
+      expect(container.querySelector('[data-testid="active-user-no-signal"]')!.textContent).toBe('No signal');
+    });
+  });
+
   describe('Started column sorting', () => {
     // Deliberately not in start order, and one spelling uses "+00:00" instead of "Z".
     const threeRunning = () =>
