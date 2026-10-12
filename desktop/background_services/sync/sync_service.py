@@ -200,6 +200,8 @@ class SyncService(LoopService):
         self._heartbeat_entry_id: Optional[int] = None
         self._heartbeat_unsupported_until = 0.0
         self._heartbeat_failing = False
+        #: Consecutive failed beats; grows the retry delay (see `_heartbeat_tick`).
+        self._heartbeat_failures = 0
         self._closed_reported_for: Optional[int] = None
         #: `(entry_id, monotonic seconds)` of the last heartbeat the backend answered
         #: with the entry still running. Written here, read by the timer on the GUI
@@ -465,20 +467,32 @@ class SyncService(LoopService):
                 # An older backend has no such route, or the entry is not this
                 # account's. Either way there is nothing to beat against; ask
                 # again later rather than every interval.
-                self._heartbeat_unsupported_until = now + self.HEARTBEAT_UNSUPPORTED_RETRY_SECONDS
+                self._heartbeat_unsupported_until = now + self.HEARTBEAT_UNSUPPORTED_RETRY_SECONDS * random.uniform(0.8, 1.2)
                 self._heartbeat_entry_id = entry_id
                 self.log.info(
                     "heartbeat for entry %s not accepted (HTTP %s); trying again in %d min",
                     entry_id, status, int(self.HEARTBEAT_UNSUPPORTED_RETRY_SECONDS // 60),
                 )
                 return
-            self._heartbeat_due_at = now + self.HEARTBEAT_RETRY_SECONDS * random.uniform(0.5, 1.5)
+            # Bounded exponential backoff with jitter: a backend that is reachable but
+            # failing (5xx, timeouts) is not asked every 30 s by every desktop for as
+            # long as it fails. 30 s, 60 s, then the heartbeat interval -- the ceiling,
+            # since a silence longer than that is what the server reads as abandonment
+            # -- each 50-150%. A backend that is back, a resume and a reconnect all set
+            # the next beat to "now" (`request_heartbeat`, the end of a hold).
+            self._heartbeat_failures += 1
+            backoff = min(
+                self.HEARTBEAT_RETRY_SECONDS * (2 ** (self._heartbeat_failures - 1)),
+                self.HEARTBEAT_INTERVAL_SECONDS,
+            )
+            self._heartbeat_due_at = now + backoff * random.uniform(0.5, 1.5)
             self._heartbeat_entry_id = entry_id
             if not self._heartbeat_failing:        # one line per outage, not per attempt
                 self._heartbeat_failing = True
                 self.log.info("heartbeat for entry %s failed (%s); will retry", entry_id, exc)
             return
 
+        self._heartbeat_failures = 0
         if self._heartbeat_failing:
             self._heartbeat_failing = False
             self.log.info("heartbeat for entry %s delivered again", entry_id)
@@ -577,19 +591,19 @@ class SyncService(LoopService):
         lowered = message.lower()
 
         if status == 401 or "session expired" in lowered:
-            # Hold rather than burn retries against a token that cannot work.
-            # A timer action is held *and kept*: parked as `failed` it is never
-            # read again until the next launch -- and a tray application is not
-            # relaunched for days -- so a stop that met a signed-out client
-            # (a logout that cleared the token a moment before the request, a
-            # session that expired while the machine slept) left its entry
-            # running on the backend for as long as the process lived.
-            keep = action_type in self._cache.TIMER_ACTION_TYPES
-            self._cache.fail_action(action_id, message, max_retries=None if keep else 0)
-            self._awaiting_auth = True
-            self.log.warning("authentication required; holding queue", extra={"op": action_id})
-            self.auth_required.emit()
-            self.action_failed.emit(action_id, action_type, "Session expired", False)
+            self._hold_for_auth(action_id, action_type, message)
+            return
+
+        # A 404 or 409 on a timer action says something about the *account whose token
+        # carried it*. If the signed-in account is no longer the one that queued the
+        # action (a sign-in during the request), the answer was for somebody else's
+        # token: it proves nothing about this action, which waits for its own account.
+        if status in (404, 409) and action_type in self._cache.TIMER_ACTION_TYPES                 and self._signed_in_account_changed(payload or {}):
+            self.log.warning(
+                "%s answered %s, but the signed-in account is no longer the one that queued it; "
+                "holding it for its owner", action_type, status, extra={"op": action_id},
+            )
+            self._cache.defer_action(action_id, "answered under another account", delay_seconds=60.0)
             return
 
         if status == 409 or "already has an active timer" in lowered or "already stopped" in lowered:
@@ -619,6 +633,8 @@ class SyncService(LoopService):
             return
 
         if status == 404 or "not found" in lowered:
+            if action_type == "stop_timer" and not self._stop_404_is_final(action_id, action_type, payload or {}):
+                return
             self._cache.complete_action(action_id)
             self.action_failed.emit(action_id, action_type, message, False)
             return
@@ -633,6 +649,67 @@ class SyncService(LoopService):
         max_retries = None if action_type in self._cache.TIMER_ACTION_TYPES else 10
         will_retry = self._cache.fail_action(action_id, message, max_retries=max_retries)
         self.action_failed.emit(action_id, action_type, message, will_retry)
+
+    def _hold_for_auth(self, action_id: str, action_type: str, message: str) -> None:
+        """Hold rather than burn retries against a token that cannot work.
+
+        A timer action is held *and kept*: parked as `failed` it is never read again
+        until the next launch -- and a tray application is not relaunched for days --
+        so a stop that met a signed-out client (a logout that cleared the token a
+        moment before the request, a session that expired while the machine slept) left
+        its entry running on the backend for as long as the process lived.
+        """
+        keep = action_type in self._cache.TIMER_ACTION_TYPES
+        self._cache.fail_action(action_id, message, max_retries=None if keep else 0)
+        self._awaiting_auth = True
+        self.log.warning("authentication required; holding queue", extra={"op": action_id})
+        self.auth_required.emit()
+        self.action_failed.emit(action_id, action_type, "Session expired", False)
+
+    def _signed_in_account_changed(self, payload: Dict[str, Any]) -> bool:
+        owner = payload.get("user_id")
+        return owner is not None and self._current_user_id() != owner
+
+    def _stop_404_is_final(self, action_id: str, action_type: str, payload: Dict[str, Any]) -> bool:
+        """May a 404 on a stop be taken for "the entry is over"? Asks the backend.
+
+        The backend answers a stop with 404 when the entry does not exist *or is not the
+        caller's*, and the API layer drops the response body, so a 404 from a proxy that
+        does not know the route (a deploy in progress, an error page) looks identical.
+        Deleting the queued stop on any of them deletes the only thing that would ever end
+        the entry. So the running entry is read back: it is final only when no entry, or a
+        different one, is running for this account. Anything we cannot establish keeps the
+        stop queued -- a stop is never abandoned over a doubt.
+
+        :return: True when the stop may be completed; False when it has been left queued
+            (retry, hold or deferral already recorded).
+        """
+        try:
+            answer = self._time_entry_service.get_active_time_entry()
+        except ApiError as exc:
+            if getattr(exc, "status_code", None) == 401:
+                self._hold_for_auth(action_id, action_type, str(exc))
+            else:
+                self._cache.fail_action(
+                    action_id, f"stop answered 404 and the entry could not be confirmed: {exc}",
+                    max_retries=None,
+                )
+            return False
+        if self._signed_in_account_changed(payload):
+            # The account changed while we were asking: whatever it said is not about this stop.
+            self._cache.defer_action(action_id, "answered under another account", delay_seconds=60.0)
+            return False
+        active = answer.get("entry") if isinstance(answer, dict) else None
+        if isinstance(active, dict) and active.get("end_time") is None                 and payload.get("entry_id") is not None and active.get("id") == payload.get("entry_id"):
+            self.log.warning(
+                "stop for entry %s answered 404, but the backend says it is still running; "
+                "keeping the stop queued", payload.get("entry_id"), extra={"op": action_id},
+            )
+            self._cache.fail_action(
+                action_id, "stop answered 404 but the entry is still running", max_retries=None,
+            )
+            return False
+        return True
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 

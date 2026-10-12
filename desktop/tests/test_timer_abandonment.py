@@ -234,14 +234,76 @@ def test_a_failed_beat_is_retried_soon_without_a_log_line_per_attempt(beat, capl
     with caplog.at_level("INFO"):
         beat.tick()
         for _ in range(5):
-            beat.tick(advance=SyncService.HEARTBEAT_RETRY_SECONDS * 2)
+            # Past the longest backoff (the interval, at 150% jitter), so every tick is due.
+            beat.tick(advance=SyncService.HEARTBEAT_INTERVAL_SECONDS * 2)
     assert beat.backend.send_heartbeat.call_count == 6
     failures = [r for r in caplog.records if "heartbeat for entry 42 failed" in r.getMessage()]
     assert len(failures) == 1, "one line per outage"
     beat.backend.send_heartbeat.side_effect = None
     with caplog.at_level("INFO"):
-        beat.tick(advance=SyncService.HEARTBEAT_RETRY_SECONDS * 2)
+        beat.tick(advance=SyncService.HEARTBEAT_INTERVAL_SECONDS * 2)
     assert any("delivered again" in r.getMessage() for r in caplog.records)
+
+
+def _delay_after_failure(beat, monkeypatch, jitter):
+    """Seconds until the next beat is due, right after a failed one."""
+    monkeypatch.setattr(sync_module.random, "uniform", lambda low, high: jitter(low, high))
+    before = beat.now
+    beat.tick()
+    return beat.sync._heartbeat_due_at - before
+
+
+def test_a_failing_backend_is_asked_less_and_less_often_up_to_the_interval(beat, monkeypatch):
+    """30 s, 60 s, then the interval -- at the longest jitter -- and never beyond it: a silence
+    longer than the interval is what the server reads as abandonment."""
+    beat.backend.send_heartbeat.side_effect = ApiError("HTTP 503", status_code=503)
+    longest = lambda low, high: high   # noqa: E731
+    delays = []
+    for _ in range(6):
+        delays.append(_delay_after_failure(beat, monkeypatch, longest))
+        beat.now = beat.sync._heartbeat_due_at + 1
+    retry, interval = SyncService.HEARTBEAT_RETRY_SECONDS, SyncService.HEARTBEAT_INTERVAL_SECONDS
+    assert delays[:3] == [retry * 1.5, retry * 2 * 1.5, interval * 1.5]
+    assert max(delays) == interval * 1.5 and delays[-1] == delays[2], "capped, not growing for ever"
+
+
+def test_the_retry_delay_is_jittered_and_never_below_half_of_the_backoff(beat, monkeypatch):
+    beat.backend.send_heartbeat.side_effect = ApiError("HTTP 503", status_code=503)
+    shortest = lambda low, high: low   # noqa: E731
+    assert _delay_after_failure(beat, monkeypatch, shortest) == SyncService.HEARTBEAT_RETRY_SECONDS * 0.5
+
+
+def test_a_delivered_beat_resets_the_backoff(beat, monkeypatch):
+    beat.backend.send_heartbeat.side_effect = ApiError("HTTP 503", status_code=503)
+    longest = lambda low, high: high   # noqa: E731
+    for _ in range(4):
+        _delay_after_failure(beat, monkeypatch, longest)
+        beat.now = beat.sync._heartbeat_due_at + 1
+    beat.backend.send_heartbeat.side_effect = None
+    beat.tick()
+    assert beat.sync._heartbeat_failures == 0
+    beat.backend.send_heartbeat.side_effect = ApiError("HTTP 503", status_code=503)
+    beat.now = beat.sync._heartbeat_due_at + 1
+    assert _delay_after_failure(beat, monkeypatch, longest) == SyncService.HEARTBEAT_RETRY_SECONDS * 1.5
+
+
+def test_backend_recovery_and_resume_bring_the_next_beat_forward_whatever_the_backoff(beat, monkeypatch):
+    beat.backend.send_heartbeat.side_effect = ApiError("HTTP 503", status_code=503)
+    for attempt in range(4):
+        _delay_after_failure(beat, monkeypatch, lambda low, high: high)
+        if attempt < 3:
+            beat.now = beat.sync._heartbeat_due_at + 1
+    assert beat.sync._heartbeat_due_at > beat.now, "the backoff is pending"
+    beat.sync.request_heartbeat()
+    assert beat.sync._heartbeat_due_at == 0.0, "a resume does not wait out the backoff"
+
+
+def test_the_hourly_probe_of_an_older_backend_is_jittered(beat, monkeypatch):
+    beat.backend.send_heartbeat.side_effect = ApiError("not found", status_code=404)
+    monkeypatch.setattr(sync_module.random, "uniform", lambda low, high: low)
+    start = beat.now
+    beat.tick()
+    assert beat.sync._heartbeat_unsupported_until == start + SyncService.HEARTBEAT_UNSUPPORTED_RETRY_SECONDS * 0.8
 
 
 def test_an_expired_session_holds_the_queue_for_re_authentication(beat):

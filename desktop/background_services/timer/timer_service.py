@@ -320,17 +320,27 @@ class TimerService(BaseService):
             TimerStatus.RUNNING, TimerStatus.STOPPING
         )
 
+    # Every accessor below is read from other services' threads while the GUI thread
+    # mutates the timer, and `self._session` is set to None by its stop. Each therefore
+    # takes ONE snapshot of the reference and works on that: testing `self._session` and
+    # then using `self._session` is two reads, and the stop can land between them
+    # (`dict(None)`, `None.get(...)` -- an exception inside the caller's tick).
+    # tests/test_timer_thread_visibility.py makes the interleaving deterministic.
+
     def active_session(self) -> Optional[Dict[str, Any]]:
         """A copy of the active session record, or None."""
-        return dict(self._session) if self._session else None
+        session = self._session
+        return dict(session) if session else None
 
     @property
     def entry_id(self) -> Optional[int]:
-        return self._session.get("entry_id") if self._session else None
+        session = self._session
+        return session.get("entry_id") if session else None
 
     @property
     def task_id(self) -> Optional[int]:
-        return self._session.get("task_id") if self._session else None
+        session = self._session
+        return session.get("task_id") if session else None
 
     @property
     def break_status(self) -> str:
@@ -341,7 +351,8 @@ class TimerService(BaseService):
 
     def pre_break_task(self) -> Optional[Dict[str, Any]]:
         """A copy of the task Break Out will resume, or None."""
-        return dict(self._pre_break_task) if self._pre_break_task else None
+        held = self._pre_break_task
+        return dict(held) if held else None
 
     def measured_seconds(self) -> int:
         """
@@ -352,9 +363,13 @@ class TimerService(BaseService):
         counter of their own, and this value is never edited: the backend
         records the same interval from the same two instants.
         """
-        if not self._session:
+        return self._measured_in(self._session)
+
+    @staticmethod
+    def _measured_in(session: Optional[Dict[str, Any]]) -> int:
+        if not session:
             return 0
-        started = parse_utc(self._session.get("started_at_utc"))
+        started = parse_utc(session.get("started_at_utc"))
         if started is None:
             return 0
         elapsed = int((_utc_now() - started).total_seconds())
@@ -369,10 +384,14 @@ class TimerService(BaseService):
         otherwise. It is only ever *received* here (`apply_entry_adjustment`),
         never computed: whether an idle stretch counts is the server's call.
         """
-        if not self._session:
+        return self._adjustment_in(self._session)
+
+    @staticmethod
+    def _adjustment_in(session: Optional[Dict[str, Any]]) -> int:
+        if not session:
             return 0
         try:
-            return int(self._session.get("adjustment_seconds") or 0)
+            return int(session.get("adjustment_seconds") or 0)
         except (TypeError, ValueError):
             return 0
 
@@ -389,9 +408,10 @@ class TimerService(BaseService):
         the idle minutes, every web surface had dropped by them, and the
         desktop alone still showed them until the timer stopped.
         """
-        if not self._session:
+        session = self._session          # one snapshot: measured and adjustment from the same record
+        if not session:
             return 0
-        return max(0, self.measured_seconds() + self.adjustment_seconds())
+        return max(0, self._measured_in(session) + self._adjustment_in(session))
 
     def apply_entry_adjustment(
         self, entry_id: Optional[int], adjustment_seconds: Any, *, allow_increase: bool = True
