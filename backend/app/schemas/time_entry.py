@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, ConfigDict, computed_field
 
 from app.core.time_format import elapsed_seconds as _elapsed_seconds, format_hms
+from app.core.timer_policy import effective_end as _effective_end, liveness as _liveness
 from app.core.validation import Identifier, OptionalDescription, OptionalIdempotencyKey
 
 
@@ -41,6 +42,12 @@ class TimeEntryStart(BaseModel):
     #: the same key is answered with the entry it already created (200), never
     #: with a second entry and never with a 409 that hides the entry's id.
     client_op: OptionalIdempotencyKey = None
+    #: The client promises to report in (`POST /time-entries/{id}/heartbeat`
+    #: every couple of minutes) for as long as this entry runs. It starts the
+    #: entry's liveness clock at creation, so a desktop that dies in its first
+    #: minutes is not mistaken for one that never reported at all. Omitted by
+    #: every client that predates the heartbeat.
+    reports_liveness: bool | None = None
 
 class TimeEntryStop(BaseModel):
     description: OptionalDescription = None
@@ -65,6 +72,9 @@ class TimeEntryRead(BaseModel):
     is_billable: bool
     description: str | None
     client_op: str | None = None
+    #: When the entry's desktop last proved it was alive; None for an entry
+    #: that has never reported. See `liveness`.
+    last_seen_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     #: Net signed seconds from `time_entry_adjustments` for this entry:
@@ -96,6 +106,15 @@ class TimeEntryRead(BaseModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def liveness(self) -> str | None:
+        """For a running entry: `live` (its desktop has reported within the
+        stale window), `stale` (it has gone quiet -- the figures below stop
+        growing where the evidence stops) or `unknown` (it has never
+        reported). None for an entry that has ended."""
+        return _liveness(self.end_time, self.last_seen_at)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def server_time(self) -> datetime:
         """
         The server's clock at the moment this response was built.
@@ -121,7 +140,11 @@ class TimeEntryRead(BaseModel):
         timer to stop before they can show its duration.
         """
         if self.end_time is None:
-            return _elapsed_seconds(self.start_time)
+            # Measured to the instant the evidence supports, which is `now`
+            # for every entry that is reporting in or never reported.
+            return _elapsed_seconds(
+                self.start_time, _effective_end(self.start_time, None, self.last_seen_at)
+            )
         return max(0, int(self.total_seconds))
 
     @computed_field  # type: ignore[prop-decorator]
@@ -158,6 +181,21 @@ class TimeEntryTransferRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class HeartbeatRead(BaseModel):
+    """The answer to `POST /time-entries/{id}/heartbeat`.
+
+    A desktop that gets `entry.end_time` back ends its own session: the entry
+    is over, by its own stop elsewhere or because the server closed it.
+    `closed_by_server` and `closed_reason` say which, so the desktop can tell
+    its person *why* rather than let a timer silently vanish.
+    """
+    entry: TimeEntryRead
+    closed_by_server: bool = False
+    #: `no_signal`, `idle_unanswered`, `replaced_by_start` or `operator`.
+    closed_reason: str | None = None
+    server_time: datetime
+
+
 class ActiveTimeEntryRead(BaseModel):
     """
     The caller's running entry, or an explicit "nothing is running".
@@ -168,3 +206,23 @@ class ActiveTimeEntryRead(BaseModel):
     """
     entry: TimeEntryRead | None
     server_time: datetime
+
+
+class ReconcileRunResult(BaseModel):
+    """What one run of the abandoned-timer reconciler found and did.
+
+    Identifiers, instants and counts only -- no names, no project or task
+    titles. A scheduler's log is written from this body.
+    """
+    dry_run: bool
+    examined: int = 0
+    candidates: int = 0
+    closed: int = 0
+    skipped: int = 0
+    failed: int = 0
+    #: Running entries that have never reported liveness. The scheduled run
+    #: never touches them (silence from a client that never speaks proves
+    #: nothing); they are counted so the owner can see how many there are.
+    unreported_running: int = 0
+    policy: dict
+    items: list[dict] = []

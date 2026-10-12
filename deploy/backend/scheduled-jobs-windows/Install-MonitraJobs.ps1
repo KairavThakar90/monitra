@@ -83,7 +83,8 @@ $Jobs = @(
     @{ Name = 'monthly-report';          Cron = '30 3 1 * *' },
     @{ Name = 'monthly-project-summary'; Cron = '30 3 1 * *' },
     @{ Name = 'daily-rollup';            Cron = '50 18 * * *' },
-    @{ Name = 'wfpm-timer-dispatch';     Cron = '*/1 * * * *' }
+    @{ Name = 'wfpm-timer-dispatch';     Cron = '*/1 * * * *' },
+    @{ Name = 'timer-reconcile';         Cron = '*/5 * * * *' }
 )
 
 $DayNames = 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'

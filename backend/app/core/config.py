@@ -182,6 +182,42 @@ class Settings(BaseSettings):
     #: refusal from the platform arrives before this code and reads as a 413.
     FEEDBACK_ATTACHMENT_MAX_TOTAL_BYTES: int = 10 * 1024 * 1024
 
+    # ── Abandoned timers (docs/TIMING_MODEL.md §9) ────────────────────────
+    # A running entry is only as trustworthy as the last time its desktop was
+    # heard from. The desktop reports in (a heartbeat every couple of minutes,
+    # plus every activity / usage / screenshot upload) and the server keeps the
+    # instant on `time_entries.last_seen_at`. These four numbers are the whole
+    # policy for an entry whose desktop has gone quiet; app/core/timer_policy.py
+    # is the one place they are read. None of them is a maximum session length:
+    # an entry that keeps reporting in runs for as long as its owner works.
+    #
+    # Silence for this long and the entry is shown as "no signal": Active
+    # Users says so, and every figure that measures a running entry stops
+    # growing at `last signal + TIMER_NO_SIGNAL_GRACE_SECONDS`. Nothing is
+    # written. Five missed heartbeats (the desktop sends one every ~2 minutes).
+    TIMER_STALE_AFTER_SECONDS: int = 600
+    # How long after its last signal an entry may still count. It is the
+    # desktop's own RECOVERY_CAP_SECONDS (a crash recovered later than this is
+    # stopped at last heartbeat + 15 minutes); a test keeps the two equal.
+    TIMER_NO_SIGNAL_GRACE_SECONDS: int = 900
+    # Silence for this long and the reconciler closes the entry at
+    # `last signal + grace`. Long enough for a lunch break or a laptop asleep
+    # through a meeting -- whose owner can still answer the idle prompt when
+    # the machine wakes -- and far shorter than a night.
+    TIMER_NO_SIGNAL_STOP_AFTER_SECONDS: int = 7200
+    # An idle prompt nobody has answered for this long closes the entry, exactly
+    # as the owner pressing Stop on the unanswered prompt would (the idle
+    # stretch is discarded). This is the case a heartbeat cannot see: Monitra
+    # still running on a machine whose person has gone home.
+    TIMER_IDLE_UNANSWERED_STOP_AFTER_SECONDS: int = 14400
+    # Whether the scheduled job *applies* its decisions. Off, the job (and the
+    # endpoint it calls) only reports what it would close -- the state every
+    # deployment starts in, so a first run never rewrites time nobody has
+    # reviewed. See docs/TIMING_MODEL.md §9 before turning it on.
+    TIMER_RECONCILER_ENABLED: bool = False
+    # Most entries one run will close.
+    TIMER_RECONCILER_BATCH_SIZE: int = 200
+
     @property
     def google_drive_configured(self) -> bool:
         """Whether screenshot storage can work at all."""

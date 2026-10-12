@@ -336,7 +336,10 @@ class TestRunningTimer(unittest.TestCase):
 
         sql = str(TimeTrackingRepository._duration_expression().compile(dialect=postgresql.dialect()))
         self.assertIn("time_entries.end_time IS NULL", sql)
-        self.assertIn("now() - time_entries.start_time", sql)
+        # Elapsed so far is measured to `effective_now`: now(), unless the
+        # entry's desktop has gone quiet (docs/TIMING_MODEL.md section 9).
+        self.assertIn("ELSE now() END - time_entries.start_time", sql)
+        self.assertIn("time_entries.last_seen_at", sql)
         self.assertIn("time_entries.total_seconds", sql)
 
     def test_the_summary_reads_seconds_only_through_that_shared_rule(self):

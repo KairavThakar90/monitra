@@ -18,6 +18,7 @@ from app.schemas.time_entry_unwanted_activity import (
     UnwantedActivityCreate, UnwantedActivityResponse,
 )
 from app.services.time_entry_activity_service import TimeEntryActivityService
+from app.services.time_entry_liveness import TimeEntryLivenessService
 # The desktop's per-entry upload has its own service: it takes a
 # time_entry_id, reads `payload.samples`, checks that the entry belongs to
 # the caller, and inserts idempotently per client_event_id. The similarly
@@ -74,6 +75,8 @@ def batch_record_activity(
         payload=payload,
         current_user=current_user,
     )
+    # An upload that names the entry proves its desktop is alive.
+    TimeEntryLivenessService.touch(db, time_entry_id, current_user.id)
     return {
         "success": True,
         "inserted_count": count,

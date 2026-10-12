@@ -53,6 +53,17 @@ class ActiveTimeTrackingItem(BaseModel):
     #: same figure as the dashboard and the desktop. `None` when no activity
     #: window has been measured yet today; that is "unknown", not 0%.
     activity_percentage: Optional[int] = Field(None, ge=0, le=100)
+    #: Whether the member's desktop is still reporting in: `live`, `stale`
+    #: (silent past the stale window -- `elapsed_seconds` has stopped growing
+    #: at `measured_until` and the row is a timer nobody is vouching for) or
+    #: `unknown` (a desktop that never reported; measured to now, as before).
+    liveness: Optional[str] = None
+    #: The last instant the member's desktop proved it was alive.
+    last_seen_at: Optional[datetime] = None
+    #: The instant `elapsed_seconds` is measured to: the response's own time
+    #: for a live or unknown row, the last instant the evidence supports for a
+    #: stale one.
+    measured_until: Optional[datetime] = None
 
 
 class ActiveTimeTrackingResponse(BaseModel):

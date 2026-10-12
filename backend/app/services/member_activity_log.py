@@ -34,6 +34,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.core.timer_policy import effective_end
 from app.core.time_format import (
     IST, elapsed_seconds, format_hms, ist_day_end_utc, ist_day_start_utc, ist_today,
 )
@@ -774,7 +775,12 @@ class MemberActivityLogService:
             "current_task_id": task.id if task else entry.task_id,
             "current_task_name": task.task_name if task else None,
             "current_started_at": _as_utc(entry.start_time),
-            "current_elapsed_seconds": max(0, elapsed_seconds(entry.start_time, now) + int(net_adjustment)),
+            # Measured to the instant the entry's evidence supports, like every
+            # other running figure (`timer_policy.effective_end`).
+            "current_elapsed_seconds": max(0, elapsed_seconds(
+                entry.start_time,
+                effective_end(entry.start_time, None, getattr(entry, "last_seen_at", None), now),
+            ) + int(net_adjustment)),
             "current_idle_since": _as_utc(pending_idle.idle_started_at) if pending_idle else None,
         })
         return state

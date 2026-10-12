@@ -11,6 +11,7 @@ from app.schemas.time_entry_idle_period import (
     IdlePeriodReassignResponse, IdlePeriodResolve, IdlePeriodResponse,
 )
 from app.services.time_entry_idle_period import TimeEntryIdlePeriodService
+from app.services.time_entry_liveness import TimeEntryLivenessService
 
 router = APIRouter(prefix="/idle-periods", tags=["Idle Time"])
 
@@ -55,7 +56,10 @@ def report_idle_period(
     report while one is still pending) return the existing period rather than
     opening another.
     """
-    return TimeEntryIdlePeriodService.report_idle_period(db, payload, current_user)
+    period = TimeEntryIdlePeriodService.report_idle_period(db, payload, current_user)
+    # A report names the entry, and only a desktop that is running makes one.
+    TimeEntryLivenessService.touch(db, payload.time_entry_id, current_user.id)
+    return period
 
 
 @router.get("/active", response_model=Optional[IdlePeriodResponse])

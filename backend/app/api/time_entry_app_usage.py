@@ -10,6 +10,7 @@ from app.schemas.time_entry_app_usage import (
     AppUsageListResponse, AppUsageSummaryResponse
 )
 from app.services.time_entry_app_usage import TimeEntryAppUsageService
+from app.services.time_entry_liveness import TimeEntryLivenessService
 
 router = APIRouter(tags=["Time Entry App Usage"])
 
@@ -47,6 +48,8 @@ def batch_record_app_usage(
         payload=payload,
         current_user=current_user
     )
+    # An upload that names the entry proves its desktop is alive.
+    TimeEntryLivenessService.touch(db, time_entry_id, current_user.id)
     return {
         "success": True,
         "inserted_count": count,

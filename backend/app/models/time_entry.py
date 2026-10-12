@@ -34,6 +34,13 @@ class TimeEntry(Base):
     #: needs. Unique per user; NULL for entries created without one (the web
     #: client, older desktop builds, idle-time reassignment).
     client_op: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: The last instant the desktop that owns this running entry proved it was
+    #: alive: its heartbeat, or any upload it makes for the entry. On the
+    #: server's clock. NULL for an entry that has never reported -- one started
+    #: by a desktop older than the heartbeat, or by something that is not a
+    #: desktop -- which is measured and handled exactly as it always was.
+    #: Meaningless once the entry has ended. See app/core/timer_policy.py.
+    last_seen_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 

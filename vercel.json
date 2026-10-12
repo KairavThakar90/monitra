@@ -52,6 +52,10 @@
     {
       "path": "/internal/wfpm/timer-events/dispatch",
       "schedule": "*/1 * * * *"
+    },
+    {
+      "path": "/internal/time-entries/reconcile",
+      "schedule": "*/5 * * * *"
     }
   ]
 }

@@ -9,6 +9,7 @@ from app.api.task import router as task_router
 from app.api.project_member import router as project_member_router
 from app.api.task_assignee import router as task_assignee_router
 from app.api.time_entry import router as time_entry_router
+from app.api.time_entry_reconcile import router as time_entry_reconcile_router
 from app.api.manual_time_entry import router as manual_time_entry_router
 from app.api.employees import router as employees_router
 from app.api.time_entry_screenshot import router as time_entry_screenshot_router
@@ -170,6 +171,7 @@ app.include_router(activity_rollup_router)
 # from a cron configuration and from inside already-delivered email. A second
 # spelling of any of them would be a second URL to keep working forever.
 app.include_router(email_notifications_router)
+app.include_router(time_entry_reconcile_router)
 app.include_router(clients_public_router)
 # The WFPM timer-event sweeper: another scheduler entry point, same reasoning.
 app.include_router(wfpm_internal_router)
@@ -267,6 +269,20 @@ def health_check(deep: bool = False):
     except Exception:  # noqa: BLE001
         logger.warning("Could not report WFPM integration in /health", exc_info=True)
         payload["wfpm_timer_sync"] = {"configured": False, "reason": "unavailable"}
+
+    try:
+        from app.core.timer_policy import TimerPolicy
+
+        # What the server does about a timer whose desktop has gone quiet. `applies`
+        # is false until the deployment turns the scheduled run on: it then only
+        # reports (docs/TIMING_MODEL.md section 9).
+        payload["timer_reconciler"] = {
+            "applies": bool(settings.TIMER_RECONCILER_ENABLED),
+            **TimerPolicy.current().as_dict(),
+        }
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not report the timer policy in /health", exc_info=True)
+        payload["timer_reconciler"] = {"applies": False, "reason": "unavailable"}
 
     # Pool utilisation of the process that answered. Each worker has its own pool,
     # so the figure is per worker; sustained `checked_out` near `max_connections`

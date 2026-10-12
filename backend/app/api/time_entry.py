@@ -6,10 +6,11 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
 from app.schemas.time_entry import (
-    ActiveTimeEntryRead, TimeEntryStart, TimeEntryStop, TimeEntryRead,
+    ActiveTimeEntryRead, HeartbeatRead, TimeEntryStart, TimeEntryStop, TimeEntryRead,
     TimeEntryTransferRequest, TimeEntryTransferRead,
 )
 from app.services.time_entry import TimeEntryService
+from app.services.time_entry_liveness import TimeEntryLivenessService
 
 router = APIRouter(prefix="/time-entries", tags=["Time Entries"])
 
@@ -53,6 +54,7 @@ def start_timer(
         client_time=payload.client_time,
         client_op=payload.client_op,
         request_id=_request_id(request),
+        reports_liveness=payload.reports_liveness,
     )
     if not created:
         # Idempotent replay: nothing was created, so say so.
@@ -97,6 +99,40 @@ def stop_timer(
 
         background_tasks.add_task(evaluate_project_in_background, entry.project_id, "timer_stop")
     return _one(db, entry)
+
+@router.post(
+    "/{id}/heartbeat",
+    response_model=HeartbeatRead,
+    responses={404: {"description": "Not found, or not the caller's entry."}},
+)
+def heartbeat(
+    id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db, scope="function"),
+):
+    """The desktop saying it is still there, and asking whether its entry is.
+
+    Sent every couple of minutes while a timer runs. It records when the
+    entry's desktop was last heard from (`last_seen_at`) -- the one fact that
+    lets the server tell a working desktop from one that is switched off -- and
+    answers with the entry as it now stands. An entry that has ended (stopped
+    from elsewhere, or closed by the server for silence or an unanswered idle
+    prompt) answers with `entry.end_time` set and, for the latter,
+    `closed_by_server` and `closed_reason`; the desktop ends its own session on
+    that. It never reopens or alters an entry that has ended.
+
+    Idempotent and safe to repeat; carries no body.
+    """
+    result = TimeEntryLivenessService.heartbeat(
+        db, id, current_user, request_id=_request_id(request),
+    )
+    return HeartbeatRead(
+        entry=_one(db, result["entry"]),
+        closed_by_server=result["closed_by_server"],
+        closed_reason=result["closed_reason"],
+        server_time=result["server_time"],
+    )
 
 @router.get("", response_model=List[TimeEntryRead])
 def list_time_entries(

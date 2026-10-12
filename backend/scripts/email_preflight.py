@@ -48,7 +48,7 @@ from sqlalchemy import text  # noqa: E402
 from app.core.config import settings  # noqa: E402
 
 JOBS = ("email-dispatch", "budget-alerts", "weekly-report", "monthly-report",
-        "monthly-project-summary", "daily-rollup", "wfpm-timer-dispatch")
+        "monthly-project-summary", "daily-rollup", "wfpm-timer-dispatch", "timer-reconcile")
 WINDOWS_TASK_FOLDER = "\\Monitra\\"
 results: list[tuple[str, str, str]] = []
 

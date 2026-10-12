@@ -1,0 +1,11 @@
+[Unit]
+Description=Monitra: close abandoned timers (report-only until TIMER_RECONCILER_ENABLED) every 5 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00 UTC
+Persistent=false
+AccuracySec=1s
+Unit=monitra-job@timer-reconcile.service
+
+[Install]
+WantedBy=timers.target

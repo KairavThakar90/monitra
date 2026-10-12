@@ -10,6 +10,7 @@ from app.models.task import Task
 from app.models.time_entry import TimeEntry
 from app.models.user import User
 from app.repositories.time_entry_adjustment import TimeEntryAdjustmentRepository
+from app.repositories.time_entry_liveness import effective_now
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
 
 #: The calendar that "a day of tracked time" is measured in -- the same zone
@@ -22,9 +23,21 @@ class TimeTrackingRepository:
     def _duration_expression():
         """Raw measured duration: elapsed-so-far for a running entry,
         `total_seconds` otherwise. Not reportable time on its own -- see
-        `_net_duration_expression`."""
+        `_net_duration_expression`.
+
+        "Elapsed so far" is measured to `effective_now`: `now()` for an entry
+        that is reporting in (or never has), and, once its desktop has been
+        silent past the stale window, to the last instant the evidence
+        supports. Every report that measures a running entry goes through
+        here, so a forgotten timer stops growing in all of them at once."""
         return case(
-            (TimeEntry.end_time.is_(None), extract("epoch", func.now() - TimeEntry.start_time)),
+            (
+                TimeEntry.end_time.is_(None),
+                extract(
+                    "epoch",
+                    effective_now(TimeEntry.last_seen_at, TimeEntry.start_time) - TimeEntry.start_time,
+                ),
+            ),
             else_=TimeEntry.total_seconds,
         )
 
@@ -63,8 +76,8 @@ class TimeTrackingRepository:
         agree and is the same arithmetic as the split the desktop performs
         when it wakes, so the per-day figures do not move when it does.
 
-        `entries` exposes `id, user_id, start_time, end_time, total_seconds,
-        adj_seconds`. Per segment:
+        `entries` exposes `id, user_id, start_time, end_time, last_seen_at,
+        total_seconds, adj_seconds`. Per segment:
 
         * `seg_start` / `seg_end` -- the entry's interval within that day.
           `seg_end` is NULL while the entry is still running *on that day*.
@@ -77,7 +90,7 @@ class TimeTrackingRepository:
         """
         tz = REPORTING_TIMEZONE
         columns = entries.c
-        live_end = func.coalesce(columns.end_time, func.now())
+        live_end = func.coalesce(columns.end_time, effective_now(columns.last_seen_at, columns.start_time))
         first_day = func.date(func.timezone(tz, columns.start_time))
         last_day = func.date(func.timezone(tz, live_end))
         # Cast to `timestamp`: `generate_series(date, date, interval)` is
@@ -151,7 +164,9 @@ class TimeTrackingRepository:
             TimeEntry.start_time < end_time,
             or_(
                 TimeEntry.start_time >= start_time,
-                func.coalesce(TimeEntry.end_time, func.now()) > start_time,
+                func.coalesce(
+                    TimeEntry.end_time, effective_now(TimeEntry.last_seen_at, TimeEntry.start_time)
+                ) > start_time,
             ),
         ]
         if user_ids:
@@ -170,6 +185,7 @@ class TimeTrackingRepository:
                 TimeEntry.user_id.label("user_id"),
                 TimeEntry.start_time.label("start_time"),
                 TimeEntry.end_time.label("end_time"),
+                TimeEntry.last_seen_at.label("last_seen_at"),
                 TimeEntry.total_seconds.label("total_seconds"),
                 adjustments.c.adj_seconds.label("adj_seconds"),
             )
@@ -258,7 +274,9 @@ class TimeTrackingRepository:
         # wholly inside it keeps its persisted `total_seconds`; one that
         # crosses a bound is measured from the clipped interval, and its
         # adjustments belong to the range it started in.
-        live_end = func.coalesce(TimeEntry.end_time, func.now())
+        live_end = func.coalesce(
+            TimeEntry.end_time, effective_now(TimeEntry.last_seen_at, TimeEntry.start_time)
+        )
         window_start = func.greatest(TimeEntry.start_time, start_time)
         window_end = func.least(live_end, end_time)
         inside_range = and_(

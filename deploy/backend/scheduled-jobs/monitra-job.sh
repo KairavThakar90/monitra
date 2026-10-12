@@ -21,6 +21,7 @@ case "${1:-}" in
   monthly-project-summary) ENDPOINT=/internal/reports/monthly-projects/run ;;
   daily-rollup)            ENDPOINT=/internal/activity/daily-rollup ;;
   wfpm-timer-dispatch)     ENDPOINT=/internal/wfpm/timer-events/dispatch ;;
+  timer-reconcile)         ENDPOINT=/internal/time-entries/reconcile ;;
   *) echo "monitra-job: unknown job '${1:-}'" >&2; exit 2 ;;
 esac
 

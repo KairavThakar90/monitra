@@ -17,6 +17,7 @@ from app.schemas.time_entry_screenshot import (
     TimeEntryScreenshotCreate, TimeEntryScreenshotRead,
 )
 from app.services.time_entry_screenshot import TimeEntryScreenshotService
+from app.services.time_entry_liveness import TimeEntryLivenessService
 
 router = APIRouter(tags=["Time Entry Screenshots"])
 
@@ -132,6 +133,8 @@ def upload_screenshot(
         monitor_number=monitor_number,
         display_count=display_count,
     )
+    # An upload that names the entry proves its desktop is alive.
+    TimeEntryLivenessService.touch(db, time_entry_id, current_user.id)
     return {
         "success": True,
         "duplicate": duplicate,

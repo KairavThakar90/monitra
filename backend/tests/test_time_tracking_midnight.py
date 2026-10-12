@@ -63,7 +63,7 @@ class DetailWindowTests(unittest.TestCase):
         # A far-future day, so "now" is before its end whatever day this runs.
         today = date(2099, 1, 6)
         entry = SimpleNamespace(
-            id=1, start_time=ist(2099, 1, 5, 19), end_time=None, is_manual=False,
+            id=1, start_time=ist(2099, 1, 5, 19), end_time=None, last_seen_at=None, is_manual=False,
         )
         result = self._detail(entry, 10 * 3600, today)
 
@@ -79,7 +79,7 @@ class DetailWindowTests(unittest.TestCase):
         # A past day: the entry is still running, but not *on* that day.
         day = date(2020, 1, 5)
         entry = SimpleNamespace(
-            id=1, start_time=ist(2020, 1, 5, 19), end_time=None, is_manual=False,
+            id=1, start_time=ist(2020, 1, 5, 19), end_time=None, last_seen_at=None, is_manual=False,
         )
         result = self._detail(entry, 5 * 3600, day)
 
@@ -92,7 +92,7 @@ class DetailWindowTests(unittest.TestCase):
     def test_a_completed_entry_inside_the_day_is_shown_as_recorded(self):
         day = date(2026, 8, 26)
         entry = SimpleNamespace(
-            id=1, start_time=ist(2026, 8, 26, 10), end_time=ist(2026, 8, 26, 12), is_manual=False,
+            id=1, start_time=ist(2026, 8, 26, 10), end_time=ist(2026, 8, 26, 12), last_seen_at=None, is_manual=False,
         )
         result = self._detail(entry, 7200, day)
 
@@ -104,7 +104,7 @@ class DetailWindowTests(unittest.TestCase):
     def test_a_completed_entry_over_midnight_is_clipped_to_the_day_asked_for(self):
         day = date(2026, 8, 27)
         entry = SimpleNamespace(
-            id=1, start_time=ist(2026, 8, 26, 23), end_time=ist(2026, 8, 27, 2), is_manual=False,
+            id=1, start_time=ist(2026, 8, 26, 23), end_time=ist(2026, 8, 27, 2), last_seen_at=None, is_manual=False,
         )
         result = self._detail(entry, 2 * 3600, day)
 
@@ -153,7 +153,10 @@ class QueryShapeTests(unittest.TestCase):
         sql = str(session.statements[-1].compile(dialect=postgresql.dialect()))
         # Overlap, not containment: an entry still running (or ended inside the
         # range) qualifies even though it started earlier.
-        self.assertIn("coalesce(time_entries.end_time, now())", sql)
+        # A running entry is measured to `effective_now`: now() unless its
+        # desktop has gone quiet (see app/repositories/time_entry_liveness.py).
+        self.assertIn("coalesce(time_entries.end_time, CASE WHEN (time_entries.last_seen_at IS NOT NULL", sql)
+        self.assertIn("ELSE now() END)", sql)
 
     def test_the_drill_down_measures_the_part_of_each_entry_inside_the_range(self):
         session = self._Session()
@@ -163,7 +166,8 @@ class QueryShapeTests(unittest.TestCase):
         sql = str(session.statements[-1].compile(dialect=postgresql.dialect()))
         self.assertIn("greatest(", sql)
         self.assertIn("least(", sql)
-        self.assertIn("coalesce(time_entries.end_time, now())", sql)
+        self.assertIn("coalesce(time_entries.end_time, CASE WHEN (time_entries.last_seen_at IS NOT NULL", sql)
+        self.assertIn("ELSE now() END)", sql)
 
 
 @unittest.skipUnless(

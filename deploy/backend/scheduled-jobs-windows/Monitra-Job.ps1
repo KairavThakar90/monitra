@@ -22,7 +22,7 @@
 
 .PARAMETER Job
     One of: email-dispatch, budget-alerts, weekly-report, monthly-report,
-    monthly-project-summary, daily-rollup, wfpm-timer-dispatch.
+    monthly-project-summary, daily-rollup, wfpm-timer-dispatch, timer-reconcile.
 
 .PARAMETER Attempts
     How many times to try when the backend cannot be reached or answers 5xx (a restart in
@@ -65,6 +65,7 @@ $Endpoints = @{
     'monthly-project-summary' = '/internal/reports/monthly-projects/run'
     'daily-rollup'            = '/internal/activity/daily-rollup'
     'wfpm-timer-dispatch'     = '/internal/wfpm/timer-events/dispatch'
+    'timer-reconcile'         = '/internal/time-entries/reconcile'
 }
 
 if (-not $LogPath) { $LogPath = Join-Path $env:ProgramData 'Monitra\logs\monitra-jobs.log' }

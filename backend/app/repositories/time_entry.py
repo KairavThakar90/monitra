@@ -116,6 +116,7 @@ class TimeEntryRepository:
         is_billable: bool = False,
         description: Optional[str] = None,
         client_op: Optional[str] = None,
+        last_seen_at: Optional[datetime] = None,
     ) -> TimeEntry:
         """Insert a running entry and commit.
 
@@ -137,6 +138,7 @@ class TimeEntryRepository:
             is_billable=is_billable,
             description=description,
             client_op=client_op,
+            last_seen_at=last_seen_at,
         )
         db.add(db_entry)
         try:

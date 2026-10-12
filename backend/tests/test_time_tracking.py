@@ -68,12 +68,14 @@ class TimeTrackingTests(unittest.TestCase):
             id=1001,
             start_time=datetime(2026, 8, 26, 10, tzinfo=timezone.utc),
             end_time=datetime(2026, 8, 26, 12, tzinfo=timezone.utc),
+            last_seen_at=None,
             is_manual=False,
         )
         running = SimpleNamespace(
             id=1002,
             start_time=datetime(2026, 8, 26, 13, tzinfo=timezone.utc),
             end_time=None,
+            last_seen_at=None,
             is_manual=True,
         )
         rows = [(first, project, task, project_status, task_status, 7200), (running, project, task, project_status, task_status, 3600)]
@@ -128,7 +130,9 @@ class ActiveTimeTrackingTests(unittest.TestCase):
 
     @staticmethod
     def _row(entry_id=501, member_id=11, elapsed=3725.4):
-        entry = SimpleNamespace(id=entry_id, start_time=datetime(2026, 9, 30, 4, 30, tzinfo=timezone.utc))
+        entry = SimpleNamespace(
+            id=entry_id, start_time=datetime(2026, 9, 30, 4, 30, tzinfo=timezone.utc), last_seen_at=None,
+        )
         member = SimpleNamespace(id=member_id, name="Asha Patel", email="asha@example.com", designation="Developer")
         project = SimpleNamespace(id=92, project_name="Alpha")
         task = SimpleNamespace(id=185, task_name="Build login screen")

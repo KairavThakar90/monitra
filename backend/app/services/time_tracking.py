@@ -11,6 +11,7 @@ from app.models.task import Task
 from app.models.time_entry import TimeEntry
 from app.models.user import User
 from app.core.time_format import format_hms, ist_day_end_utc, ist_day_start_utc, ist_today
+from app.core.timer_policy import TimerPolicy, effective_end as _effective_end, liveness as _liveness
 from app.repositories.time_entry_activity import TimeEntryActivityRepository
 from app.repositories.time_tracking import TimeTrackingRepository
 from app.services.member_scope import may_view_member, visible_member_ids
@@ -201,6 +202,8 @@ class TimeTrackingService:
                 ist_day_end_utc(today),
             )
         items = []
+        now_utc = datetime.now(timezone.utc)
+        policy = TimerPolicy.current()
         for entry, member, project, task, elapsed in rows:
             elapsed_seconds = max(0, int(elapsed or 0))
             weighted, measured = day_totals.get(member.id, (0.0, 0))
@@ -221,11 +224,18 @@ class TimeTrackingService:
                 "elapsed_seconds": elapsed_seconds,
                 "elapsed_time": format_hms(elapsed_seconds),
                 "activity_percentage": activity,
+                # Whether the member's desktop is still reporting in. A `stale`
+                # row's `elapsed_seconds` stops where the evidence stops, and
+                # the page says so rather than showing a long-dead timer as
+                # live work.
+                "liveness": _liveness(None, entry.last_seen_at, now_utc, policy),
+                "last_seen_at": entry.last_seen_at,
+                "measured_until": _effective_end(entry.start_time, None, entry.last_seen_at, now_utc, policy),
             })
         return {
             "items": items,
             "total": len(items),
-            "server_time": datetime.now(timezone.utc),
+            "server_time": now_utc,
         }
 
     @staticmethod
@@ -270,10 +280,15 @@ class TimeTrackingService:
             # duration would otherwise not match the times beside it. Open
             # (no end) only while it is running *and* the range reaches now.
             window_start = max(entry.start_time, range_start)
-            if entry.end_time is None and now < range_end:
+            # A running entry whose desktop has gone quiet is measured to the
+            # last instant the evidence supports (the same instant its
+            # `duration_seconds` was measured to), and shows that as its end;
+            # one that is still reporting in is open.
+            measured_to = _effective_end(entry.start_time, entry.end_time, entry.last_seen_at, now)
+            if entry.end_time is None and measured_to >= now and now < range_end:
                 window_end = None
             else:
-                window_end = min(entry.end_time or range_end, range_end)
+                window_end = min(measured_to if entry.end_time is None else entry.end_time, range_end)
             first_start = window_start if first_start is None else min(first_start, window_start)
             if window_end is not None:
                 last_end = window_end if last_end is None else max(last_end, window_end)

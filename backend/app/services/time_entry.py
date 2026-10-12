@@ -70,6 +70,7 @@ class TimeEntryService:
         not_before: Optional[datetime] = None,
         client_time: Optional[datetime] = None,
         now: Optional[datetime] = None,
+        trust_age: bool = False,
     ) -> datetime:
         """
         Resolve when a timer event actually happened, on the server clock.
@@ -86,6 +87,16 @@ class TimeEntryService:
         value is clamped to now, and an implausibly old value falls back to
         the server clock. In both modes the result is never earlier than
         `not_before` (the entry's own start) and never in the future.
+
+        `trust_age` lifts the seven-day ceiling, and is for *stops* only. The
+        ceiling exists so a client cannot claim an unbounded amount of time by
+        backdating a start; its fallback -- "use the server clock" -- is the
+        *latest* instant a stop could take, so applied to a stop it did the
+        opposite of its purpose: a stop queued on a machine that stayed off
+        for eight days was recorded at arrival time, ending the entry eight
+        days after the user had stopped. A stop can only ever shorten an
+        entry (it is bounded below by the entry's start and above by now), so
+        the age it carries is honoured however large it is.
         """
         now = now or datetime.now(timezone.utc)
         if client_value is None:
@@ -101,7 +112,7 @@ class TimeEntryService:
                 # that stepped between the two, or a bug. Treat it as now.
                 log.info("%s is later than the client's send time; using the server clock", label)
                 age = 0.0
-            if age > MAX_CLIENT_BACKDATE_SECONDS:
+            if age > MAX_CLIENT_BACKDATE_SECONDS and not trust_age:
                 log.warning("%s from the client is implausibly old (age %.0fs); using the server clock",
                             label, age)
                 age = 0.0
@@ -110,7 +121,7 @@ class TimeEntryService:
             if value > now:
                 log.info("%s from the client is in the future; using the server clock", label)
                 resolved = now
-            elif (now - value).total_seconds() > MAX_CLIENT_BACKDATE_SECONDS:
+            elif (now - value).total_seconds() > MAX_CLIENT_BACKDATE_SECONDS and not trust_age:
                 log.warning("%s from the client is implausibly old (%s); using the server clock",
                             label, value.isoformat())
                 resolved = now
@@ -139,6 +150,7 @@ class TimeEntryService:
         client_time: Optional[datetime] = None,
         client_op: Optional[str] = None,
         request_id: Optional[str] = None,
+        reports_liveness: Optional[bool] = None,
     ) -> Tuple[TimeEntry, bool]:
         """
         Start a timer. Returns `(entry, created)`.
@@ -164,17 +176,31 @@ class TimeEntryService:
                 )
                 return existing, False
 
+        now = datetime.now(timezone.utc)
+        start_time = TimeEntryService._event_time(
+            started_at, label="started_at", client_time=client_time, now=now
+        )
+
         # 3. One running entry per user. Checked here for a clear answer, and
         #    enforced again by the database for the two requests that both
         #    pass this check at the same instant.
         active_timer = TimeEntryRepository.get_active_for_user(db, current_user.id)
         if active_timer:
-            TimeEntryService._raise_active_conflict(active_timer, current_user, client_op, request_id)
+            # A running entry whose desktop has gone quiet is over: the person
+            # starting a new session here is the evidence. Without this the
+            # start was refused with the *old* entry, and the desktop adopted
+            # it -- a Friday timer handed back on Monday as the session just
+            # begun. Only an entry that has demonstrably stopped reporting is
+            # replaced; a live one (or one that never reported) is refused
+            # exactly as before.
+            from app.services.time_entry_reconciliation import TimeEntryReconciliationService
 
-        now = datetime.now(timezone.utc)
-        start_time = TimeEntryService._event_time(
-            started_at, label="started_at", client_time=client_time, now=now
-        )
+            if TimeEntryReconciliationService.close_if_replaced_by_start(
+                db, active_timer, start_time, now=now, request_id=request_id,
+            ):
+                active_timer = TimeEntryRepository.get_active_for_user(db, current_user.id)
+        if active_timer:
+            TimeEntryService._raise_active_conflict(active_timer, current_user, client_op, request_id)
 
         # 4. Create time entry resolving organization_id from current_user
         try:
@@ -188,6 +214,7 @@ class TimeEntryService:
                 is_billable=is_billable if is_billable is not None else False,
                 description=description,
                 client_op=client_op,
+                last_seen_at=now if reports_liveness else None,
             )
         except IntegrityError:
             # Lost a race: either the same client_op landed twice at once,
@@ -301,9 +328,46 @@ class TimeEntryService:
         now = datetime.now(timezone.utc)
         end_time = TimeEntryService._event_time(
             stopped_at, label="stopped_at", not_before=time_entry.start_time,
-            client_time=client_time, now=now,
+            client_time=client_time, now=now, trust_age=True,
+        )
+        return TimeEntryService.finalize_entry(
+            db, time_entry, end_time, description, current_user,
+            now=now, request_id=request_id, client_stopped_at=stopped_at,
+            client_time=client_time, background_tasks=background_tasks,
         )
 
+    @staticmethod
+    def finalize_entry(
+        db: Session,
+        time_entry: TimeEntry,
+        end_time: datetime,
+        description: Optional[str],
+        current_user: User,
+        *,
+        now: datetime,
+        request_id: Optional[str] = None,
+        client_stopped_at: Optional[datetime] = None,
+        client_time: Optional[datetime] = None,
+        background_tasks: Optional[BackgroundTasks] = None,
+        note: Optional[str] = None,
+        activity_description: Optional[str] = None,
+        activity_at: Optional[datetime] = None,
+    ) -> Tuple[TimeEntry, bool]:
+        """
+        End a running entry at `end_time`. Returns `(entry, finalized_now)`.
+
+        The one place a running entry is finalized: the user's Stop, the idle
+        popup's Stop, a member being excluded from signing in, and the server
+        closing an abandoned entry (`TimeEntryReconciliationService`) all end
+        here, so the duration rule, the idle sweep, the rollup, the activity
+        trail and the WFPM stop are the same for every one of them. What
+        differs is only who decided `end_time` -- `stop_timer` takes it from
+        the user's click, the reconciler from the last evidence of life.
+
+        `current_user` is the entry's owner; the trail records the closure
+        under them, as it records their own stop.
+        """
+        entry_id = time_entry.id
         # The one canonical duration calculation. Derived from the two
         # timestamps and rounded to the nearest second, so
         # `total_seconds == round(end_time - start_time)` holds for every
@@ -339,13 +403,14 @@ class TimeEntryService:
             winner = TimeEntryRepository.get_by_id(db, entry_id)
             TimeEntryService._log(
                 "stop.replayed", winner, current_user, request_id=request_id,
-                client_stopped_at=stopped_at, client_time=client_time, note="race",
+                client_stopped_at=client_stopped_at, client_time=client_time, note="race",
             )
             return winner, False
 
         TimeEntryService._log(
             "stop.finalized", stopped_entry, current_user, request_id=request_id,
-            client_stopped_at=stopped_at, client_time=client_time, server_now=now,
+            client_stopped_at=client_stopped_at, client_time=client_time, server_now=now,
+            note=note,
         )
 
         # Update the task's time_tracked_seconds
@@ -358,12 +423,14 @@ class TimeEntryService:
         ActivityLogService.capture(db, lambda: {
             "actor": current_user,
             "module": ActivityLogModule.TIMER, "action": ActivityLogAction.TIMER_STOPPED,
-            "description": "Stopped the timer on "
-                           + ActivityLogService.describe_project_task(
-                               db, stopped_entry.project_id, stopped_entry.task_id)
-                           + f" after {ActivityLogService.format_duration(total_seconds)}",
+            "description": activity_description or (
+                "Stopped the timer on "
+                + ActivityLogService.describe_project_task(
+                    db, stopped_entry.project_id, stopped_entry.task_id)
+                + f" after {ActivityLogService.format_duration(total_seconds)}"
+            ),
             "project_id": stopped_entry.project_id, "task_id": stopped_entry.task_id,
-            "entity_id": stopped_entry.id, "created_at": end_time,
+            "entity_id": stopped_entry.id, "created_at": activity_at or end_time,
         })
 
         # A timer on a WFPM-linked task stops the matching timer in WFPM.
