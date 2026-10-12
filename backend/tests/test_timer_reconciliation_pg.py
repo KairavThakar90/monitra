@@ -146,6 +146,183 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertLess(abs(result["clock_skew_seconds"]), 5)
 
+    # ── what "report only" and "read-only" mean, proved at the statement level ──
+
+    def _statements_during(self, work):
+        from sqlalchemy import event
+
+        seen = []
+
+        def listener(conn, cursor, statement, parameters, context, executemany):
+            seen.append(statement.lstrip().split(None, 1)[0].upper())
+
+        event.listen(self.engine, "before_cursor_execute", listener)
+        try:
+            work()
+        finally:
+            event.remove(self.engine, "before_cursor_execute", listener)
+        return seen
+
+    def _digest(self):
+        return self.db.execute(text(
+            "select count(*), md5(string_agg(t::text, '|' order by id)) from time_entries t"
+        )).one()
+
+    def test_a_dry_run_executes_nothing_but_reads(self):
+        now = self._db_now()
+        self._running(now - timedelta(hours=6), last_seen=now - timedelta(hours=3))     # a candidate
+        self._running(now - timedelta(days=2), last_seen=None, user_id=self._other_user())  # a legacy row
+        before = self._digest()
+
+        statements = self._statements_during(lambda: self._reconcile(apply=False))
+
+        self.assertTrue(statements, "it did look")
+        self.assertEqual(set(statements), {"SELECT"}, f"a report-only run wrote: {sorted(set(statements))}")
+        self.assertEqual(self._digest(), before)
+
+    def test_the_control_an_applying_run_is_seen_writing(self):
+        """So the statement capture above is known to notice a write."""
+        now = self._db_now()
+        self._running(now - timedelta(hours=6), last_seen=now - timedelta(hours=3))
+        statements = set(self._statements_during(lambda: self._reconcile(apply=True)))
+        self.assertTrue({"INSERT", "UPDATE"} <= statements, sorted(statements))
+
+    def test_the_scheduled_endpoint_with_the_job_off_executes_nothing_but_reads(self):
+        from app.core.config import settings
+
+        now = self._db_now()
+        self._running(now - timedelta(hours=6), last_seen=now - timedelta(hours=3))
+        before = self._digest()
+        client = self._client()
+
+        def call():
+            with patch.object(settings, "TIMER_RECONCILER_ENABLED", False), \
+                 patch.object(settings, "EMAIL_DISPATCH_TOKEN", "t" * 12):
+                response = client.post("/internal/time-entries/reconcile", headers={"X-Email-Dispatch-Token": "t" * 12})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(response.json()["dry_run"])
+
+        statements = self._statements_during(call)
+        self.assertEqual(set(statements), {"SELECT"}, sorted(set(statements)))
+        self.assertEqual(self._digest(), before)
+
+    def test_the_get_alias_executes_nothing_but_reads_even_with_the_job_on(self):
+        from app.core.config import settings
+
+        now = self._db_now()
+        self._running(now - timedelta(hours=6), last_seen=now - timedelta(hours=3))
+        before = self._digest()
+        client = self._client()
+
+        def call():
+            with patch.object(settings, "TIMER_RECONCILER_ENABLED", True), \
+                 patch.object(settings, "EMAIL_DISPATCH_TOKEN", "t" * 12):
+                response = client.get("/internal/time-entries/reconcile", headers={"X-Email-Dispatch-Token": "t" * 12})
+            self.assertEqual(response.status_code, 200, response.text)
+
+        self.assertEqual(set(self._statements_during(call)), {"SELECT"})
+        self.assertEqual(self._digest(), before, "and the candidate is still running")
+
+    def test_every_read_only_script_runs_inside_a_read_only_transaction(self):
+        """If any of them could write, Postgres would refuse here."""
+        import pathlib
+        import re
+
+        now = self._db_now()
+        entry = self._running(now - timedelta(days=3), last_seen=None)
+        scripts = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+        for name in ("stale_running_entries_report.sql", "timer_silence_evidence.sql",
+                     "entry_reconciliation_preview.sql"):
+            sql = (scripts / name).read_text(encoding="utf-8")
+            if name.startswith("entry_"):
+                sql = re.sub(r"5958::bigint", f"{entry.id}::bigint", sql)
+            with self.subTest(script=name), self.engine.connect() as conn:
+                conn.execute(text("SET TRANSACTION READ ONLY"))
+                rows = conn.execute(text(sql)).fetchall()
+                conn.rollback()
+                self.assertIsNotNone(rows)
+
+    def test_a_legacy_entry_with_a_fresh_upload_is_active_not_abandoned(self):
+        """A missing last_seen_at is not evidence of anything. A legacy desktop that is uploading
+        right now is a confirmed active timer, whatever the age of the entry."""
+        import pathlib
+
+        from app.models.time_entry_activity import TimeEntryActivity
+
+        now = self._db_now()
+        entry = self._running(now - timedelta(days=2), last_seen=None)
+        self.db.add(TimeEntryActivity(
+            organization_id=1, time_entry_id=entry.id, recorded_at=now - timedelta(minutes=3),
+            keyboard_strokes=4, mouse_clicks=1, mouse_movements=9, activity_percentage=40, window_seconds=60,
+        ))
+        self.db.commit()
+        sql = (pathlib.Path(__file__).resolve().parents[1] / "scripts"
+               / "stale_running_entries_report.sql").read_text(encoding="utf-8")
+        row = [r for r in self.db.execute(text(sql)).mappings().all() if r["time_entry_id"] == entry.id][0]
+
+        self.assertEqual(row["category"], "manual_review", "alive, but running for two days: a person should look")
+        self.assertIsNone(row["proposed_end"], "and nothing is proposed for an entry that is reporting in")
+        self.assertEqual(row["signal_source"], "legacy upload evidence only")
+        self.assertEqual(row["policy_action"], "leave open")
+
+    def test_the_slept_through_days_script_finds_a_weekend_an_older_desktop_booked(self):
+        """What 1.0.0 to 1.3.2 did on waking: contiguous entries on the IST midnights with nothing
+        in them. A genuine overnight stretch -- which has activity windows -- is not listed."""
+        import pathlib
+
+        from app.models.time_entry import TimeEntry
+        from app.models.time_entry_activity import TimeEntryActivity
+
+        ist = timezone(timedelta(hours=5, minutes=30))
+        # The three most recent midnights, comfortably inside the look-back.
+        today = self._db_now().astimezone(ist).replace(hour=0, minute=0, second=0, microsecond=0)
+        d1, d2, d3, d4 = (today - timedelta(days=n) for n in (6, 5, 4, 3))
+        sql = (pathlib.Path(__file__).resolve().parents[1] / "scripts"
+               / "suspected_slept_through_days.sql").read_text(encoding="utf-8")
+
+        def add(user, start, end, op, *, activity=False):
+            entry = TimeEntry(
+                organization_id=1, user_id=user, project_id=self.ids.project_id, task_id=self.ids.task_id,
+                start_time=start, end_time=end, total_seconds=round((end - start).total_seconds()),
+                status="stopped", client_op=op,
+            )
+            self.db.add(entry)
+            self.db.flush()
+            if activity:
+                self.db.add(TimeEntryActivity(
+                    organization_id=1, time_entry_id=entry.id, recorded_at=start + timedelta(minutes=5),
+                    keyboard_strokes=3, mouse_clicks=1, mouse_movements=9, activity_percentage=30, window_seconds=60,
+                ))
+            return entry
+
+        # Friday 18:00 -> Monday: a stop and a start at each midnight, 24 h in the middle.
+        first = add(self.ids.user_id, d1 - timedelta(hours=6, minutes=37), d1, "ru:1")                    # Friday evening, to midnight
+        sat = add(self.ids.user_id, d1 + timedelta(milliseconds=40), d2, "ru:2")              # Saturday
+        sun = add(self.ids.user_id, d2 + timedelta(milliseconds=35), d3, "ru:3")              # Sunday
+        last = add(self.ids.user_id, d3, d3 + timedelta(hours=9), "ru:4")                     # Monday morning
+        # A member who really worked through a midnight: the same shape, but with activity.
+        other = self._other_user()
+        real = add(other, d1 + timedelta(milliseconds=20), d2, "ru:5", activity=True)
+        # An ordinary entry.
+        ordinary = add(self.ids.user_id, d4 + timedelta(hours=10), d4 + timedelta(hours=12), "ru:6")
+        self.db.commit()
+
+        rows = {r["time_entry_id"]: r["reason"] for r in self.db.execute(text(sql)).mappings().all()}
+        self.assertEqual(rows.get(sat.id), "full_day_no_activity")
+        self.assertEqual(rows.get(sun.id), "full_day_no_activity")
+        self.assertEqual(rows.get(first.id), "edge_of_a_run", "the evening that ran into the first midnight")
+        self.assertEqual(rows.get(last.id), "edge_of_a_run", "and the morning that began at the last")
+        self.assertNotIn(real.id, rows, "a day with activity in it is real work")
+        self.assertNotIn(ordinary.id, rows)
+
+    def _other_user(self):
+        other = self.db.execute(text(
+            "INSERT INTO users (organization_id, username, email, name, role_name, capture_frequency) "
+            "VALUES (1, 'legacy', 'legacy@example.invalid', 'Legacy', 'employee', 3) RETURNING id"
+        )).scalar()
+        self.db.commit()
+        return other
+
     def test_a_second_run_changes_nothing(self):
         start = datetime(2026, 10, 9, 11, 53, 21, tzinfo=UTC)
         entry = self._running(start, last_seen=start + timedelta(minutes=27))
