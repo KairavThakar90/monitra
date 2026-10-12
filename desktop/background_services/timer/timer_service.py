@@ -43,6 +43,7 @@ response carries, and the offset is kept on the record for diagnostics.
 """
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -78,6 +79,19 @@ REANCHOR_TOLERANCE_SECONDS = 5
 #: (`TIMER_NO_SIGNAL_GRACE_SECONDS`, docs/TIMING_MODEL.md section 9); a test
 #: keeps the two numbers equal.
 RECOVERY_CAP_SECONDS = 15 * 60
+
+#: An IST midnight is normally split at within a second of passing -- the tick
+#: runs every second. A boundary found more than this far behind `now` was
+#: crossed while the machine was asleep (or the process suspended), and the first
+#: tick after it wakes would split the session once per slept-through day, a
+#: stopped entry for each, which the backend accepts however long the weekend
+#: was. Before doing that the backend is asked whether the entry is still
+#: running: if it has ended it (the abandoned-timer policy,
+#: docs/TIMING_MODEL.md section 9) the local session ends with it and nothing is
+#: split; if it says "running", or does not answer within
+#: `ROLLOVER_VERIFY_WAIT_SECONDS`, the split proceeds exactly as it always has.
+ROLLOVER_VERIFY_AFTER_SECONDS = 120.0
+ROLLOVER_VERIFY_WAIT_SECONDS = 30.0
 
 
 class TimerStatus:
@@ -281,6 +295,8 @@ class TimerService(BaseService):
         self._trackers: list = []
         self._sync_connected = False
         self._closed_connected = False
+        #: The late-midnight check in flight (see `_rollover_confirmed`). In memory only.
+        self._rollover_gate: Optional[Dict[str, Any]] = None
 
         #: The break-resume reference (see `BreakStatus`). Never persisted.
         self._break_status = BreakStatus.NONE
@@ -1049,8 +1065,11 @@ class TimerService(BaseService):
     # and `recover()`, for a session recovered into a new IST day. One
     # implementation, two callers -- never two implementations of a split.
 
-    def _maybe_roll_over_midnight(self, *, emit_started: bool = True) -> bool:
+    def _maybe_roll_over_midnight(self, *, emit_started: bool = True, verify: bool = True) -> bool:
         """Split the running session if it has crossed an IST day boundary.
+
+        `verify=False` is for `recover()`, whose gap is already bounded by
+        `RECOVERY_CAP_SECONDS` and so cannot span more than one boundary.
 
         :return: True if a rollover happened.
         """
@@ -1060,10 +1079,69 @@ class TimerService(BaseService):
         if started is None:
             return False
         boundary = ist_day_bounds_utc(to_ist(started).date())[1]
-        if _utc_now() < boundary:
+        now = _utc_now()
+        if now < boundary:
             return False
+        if verify and (now - boundary).total_seconds() > ROLLOVER_VERIFY_AFTER_SECONDS:
+            if not self._rollover_confirmed(now):
+                return False
         self._roll_over_at(boundary, emit_started=emit_started)
         return True
+
+    def _rollover_confirmed(self, now: datetime) -> bool:
+        """May a split this late go ahead? Asks the backend first, once.
+
+        True when there is no one to ask (the session's start has not reached
+        the backend yet, so there is no entry to ask about) or the backend has
+        said the entry is still running; also after `ROLLOVER_VERIFY_WAIT_SECONDS`
+        without an answer, so a backend that cannot be reached delays the split
+        by half a minute and no more. While this returns False the tick tries
+        again -- no timer of its own, no thread, one heartbeat requested.
+
+        An answer saying the entry has *ended* never confirms anything: it
+        reaches `end_session_closed_remotely` through the sync service's
+        `entry_closed_by_server`, which ends the local session, and there is then
+        nothing left to split.
+        """
+        session = self._session or {}
+        entry_id = session.get("entry_id")
+        sync = getattr(self.runtime, "sync", None)
+        ask = getattr(sync, "request_heartbeat", None)
+        confirmed = getattr(sync, "confirmed_running_since", None)
+        if not entry_id or not callable(ask) or not callable(confirmed):
+            return True
+        key = (session.get("client_op"), entry_id)
+        gate = self._rollover_gate
+        if gate is not None and gate["key"] == key and gate.get("confirmed"):
+            return True
+        if gate is None or gate["key"] != key:
+            self._rollover_gate = {"key": key, "since": now, "monotonic": time.monotonic()}
+            self._timing("rollover.verify", reason="midnight passed while the application was not running")
+            self.log.info(
+                "an IST midnight passed while this application was not running; asking the "
+                "backend about entry %s before splitting the session", entry_id,
+            )
+            ask()
+            return False
+        if confirmed(entry_id, gate["monotonic"]):
+            return True
+        if (now - gate["since"]).total_seconds() >= ROLLOVER_VERIFY_WAIT_SECONDS:
+            self.log.warning(
+                "the backend did not answer about entry %s within %ds; splitting at midnight "
+                "as usual", entry_id, int(ROLLOVER_VERIFY_WAIT_SECONDS),
+            )
+            return True
+        return False
+
+    def _note_server_confirms_running(self) -> None:
+        """The backend has just told us this session's entry is running (an adoption
+        or a reconciliation): a split need not ask again."""
+        session = self._session or {}
+        if session.get("entry_id"):
+            self._rollover_gate = {
+                "key": (session.get("client_op"), session.get("entry_id")),
+                "since": _utc_now(), "monotonic": time.monotonic(), "confirmed": True,
+            }
 
     def _roll_over_at(self, boundary: datetime, *, emit_started: bool = True) -> None:
         """Stop the running session at `boundary` and start a fresh one there.
@@ -1076,6 +1154,7 @@ class TimerService(BaseService):
         split.
         """
         assert self._session is not None
+        self._rollover_gate = None
         session = dict(self._session)
         started_at = parse_utc(session.get("started_at_utc"))
         stopped_at = boundary.isoformat()
@@ -1519,7 +1598,7 @@ class TimerService(BaseService):
         # own -- the count belongs to the recovery that just happened, not
         # to the split.
         recovery_count = self._session["recovery_count"]
-        rolled_over = self._maybe_roll_over_midnight(emit_started=False)
+        rolled_over = self._maybe_roll_over_midnight(emit_started=False, verify=False)
         elapsed = self.elapsed_seconds()
         gap = int((now - interrupted_at).total_seconds()) if interrupted_at else None
         self.log.info(
@@ -1810,6 +1889,7 @@ class TimerService(BaseService):
                 # another machine, must not leave the display un-netted.
                 self._session["adjustment_seconds"] = _entry_adjustment(entry)
             self._persist()
+            self._note_server_confirms_running()
             self._emit_tick()
             return True
 
@@ -1838,6 +1918,7 @@ class TimerService(BaseService):
         # nothing about.
         self._leave_break("the backend reports a running entry")
         self.timer_started.emit(dict(self._session))
+        self._note_server_confirms_running()
         self._emit_tick()
         self._timing("adopt.remote")
         return True

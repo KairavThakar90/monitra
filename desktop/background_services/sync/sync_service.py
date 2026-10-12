@@ -201,6 +201,11 @@ class SyncService(LoopService):
         self._heartbeat_unsupported_until = 0.0
         self._heartbeat_failing = False
         self._closed_reported_for: Optional[int] = None
+        #: `(entry_id, monotonic seconds)` of the last heartbeat the backend answered
+        #: with the entry still running. Written here, read by the timer on the GUI
+        #: thread (`confirmed_running_since`); one tuple assignment, so a reader sees
+        #: either the old pair or the new one.
+        self._running_confirmed: Optional[tuple] = None
 
     # ── Public producer API ───────────────────────────────────────────────────
 
@@ -250,6 +255,18 @@ class SyncService(LoopService):
         wants to hear whether its entry survived the silence."""
         self._heartbeat_due_at = 0.0
         self.wake()
+
+    def confirmed_running_since(self, entry_id: Any, since_monotonic: float) -> bool:
+        """Has the backend, since `since_monotonic`, said `entry_id` is still running?
+
+        Pulled, not pushed: the timer asks when it needs the answer (before a
+        midnight split it was late for -- see `TimerService._rollover_confirmed`),
+        so no signal fires on every heartbeat. An answer that says the entry has
+        *ended* never counts here; that one reaches the timer through
+        `entry_closed_by_server`.
+        """
+        confirmed = self._running_confirmed
+        return confirmed is not None and confirmed[0] == entry_id and confirmed[1] >= since_monotonic
 
     @property
     def last_synced_at(self) -> Optional[datetime]:
@@ -465,6 +482,8 @@ class SyncService(LoopService):
                 entry_id, answer.get("closed_by_server"), answer.get("closed_reason"),
             )
             self.entry_closed_by_server.emit(answer)
+        elif entry.get("end_time") is None:
+            self._running_confirmed = (entry_id, time.monotonic())
 
     # ── Action processing ─────────────────────────────────────────────────────
 

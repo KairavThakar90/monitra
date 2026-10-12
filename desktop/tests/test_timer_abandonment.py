@@ -190,6 +190,35 @@ def test_an_entry_the_backend_closed_is_reported_once(beat):
     assert beat.closed[0]["closed_reason"] == "no_signal"
 
 
+def test_a_running_answer_is_remembered_for_the_timer_to_ask_about(beat):
+    """The timer pulls this before a midnight split it was hours late for
+    (`TimerService._rollover_confirmed`); nothing is emitted per heartbeat."""
+    asked_at = beat.now
+    assert not beat.sync.confirmed_running_since(42, asked_at)
+    beat.tick(advance=1)
+    assert beat.sync.confirmed_running_since(42, asked_at)
+    assert not beat.sync.confirmed_running_since(42, beat.now + 1), "only an answer after the question counts"
+    assert not beat.sync.confirmed_running_since(43, asked_at), "and only for that entry"
+
+
+def test_an_answer_that_says_the_entry_ended_never_confirms_it_is_running(beat):
+    beat.backend.send_heartbeat.return_value = {
+        "entry": {"id": 42, "end_time": "2026-10-09T12:08:21+00:00", "total_seconds": 900},
+        "closed_by_server": True, "closed_reason": "no_signal",
+    }
+    asked_at = beat.now
+    beat.tick(advance=1)
+    assert not beat.sync.confirmed_running_since(42, asked_at)
+    assert len(beat.closed) == 1, "that answer reaches the timer through the closure signal instead"
+
+
+def test_a_failed_beat_confirms_nothing(beat):
+    beat.backend.send_heartbeat.side_effect = ApiError("Network connection error")
+    asked_at = beat.now
+    beat.tick(advance=1)
+    assert not beat.sync.confirmed_running_since(42, asked_at)
+
+
 def test_an_older_backend_without_the_route_is_asked_again_in_an_hour_not_every_beat(beat):
     beat.backend.send_heartbeat.side_effect = ApiError("not found", status_code=404)
     beat.tick()
