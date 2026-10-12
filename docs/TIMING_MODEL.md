@@ -163,10 +163,12 @@ asserts against the live database.
   *now* -- never captured when the bundle loads -- and a page showing one moves
   to the new day when IST midnight passes, with no reload.
 
-  What the web cannot do is know a desktop is asleep. While it sleeps, its entry
-  stays open and the server's `now - start_time` keeps growing; the correction
-  arrives only when the desktop wakes and the server records it. Showing it
-  sooner needs a signal from the desktop, which no endpoint carries today.
+  The server now *does* know when a desktop has gone quiet (section 9): a
+  running entry carries `last_seen_at`, and `GET /time-tracking/active` answers
+  each row with `liveness` (`live` / `stale` / `unknown`), `last_seen_at` and
+  `measured_until`. A silent entry's figure stops at `measured_until` and the
+  page says "No signal since ..." beside it; the row stays on the page, and the
+  server closes the entry itself after a longer silence.
 
   **Which day an entry's time belongs to.** The desktop splits a session at IST
   midnight, but only while it is awake, so an entry can be open across a
@@ -222,7 +224,7 @@ instead of a permanent 400. Every refusal is logged (`IDLE_REPORT_REJECTED`).
 `keep_idle_time` and `action` repeated returns the stored result and applies
 nothing, which is what lets a client whose reply was lost simply ask again.
 
-**The gap of an interruption is idle time, and the user decides it.** A
+**The gap of a short interruption is idle time, and the user decides it.** A
 session recovered after a power cut, a crash, a kill or a hang continues from
 its original start -- the record is adopted, no second entry is created --
 but a powered-off machine is not evidence of work. The gap runs from the
@@ -232,21 +234,32 @@ through the same `POST /idle-periods` an ordinary idle stretch uses, the
 same popup asks, and the same backend rule accounts for it: the gap counts
 only for keep + resume, discard + resume deducts it as a signed adjustment,
 and stop discards it and stops the entry at the answer. Below the threshold
-nothing is reported, exactly as for any shorter pause. No new threshold and
-no maximum session length exist. The report is idempotent three ways: a
+nothing is reported, exactly as for any shorter pause.
+
+**A long interruption is not resumed.** `TimerService.RECOVERY_CAP_SECONDS`
+(15 minutes, set 2026-09-25) is the longest gap a recovered session may have.
+A session whose process was last alive more than the cap ago is *not*
+resumed: a stop is queued at `last heartbeat + 15 minutes` -- never "now" --
+the record is cleared, and the user is not asked anything. The same rule holds
+for a running entry adopted from the backend (`adopt_remote_session`): one
+whose `last_seen_at` is more than the cap before the backend's own clock is
+declined, and its stop is queued at `last_seen_at + the cap`. This is the
+rule this section previously said did not exist; the cap, not the idle prompt,
+is what decides a weekend. There is no maximum *session* length: a session
+whose desktop keeps reporting in runs for as long as its owner works.
+
+The report of a gap that is resumed is idempotent three ways: a
 client event id keyed on the session and the interruption instant, the
 backend's one-pending-period-per-entry rule, and the pending lookup every
 entry id gets at recovery. Nothing fabricates activity or screenshots for
 the gap; capture restarts at recovery.
 
 **A forgotten timer while Monitra keeps running is the ordinary idle rule**
--- the user's threshold, the popup, the same four answers -- and nothing
-more. **Still undefined, deliberately:** what happens to an idle period that
-is never answered. Today the entry keeps running with the period pending
-until the user returns or the timer is stopped (a stop discards it). No
-automatic finalization and no maximum unattended duration are implemented,
-because no business rule names one; that decision is recorded here as
-pending rather than invented.
+-- the user's threshold, the popup, the same four answers. What happens to an
+idle period that is *never answered* was left undefined here until the owner
+named the rule (2026-10-12: a forgotten timer must not accrue unlimited
+unintended time); it is now section 9: an idle prompt unanswered for four hours
+closes the entry at the prompt, exactly as pressing Stop on it would.
 
 **An explicit quit is not an interruption.** Quit, X with Quit chosen, a
 remembered Quit and the tray's Quit all stop the timer first, at the instant
@@ -254,6 +267,23 @@ of the quit, and wait a bounded time for the stop to reach the backend before
 the process exits. Offline, the stop stays queued with that instant and is
 placed by age when it is finally delivered. The remembered close choice
 decides only whether the confirmation is shown.
+
+**An OS shutdown or sign-out that goes ahead is a stop.** Windows asks every
+application first (`WM_QUERYENDSESSION`, Qt's `commitDataRequest`): that is a
+question any of them may refuse, so the desktop only notes it
+(`MainWindow.on_os_session_ending`) and stops nothing. When the shutdown is
+carried out (`WM_ENDSESSION` emits `aboutToQuit` and the process is killed
+moments later) and the question had been asked, `MainWindow.on_about_to_quit`
+stops the running timer the way a Quit does -- queued durably *before* the
+session record is cleared, carrying the instant of the shutdown, the consumer
+woken -- and then runs the ordinary teardown. A stop that cannot be sent in the
+moments that remain is sent by the next launch with that instant; one the
+machine never launches again is closed by the backend after two hours of
+silence (section 9). An **update restart is not this**: it relaunches at once,
+and its session survives it. Before 2026-10-12 an OS shutdown was treated as an
+interruption (the record was left for recovery), which meant a machine switched
+off for the night carried a running entry on the server until it was next
+launched.
 
 ## 8. Diagnosability
 
@@ -264,6 +294,210 @@ instants, the server's `now`, and the persisted `start_time` / `end_time` /
 `total_seconds`. Nothing a user typed is ever logged.
 
 Events: `start.created`, `start.replayed`, `start.conflict`, `stop.finalized`,
-`stop.replayed` (backend); `start.local`, `start.bound`, `start.refused`,
-`stop.local`, `stop.finalized`, `adopt.remote`, `reconcile.reanchored`,
-`recover` (desktop).
+`stop.replayed`, `heartbeat.first`, `heartbeat.resumed`, `reconcile.closed`
+(backend; a heartbeat is logged only on its edges -- the first of an entry and
+the one that ends a silence -- never per beat); `start.local`, `start.bound`,
+`start.refused`, `stop.local`, `stop.finalized`, `adopt.remote`,
+`adopt.declined`, `closed.remote`, `reconcile.reanchored`, `recover`,
+`recover.capped` (desktop). Every `reconcile.closed` line carries the entry,
+user, reason, `decided_by`, `last_seen_at`, the silence, and the instants and
+duration it wrote; the decision itself is a row in
+`time_entry_reconciliations`. `GET /health` reports the policy in force
+(`timer_reconciler`: the four thresholds and whether the scheduled run applies).
+
+
+## 9. Abandoned timers: what the server does about silence
+
+**The incident.** A timer started on Friday 2026-10-09 at 17:23 IST
+(`time_entries` id 5958, user 260) was still `running`, `end_time` NULL,
+`total_seconds` 0, on Monday morning, and Active Users read `65:32:33`. A
+running entry is the server's only statement that somebody is working, and
+until this section nothing on the server could tell a desktop that is working
+from one that is switched off, asleep, crashed, uninstalled or never
+relaunched. Every consumer -- Active Users, Time Tracking, the reports, the
+monthly summary -- measured `now() - start_time`, so one forgotten row put a
+weekend into its start day.
+
+**The rule, in one sentence.** A running entry counts for as long as its
+desktop vouches for it, plus a quarter hour; the server stops counting it
+when the vouching stops, and closes it if the silence lasts.
+
+### 9.1 The signal
+
+`time_entries.last_seen_at` (`timestamptz`, nullable, no default; migration
+`e3a7c1d95b40`) is the last instant the owning desktop proved it was alive, on
+the server's clock. It is written by one conditional `UPDATE ... WHERE id =
+:id AND user_id = :caller AND end_time IS NULL` -- a late signal can neither
+reopen nor alter an ended entry, nor touch another member's:
+
+* `POST /time-entries/{id}/heartbeat` -- the desktop's explicit "still here",
+  sent by `SyncService` every 120 s (jittered 0.8-1.2x) while a timer runs, at
+  once when an entry is bound, when the backend becomes reachable again and on
+  resume from sleep. It is not durable work: nothing is queued, a lost beat is
+  replaced by the next, and a backend that answers "no such route" (older than
+  the heartbeat) is asked again an hour later, not every beat.
+* Any upload that names the entry -- an activity window, an application-usage
+  batch, a screenshot, an idle report. They prove the same thing, which is what
+  makes the policy work for desktops that predate the heartbeat: they upload
+  activity every minute they run.
+* `POST /time-entries/start` with `reports_liveness: true` starts the entry's
+  clock at creation (a desktop that dies in its first minutes is not mistaken
+  for one that never reported).
+
+An entry that has never reported (`last_seen_at IS NULL`) has **unknown**
+liveness. It is measured and handled exactly as before and is never closed on
+its own: silence from a client that never speaks proves nothing.
+
+### 9.2 What a running entry is worth
+
+The duration of a running entry is measured to its *effective end*:
+
+```
+silence       = now - last_seen_at
+effective_end = now                                   if never reported, or silence <= stale_after
+              = max(start, min(now, last_seen_at + grace))   otherwise
+```
+
+`app/core/timer_policy.py` (`effective_end`, `liveness`) is the Python form and
+`app/repositories/time_entry_liveness.py` (`effective_now`) the SQL form; one
+test runs both against PostgreSQL and requires the same instant. Every figure
+that measures a running entry goes through one of them: `TimeEntryRead`
+(`elapsed_seconds`, `net_seconds`, `liveness`), Active Users, the day list and
+the member drill-down (including their midnight apportioning), every report
+that reuses `TimeTrackingRepository._duration_expression`, the monthly summary
+and the member activity log. So the weekend of the incident adds 42 minutes to
+Friday, not 65 hours, in all of them at once -- before anything is closed.
+
+`stale_after <= grace` is enforced when the settings are read, which is what
+keeps the figure continuous: an entry is measured to `now` until it turns
+stale and to `last signal + grace` after, and the second is never earlier than
+the first, so no number steps backwards.
+
+### 9.3 What the server closes
+
+| Rule | Trigger | Closing instant | Reason |
+|---|---|---|---|
+| No signal | silent longer than `TIMER_NO_SIGNAL_STOP_AFTER_SECONDS` (default **2 h**) | `last_seen_at + grace` (15 min) | `no_signal` |
+| Unanswered idle prompt | a pending idle period older than `TIMER_IDLE_UNANSWERED_STOP_AFTER_SECONDS` (default **4 h**), desktop still reporting | the instant the prompt was raised | `idle_unanswered` |
+| Replaced by a start | a start finds a running entry that is **stale** (silent > `TIMER_STALE_AFTER_SECONDS`, 10 min) | `min(last_seen_at + grace, new start)` | `replaced_by_start` |
+| Operator | an administrator names an entry that never reported (`include_unreported` + `entry_id`) | newest upload that names it + grace (else the start + grace) | `operator` |
+
+Every closure goes through `TimeEntryService.finalize_entry` -- the code the
+user's own Stop runs -- so `total_seconds = round(end_time - start_time)`, a
+pending idle period is resolved as discarded (the owner's rule: *a Stop pressed
+while the prompt is unanswered discards it*), the task rollup refreshes, the
+activity trail records it and the WFPM timer is stopped. The entry keeps its
+original `start_time`. Each closure is one transaction under
+`SELECT ... FOR UPDATE SKIP LOCKED`, re-decided on the locked row (a heartbeat
+that landed first wins), writes one `time_entry_reconciliations` row (what,
+why, `last_seen_at`, the silence, the instants written, the idle period it
+resolved, the thresholds in force, who decided) and is idempotent: the unique
+index on the entry means a second run changes nothing.
+
+**What it never does:** delete or edit an entry that has ended; reopen
+anything; close an entry that is reporting in, however long it has run (no
+maximum session length exists); close an entry that never reported, unless an
+operator names it; or apply anything on its own until the deployment turns the
+scheduled run on (9.5).
+
+A **start** that finds a stale entry closes it and proceeds. Before, it was
+refused with `409 active_entry`, and the desktop adopted Friday's entry as the
+session it had just started. A live entry (or one that never reported) is still
+refused exactly as before.
+
+### 9.4 The choice of numbers, and what they cost
+
+No rule in the product named a number, so these are chosen from what is
+already there and are all settings:
+
+* **grace = 15 min** is the desktop's own `RECOVERY_CAP_SECONDS` (the owner set
+  it on 2026-09-25: a crash recovered later is stopped at last heartbeat + 15
+  minutes). A test keeps the two equal. The grace is also the most unattended
+  time any closure can count.
+* **stale = 10 min** is five missed heartbeats.
+* **no-signal stop = 2 h** has to be longer than a lunch break or a laptop
+  asleep through a meeting -- whose owner can still answer the idle prompt when
+  the machine wakes and keep the time -- and far shorter than a night. It only
+  decides *when* an entry is closed, never *how much* it counts (that is
+  `last signal + 15 min` whenever it fires), so a shorter value costs only the
+  people whose machine was silent for that long and who then wanted to keep it.
+* **idle prompt = 4 h** is the case a heartbeat cannot see: Monitra still
+  running on a machine whose person went home.
+
+| If the no-signal stop were | Forgotten timers are closed after | A legitimate silence is cut if it exceeds |
+|---|---|---|
+| 1 h | ~1 h | 1 h (a long lunch with the lid closed) |
+| **2 h (chosen)** | ~2 h | 2 h (a half-day offline) |
+| 4 h | ~4 h | 4 h |
+| 8 h | ~8 h (overnight survives until morning) | a working day |
+
+The cost of a cut is bounded and visible: the desktop is told on its next
+heartbeat (`closed_by_server`, `closed_reason`), says so ("Monitra stopped your
+timer at 6:05 pm ... If you were working, you can request that time"), and the
+existing manual-time request is the way to claim it. A long offline stretch
+whose desktop *kept* running is the one honest loss: the server cannot tell it
+from a dead one, and the activity the desktop captured meanwhile is still
+uploaded and still attributed to the (closed) entry.
+
+### 9.5 Switching it on
+
+`TIMER_RECONCILER_ENABLED` is **off** by default. The job
+(`timer-reconcile`, every 5 minutes, on every scheduler surface:
+`vercel.json`, the Linux timer, the Windows task) calls
+`POST /internal/time-entries/reconcile`, which with the flag off only *reports*
+-- the same JSON, `dry_run: true`, nothing written. The order is:
+
+1. Deploy the backend and apply migration `e3a7c1d95b40` (additive; it touches
+   no row). From that moment every figure above is already correct for
+   entries that report liveness; nothing is closed.
+2. Read a report: `POST /internal/time-entries/reconcile` (token
+   `EMAIL_DISPATCH_TOKEN`). Each item names the entry, user, reason, last
+   evidence, the instant it would end at, the duration it would write, and the
+   figure it would correct.
+   The same picture, as a plain read-only query for pgAdmin (no token, no
+   application involved): `backend/scripts/stale_running_entries_report.sql`.
+   It lists every running entry with its silence, the newest evidence that names
+   it, what Active Users showed (`measured_now_seconds`), what the policy would
+   write (`proposed_end`, `proposed_seconds`) and who may close it.
+3. Set `TIMER_RECONCILER_ENABLED=true`, or approve a single run with
+   `?dry_run=false`.
+
+**Legacy rows.** Entries that were running before the deploy have
+`last_seen_at NULL` and are reported (`unreported_running`) but not closed by
+any scheduled run -- including the incident's own row, unless its desktop
+uploads something. Closing one is the owner's explicit, per-entry decision:
+`?dry_run=false&include_unreported=true&entry_id=5958`, which uses the newest
+activity / screenshot / application-usage row that names the entry as the last
+evidence (else the start) and records `decided_by = operator` and the evidence
+in the audit row. Read the dry-run for the same parameters first.
+
+### 9.6 What the desktop does
+
+* **Heartbeat** (`SyncService`): as 9.1. The answer is the entry as it stands;
+  an entry that has ended makes the desktop end its own session
+  (`TimerService.end_session_closed_remotely`): the local clock stops, the day
+  is re-read from the backend, the figure that counts is the backend's, and the
+  person is told why. A session whose stop the user already queued is left to
+  that stop.
+* **Adopting a backend entry** (`adopt_remote_session`): declined, with a stop
+  queued at `last_seen_at + 15 min`, when its desktop was silent for more than
+  the cap -- the same rule as a crash recovered at launch.
+* **Queued starts and stops name their account** (`user_id`) and are sent only
+  under it (`SyncService._require_owner`); held, never cancelled and never
+  spending their retry budget, while another account (or nobody) is signed in.
+  A stop is never parked as `failed` by a 401 (it is held until the session is
+  re-established): the backend answered such a stop as "not found" under
+  another account's token and a signed-out client's as 401, and either way the
+  entry ran on with nothing to end it.
+* **A stop is honoured however old it is** (backend `_event_time(trust_age=True)`):
+  the seven-day ceiling is for backdated *starts*; applied to a stop its
+  fallback ("use the server clock") was the latest instant the stop could take.
+
+### 9.7 What is not covered
+
+* Production data and logs were not available to the investigation, so *which*
+  of the paths above produced the 65-hour row cannot be proved from evidence
+  (see the final report); each is reproduced by a test.
+* The OS-shutdown stop, the tray, the real display and a real sleep/wake are
+  verified by tests and doubles, not on hardware (`CLAUDE.md` section 5, item 4).
+* macOS has not run any of this.

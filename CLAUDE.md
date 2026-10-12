@@ -256,6 +256,18 @@ These are **unimplemented features**, deliberately left out of the stability wor
    artifacts are unsigned.** Registering releases as drafts and piloting them is fine;
    publishing one to real users is not, until Windows code signing and macOS
    notarization are in place. The macOS update path has also never run on real hardware.
+7. **Abandoned-timer reconciliation — implemented (2026-10-12), report-only until the
+   owner switches it on.** A running entry is only as live as its desktop:
+   `time_entries.last_seen_at` (heartbeat and uploads) lets the server measure a silent
+   entry only to `last signal + 15 min` in every report, show it as "No signal" on Active
+   Users, and — once `TIMER_RECONCILER_ENABLED` is on — close it after two hours of
+   silence (or an idle prompt unanswered for four) with an audit row. **The scheduled
+   job ships report-only**: never turn it on, and never close a legacy row
+   (`last_seen_at IS NULL`, e.g. entry 5958), without the owner reading a dry-run first.
+   **[docs/TIMING_MODEL.md](docs/TIMING_MODEL.md) section 9 is authoritative**, including
+   the thresholds, the alternatives and what it costs. The desktop cap
+   (`RECOVERY_CAP_SECONDS`) and the backend grace are one number written twice; a test
+   keeps them equal.
 
 ---
 
