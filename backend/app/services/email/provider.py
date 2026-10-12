@@ -223,12 +223,20 @@ def build_mime_message(message: OutgoingEmail) -> EmailMessage:
     if message.inline_images:
         html_part = mime.get_payload()[-1]
         for image in message.inline_images:
+            # `disposition="inline"` is not the default it looks like: giving
+            # `filename` makes the stdlib stamp the part `attachment`, and
+            # `add_related`'s own "inline" is then skipped because a disposition
+            # exists. Gmail's web client does not draw an `attachment` part in
+            # the body even when the HTML points at its Content-ID -- the logos
+            # showed as broken images and as downloadable attachments -- while
+            # Outlook does, which is why only some recipients saw the problem.
             html_part.add_related(
                 image.content,
                 maintype="image",
                 subtype=image.subtype,
                 cid=f"<{image.cid}>",
                 filename=image.filename,
+                disposition="inline",
             )
     return mime
 

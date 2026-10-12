@@ -1403,6 +1403,40 @@ class TestEmailAssets(unittest.TestCase):
         for attempt in ("../../../etc/passwd", "..\\..\\secrets.env", "sub/dir.png", ""):
             self.assertIsNone(assets.asset_path(attempt))
 
+    def test_embedded_logos_are_inline_parts_that_the_html_can_resolve(self):
+        """Every embedded image must be an *inline* part whose Content-ID the HTML names.
+
+        Giving the stdlib a `filename` stamps a part `attachment`, which Gmail's web
+        client will not draw in the body: the logos showed as broken images and as
+        attachments to download. Outlook draws them, so the fault looked random.
+        """
+        import re
+
+        with email_settings(EMAIL_ASSET_BASE_URL=""):
+            message = messages.build_welcome_email({"user_id": 1, "name": "A"}, ["a@x.com"])
+            mime = build_mime_message(message)
+
+        images = [part for part in mime.walk() if part.get_content_maintype() == "image"]
+        self.assertEqual(len(images), 2, "both logos should be carried by the message")
+        for part in images:
+            self.assertEqual(part.get_content_disposition(), "inline", part.get_filename())
+        referenced = set(re.findall(r'src="cid:([^"]+)"', message.html))
+        carried = {part["Content-ID"].strip("<>") for part in images}
+        self.assertEqual(referenced, carried)
+
+    def test_a_screenshot_image_in_a_notice_is_inline_as_well(self):
+        from app.services.email.provider import InlineImage
+
+        pixel = (b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        with email_settings():
+            mime = build_mime_message(OutgoingEmail(
+                to=["a@x.com"], subject="s", html='<p><img src="cid:shot" /></p>', text="s",
+                inline_images=(InlineImage(cid="shot", filename="shot.png", content=pixel),),
+            ))
+        (part,) = [p for p in mime.walk() if p.get_content_maintype() == "image"]
+        self.assertEqual(part.get_content_disposition(), "inline")
+        self.assertEqual(part["Content-ID"], "<shot>")
+
     def test_no_email_references_a_local_file_path(self):
         with email_settings():
             welcome = messages.build_welcome_email({"user_id": 1, "name": "A"}, ["a@x.com"]).html
