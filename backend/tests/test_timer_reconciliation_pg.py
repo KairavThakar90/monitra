@@ -232,7 +232,8 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
         entry = self._running(now - timedelta(days=3), last_seen=None)
         scripts = pathlib.Path(__file__).resolve().parents[1] / "scripts"
         for name in ("stale_running_entries_report.sql", "timer_silence_evidence.sql",
-                     "entry_reconciliation_preview.sql"):
+                     "entry_reconciliation_preview.sql", "suspected_slept_through_days.sql",
+                     "timer_rollout_monitor.sql"):
             sql = (scripts / name).read_text(encoding="utf-8")
             if name.startswith("entry_"):
                 sql = re.sub(r"5958::bigint", f"{entry.id}::bigint", sql)
@@ -241,6 +242,38 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
                 rows = conn.execute(text(sql)).fetchall()
                 conn.rollback()
                 self.assertIsNotNone(rows)
+
+    def test_the_rollout_monitor_counts_what_it_says_and_flags_a_cut_that_was_wrong(self):
+        import pathlib
+
+        from app.models.manual_time_entry import ManualTimeEntry
+
+        now = self._db_now()
+        sql = (pathlib.Path(__file__).resolve().parents[1] / "scripts"
+               / "timer_rollout_monitor.sql").read_text(encoding="utf-8")
+        live = self._running(now - timedelta(hours=30), last_seen=now - timedelta(seconds=20))
+        quiet_start = now - timedelta(hours=8)
+        quiet = self._running(quiet_start, last_seen=quiet_start + timedelta(minutes=20), user_id=self._other_user())
+        self._reconcile()                                                   # closes `quiet`; the job is applying here
+        self.assertIsNotNone(self._reload(quiet.id).end_time)
+        closed_at = self._reload(quiet.id).end_time
+        # The member then asks for the time after the cut.
+        self.db.add(ManualTimeEntry(
+            organization_id=1, user_id=quiet.user_id, project_id=self.ids.project_id, task_id=self.ids.task_id,
+            work_date=now.date(), start_time=closed_at + timedelta(minutes=5), end_time=closed_at + timedelta(hours=2),
+            total_seconds=7000, approval_status="pending", is_billable=False,
+        ))
+        self.db.commit()
+
+        metrics = {r["metric"]: r["value"] for r in self.db.execute(text(sql)).mappings().all()}
+        self.assertEqual(metrics["running entries"], "1")
+        self.assertEqual(metrics["running over 24 h, reporting in"], "1", "the live 30-hour timer is counted, not closed")
+        self.assertEqual(metrics["server closures, last 24 hours"], "1")
+        self.assertEqual(metrics["  of which no_signal, last 7 days"], "1")
+        self.assertTrue(metrics["last audit row written"].endswith("IST"))
+        wrong_cut = [v for k, v in metrics.items() if k.startswith("wrong-cut indicator")]
+        self.assertEqual(wrong_cut, ["1"], "one member asked for the time after the server's cut")
+        self.assertIsNone(self._reload(live.id).end_time)
 
     def test_a_legacy_entry_with_a_fresh_upload_is_active_not_abandoned(self):
         """A missing last_seen_at is not evidence of anything. A legacy desktop that is uploading
