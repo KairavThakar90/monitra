@@ -73,6 +73,12 @@ export type FieldSpec = {
   minimum?: number;
   maximum?: number;
   allowNegative?: boolean;
+  /**
+   * Also refuse code that carries no markup tag (jQuery, JavaScript, CSS).
+   * Only meaningful for `rule: 'description'`; set it on a project's or a
+   * task's description and nowhere else.
+   */
+  rejectCode?: boolean;
   /** The permitted values, for the `enum` rule. */
   allowed?: readonly unknown[];
   /**
@@ -128,6 +134,7 @@ export function validateBySpec(value: unknown, spec: FieldSpec): ValidationResul
         fieldLabel: label,
         maxLength: spec.maxLength,
         required,
+        rejectCode: spec.rejectCode,
       });
     case 'plain_text':
     case 'idempotency_key':

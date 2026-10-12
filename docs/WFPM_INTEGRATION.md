@@ -126,7 +126,7 @@ ids** (the `id` returned by Monitra's sign-in and member endpoints).
 |---|---|---|
 | `wfpm_project_id` | yes | See §1 |
 | `project_name` | yes | 1–150 characters, not blank |
-| `description` | no | Up to 5000 characters |
+| `description` | no | Up to 5000 characters of **plain text**. HTML, CSS, JavaScript, jQuery and other code are refused with a `422` naming the field; a blank one is stored as no description |
 | `employee_ids` | no | Monitra user ids to add as members; no duplicates |
 | `deadline` | no | `YYYY-MM-DD`, not in the past. Omit or send `null` for none |
 | `billing_type` | yes | `"free"` (flexible time) or `"non_billing"` (not billed). Neither has an hours budget. (`"fixed"` needs one, which this API does not accept, so it is refused) |
@@ -166,7 +166,7 @@ Send only the fields to change.
 | Field | Notes |
 |---|---|
 | `project_name` | 1–150 characters |
-| `description` | `null` clears it |
+| `description` | `null` (or blank) clears it. Plain text only, as on create: code is refused with a `422` |
 | `deadline` | `null` clears it; a date must not be in the past |
 | `status` | `"active"`, `"paused"` or `"completed"` |
 

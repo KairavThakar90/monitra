@@ -91,6 +91,7 @@ from .sanitizer import (
 )
 from .validators import (
     ValidationResult,
+    contains_code_snippet,
     find_structured_content,
     looks_like_json_document,
     validate_all,
@@ -165,6 +166,7 @@ __all__ = [
     "validate_time_of_day",
     "validate_sha256",
     "validate_all",
+    "contains_code_snippet",
     "find_structured_content",
     "looks_like_json_document",
 ]

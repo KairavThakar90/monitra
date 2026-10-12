@@ -111,6 +111,57 @@ TEMPLATE_EXPRESSION_PATTERN = re.compile(r"\$\{[^}]*\}|\{\{[^}]*\}\}|<%.*?%>", r
 XML_PROLOG_PATTERN = re.compile(r"<\?xml\b|<!\[CDATA\[|<!DOCTYPE\b", re.IGNORECASE)
 CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
+# Code-snippet detection -- opt-in, for fields that must hold prose and nothing
+# else (a project's or a task's description). Mirrors the backend's
+# `CODE_SNIPPET_SOURCES`, source text for source text, and
+# `test_validation_framework.py` fails if the two differ. See the backend file
+# for the reasoning behind each entry and for why this is not part of
+# `find_structured_content`.
+CODE_SNIPPET_SOURCES: tuple[tuple[str, bool], ...] = (
+    # jQuery and `$` selectors
+    (r"\$\s*\(\s*(?:[\x22\x27\x60#.<\[]|document\b|window\b|this\b|function\b)", False),
+    (r"\bjQuery\s*[.(]", False),
+    (r"\$\.(?:ajax|get|post|getJSON|each|extend|parseJSON|map|grep)\s*\(", False),
+    # JavaScript: calls with a literal argument, the DOM, storage, networking
+    (r"\b(?:alert|eval|prompt|confirm|setTimeout|setInterval|atob|btoa|importScripts)\((?=[^)\n]*[\d\x22\x27\x60.$_])", False),
+    (r"\bfetch\(\s*[\x22\x27\x60]", False),
+    (r"\bnew\s+(?:Function|WebSocket)\b|\bXMLHttpRequest\b", False),
+    (r"\b(?:document|window)\.(?:cookie|location|domain|write|writeln|body|getElementById|getElementsBy\w+|querySelector|querySelectorAll|createElement|open|eval)\b", False),
+    (r"\b(?:localStorage|sessionStorage)\.\w+", False),
+    (r"\.(?:innerHTML|outerHTML|insertAdjacentHTML)\b|\.addEventListener\s*\(", False),
+    # JavaScript: function and control-flow syntax
+    (r"\bfunction\s*[\w$]*\s*\([^)]*\)\s*\{", False),
+    (r"=>\s*\{|\([^()]*\)\s*=>\s*[\w$.\x22\x27]+\s*[;)]", False),
+    (r"\.(?:then|catch|forEach|map|filter|reduce)\(\s*(?:function\b|\(?[\w$,\s]*\)?\s*=>)", False),
+    (r"\b(?:var|let|const)\s+[A-Za-z_$][\w$]*\s*=(?!=)", False),
+    (r"\bconsole\.(?:log|error|warn|info|debug|table|dir)\s*\(", False),
+    (r"\b(?:if|while|for|switch|catch)\s*\([^)\n]*\)\s*\{", False),
+    (r"\}\s*else\s*(?:if\b[^{]*)?\{", False),
+    # CSS: a rule block, an at-rule
+    (r"\{\s*-?[a-z][a-z-]*\s*:[^{}]*;[^{}]*\}", True),
+    (r"\{\s*(?:color|background(?:-[a-z]+)?|display|margin(?:-[a-z]+)?|padding(?:-[a-z]+)?|font(?:-[a-z]+)?|width|height|min-[a-z]+|max-[a-z]+|position|border(?:-[a-z]+)?|content|opacity|visibility|z-index|top|left|right|bottom|float|overflow|cursor|transform|text-[a-z]+)\s*:[^{}]*\}", True),
+    (r"@(?:import|charset|font-face|keyframes)\b|@media\s*\(", True),
+    # Markup the tag pattern cannot see: a tag with no closing `>`, a comment
+    (r"<\s*/?\s*(?:script|style|iframe|frame|frameset|object|embed|applet|link|meta|base|svg|math|img|body|html|head|form|input|button|video|audio|source|marquee|details|textarea|select|template|noscript)\b", True),
+    (r"<!--", False),
+    # Server-side and other languages
+    (r"<\?(?:php\b|=)", True),
+    (r"\b(?:os\.system|os\.popen|subprocess\.\w+|__import__|shell_exec|passthru)\s*\(", False),
+    (r"\brm\s+-[a-z]*[rf][a-z]*\s", True),
+    (r"\bInvoke-(?:Expression|WebRequest|Command)\b", True),
+    # SQL injection signatures -- the shapes of an attack, not the words
+    (r"\bUNION\s+(?:ALL\s+)?SELECT\b", True),
+    (r";\s*(?:DROP|TRUNCATE|ALTER|DELETE\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|EXEC(?:UTE)?)\b", True),
+    (r"[\x22\x27]\s*(?:OR|AND)\s+[\x22\x27]?\w+[\x22\x27]?\s*=\s*[\x22\x27]?\w+", True),
+    # Markup hidden by URL- or JS-escaping: `%3Cscript`, `<`, `\x3c`
+    (r"%3[cC]\s*/?\s*[A-Za-z!]|\\u003[cC]|\\x3[cC]", False),
+)
+
+CODE_SNIPPET_PATTERNS = tuple(
+    re.compile(source, re.IGNORECASE if ignore_case else 0)
+    for source, ignore_case in CODE_SNIPPET_SOURCES
+)
+
 
 __all__ = [
     "Rule",
@@ -146,4 +197,6 @@ __all__ = [
     "TEMPLATE_EXPRESSION_PATTERN",
     "XML_PROLOG_PATTERN",
     "CONTROL_CHARACTER_PATTERN",
+    "CODE_SNIPPET_SOURCES",
+    "CODE_SNIPPET_PATTERNS",
 ]

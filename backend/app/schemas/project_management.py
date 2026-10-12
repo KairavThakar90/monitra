@@ -5,7 +5,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.core.validation import IdentifierList, OptionalDescription, OptionalIdempotencyKey
+from app.core.validation import IdentifierList, OptionalIdempotencyKey, OptionalPlainDescription
 
 
 class BillingType(str, Enum):
@@ -70,7 +70,9 @@ class PersonRead(BaseModel):
 
 class ProjectCreate(BaseModel):
     project_name: str = Field(..., max_length=150)
-    description: Optional[str] = Field(None, max_length=5000)
+    #: Plain text only -- no HTML, CSS, script or other code -- and a blank one
+    #: is stored as no description rather than as whitespace.
+    description: OptionalPlainDescription = None
     status_id: int = Field(..., gt=0)
     #: Optional in the schema only because the WFPM route builds this model
     #: and has no owner to name. `ProjectManagementService.create` requires it
@@ -94,11 +96,6 @@ class ProjectCreate(BaseModel):
         if not value:
             raise ValueError("Project name cannot be empty")
         return value
-
-    @field_validator("description")
-    @classmethod
-    def clean_description(cls, value: Optional[str]):
-        return value.strip() if value else value
 
     @field_validator("employee_ids")
     @classmethod
@@ -169,7 +166,9 @@ class ProjectCategoryAssignResult(BaseModel):
 
 class ProjectUpdate(BaseModel):
     project_name: Optional[str] = Field(None, max_length=150)
-    description: Optional[str] = Field(None, max_length=5000)
+    #: Omitted leaves the description alone; sent as null or blank, it clears
+    #: it. Plain text only, exactly as on create.
+    description: OptionalPlainDescription = None
     status_id: Optional[int] = Field(None, gt=0)
     #: Omitted means "keep the current owner". An explicit null is refused:
     #: a project that has an owner cannot be left without one.
@@ -193,11 +192,6 @@ class ProjectUpdate(BaseModel):
             raise ValueError("Project name cannot be empty")
         return value
 
-    @field_validator("description")
-    @classmethod
-    def clean_description(cls, value: Optional[str]):
-        return value.strip() if value else value
-
     @field_validator("employee_ids")
     @classmethod
     def unique_employees(cls, value: Optional[list[int]]):
@@ -209,8 +203,9 @@ class ProjectUpdate(BaseModel):
 class TaskCreate(BaseModel):
     name: str = Field(..., max_length=150)
     #: Optional free text. Validated by the shared rule, so a blank one is
-    #: stored as no description rather than as whitespace.
-    description: OptionalDescription = None
+    #: stored as no description rather than as whitespace -- and, as for a
+    #: project, it is plain text only.
+    description: OptionalPlainDescription = None
     #: Optional. A task created by someone who is not an employee -- an admin
     #: or a leader -- starts unassigned and is given an owner later through
     #: the update endpoint, because only an active employee who is a member
@@ -266,7 +261,7 @@ class TaskUpdate(BaseModel):
     name: Optional[str] = Field(None, max_length=150)
     #: Omitted leaves the description alone; sent as null or blank, it clears
     #: it (the service applies `exclude_unset`).
-    description: OptionalDescription = None
+    description: OptionalPlainDescription = None
     assignee_id: Optional[int] = Field(None, gt=0)
     status_id: Optional[int] = Field(None, gt=0)
     #: Sent explicitly as null, this *clears* the budget (the service applies

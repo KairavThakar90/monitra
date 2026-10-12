@@ -423,7 +423,7 @@ class AddTaskDialog(QDialog):
             self.name_input.setFocus()
             return
         description = validate_description(
-            self.desc_input.toPlainText(), field_label="Description"
+            self.desc_input.toPlainText(), field_label="Description", reject_code=True
         )
         if not description.ok:
             QMessageBox.warning(self, "Validation Error", description.error)
@@ -439,7 +439,7 @@ class AddTaskDialog(QDialog):
         # the trimming and line-ending conversion the backend expects.
         name = validate_name(self.name_input.text(), field_label="Task name")
         description = validate_description(
-            self.desc_input.toPlainText(), field_label="Description"
+            self.desc_input.toPlainText(), field_label="Description", reject_code=True
         )
         return {
             "task_name": self._final_name(name.value) if name.ok else "",
@@ -616,7 +616,7 @@ class EditTaskDialog(QDialog):
             self.name_input.setFocus()
             return
         description = validate_description(
-            self.desc_input.toPlainText(), field_label="Description"
+            self.desc_input.toPlainText(), field_label="Description", reject_code=True
         )
         if not description.ok:
             QMessageBox.warning(self, "Validation Error", description.error)
@@ -628,7 +628,7 @@ class EditTaskDialog(QDialog):
         status_id = self.status_combo.currentData()
         name = validate_name(self.name_input.text(), field_label="Task name")
         description = validate_description(
-            self.desc_input.toPlainText(), field_label="Description"
+            self.desc_input.toPlainText(), field_label="Description", reject_code=True
         )
         return {
             "task_name": self._final_name(name.value) if name.ok else "",
@@ -1299,6 +1299,11 @@ class TaskRow(QFrame):
             clean_desc = desc.replace("[duplicate]", "").strip()
             if clean_desc:
                 self._desc_label = QLabel(clean_desc[:60] + ("…" if len(clean_desc) > 60 else ""), self)
+                # A QLabel's default (AutoText) turns anything that looks like
+                # HTML into rich text. A description is the person's own words,
+                # so it is shown literally: a stored `<b>x</b>` must read as
+                # `<b>x</b>`, never as bold text -- or as an image fetch.
+                self._desc_label.setTextFormat(Qt.TextFormat.PlainText)
                 self._desc_label.setFont(QFont("Segoe UI", 10))
                 # Starts where the task name starts, not under the leading
                 # glyph: the name sits after the glyph and the row's spacing,

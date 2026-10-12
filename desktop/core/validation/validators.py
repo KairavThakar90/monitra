@@ -32,6 +32,7 @@ from urllib.parse import urlparse
 
 from .rules import (
     ALLOWED_URL_SCHEMES,
+    CODE_SNIPPET_PATTERNS,
     CONTROL_CHARACTER_PATTERN,
     DATE_PATTERN,
     DESCRIPTION_MAX_LENGTH,
@@ -127,6 +128,15 @@ def find_structured_content(value: str) -> Optional[str]:
     return None
 
 
+def contains_code_snippet(value: str) -> bool:
+    """True when *value* contains code even though it carries no markup tag.
+
+    The stricter, opt-in companion to :func:`find_structured_content`, mirroring
+    the backend's function of the same name.
+    """
+    return any(pattern.search(value) for pattern in CODE_SNIPPET_PATTERNS)
+
+
 def contains_letter_or_digit(value: str) -> bool:
     """True if *value* holds at least one letter or digit, in any script.
 
@@ -143,6 +153,7 @@ def _plain_text_problem(
     field_label: str,
     *,
     require_content: bool = True,
+    reject_code: bool = False,
 ) -> Optional[str]:
     """The shared content check. Control characters are tested on the raw text.
 
@@ -160,6 +171,8 @@ def _plain_text_problem(
     reason = find_structured_content(normalized)
     if reason is not None:
         return f"{field_label}: {reason}"
+    if reject_code and contains_code_snippet(normalized):
+        return f"{field_label}: Code is not allowed here. Please describe it in plain text."
     # Length and structure alone let a value through that is nothing but
     # punctuation -- "!!!", "...", "@@@" all have a length, contain no markup
     # and are not JSON, so every other check passed them. They are not names or
@@ -204,8 +217,15 @@ def validate_description(
     field_label: str = "Description",
     max_length: int = DESCRIPTION_MAX_LENGTH,
     required: bool = False,
+    reject_code: bool = False,
 ) -> ValidationResult:
-    """Multi-line prose: descriptions, reasons, comments, feedback."""
+    """Multi-line prose: descriptions, reasons, comments, feedback.
+
+    *reject_code* also refuses code that carries no markup tag (jQuery,
+    JavaScript, CSS ...). It is for a project's or a task's description and is
+    off elsewhere -- the backend applies the same switch to the same fields, and
+    a client must never be stricter than the backend.
+    """
     if value is None:
         return _fail(f"{field_label} is required.") if required else _ok(None)
     if not isinstance(value, str):
@@ -215,7 +235,7 @@ def validate_description(
         return _fail(f"{field_label} is required.") if required else _ok(None)
     if len(normalized) > max_length:
         return _fail(f"{field_label} must be at most {max_length} characters.")
-    problem = _plain_text_problem(value, normalized, field_label)
+    problem = _plain_text_problem(value, normalized, field_label, reject_code=reject_code)
     return _fail(problem) if problem else _ok(normalized)
 
 
@@ -556,6 +576,7 @@ def validate_time_of_day(value: Any, *, field_label: str = "Time") -> Validation
 __all__ = [
     "ValidationResult",
     "looks_like_json_document",
+    "contains_code_snippet",
     "find_structured_content",
     "validate_name",
     "validate_description",

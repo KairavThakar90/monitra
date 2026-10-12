@@ -4,7 +4,7 @@ from typing import Optional, List
 from app.schemas.task_assignee import TaskAssigneeRead
 from app.core.validation import (
     Name,
-    OptionalDescription,
+    OptionalPlainDescription,
     OptionalIdentifier,
     OptionalName,
 )
@@ -40,7 +40,7 @@ class TaskBase(BaseModel):
 
 class TaskCreate(BaseModel):
     task_name: Name
-    description: OptionalDescription = None
+    description: OptionalPlainDescription = None
     start_date: Optional[date] = None
     due_date: Optional[date] = None
     estimated_hours: Optional[float] = Field(
@@ -52,7 +52,7 @@ class TaskCreate(BaseModel):
 
 class TaskUpdate(BaseModel):
     task_name: OptionalName = None
-    description: OptionalDescription = None
+    description: OptionalPlainDescription = None
     status: Optional[str] = None
     start_date: Optional[date] = None
     due_date: Optional[date] = None

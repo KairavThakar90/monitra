@@ -217,6 +217,61 @@ export const XML_PROLOG_PATTERN = /<\?xml\b|<!\[CDATA\[|<!DOCTYPE\b/i;
 // oxlint-disable-next-line no-control-regex
 export const CONTROL_CHARACTER_PATTERN = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 
+// ---------------------------------------------------------------------------
+// Code-snippet detection — opt-in, for fields that must hold prose and nothing
+// else (a project's or a task's description)
+// ---------------------------------------------------------------------------
+// Mirrors the backend's `CODE_SNIPPET_SOURCES` source text for source text:
+// `desktop/tests/test_validation_framework.py` reads this file and fails if the
+// two differ. Each entry is `[source, ignoreCase]`. Quotes and the backtick are
+// written `\x22`, `\x27` and `\x60` so a source reads the same here as in
+// Python. See `backend/app/core/validation/rules.py` for the reasoning behind
+// each entry, and for why this is not part of `findStructuredContent`.
+
+export const CODE_SNIPPET_SOURCES: ReadonlyArray<readonly [string, boolean]> = [
+  // jQuery and `$` selectors
+  [String.raw`\$\s*\(\s*(?:[\x22\x27\x60#.<\[]|document\b|window\b|this\b|function\b)`, false],
+  [String.raw`\bjQuery\s*[.(]`, false],
+  [String.raw`\$\.(?:ajax|get|post|getJSON|each|extend|parseJSON|map|grep)\s*\(`, false],
+  // JavaScript: calls with a literal argument, the DOM, storage, networking
+  [String.raw`\b(?:alert|eval|prompt|confirm|setTimeout|setInterval|atob|btoa|importScripts)\((?=[^)\n]*[\d\x22\x27\x60.$_])`, false],
+  [String.raw`\bfetch\(\s*[\x22\x27\x60]`, false],
+  [String.raw`\bnew\s+(?:Function|WebSocket)\b|\bXMLHttpRequest\b`, false],
+  [String.raw`\b(?:document|window)\.(?:cookie|location|domain|write|writeln|body|getElementById|getElementsBy\w+|querySelector|querySelectorAll|createElement|open|eval)\b`, false],
+  [String.raw`\b(?:localStorage|sessionStorage)\.\w+`, false],
+  [String.raw`\.(?:innerHTML|outerHTML|insertAdjacentHTML)\b|\.addEventListener\s*\(`, false],
+  // JavaScript: function and control-flow syntax
+  [String.raw`\bfunction\s*[\w$]*\s*\([^)]*\)\s*\{`, false],
+  [String.raw`=>\s*\{|\([^()]*\)\s*=>\s*[\w$.\x22\x27]+\s*[;)]`, false],
+  [String.raw`\.(?:then|catch|forEach|map|filter|reduce)\(\s*(?:function\b|\(?[\w$,\s]*\)?\s*=>)`, false],
+  [String.raw`\b(?:var|let|const)\s+[A-Za-z_$][\w$]*\s*=(?!=)`, false],
+  [String.raw`\bconsole\.(?:log|error|warn|info|debug|table|dir)\s*\(`, false],
+  [String.raw`\b(?:if|while|for|switch|catch)\s*\([^)\n]*\)\s*\{`, false],
+  [String.raw`\}\s*else\s*(?:if\b[^{]*)?\{`, false],
+  // CSS: a rule block, an at-rule
+  [String.raw`\{\s*-?[a-z][a-z-]*\s*:[^{}]*;[^{}]*\}`, true],
+  [String.raw`\{\s*(?:color|background(?:-[a-z]+)?|display|margin(?:-[a-z]+)?|padding(?:-[a-z]+)?|font(?:-[a-z]+)?|width|height|min-[a-z]+|max-[a-z]+|position|border(?:-[a-z]+)?|content|opacity|visibility|z-index|top|left|right|bottom|float|overflow|cursor|transform|text-[a-z]+)\s*:[^{}]*\}`, true],
+  [String.raw`@(?:import|charset|font-face|keyframes)\b|@media\s*\(`, true],
+  // Markup the tag pattern cannot see: a tag with no closing `>`, a comment
+  [String.raw`<\s*/?\s*(?:script|style|iframe|frame|frameset|object|embed|applet|link|meta|base|svg|math|img|body|html|head|form|input|button|video|audio|source|marquee|details|textarea|select|template|noscript)\b`, true],
+  [String.raw`<!--`, false],
+  // Server-side and other languages
+  [String.raw`<\?(?:php\b|=)`, true],
+  [String.raw`\b(?:os\.system|os\.popen|subprocess\.\w+|__import__|shell_exec|passthru)\s*\(`, false],
+  [String.raw`\brm\s+-[a-z]*[rf][a-z]*\s`, true],
+  [String.raw`\bInvoke-(?:Expression|WebRequest|Command)\b`, true],
+  // SQL injection signatures -- the shapes of an attack, not the words
+  [String.raw`\bUNION\s+(?:ALL\s+)?SELECT\b`, true],
+  [String.raw`;\s*(?:DROP|TRUNCATE|ALTER|DELETE\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|EXEC(?:UTE)?)\b`, true],
+  [String.raw`[\x22\x27]\s*(?:OR|AND)\s+[\x22\x27]?\w+[\x22\x27]?\s*=\s*[\x22\x27]?\w+`, true],
+  // Markup hidden by URL- or JS-escaping: `%3Cscript`, `<`, `\x3c`
+  [String.raw`%3[cC]\s*/?\s*[A-Za-z!]|\\u003[cC]|\\x3[cC]`, false],
+];
+
+export const CODE_SNIPPET_PATTERNS: readonly RegExp[] = CODE_SNIPPET_SOURCES.map(
+  ([source, ignoreCase]) => new RegExp(source, ignoreCase ? 'i' : ''),
+);
+
 /**
  * The maximum length each rule enforces, for driving `maxLength` on an input.
  * Rules with no natural character cap are absent.
