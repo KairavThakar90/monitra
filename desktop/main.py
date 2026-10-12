@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from typing import Optional
 
 if __name__ == "__main__":
@@ -89,6 +90,15 @@ SETTINGS_GEOMETRY_KEY = "window/geometry"
 #: the work area is about 728px tall, so the status bar was never visible.
 DEFAULT_WINDOW_WIDTH = 1280
 DEFAULT_WINDOW_HEIGHT = 800
+#: How long the OS's "may the session end?" question is remembered. Windows can
+#: wait for a person to choose "shut down anyway", so this is generous; it only has
+#: to be finite, so a question that was refused is not still true an hour later.
+OS_SESSION_QUESTION_MAX_AGE_SECONDS = 15 * 60
+#: The window the OS closes for a session ending is closed inside the very message that
+#: asked the question (Qt's default commitData closes every visible window), so a close
+#: this long after the question is the user's own Quit, not the OS.
+OS_SESSION_CLOSE_MAX_AGE_SECONDS = 30
+
 MINIMUM_WINDOW_WIDTH = 1024
 MINIMUM_WINDOW_HEIGHT = 680
 
@@ -153,10 +163,12 @@ class MainWindow(QMainWindow):
         #: The exit is a restart (an update being installed), not a quit: the
         #: running session is meant to survive it, as after any interruption.
         self._exit_is_restart = False
-        #: The OS is ending the session (shutdown, restart, sign-out). Not a
-        #: quit either: no dialog, no stop -- the session record stays for
-        #: the next launch to recover.
+        #: The OS has *asked* whether the session may end (shutdown, restart,
+        #: sign-out; `WM_QUERYENDSESSION`) and when. A question, not the event:
+        #: it may be refused. Only an exit that follows it -- `aboutToQuit` from
+        #: `WM_ENDSESSION` -- is the shutdown (see `on_about_to_quit`).
         self._os_session_ending = False
+        self._os_session_asked_at: Optional[float] = None
         #: The close-intent dialog is on screen. A second close that arrives
         #: while it is -- Cmd+Q or Cmd+W on macOS, where the app menu stays
         #: live under an application-modal dialog -- must not stack a second
@@ -538,10 +550,29 @@ class MainWindow(QMainWindow):
         carrying an entry for a machine that is switched off.
 
         An update restart is not this: it relaunches at once, and the session
-        survives it (`exit_for_restart`, which never sets the flag).
+        survives it (`exit_for_restart`).
+
+        Three things keep a *refused* shutdown from being mistaken for one. The
+        question is only remembered for `OS_SESSION_QUESTION_MAX_AGE_SECONDS`
+        (Windows can wait on a person to choose "shut down anyway", but not
+        for ever); an exit that is a restart is never an OS shutdown, whatever
+        was asked earlier; and the memory is consumed here, so one question
+        answers for one exit. Measured with the real messages sent to a real
+        Qt window (`tests/e2e/real_os_session_end_probe.py`): after
+        `WM_QUERYENDSESSION` and a vetoing `WM_ENDSESSION` the flag used to
+        stay set, and an update restart that followed stopped the timer.
         """
-        if self._os_session_ending:
+        asked_at, self._os_session_asked_at = self._os_session_asked_at, None
+        asked = self._os_session_ending
+        self._os_session_ending = False
+        fresh = asked_at is not None and time.monotonic() - asked_at <= OS_SESSION_QUESTION_MAX_AGE_SECONDS
+        if asked and fresh and not self._exit_is_restart:
             self.runtime.stop_for_os_shutdown()
+        elif asked:
+            log.info(
+                "the OS had asked to end the session, but this exit is %s; not treating it as a shutdown",
+                "a restart" if self._exit_is_restart else "long after the question",
+            )
         self.runtime.shutdown()
 
     def exit_for_restart(self) -> None:
@@ -568,6 +599,7 @@ class MainWindow(QMainWindow):
         """
         log.info("the OS is asking to end the session; waiting to see whether it does")
         self._os_session_ending = True
+        self._os_session_asked_at = time.monotonic()
         try:
             manager.release()
         except Exception:  # noqa: BLE001
@@ -609,7 +641,15 @@ class MainWindow(QMainWindow):
         # that nothing here waits on the network or on a thread.
         self._remember_geometry()
 
-        if self._os_session_ending:
+        # Qt emits nothing when a shutdown is refused, so the flag alone cannot tell the
+        # OS closing this window from a user who clicked Quit after the OS was told no:
+        # trusting it made that Quit a silent no-op that left the timer running.
+        asked_at = self._os_session_asked_at
+        if (
+            self._os_session_ending
+            and asked_at is not None
+            and time.monotonic() - asked_at <= OS_SESSION_CLOSE_MAX_AGE_SECONDS
+        ):
             log.info("window closed by the OS session ending; not treated as a quit")
             event.accept()
             return
