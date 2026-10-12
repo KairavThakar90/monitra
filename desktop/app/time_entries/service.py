@@ -103,7 +103,11 @@ class TimeEntryService:
             "project_id": project_id,
             "task_id": task_id,
             "description": None,
-            "is_billable": None
+            "is_billable": None,
+            # This client sends a heartbeat for as long as the entry runs
+            # (`send_heartbeat`), so the server starts the entry's liveness
+            # clock at creation. A backend that predates the field ignores it.
+            "reports_liveness": True,
         }
         if started_at:
             payload["started_at"] = started_at
@@ -183,6 +187,45 @@ class TimeEntryService:
             raise
         except Exception as e:
             raise ApiError(f"Failed to stop timer: {str(e)}")
+
+    def send_heartbeat(self, entry_id: int, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Tell the backend this desktop is alive and ask where its entry stands.
+
+        `POST /time-entries/{id}/heartbeat` records the instant on the entry
+        (`last_seen_at`) -- the one fact that lets the server tell a working
+        desktop from one that is switched off -- and answers with the entry as
+        it now stands: `{"entry", "closed_by_server", "closed_reason",
+        "server_time"}`. An entry that has ended comes back with
+        `entry.end_time` set, and the caller ends its own session on that.
+
+        Not retried here or anywhere: a heartbeat that is lost is replaced by
+        the next one, and the backend treats a missed one as silence, not as
+        a fault.
+
+        :raises ApiError: `status_code` 404 when the backend does not know the
+            route (an older deployment) or the entry; 401 on session expiry.
+        """
+        try:
+            response = self.api_client.post(
+                f"/time-entries/{entry_id}/heartbeat", json_data={}, timeout=timeout,
+            )
+            data = response.json()
+            if not isinstance(data, dict) or not isinstance(data.get("entry"), dict):
+                raise ApiError("The backend's heartbeat answer was not understood.")
+            return data
+        except ApiHttpError as e:
+            if e.status_code == 401:
+                raise ApiError("Session expired. Please log in again.", status_code=401)
+            raise ApiError(
+                f"Failed to send a heartbeat: HTTP {e.status_code}.", status_code=e.status_code
+            )
+        except ApiConnectionError:
+            raise ApiError("Failed to send a heartbeat: Network connection error.")
+        except ApiError:
+            raise
+        except Exception as e:
+            raise ApiError(f"Failed to send a heartbeat: {str(e)}")
 
     def get_active_time_entry(self) -> Dict[str, Any]:
         """

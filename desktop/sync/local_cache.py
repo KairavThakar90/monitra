@@ -733,6 +733,7 @@ class LocalCache:
         self,
         exclude_client_op: Optional[str] = None,
         created_before: Optional[float] = None,
+        owner_id: Optional[int] = None,
     ) -> int:
         """How many stops are still waiting to reach the backend.
 
@@ -749,6 +750,13 @@ class LocalCache:
         waiting for start(A), start(A) waiting for stop(B), stop(B) waiting
         for start(B), start(B) waiting for stop(A) -- which the soak found as
         a queue that never drained.
+
+        `owner_id` leaves out stops queued by a *different* account (their
+        payload names it). Such a stop is held until its owner signs in again
+        (`SyncService._require_owner`) and is nobody else's business: counted,
+        it would make the next person's start wait behind a stop that cannot be
+        sent under their token, and a quit wait out its whole budget for one.
+        A stop that names no account (queued by an older build) is everyone's.
         """
         rows = self._storage.query_all(
             "SELECT payload, created_at FROM pending_actions "
@@ -759,12 +767,15 @@ class LocalCache:
         for row in rows:
             if created_before is not None and row["created_at"] >= created_before:
                 continue
-            if exclude_client_op is not None:
+            if exclude_client_op is not None or owner_id is not None:
                 try:
                     payload = json.loads(row["payload"])
                 except (json.JSONDecodeError, TypeError):
                     payload = {}
-                if payload.get("client_op") == exclude_client_op:
+                if exclude_client_op is not None and payload.get("client_op") == exclude_client_op:
+                    continue
+                queued_by = payload.get("user_id")
+                if owner_id is not None and queued_by is not None and queued_by != owner_id:
                     continue
             count += 1
         return count
@@ -967,13 +978,39 @@ class LocalCache:
 
         Prevents user A's queued operations from being executed with user B's
         credentials after a logout/login.
+
+        Not for a timer action that names its account. A stop queued for user A
+        is the only thing that ends A's entry on the backend, and it cannot run
+        under B's token anyway: the consumer holds it until A signs in
+        (`SyncService._require_owner`). Cancelling it here -- as every older
+        generation's rows are -- left the entry running on the backend with
+        nothing left to end it.
         """
-        cursor = self._storage.execute(
-            "UPDATE pending_actions SET status = 'cancelled', error_message = 'stale session' "
+        rows = self._storage.query_all(
+            "SELECT id, action_type, payload FROM pending_actions "
             "WHERE session_generation < ? AND status IN ('pending', 'retry', 'processing')",
             (generation,),
         )
-        return cursor.rowcount or 0
+        cancel = [r["id"] for r in rows if not self.is_account_owned_timer_action(r["action_type"], r["payload"])]
+        for action_id in cancel:
+            self._storage.execute(
+                "UPDATE pending_actions SET status = 'cancelled', error_message = 'stale session' "
+                "WHERE id = ?",
+                (action_id,),
+            )
+        return len(cancel)
+
+    @classmethod
+    def is_account_owned_timer_action(cls, action_type: str, payload) -> bool:
+        """A start or stop that names the account that queued it."""
+        if action_type not in cls.TIMER_ACTION_TYPES:
+            return False
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (json.JSONDecodeError, TypeError):
+                return False
+        return isinstance(payload, dict) and payload.get("user_id") is not None
 
     # ── Application Usage ─────────────────────────────────────────────────────
 

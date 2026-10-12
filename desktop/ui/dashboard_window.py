@@ -649,6 +649,9 @@ class DashboardWindow(QWidget):
         # and not on the local stop.
         timer.timer_finalized.connect(self._on_timer_finalized)
         timer.timer_conflict.connect(self._on_timer_conflict)
+        # The backend ended the running entry because this machine stopped
+        # reporting in: say so, rather than let a timer quietly vanish.
+        timer.timer_closed_by_server.connect(self._on_timer_closed_by_server)
         # The break, on its transitions only (never a poll of it).
         timer.break_state_changed.connect(self._on_break_state_changed)
 
@@ -2574,6 +2577,38 @@ class DashboardWindow(QWidget):
         if self._current_project:
             self._load_tasks(self._current_project.get("id"))
 
+    #: What the user is told when the backend, not they, ended the timer.
+    _CLOSED_BY_SERVER = {
+        "no_signal": (
+            "Monitra stopped your timer at {time}. It had not heard from this computer "
+            "since then, so the time after that was not counted. If you were working, "
+            "you can request that time."
+        ),
+        "idle_unanswered": (
+            "Monitra stopped your timer at {time}. The idle prompt was not answered, so "
+            "the idle time was not counted."
+        ),
+        "replaced_by_start": (
+            "Your previous timer was stopped at {time} because a new one was started."
+        ),
+        "operator": (
+            "An administrator closed a timer that had been left running; it ended at {time}."
+        ),
+    }
+
+    def _on_timer_closed_by_server(self, details: dict) -> None:
+        """The backend (or the stop this desktop queued on its behalf) ended a
+        timer this person did not stop. Said once, plainly, with the instant
+        it ended -- the figure that counts is the backend's."""
+        reason = details.get("reason")
+        template = self._CLOSED_BY_SERVER.get(reason) or (
+            "Your timer was stopped at {time}."
+        )
+        message = template.format(time=ist_clock(details.get("ended_at")) or "an earlier time")
+        log.info("timer closed by the backend: reason=%s ended_at=%s", reason, details.get("ended_at"))
+        self._status_bar.set_message(message, WARNING)
+        self.api.notify(message, NotificationLevel.WARNING, key="timer-closed-by-server")
+
     def _on_timer_conflict(self, active_entry) -> None:
         """The backend refused a start because another entry is running.
 
@@ -2760,7 +2795,12 @@ class DashboardWindow(QWidget):
             return
         self._pending_active_timer = None
 
-        self.api.timer.adopt_remote_session(entry)
+        if self.api.timer.adopt_remote_session(entry) is False:
+            # Declined: the entry's desktop had been silent past the cap, so it
+            # is not resumed -- its stop is queued at the last evidence, and
+            # the user has been told (`_on_timer_closed_by_server`).
+            self._load_today_time()
+            return
 
         project_id = entry.get("project_id")
         task_id = entry.get("task_id")

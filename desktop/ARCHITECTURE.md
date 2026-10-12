@@ -129,10 +129,21 @@ queued stop to reach the backend. Only then does the window call
 running out of budget (or being offline) loses nothing: the next launch
 delivers it, with the instant the user pressed Quit as the end time. The
 remembered close choice decides only whether the dialog is shown; it never
-decides whether the timer stops. Two exits are deliberately *not* quits and
-leave the session record for recovery: an update restart
-(`MainWindow.exit_for_restart`) and an OS shutdown or sign-out
-(`commitDataRequest`).
+decides whether the timer stops. One exit is deliberately *not* a quit and
+leaves the session record for recovery: an update restart
+(`MainWindow.exit_for_restart`), which relaunches at once.
+
+**An OS shutdown or sign-out that goes ahead stops the timer too.** Windows
+asks first (`commitDataRequest`, `WM_QUERYENDSESSION`) and any application may
+refuse, so `MainWindow.on_os_session_ending` only notes the question. When the
+shutdown is carried out `aboutToQuit` fires, and `MainWindow.on_about_to_quit`
+-- the one shutdown path -- calls `ApplicationRuntime.stop_for_os_shutdown()`
+first: `TimerService.stop_tracking()` (the stop queued durably *before* the
+record is cleared, carrying the instant of the shutdown) and a wake of the
+consumer, then the ordinary teardown. There is no window to keep up and no time
+to wait for the network; a stop that cannot be sent in the moments that remain
+is sent by the next launch, and one that is never sent is closed by the backend
+after two hours of silence (docs/TIMING_MODEL.md section 9).
 
 **Opening and closing are reported to the activity trail.** A launch that
 restores a session, and an explicit quit, each queue a `client_event`
@@ -419,6 +430,33 @@ Guarantees:
   one, against a bounded budget, then `UnresolvableAction`. Deferring tracks
   `defer_count` separately from `retry_count`, so waiting on ordering never
   consumes the retries reserved for genuine errors.
+
+### Liveness: the heartbeat, and who a queued operation belongs to
+
+`SyncService` also tells the backend this desktop is alive. While a timer runs
+and its entry id is known, `_heartbeat_tick` sends
+`POST /time-entries/{id}/heartbeat` every 120 s (jittered), at once when an
+entry is bound, when the backend becomes reachable again and on
+`system_resumed`. It is **not** durable work -- nothing is queued, a lost beat
+is replaced by the next, and an older backend's "no such route" is asked again
+an hour later -- and it never stalls the queue (it runs first on the tick,
+bounded by `HEARTBEAT_TIMEOUT_SECONDS`, and an exception in it is logged and
+swallowed). The answer is the entry as the backend now sees it: when it has
+ended, `entry_closed_by_server` fires once and `TimerService`
+(`end_session_closed_remotely`) ends the local session, banks the backend's
+figure and tells the user why (`timer_closed_by_server`). What the backend does
+with the signal is docs/TIMING_MODEL.md section 9.
+
+Every queued `start_timer` / `stop_timer` names the account that queued it
+(`user_id`, from `TimerService._owned`) and is sent only under that account's
+token (`SyncService._require_owner`). Another account -- or nobody -- being
+signed in is a hold (`DeferAction`, 60 s, no retry spent), never a send and
+never a cancel: the queue's generation fence and `cancel_actions_for_generation`
+skip a timer action that names its account. A 401 holds a timer action *and
+keeps it* (`fail_action(..., max_retries=None)`); parked as `failed` it was
+never read again until the next launch. `pending_stop_count(owner_id=...)`
+ignores another account's held stops, so they cannot block the next person's
+start or make a quit wait.
 
 ### Signals are edge-triggered
 
@@ -1099,7 +1137,8 @@ tabs show honest empty states.
 | Restore | From tray icon, tray menu, or taskbar |
 | Explicit quit (dialog, remembered, tray) | **Stops the timer**, waits (bounded, non-blocking) for the stop to land, then a full controlled shutdown via `aboutToQuit` |
 | Update restart | Controlled shutdown; the session record stays and the relaunch recovers it |
-| OS shutdown / sign-out | Interruption: no dialog, no stop; the record stays for recovery |
+| OS shutdown / sign-out (the question) | Noted; nothing stops -- it may be refused |
+| OS shutdown / sign-out (carried out) | `aboutToQuit`: **stops the timer** durably at that instant, then the controlled shutdown |
 
 `closeEvent` does no blocking work. The audited version performed a synchronous
 3-second network call and a batch upload there, which is why quitting appeared
@@ -1128,10 +1167,18 @@ Recovery is **idempotent by construction**: it adopts persisted records rather
 than replaying operations, so running it twice yields the same state and cannot
 create duplicate time entries.
 
-What is recovered is the *session*, not evidence of work. A timer started at
-13:00 on a machine that lost power at 17:00 and came back at 18:00 is
-recovered at 18:00 as the same entry with the same `started_at_utc` — no
-second entry, ever. The hour the machine was off is **not** taken as work:
+What is recovered is the *session*, not evidence of work, and only a session
+that was not abandoned. A timer started at 13:00 on a machine that lost power
+at 17:00 and came back at 17:10 is recovered at 17:10 as the same entry with
+the same `started_at_utc` — no second entry, ever. **A gap longer than
+`RECOVERY_CAP_SECONDS` (15 minutes) is not resumed at all:** the same machine
+back at 18:00 gets no session -- a stop is queued at 17:15 (last heartbeat +
+the cap, never "now"), the record is cleared and nothing is asked. The cap is
+the desktop's half of docs/TIMING_MODEL.md section 9 (the backend's half is the
+same quarter hour, `TIMER_NO_SIGNAL_GRACE_SECONDS`; a test keeps the two
+equal), and it is also applied to a running entry adopted from the backend
+(`adopt_remote_session`, from the entry's `last_seen_at`). The ten minutes the
+machine was off in the resumed case is **not** taken as work:
 `IdleService._on_tracking_recovered` measures the gap from the previous
 process's last heartbeat to the recovery instant and, when it reaches the
 user's own `idle_minutes`, reports it through the ordinary idle-period
@@ -1141,8 +1188,8 @@ the start was queued, is retried while the network is unusable, is dropped
 on a definitive 4xx, and cannot open a second period: the client event id
 is keyed on the session and the interruption instant, and the backend
 answers a repeat with the period already pending. The sub-trackers
-(activity, application and URL usage, screenshots) start again at 18:00
-and record nothing for the hour the machine was off. The timer record is
+(activity, application and URL usage, screenshots) start again at 17:10
+and record nothing for the ten minutes the machine was off. The timer record is
 the only thing that distinguishes an interruption from a stop: an explicit
 stop has already queued its stop action and removed the record, and a
 record whose stop is queued is never resurrected.

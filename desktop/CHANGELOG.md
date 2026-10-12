@@ -20,6 +20,28 @@ re-grant a permission.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A forgotten timer no longer runs through the night or the weekend.** Monitra now
+  tells the server it is still there while a timer runs, so the server can tell a
+  timer you are working on from one on a computer that has been switched off, asleep or
+  closed. If your computer goes quiet, the server stops counting your timer where the
+  evidence stops (plus a quarter of an hour) and, after two hours of silence, ends it.
+  When your computer wakes, Monitra tells you what happened ("Monitra stopped your timer
+  at 6:05 pm … if you were working, you can request that time"). A timer left running
+  in an idle prompt nobody answers is ended after four hours, the idle time not counted.
+- **Shutting down or signing out of Windows stops your timer.** It used to stay
+  running on the server until you next opened Monitra. (A restart to install a Monitra
+  update still carries your timer across.)
+- **A stop can no longer be lost on the way out.** Logging out while offline, or your
+  sign-in expiring, used to leave the stop waiting where nothing would ever send it, so
+  the timer kept running on the server. The stop is now kept for your account and sent as
+  soon as you are signed in again, with the time you actually pressed Stop. Another person
+  signing in on the same computer can neither send it nor be held up by it.
+- **A timer left on the server is no longer handed back as the one you just started.**
+  Starting a task on Monday used to bring back Friday's timer, 65 hours long; if the
+  computer that was running it has gone quiet, it is now ended and your new task starts.
+
 ## [1.3.2]
 
 The installer and the macOS bundles are still unsigned: Windows SmartScreen

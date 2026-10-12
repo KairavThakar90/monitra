@@ -538,7 +538,10 @@ class ApplicationRuntime(QObject):
         """The machine was asleep for `gap_seconds`; re-establish connectivity."""
         log.info("resume after %.0fs: probing the backend and waking the sync consumer", gap_seconds)
         self.network.check_now()
-        self.sync.wake()
+        # Wakes the consumer. The backend has heard nothing from this machine
+        # while it slept, and this machine wants to know whether its entry
+        # survived that silence, so the first thing the consumer does is beat.
+        self.sync.request_heartbeat()
         # The screenshot schedule was paused with the machine, and a capture
         # that was running when the lid closed will never finish.
         self.screenshot.on_system_resumed(gap_seconds)
@@ -669,10 +672,39 @@ class ApplicationRuntime(QObject):
         # next scheduled poll.
         self.sync.wake()
 
+    def stop_for_os_shutdown(self) -> None:
+        """The machine is shutting down for real: end the running timer now.
+
+        Not `prepare_exit`: there is no window to keep up and no time to wait
+        for the network -- Windows ends the process moments after
+        `aboutToQuit`. What it shares with an explicit quit is the part that
+        matters: the stop is queued durably *before* the session record is
+        cleared (`TimerService.stop_tracking`), carrying the instant of the
+        shutdown, so a kill at any point from here leaves either the record
+        (recovered, and capped at 15 minutes) or the queued stop (delivered at
+        the next launch, or by the sync consumer in the moments that remain --
+        it is woken here, and `shutdown` waits for it to finish what it is
+        sending). The backend closes anything this never reaches after two
+        hours of silence (docs/TIMING_MODEL.md section 9).
+
+        Idempotent; does nothing once a shutdown has begun or when no timer
+        runs.
+        """
+        if self._shutdown_started or not self.timer.is_running():
+            return
+        log.info("the OS is shutting down; stopping the running timer at this instant")
+        try:
+            self.timer.stop_tracking()
+            self.sync.wake()
+        except Exception:  # noqa: BLE001 -- the shutdown must proceed whatever happens here
+            log.exception("could not stop the timer for an OS shutdown")
+
     def _pending_exit_stops(self) -> int:
         """Queued stops still to reach the backend; 0 when they cannot be counted."""
         try:
-            return self.cache.pending_stop_count()
+            profile = getattr(self.session_manager, "user_info", None)
+            owner = profile.get("id") if isinstance(profile, dict) else None
+            return self.cache.pending_stop_count(owner_id=owner)
         except Exception:  # noqa: BLE001
             log.exception("could not count queued stops; not waiting")
             return 0

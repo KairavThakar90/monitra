@@ -524,6 +524,26 @@ class MainWindow(QMainWindow):
         self._force_quit = True
         self.close()
 
+    def on_about_to_quit(self) -> None:
+        """The one shutdown path, whatever triggered the exit.
+
+        On Windows `WM_ENDSESSION` (the shutdown really going ahead) emits
+        `aboutToQuit` directly and the process is killed moments later; a
+        vetoed shutdown never gets here. So a quit that arrives with the OS
+        having asked to end the session *is* the machine shutting down: the
+        running timer is stopped -- queued durably, then the record cleared,
+        exactly as an explicit quit does it -- before anything is torn down,
+        so the backend hears of the stop at the instant of shutdown (now if
+        the network is up, from the next launch if it is not) instead of
+        carrying an entry for a machine that is switched off.
+
+        An update restart is not this: it relaunches at once, and the session
+        survives it (`exit_for_restart`, which never sets the flag).
+        """
+        if self._os_session_ending:
+            self.runtime.stop_for_os_shutdown()
+        self.runtime.shutdown()
+
     def exit_for_restart(self) -> None:
         """Exit so an update can be installed; the session survives it."""
         self._exit_is_restart = True
@@ -531,22 +551,22 @@ class MainWindow(QMainWindow):
         self.close()
 
     def on_os_session_ending(self, manager) -> None:
-        """The OS is shutting down, restarting, or signing the user out.
+        """The OS is asking whether it may shut down, restart or sign out.
 
-        Connected to `QGuiApplication.commitDataRequest`, which Qt emits when
-        the OS asks the application to save its work. This is an interruption
-        in the timing model's sense, not a quit: the timer is not stopped, no
-        dialog can be shown, and the session record stays exactly as it is
-        for the next launch to recover -- the same outcome as a power cut,
-        by design (see TimerService.recover). Nothing needs to be written
-        here, because the record was written when the timer started and the
-        liveness heartbeat is already on disk; this only makes sure that if
-        Qt goes on to close the window, the close is not taken for a Quit.
+        Connected to `QGuiApplication.commitDataRequest`, which Qt emits for
+        `WM_QUERYENDSESSION`. That is a *question*, not the event: any
+        application may answer no, and then the session carries on. So nothing
+        is stopped here -- a timer stopped on a shutdown that did not happen
+        would silently end somebody's work. This only records that the
+        question was asked, so that if Qt goes on to close the window the
+        close is not taken for a Quit, and so that `on_about_to_quit` can tell
+        the shutdown that really happened from an ordinary exit.
 
-        Not verifiable headless: Windows delivers WM_QUERYENDSESSION only to
-        a real session, so this path is covered by the manual matrix.
+        No dialog can be shown here. Not verifiable headless: Windows
+        delivers the message only to a real session, so the real path is
+        covered by the manual matrix.
         """
-        log.info("OS session is ending; leaving the session record for recovery")
+        log.info("the OS is asking to end the session; waiting to see whether it does")
         self._os_session_ending = True
         try:
             manager.release()
@@ -737,11 +757,13 @@ def main() -> int:
     # 3. Shell.
     window = MainWindow(runtime)
 
-    # Exactly one shutdown path, whatever triggers the exit.
-    app.aboutToQuit.connect(lambda: runtime.shutdown())
-    # An OS shutdown or sign-out is an interruption, not a quit: the running
-    # session is left for the next launch to recover. Direct, as Qt requires
-    # for this signal -- the session manager is waiting on the answer.
+    # Exactly one shutdown path, whatever triggers the exit. An exit that comes
+    # with the OS having asked to end the session stops the timer first.
+    app.aboutToQuit.connect(window.on_about_to_quit)
+    # The OS asking to shut down or sign out. Only noted: it may be vetoed, and
+    # a timer stopped on a shutdown that did not happen would end real work.
+    # Direct, as Qt requires for this signal -- the session manager is waiting
+    # on the answer.
     app.commitDataRequest.connect(
         window.on_os_session_ending, Qt.ConnectionType.DirectConnection
     )

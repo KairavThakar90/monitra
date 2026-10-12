@@ -67,12 +67,16 @@ TIMER_STATE_KEY = "timer_state"
 #: the backend's record -- the one that will be billed -- wins.
 REANCHOR_TOLERANCE_SECONDS = 5
 
-#: A crash-recovered session whose interruption gap (last heartbeat -> this
-#: launch) exceeds this is not resumed -- it is stopped at
-#: `interrupted_at + this`, never "now", so the outcome is deterministic and
-#: replayable. Applied only at the moment the app is reopened: there is no
-#: background or real-time enforcement while the app stays closed, since
-#: nothing runs to enforce it.
+#: A session whose desktop has been silent for longer than this is not
+#: resumed -- it is stopped at `last evidence + this`, never "now", so the
+#: outcome is deterministic and replayable. It is applied wherever this client
+#: has to decide what to do with a session it did not see end: a crash
+#: recovered at launch (`recover`, from the last local heartbeat), and a
+#: running entry adopted from the backend (`adopt_remote_session`, from the
+#: entry's `last_seen_at`). While the app stays closed nothing here can run, so
+#: the backend enforces the same quarter hour on its side
+#: (`TIMER_NO_SIGNAL_GRACE_SECONDS`, docs/TIMING_MODEL.md section 9); a test
+#: keeps the two numbers equal.
 RECOVERY_CAP_SECONDS = 15 * 60
 
 
@@ -239,6 +243,10 @@ class TimerService(BaseService):
                                 deductions for this entry (see
                                 `elapsed_seconds`)
         timer_recovered(dict) — session restored after an unclean shutdown
+        timer_closed_by_server(dict) — the backend ended the running entry
+                                because this desktop had stopped reporting in
+                                (or its idle prompt went unanswered); carries
+                                `reason`, `ended_at`, `total_seconds`
         timer_error(str)      — user-facing failure
         status_changed(str)   — TimerStatus
     """
@@ -251,6 +259,7 @@ class TimerService(BaseService):
     timer_conflict = Signal(object)
     timer_tick = Signal(int)
     timer_recovered = Signal(dict)
+    timer_closed_by_server = Signal(dict)
     timer_error = Signal(str)
     status_changed = Signal(str)
     #: `BreakStatus`, on every transition and only on a transition.
@@ -271,6 +280,7 @@ class TimerService(BaseService):
         self._status = TimerStatus.IDLE
         self._trackers: list = []
         self._sync_connected = False
+        self._closed_connected = False
 
         #: The break-resume reference (see `BreakStatus`). Never persisted.
         self._break_status = BreakStatus.NONE
@@ -672,21 +682,37 @@ class TimerService(BaseService):
             self._persist()
         self.runtime.sync.enqueue(
             "start_timer",
-            {
+            self._owned({
                 "project_id": project_id,
                 "task_id": task_id,
                 "started_at": started_at,
                 "client_op": client_op,
-            },
+            }),
             idempotency_key=f"start:{client_op}",
             entity_type="time_entry",
         )
+
+    def _owner_id(self) -> Optional[int]:
+        """The account signed in now: queued starts and stops are stamped with
+        it, so each is sent only under its own account's token."""
+        session = getattr(self.runtime, "session_manager", None)
+        profile = getattr(session, "user_info", None)
+        owner = profile.get("id") if isinstance(profile, dict) else None
+        return owner if isinstance(owner, int) else None
+
+    def _owned(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        owner = self._owner_id()
+        if owner is not None:
+            payload["user_id"] = owner
+        return payload
 
     def _stop_is_pending_for_another_session(self, client_op: Optional[str]) -> bool:
         if not self._cache:
             return False
         try:
-            return self._cache.pending_stop_count(exclude_client_op=client_op) > 0
+            return self._cache.pending_stop_count(
+                exclude_client_op=client_op, owner_id=self._owner_id(),
+            ) > 0
         except Exception:  # noqa: BLE001
             self.log.exception("could not check for queued stops")
             return False
@@ -781,11 +807,11 @@ class TimerService(BaseService):
         try:
             self.runtime.sync.enqueue(
                 "stop_timer",
-                {
+                self._owned({
                     "entry_id": entry_id,
                     "stopped_at": _utc_now().isoformat(),
                     "client_op": client_op,
-                },
+                }),
                 idempotency_key=f"stop:{entry_id}",
                 entity_type="time_entry",
                 entity_id=str(entry_id),
@@ -961,26 +987,26 @@ class TimerService(BaseService):
             )
             self.runtime.sync.enqueue(
                 "stop_timer",
-                {
+                self._owned({
                     "entry_id": None,
                     "task_id": task_id,
                     "elapsed_seconds": elapsed,
                     "stopped_at": stopped_at,
                     "client_op": client_op,
-                },
+                }),
                 idempotency_key=f"stop:{client_op}",
                 entity_type="time_entry",
             )
             return
         self.runtime.sync.enqueue(
             "stop_timer",
-            {
+            self._owned({
                 "entry_id": entry_id,
                 "task_id": task_id,
                 "elapsed_seconds": elapsed,
                 "stopped_at": stopped_at,
                 "client_op": client_op,
-            },
+            }),
             idempotency_key=f"stop:{entry_id}",
             entity_type="time_entry",
             entity_id=str(entry_id),
@@ -1297,6 +1323,13 @@ class TimerService(BaseService):
                 self._sync_connected = True
             except Exception:  # noqa: BLE001
                 self.log.exception("could not subscribe to sync completions")
+        closed = getattr(sync, "entry_closed_by_server", None)
+        if closed is not None and not self._closed_connected:
+            try:
+                closed.connect(self._on_entry_closed_by_server)
+                self._closed_connected = True
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not subscribe to the heartbeat's verdict")
 
     def _unsubscribe_from_sync(self) -> None:
         """Undo `on_start`'s subscription before this service goes away.
@@ -1307,9 +1340,17 @@ class TimerService(BaseService):
         released -- observed as an access violation the next time the event
         loop ran, one test later.
         """
+        sync = getattr(self.runtime, "sync", None)
+        if self._closed_connected:
+            closed = getattr(sync, "entry_closed_by_server", None)
+            if closed is not None:
+                try:
+                    closed.disconnect(self._on_entry_closed_by_server)
+                except (RuntimeError, TypeError):
+                    pass
+            self._closed_connected = False
         if not self._sync_connected:
             return
-        sync = getattr(self.runtime, "sync", None)
         signal = getattr(sync, "action_completed", None)
         if signal is not None:
             try:
@@ -1643,9 +1684,81 @@ class TimerService(BaseService):
         self.timer_finalized.emit({"session": session, "entry": None})
         return True
 
+    @Slot(dict)
+    def _on_entry_closed_by_server(self, answer: dict) -> None:
+        entry = answer.get("entry") if isinstance(answer, dict) else None
+        if not isinstance(entry, dict):
+            return
+        self.end_session_closed_remotely(
+            entry, reason=answer.get("closed_reason") if answer.get("closed_by_server") else None
+        )
+
+    def end_session_closed_remotely(
+        self, entry: Dict[str, Any], reason: Optional[str] = None
+    ) -> bool:
+        """The backend says the entry this session is counting against has ended.
+
+        The heartbeat is what finds out. Two ways it happens, and the user is
+        told which: the backend closed it itself because this desktop had gone
+        quiet (the machine was asleep or offline past the limit) or its idle
+        prompt was never answered -- `reason` is then the backend's -- or it
+        was stopped from somewhere else. Either way the entry is finalized
+        there and the figure that counts is the backend's, so the local clock
+        stops, the day is re-read from it and nothing local keeps counting
+        against a row that is over.
+
+        Not for a session whose stop is already queued here (the user ended it;
+        the stop is on its way and the backend will answer it as already
+        applied), and not for an entry this session is not bound to.
+
+        :return: True if the local session was ended.
+        """
+        if not self.is_running() or self._session is None:
+            return False
+        session = dict(self._session)
+        entry_id = session.get("entry_id")
+        if not entry_id or entry.get("id") != entry_id or entry.get("end_time") is None:
+            return False
+        if self._stop_already_queued_for(session):
+            return False
+
+        net = entry.get("net_seconds")
+        if net is None:
+            net = entry.get("total_seconds")
+        try:
+            settled = max(0, int(net or 0))
+        except (TypeError, ValueError):
+            settled = 0
+        self._timing(
+            "closed.remote", reason=reason or "stopped_elsewhere",
+            ended_at=entry.get("end_time"), settled_seconds=settled,
+            local_elapsed_seconds=self.elapsed_seconds(),
+        )
+        self.log.warning(
+            "the backend ended entry %s (%s); ending the local session at %s",
+            entry_id, reason or "stopped from elsewhere", entry.get("end_time"),
+        )
+        self._tick_timer.stop()
+        self._stop_trackers()
+        self._session = None
+        self._persist()
+        self._set_status(TimerStatus.IDLE)
+        self.timer_stopped.emit({
+            "session": session, "elapsed_seconds": settled,
+            "result": {"closed_by_server": bool(reason), "reason": reason,
+                       "stopped_elsewhere": not reason, "ended_at": entry.get("end_time")},
+        })
+        self.timer_finalized.emit({"session": session, "entry": entry})
+        if reason:
+            self.timer_closed_by_server.emit({
+                "reason": reason, "ended_at": entry.get("end_time"), "total_seconds": settled,
+                "task_name": session.get("task_name"),
+            })
+        return True
+
     def adopt_remote_session(
         self, entry: Dict[str, Any], server_time: Optional[str] = None
-    ) -> None:
+    ) -> bool:
         """
         Adopt a running entry reported by the backend.
 
@@ -1655,14 +1768,26 @@ class TimerService(BaseService):
         origin, so the displayed elapsed time matches the record that will
         eventually be billed.
 
+        A session this client is not already counting is held to the same rule
+        as one recovered from a crash: if the entry's desktop has been silent
+        for longer than `RECOVERY_CAP_SECONDS` (its `last_seen_at` against the
+        backend's own clock), it is not resumed -- a stop is queued at last
+        evidence + the cap and the session is declined. An entry that has
+        never reported (`last_seen_at` absent) is adopted as it always was.
+
         :param server_time: The backend's clock when it produced `entry`.
             Read from the entry itself when the caller has nothing better.
+        :return: False when the entry was declined (and its stop queued).
         """
         server_time = server_time or entry.get("server_time")
         anchor = local_anchor_for(entry.get("start_time"), server_time)
         if anchor is None:
             self.log.warning("remote session has no usable start_time; ignoring")
-            return
+            return False
+
+        already_ours = self.is_running() and self.entry_id == entry.get("id")
+        if not already_ours and self._decline_silent_remote(entry, server_time):
+            return False
         server_start = parse_utc(entry.get("start_time"))
         offset = None
         if server_start is not None:
@@ -1686,7 +1811,7 @@ class TimerService(BaseService):
                 self._session["adjustment_seconds"] = _entry_adjustment(entry)
             self._persist()
             self._emit_tick()
-            return
+            return True
 
         task = entry.get("task") if isinstance(entry.get("task"), dict) else {}
         self._session = {
@@ -1715,6 +1840,54 @@ class TimerService(BaseService):
         self.timer_started.emit(dict(self._session))
         self._emit_tick()
         self._timing("adopt.remote")
+        return True
+
+    def _decline_silent_remote(self, entry: Dict[str, Any], server_time: Optional[str]) -> bool:
+        """Queue the stop of a backend entry that has been silent past the cap.
+
+        The backend closes such an entry itself once it has been quiet for
+        hours; this covers the window before that, and a backend that has not
+        been told to (`TIMER_RECONCILER_ENABLED` off). Idempotent: the stop is
+        keyed on the entry, and the backend answers a repeat as already
+        applied.
+        """
+        last_seen = parse_utc(entry.get("last_seen_at"))
+        reference = parse_utc(server_time)
+        entry_id = entry.get("id")
+        if last_seen is None or reference is None or not entry_id:
+            return False
+        gap = (reference - last_seen).total_seconds()
+        if gap <= RECOVERY_CAP_SECONDS:
+            return False
+        stopped_at_dt = last_seen + timedelta(seconds=RECOVERY_CAP_SECONDS)
+        started = parse_utc(entry.get("start_time"))
+        if started is not None and stopped_at_dt < started:
+            stopped_at_dt = started
+        record = {
+            "entry_id": entry_id, "client_op": entry.get("client_op"),
+            "task_id": entry.get("task_id"), "project_id": entry.get("project_id"),
+        }
+        elapsed = max(0, int((stopped_at_dt - started).total_seconds())) if started else 0
+        # The stop carries the instant on the *backend's* clock expressed on
+        # ours (the age model: `client_time - stopped_at` is all it reads).
+        offset = _utc_now() - reference
+        stopped_at = (stopped_at_dt + offset).isoformat()
+        self._timing_for(
+            {**record, "started_at_utc": entry.get("start_time")}, "adopt.declined",
+            last_seen_at=entry.get("last_seen_at"), silent_for_seconds=int(gap),
+            stopped_at=stopped_at, elapsed_seconds=elapsed,
+        )
+        self.log.warning(
+            "backend entry %s has not been heard from for %ds (cap %ds); queueing a stop at "
+            "its last evidence + the cap instead of resuming it",
+            entry_id, int(gap), RECOVERY_CAP_SECONDS,
+        )
+        self._enqueue_stop(record, stopped_at, elapsed)
+        self.timer_closed_by_server.emit({
+            "reason": "no_signal", "ended_at": stopped_at, "total_seconds": elapsed,
+            "task_name": (entry.get("task") or {}).get("name") if isinstance(entry.get("task"), dict) else None,
+        })
+        return True
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 

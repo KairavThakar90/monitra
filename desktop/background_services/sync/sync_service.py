@@ -22,6 +22,7 @@ its own retry loop.
 """
 from __future__ import annotations
 
+import random
 import re
 import time
 import uuid
@@ -52,8 +53,13 @@ class DeferAction(Exception):
     Raised by a handler whose prerequisites are not ready yet.
 
     The action is rescheduled without counting a failure, so waiting on an
-    ordering dependency never burns the retry budget.
+    ordering dependency never burns the retry budget. `delay_seconds` is how
+    long it waits: two seconds for an ordering dependency that is about to land,
+    much longer for one that needs a person (another account's stop waiting for
+    that account to sign in).
     """
+
+    delay_seconds: float = 2.0
 
 
 class UnresolvableAction(Exception):
@@ -76,6 +82,8 @@ class SyncService(LoopService):
         queue_drained()                       — edge: queue became empty
         pending_count_changed(int)            — edge: depth changed
         synced_at_changed(object)             — edge: a sync to the backend just succeeded (datetime, UTC)
+        entry_closed_by_server(dict)          — the heartbeat found the running entry already ended; carries
+                                                the backend's answer (`entry`, `closed_by_server`, `closed_reason`)
     """
 
     name = "sync"
@@ -89,6 +97,8 @@ class SyncService(LoopService):
     queue_drained = Signal()
     pending_count_changed = Signal(int)
     synced_at_changed = Signal(object)
+    #: Edge: once per entry. The owner of the timer decides what it means.
+    entry_closed_by_server = Signal(dict)
 
     #: Cadence while the queue has work.
     BUSY_INTERVAL_MS = 100
@@ -130,6 +140,23 @@ class SyncService(LoopService):
     #: desktop's own status uses the same threshold (`health.RETRYING_AFTER_*`).
     UPLOAD_REPORT_AFTER_SECONDS = 120.0
 
+    #: How often a running timer tells the backend its desktop is alive. The
+    #: backend calls an entry stale after ten minutes of silence, so this is
+    #: five beats inside that window: one lost request is invisible, a dead
+    #: machine is noticed. Jittered (0.8-1.2x) so a fleet that came back
+    #: together does not beat together.
+    HEARTBEAT_INTERVAL_SECONDS = 120.0
+    #: After a heartbeat that failed, how soon the next is tried. Not the
+    #: queue's backoff: a heartbeat is not durable work, and the next beat
+    #: replaces a missed one.
+    HEARTBEAT_RETRY_SECONDS = 30.0
+    #: A backend that answered "no such route" (older than the heartbeat) is
+    #: asked again this often, not every two minutes.
+    HEARTBEAT_UNSUPPORTED_RETRY_SECONDS = 3600.0
+    #: A heartbeat is one small request; it must never hold the queue behind a
+    #: slow answer for long.
+    HEARTBEAT_TIMEOUT_SECONDS = 8.0
+
     #: Priorities — lower runs first.
     PRIORITY = {
         "stop_timer": 1,
@@ -168,6 +195,12 @@ class SyncService(LoopService):
         #: When a sync last actually succeeded, this session only -- there is
         #: no durable store for it, so a restart starts this back at None.
         self._last_synced_at: Optional[datetime] = None
+        #: Heartbeat bookkeeping (monotonic seconds). Held on this thread.
+        self._heartbeat_due_at = 0.0
+        self._heartbeat_entry_id: Optional[int] = None
+        self._heartbeat_unsupported_until = 0.0
+        self._heartbeat_failing = False
+        self._closed_reported_for: Optional[int] = None
 
     # ── Public producer API ───────────────────────────────────────────────────
 
@@ -208,6 +241,14 @@ class SyncService(LoopService):
         else:
             if revived:
                 self.log.info("SCREENSHOT_REVIVED count=%d reason=re_authenticated", revived)
+        self.wake()
+
+    def request_heartbeat(self) -> None:
+        """Make the next tick send a heartbeat now (a resume from sleep, the
+        backend reachable again): the moment the backend most wants to hear
+        from a desktop that has been silent, and the moment this desktop most
+        wants to hear whether its entry survived the silence."""
+        self._heartbeat_due_at = 0.0
         self.wake()
 
     @property
@@ -266,8 +307,13 @@ class SyncService(LoopService):
             self._set_state(ServiceState.DEGRADED, hold_reason)
             return self.HOLD_INTERVAL_MS
 
+        self._send_heartbeat_if_due()
+
         if self.state == ServiceState.DEGRADED:
             self._set_state(ServiceState.RUNNING)
+            # The backend is reachable again: the first thing it wants from a
+            # desktop that has been silent is to hear from it.
+            self._heartbeat_due_at = 0.0
             # The hold is over: the backend is reachable again, or the user
             # has signed back in. A timer action waiting out a backoff earned
             # against the outage is attempted now rather than up to a minute
@@ -340,6 +386,86 @@ class SyncService(LoopService):
         self.heartbeat()
         return self.BUSY_INTERVAL_MS
 
+    # ── Liveness heartbeat ────────────────────────────────────────────────────
+    #
+    # A running timer is only as trustworthy as the last time its desktop was
+    # heard from. The backend keeps that instant on the entry
+    # (`time_entries.last_seen_at`) and measures a silent entry only to the
+    # last evidence, then closes it (docs/TIMING_MODEL.md section 9) -- so a
+    # machine that is switched off, asleep or dead stops being counted without
+    # anyone having to stop anything. This is the explicit "still here"; the
+    # activity and screenshot uploads say the same thing implicitly.
+    #
+    # Not durable work: nothing is queued and nothing is retried on the
+    # queue's schedule. It is sent from here -- the one thread that talks to
+    # the backend on a loop -- when due, and a lost one is replaced by the next.
+
+    def _send_heartbeat_if_due(self) -> None:
+        try:
+            self._heartbeat_tick()
+        except Exception:  # noqa: BLE001 -- a heartbeat must never stall the queue
+            self.log.exception("heartbeat failed unexpectedly")
+
+    def _heartbeat_tick(self) -> None:
+        timer = getattr(self.runtime, "timer", None)
+        session = timer.active_session() if timer is not None and timer.is_running() else None
+        entry_id = (session or {}).get("entry_id")
+        if not entry_id:
+            # Nothing running, or the start has not been confirmed yet (the
+            # next tick after it binds sends the first beat at once).
+            self._heartbeat_entry_id = None
+            return
+        now = time.monotonic()
+        new_entry = entry_id != self._heartbeat_entry_id
+        if not new_entry and now < self._heartbeat_due_at:
+            return
+        if now < self._heartbeat_unsupported_until:
+            return
+
+        try:
+            answer = self._time_entry_service.send_heartbeat(
+                entry_id, timeout=self.HEARTBEAT_TIMEOUT_SECONDS,
+            )
+        except ApiError as exc:
+            status = getattr(exc, "status_code", None)
+            if status == 401:
+                self._awaiting_auth = True
+                self.auth_required.emit()
+                return
+            if status in (404, 405):
+                # An older backend has no such route, or the entry is not this
+                # account's. Either way there is nothing to beat against; ask
+                # again later rather than every interval.
+                self._heartbeat_unsupported_until = now + self.HEARTBEAT_UNSUPPORTED_RETRY_SECONDS
+                self._heartbeat_entry_id = entry_id
+                self.log.info(
+                    "heartbeat for entry %s not accepted (HTTP %s); trying again in %d min",
+                    entry_id, status, int(self.HEARTBEAT_UNSUPPORTED_RETRY_SECONDS // 60),
+                )
+                return
+            self._heartbeat_due_at = now + self.HEARTBEAT_RETRY_SECONDS * random.uniform(0.5, 1.5)
+            self._heartbeat_entry_id = entry_id
+            if not self._heartbeat_failing:        # one line per outage, not per attempt
+                self._heartbeat_failing = True
+                self.log.info("heartbeat for entry %s failed (%s); will retry", entry_id, exc)
+            return
+
+        if self._heartbeat_failing:
+            self._heartbeat_failing = False
+            self.log.info("heartbeat for entry %s delivered again", entry_id)
+        self._heartbeat_entry_id = entry_id
+        self._heartbeat_due_at = now + self.HEARTBEAT_INTERVAL_SECONDS * random.uniform(0.8, 1.2)
+        self._heartbeat_unsupported_until = 0.0
+
+        entry = answer.get("entry") or {}
+        if entry.get("end_time") is not None and self._closed_reported_for != entry_id:
+            self._closed_reported_for = entry_id
+            self.log.info(
+                "heartbeat: entry %s has ended on the backend (closed_by_server=%s reason=%s)",
+                entry_id, answer.get("closed_by_server"), answer.get("closed_reason"),
+            )
+            self.entry_closed_by_server.emit(answer)
+
     # ── Action processing ─────────────────────────────────────────────────────
 
     def _process_action(self, action: Dict[str, Any]) -> bool:
@@ -356,7 +482,10 @@ class SyncService(LoopService):
 
         # Work queued by a previous login must never run against the current
         # user's credentials.
-        if action.get("session_generation", 0) < getattr(self.runtime, "queue_floor_generation", 0):
+        # (A timer action that names its account is the exception: it is held
+        # for that account rather than cancelled -- see `_require_owner`.)
+        if action.get("session_generation", 0) < getattr(self.runtime, "queue_floor_generation", 0) \
+                and not self._cache.is_account_owned_timer_action(action_type, payload):
             self.log.warning(
                 "cancelling stale action %s from generation %s",
                 action_type, action.get("session_generation"), extra={"op": action_id},
@@ -389,7 +518,7 @@ class SyncService(LoopService):
                 result = handler(payload) or {}
         except DeferAction as exc:
             self.log.info("deferring %s: %s", action_type, exc, extra={"op": action_id})
-            self._cache.defer_action(action_id, str(exc))
+            self._cache.defer_action(action_id, str(exc), delay_seconds=exc.delay_seconds)
             return False
         except UnresolvableAction as exc:
             self.log.warning("cancelling %s: %s", action_type, exc, extra={"op": action_id})
@@ -418,7 +547,14 @@ class SyncService(LoopService):
 
         if status == 401 or "session expired" in lowered:
             # Hold rather than burn retries against a token that cannot work.
-            self._cache.fail_action(action_id, message, max_retries=0)
+            # A timer action is held *and kept*: parked as `failed` it is never
+            # read again until the next launch -- and a tray application is not
+            # relaunched for days -- so a stop that met a signed-out client
+            # (a logout that cleared the token a moment before the request, a
+            # session that expired while the machine slept) left its entry
+            # running on the backend for as long as the process lived.
+            keep = action_type in self._cache.TIMER_ACTION_TYPES
+            self._cache.fail_action(action_id, message, max_retries=None if keep else 0)
             self._awaiting_auth = True
             self.log.warning("authentication required; holding queue", extra={"op": action_id})
             self.auth_required.emit()
@@ -483,7 +619,39 @@ class SyncService(LoopService):
             return True
         return False
 
+    def _current_user_id(self) -> Optional[int]:
+        session = getattr(self.runtime, "session_manager", None)
+        profile = getattr(session, "user_info", None)
+        return profile.get("id") if isinstance(profile, dict) else None
+
+    def _require_owner(self, payload: Dict[str, Any]) -> None:
+        """Send a timer action only under the account that queued it.
+
+        A start or stop names the account it was queued under. A stop queued
+        by user A and delivered with user B's token is refused by the backend
+        as "not found" -- which the consumer treats as done -- and A's entry
+        runs on with nothing left to end it; a start would create B an entry
+        for A's session. So the action waits (held, never cancelled, never
+        spending its retry budget) until its own account is signed in, which
+        also covers a stop queued by a logout whose token was cleared before
+        the request could go. One queued by an older build names nobody and
+        goes out as before.
+        """
+        owner = payload.get("user_id")
+        if owner is None:
+            return
+        current = self._current_user_id()
+        if current == owner:
+            return
+        wait = DeferAction(
+            f"queued by account {owner}; waiting for it to sign in "
+            f"({'nobody is signed in' if current is None else 'another account is'})"
+        )
+        wait.delay_seconds = 60.0
+        raise wait
+
     def _handle_start_timer(self, payload, created_at: Optional[float] = None):
+        self._require_owner(payload)
         # A start never overtakes a stop queued before it. The stop of the
         # previous session runs first by priority, but a stop that is
         # *deferred* -- waiting for its own start's entry id -- is not ready,
@@ -496,7 +664,8 @@ class SyncService(LoopService):
         # own start, which waits for nothing, so the chain always advances.
         client_op = payload.get("client_op")
         if self._cache.pending_stop_count(
-            exclude_client_op=client_op, created_before=created_at
+            exclude_client_op=client_op, created_before=created_at,
+            owner_id=payload.get("user_id"),
         ) > 0:
             raise DeferAction("a stop for an earlier session has not reached the backend yet")
 
@@ -574,6 +743,7 @@ class SyncService(LoopService):
                 )
 
     def _handle_stop_timer(self, payload, deferrals: int = 0):
+        self._require_owner(payload)
         entry_id = payload.get("entry_id")
         client_op = payload.get("client_op")
 

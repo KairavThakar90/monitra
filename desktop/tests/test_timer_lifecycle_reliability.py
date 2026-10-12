@@ -483,7 +483,11 @@ def test_an_update_restart_leaves_the_session_for_recovery(qapp, window, live_ru
     runtime.timer.stop_tracking()
 
 
-def test_an_os_session_end_is_an_interruption_not_a_quit(qapp, window, live_runtime, monkeypatch):
+def test_the_os_asking_to_end_the_session_stops_nothing_by_itself(qapp, window, live_runtime, monkeypatch):
+    """`commitDataRequest` is WM_QUERYENDSESSION: a question any application
+    may answer no to. A timer stopped on a shutdown that did not happen would
+    silently end real work, so the question alone changes nothing -- the
+    shutdown going ahead (`on_about_to_quit`, below) is what stops it."""
     import ui.quit_confirm_dialog as dialog_module
 
     runtime = live_runtime
@@ -501,11 +505,89 @@ def test_an_os_session_end_is_an_interruption_not_a_quit(qapp, window, live_runt
     window.close()
     qapp.processEvents()
 
-    assert runtime.timer.is_running(), "an OS shutdown must leave the session to recover"
+    assert runtime.timer.is_running(), "a question that may be vetoed must not stop the timer"
     assert runtime.cache.load_app_state(TIMER_STATE_KEY)["entry_id"] == 42
     assert runtime.backend.stopped == []
     assert window.quits == []
     runtime.timer.stop_tracking()
+
+
+def test_a_shutdown_that_goes_ahead_stops_the_timer_durably_at_that_instant(
+    qapp, window, live_runtime, monkeypatch
+):
+    """WM_ENDSESSION emits aboutToQuit and the process is killed moments later.
+    The timer is stopped the way a Quit stops it -- queued durably before the
+    session record is cleared -- so the backend hears of the stop at the
+    instant of shutdown instead of carrying an entry for a machine that is off.
+    Before: the entry ran until the next launch recovered it, or for ever if
+    there was no next launch."""
+    runtime = live_runtime
+    _start_and_bind(qapp, runtime)
+
+    class Manager:
+        def release(self):
+            pass
+
+    runtime.sync._awaiting_auth = True       # hold the consumer: the stop stays queued to be read
+    shutdown_calls = []
+    real_shutdown = runtime.shutdown
+    runtime.shutdown = lambda *a, **k: shutdown_calls.append("shutdown")
+    before = datetime.now(UTC)
+
+    try:
+        window.on_os_session_ending(Manager())
+        window.on_about_to_quit()
+    finally:
+        runtime.shutdown = real_shutdown      # the fixture's own teardown must run the real one
+
+    assert not runtime.timer.is_running()
+    assert runtime.cache.load_app_state(TIMER_STATE_KEY) is None, "the record goes after the stop is queued"
+    queued = runtime.cache.storage.query_all(
+        "SELECT payload FROM pending_actions WHERE action_type = 'stop_timer'"
+    )
+    import json
+    assert len(queued) == 1
+    stop = json.loads(queued[0]["payload"])
+    assert stop["entry_id"] == 42
+    assert before <= parse_utc(stop["stopped_at"]) <= datetime.now(UTC), "the instant of the shutdown"
+    assert shutdown_calls == ["shutdown"], "and the ordinary teardown follows"
+
+
+def test_an_ordinary_exit_does_not_take_the_os_path(qapp, window, live_runtime, monkeypatch):
+    """An update restart (or any quit that did not come with the OS asking to
+    end the session) must not stop the timer here: an explicit Quit has already
+    stopped it through prepare_exit, and a restart relaunches at once."""
+    runtime = live_runtime
+    _start_and_bind(qapp, runtime)
+    real_shutdown = runtime.shutdown
+    runtime.shutdown = lambda *a, **k: None
+    try:
+        window.on_about_to_quit()
+    finally:
+        runtime.shutdown = real_shutdown
+
+    assert runtime.timer.is_running()
+    assert runtime.cache.load_app_state(TIMER_STATE_KEY)["entry_id"] == 42
+    runtime.timer.stop_tracking()
+
+
+def test_the_os_stop_is_idempotent_and_ignores_an_idle_timer(qapp, window, live_runtime, monkeypatch):
+    runtime = live_runtime
+    real_shutdown = runtime.shutdown
+    runtime.shutdown = lambda *a, **k: None
+    try:
+        window.on_os_session_ending(type("M", (), {"release": lambda self: None})())
+        window.on_about_to_quit()                # nothing running: nothing to do
+    finally:
+        runtime.shutdown = real_shutdown
+    assert runtime.cache.pending_stop_count() == 0
+    _start_and_bind(qapp, runtime)
+    runtime.sync._awaiting_auth = True           # hold the consumer so the queue can be read
+    runtime.stop_for_os_shutdown()
+    runtime.stop_for_os_shutdown()               # a second call finds nothing running
+    assert len(runtime.cache.storage.query_all(
+        "SELECT id FROM pending_actions WHERE action_type = 'stop_timer'"
+    )) == 1
 
 
 # ── Test 5: explicit stop, then restart ──────────────────────────────────────

@@ -224,6 +224,69 @@ backend for ever. Timer actions retry without limit (at the capped, jittered
 backoff, and only while the backend is reachable), and any parked by an
 older build are revived at launch.
 
+### ❌ Do not park a timer action as `failed` because the session ended
+
+```python
+if status == 401 or "session expired" in lowered:
+    self._cache.fail_action(action_id, message, max_retries=0)   # "hold rather than burn retries"
+```
+
+**What it caused:** `fail_action(max_retries=0)` does not hold, it *parks*: the
+row becomes `failed`, and nothing reads a failed row again until the next
+launch -- and a tray application is not relaunched for days. A stop that met a
+signed-out client (a logout that cleared the token a moment before the request
+went; a session that expired while the machine slept) therefore never ended its
+entry on the backend, which ran until somebody noticed. Reproduced by
+`tests/test_stop_survives_sign_out.py` against the real consumer and queue.
+
+**Instead:** a timer action is held *and kept* (`max_retries=None`), the
+consumer holds as a whole until re-authentication, and the hold ending brings
+every timer action forward.
+
+### ❌ Do not send a queued stop or start under whichever token is signed in
+
+A stop queued by user A and delivered after user B signed in on the same
+machine is answered "not found" -- which the consumer treats as done -- so A's
+entry ran on with nothing left to end it; a start would have created B an entry
+for A's session. The old guard was to *cancel* every row of an earlier session
+generation, which lost A's stop instead. Each start and stop now names its
+account (`user_id`) and waits, held, for that account; the generation fence and
+the logout cancellation both skip it. See ARCHITECTURE.md section 7.
+
+### ❌ Do not stop the timer on `commitDataRequest`, and do not ignore a shutdown that happens
+
+`commitDataRequest` is `WM_QUERYENDSESSION`, a question any application may
+answer no to; the shutdown going ahead is `aboutToQuit` (Qt emits it directly
+on `WM_ENDSESSION`, and the process is killed moments later). Stopping on the
+question ends real work if the shutdown is refused; doing nothing on the
+answer -- which this application did, calling it an "interruption" -- leaves an
+entry running on the backend for a machine that is switched off, until that
+machine is next launched or, if it never is, for ever. The question is noted
+(`on_os_session_ending`); the answer stops the timer durably
+(`on_about_to_quit` -> `stop_for_os_shutdown`). An update restart is neither.
+
+### ❌ Do not adopt a backend entry on faith
+
+```python
+self.api.timer.adopt_remote_session(entry)    # whatever the backend says is running
+```
+
+**What it caused:** a Monday-morning login adopted Friday's entry as "the
+timer that is running", anchored to its original start, 65 hours on the clock
+-- and a new start was refused with `409 active_entry` for it, which the
+desktop adopted too. The local crash-recovery cap (15 minutes) was applied to a
+session recovered from disk and to nothing else. The cap is now one rule:
+`adopt_remote_session` declines an entry whose `last_seen_at` is more than
+`RECOVERY_CAP_SECONDS` before the backend's clock, queues its stop at last
+evidence + the cap and tells the user.
+
+### ❌ Do not write the cap twice
+
+`RECOVERY_CAP_SECONDS` here and `TIMER_NO_SIGNAL_GRACE_SECONDS` on the backend
+are one policy -- the most unattended time any stop may count -- and
+`tests/test_timer_abandonment.py::test_the_desktop_cap_equals_the_backends_grace`
+reads both files and fails if they differ. Change one and you change both.
+
 ### ❌ Do not use `terminate()` as normal shutdown
 
 It is a last resort, used only when the alternative is a process that never
