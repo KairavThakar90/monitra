@@ -29,6 +29,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     designation: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    floor: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     date_of_joining: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     date_of_birth: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     password_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)

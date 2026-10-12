@@ -42,6 +42,16 @@ class MemberSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             MemberCreate(**valid_member(date_of_birth=date.today() + timedelta(days=1)))
 
+    def test_member_floor_accepts_only_the_supported_floors(self):
+        for floor in ("3rd floor", "4th floor", "6th floor"):
+            self.assertEqual(MemberCreate(**valid_member(floor=floor)).floor.value, floor)
+        with self.assertRaises(ValidationError):
+            MemberCreate(**valid_member(floor="5th floor"))
+
+    def test_floor_can_be_updated_or_cleared(self):
+        self.assertEqual(MemberUpdate(floor="4th floor").floor.value, "4th floor")
+        self.assertIsNone(MemberUpdate(floor=None).floor)
+
 
 class MemberUpdateTrackingSettingsTests(unittest.TestCase):
     """`idle_enabled` / `idle_minutes` / `capture_frequency` are the tracking
@@ -87,5 +97,7 @@ class MemberCreationDefaultsTests(unittest.TestCase):
             "email": "new@example.com", "name": "New Member",
             "designation": "Engineer", "role": "employee", "status": "active",
             "date_of_joining": date(2026, 1, 1), "date_of_birth": date(1990, 1, 1),
+            "floor": "6th floor",
         })
         self.assertEqual(member.capture_frequency, 10)
+        self.assertEqual(member.floor, "6th floor")

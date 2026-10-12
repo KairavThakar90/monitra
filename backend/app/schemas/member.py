@@ -62,6 +62,12 @@ class MemberStatus(str, Enum):
     inactive = "inactive"
 
 
+class MemberFloor(str, Enum):
+    third = "3rd floor"
+    fourth = "4th floor"
+    sixth = "6th floor"
+
+
 def _clean_required(value: str, field_name: str, max_length: int) -> str:
     cleaned = value.strip()
     if not cleaned:
@@ -79,6 +85,7 @@ class MemberCreate(BaseModel):
     date_of_joining: date
     date_of_birth: date
     designation: str = Field(..., max_length=150)
+    floor: Optional[MemberFloor] = None
 
     @field_validator("name", "designation")
     @classmethod
@@ -111,6 +118,7 @@ class MemberUpdate(BaseModel):
     date_of_joining: Optional[date] = None
     date_of_birth: Optional[date] = None
     designation: Optional[str] = Field(None, max_length=150)
+    floor: Optional[MemberFloor] = None
     idle_enabled: Optional[bool] = None
     idle_minutes: IdleMinutes = None
     capture_frequency: CaptureFrequencyMinutes = None
@@ -162,6 +170,7 @@ class MemberResponse(BaseModel):
     date_of_joining: Optional[date]
     date_of_birth: Optional[date]
     designation: Optional[str]
+    floor: Optional[MemberFloor] = None
     idle_enabled: bool
     idle_minutes: int
     capture_frequency: int

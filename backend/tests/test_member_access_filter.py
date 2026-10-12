@@ -92,7 +92,9 @@ class _World:
         self.db = _database()
         self.ids = {}
         for i, (name, (login, add_task)) in enumerate(SWITCHES.items(), start=1):
-            self.ids[name] = _user(self.db, i, name, can_login=login, can_add_tasks=add_task).id
+            member = _user(self.db, i, name, can_login=login, can_add_tasks=add_task)
+            member.floor = {"Alice": "3rd floor", "Bob": "4th floor", "Cara": "6th floor"}.get(name)
+            self.ids[name] = member.id
         self.db.commit()
 
     def names(self, **filters):
@@ -131,6 +133,17 @@ class RepositoryFilterTests(unittest.TestCase):
         allowed, excluded = self.world.names(can_login=True), self.world.names(can_login=False)
         self.assertEqual(sorted(allowed + excluded), ["Alice", "Bob", "Cara", "Dan"])
         self.assertFalse(set(allowed) & set(excluded))
+
+    def test_floor_filter_and_combinations(self):
+        self.assertEqual(self.world.names(floor="3rd floor"), ["Alice"])
+        self.assertEqual(self.world.names(floor="4th floor"), ["Bob"])
+        self.assertEqual(self.world.names(floor="6th floor"), ["Cara"])
+        self.assertEqual(self.world.names(floor="4th floor", can_login=False), ["Bob"])
+        self.assertEqual(self.world.names(floor="4th floor", can_login=True), [])
+
+    def test_floor_filtered_total_and_paging(self):
+        items, total = self.world.list(floor="3rd floor", limit=1, page=1)
+        self.assertEqual(([u.name for u in items], total), (["Alice"], 1))
 
     def test_the_total_and_the_pages_describe_the_filtered_list(self):
         items, total = self.world.list(can_login=False, limit=1, page=1)
@@ -177,13 +190,13 @@ class ServiceTests(unittest.TestCase):
                 patch("app.services.member_service.visible_directory_ids", return_value=None):
             MemberService.list(MagicMock(), _caller(), None, None, None, 1, 20, can_login=False, can_add_tasks=True)
         self.assertIsNone(listed.call_args.args[-1])   # the leader scope is still the last positional
-        self.assertEqual(listed.call_args.kwargs, {"can_login": False, "can_add_tasks": True, "can_add_nonbillable_tasks": None})
+        self.assertEqual(listed.call_args.kwargs, {"can_login": False, "can_add_tasks": True, "can_add_nonbillable_tasks": None, "floor": None})
 
     def test_they_default_to_no_filter(self):
         with patch("app.services.member_service.MemberRepository.list_by_organization", return_value=([], 0)) as listed, \
                 patch("app.services.member_service.visible_directory_ids", return_value=None):
             MemberService.list(MagicMock(), _caller(), None, None, None, 1, 20)
-        self.assertEqual(listed.call_args.kwargs, {"can_login": None, "can_add_tasks": None, "can_add_nonbillable_tasks": None})
+        self.assertEqual(listed.call_args.kwargs, {"can_login": None, "can_add_tasks": None, "can_add_nonbillable_tasks": None, "floor": None})
 
 
 def _caller() -> User:
@@ -217,16 +230,26 @@ class RouteTests(unittest.TestCase):
     def test_booleans_are_passed_to_the_service(self):
         response, listed = self._get({"can_login": "true", "can_add_tasks": "false"})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(listed.call_args.kwargs, {"can_login": True, "can_add_tasks": False, "can_add_nonbillable_tasks": None})
+        self.assertEqual(listed.call_args.kwargs, {"can_login": True, "can_add_tasks": False, "can_add_nonbillable_tasks": None, "floor": None})
 
     def test_omitting_them_means_no_filter(self):
         response, listed = self._get({})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(listed.call_args.kwargs, {"can_login": None, "can_add_tasks": None, "can_add_nonbillable_tasks": None})
+        self.assertEqual(listed.call_args.kwargs, {"can_login": None, "can_add_tasks": None, "can_add_nonbillable_tasks": None, "floor": None})
 
     def test_each_filter_works_alone(self):
-        self.assertEqual(self._get({"can_login": "false"})[1].call_args.kwargs, {"can_login": False, "can_add_tasks": None, "can_add_nonbillable_tasks": None})
-        self.assertEqual(self._get({"can_add_tasks": "true"})[1].call_args.kwargs, {"can_login": None, "can_add_tasks": True, "can_add_nonbillable_tasks": None})
+        self.assertEqual(self._get({"can_login": "false"})[1].call_args.kwargs, {"can_login": False, "can_add_tasks": None, "can_add_nonbillable_tasks": None, "floor": None})
+        self.assertEqual(self._get({"can_add_tasks": "true"})[1].call_args.kwargs, {"can_login": None, "can_add_tasks": True, "can_add_nonbillable_tasks": None, "floor": None})
+
+    def test_floor_filter_is_passed_to_the_service(self):
+        response, listed = self._get({"floor": "4th floor"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(listed.call_args.kwargs["floor"], "4th floor")
+
+    def test_unknown_floor_is_refused(self):
+        response, listed = self._get({"floor": "5th floor"})
+        self.assertEqual(response.status_code, 422)
+        listed.assert_not_called()
 
     def test_the_positional_arguments_are_unchanged(self):
         _, listed = self._get({"role": "hr", "search": "ann", "page": 2, "limit": 5, "can_login": "true"})
@@ -241,7 +264,7 @@ class RouteTests(unittest.TestCase):
 
     def test_the_parameters_are_documented(self):
         params = {p["name"] for p in app.openapi()["paths"]["/api/v1/members"]["get"]["parameters"]}
-        self.assertTrue({"can_login", "can_add_tasks", "can_add_nonbillable_tasks"} <= params)
+        self.assertTrue({"can_login", "can_add_tasks", "can_add_nonbillable_tasks", "floor"} <= params)
 
 
 if __name__ == "__main__":

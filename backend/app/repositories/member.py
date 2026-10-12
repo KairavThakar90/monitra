@@ -37,7 +37,7 @@ class MemberRepository:
     def list_by_organization(
         db: Session, organization_id: int, search: Optional[str], role: Optional[str], status: Optional[str], page: int, limit: int,
         member_ids: Optional[set[int]] = None, *, can_login: Optional[bool] = None, can_add_tasks: Optional[bool] = None,
-        can_add_nonbillable_tasks: Optional[bool] = None,
+        can_add_nonbillable_tasks: Optional[bool] = None, floor: Optional[str] = None,
     ):
         """One page of the directory.
 
@@ -66,6 +66,8 @@ class MemberRepository:
             filters.extend([User.status == "active", User.is_active.is_(True)])
         elif status == "inactive":
             filters.append(or_(User.status == "inactive", User.is_active.is_(False)))
+        if floor is not None:
+            filters.append(User.floor == floor)
         for column, wanted in ((User.can_login, can_login), (User.can_add_tasks, can_add_tasks)):
             if wanted is not None:
                 filters.append(column.is_not(False) if wanted else column.is_(False))
@@ -120,6 +122,7 @@ class MemberRepository:
             email=data["email"],
             name=data["name"],
             designation=data["designation"],
+            floor=data.get("floor"),
             role_name=data["role"],
             status=data["status"],
             is_active=data["status"] == "active",

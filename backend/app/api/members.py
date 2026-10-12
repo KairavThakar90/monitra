@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user, require_permission
 from app.models.user import User
-from app.schemas.member import MemberAccessResponse, MemberAccessSummary, MemberAccessUpdate, MemberCreate, MemberListResponse, MemberResponse, MemberRoleFilter, MemberStatus, MemberUpdate
+from app.schemas.member import MemberAccessResponse, MemberAccessSummary, MemberAccessUpdate, MemberCreate, MemberFloor, MemberListResponse, MemberResponse, MemberRoleFilter, MemberStatus, MemberUpdate
 from app.services.member_service import MemberService
 
 router = APIRouter(prefix="/members", tags=["Member Management"])
@@ -21,6 +21,7 @@ def create_member(payload: MemberCreate, current_user: User = Depends(get_curren
 def list_members(
     page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100), search: Optional[str] = Query(None, max_length=100),
     role: Optional[MemberRoleFilter] = None, status: Optional[MemberStatus] = None,
+    floor: Optional[MemberFloor] = Query(None, description="Only members assigned to the selected floor."),
     can_login: Optional[bool] = Query(None, description="true: only members allowed to log in; false: only those excluded."),
     can_add_tasks: Optional[bool] = Query(None, description="true: only members allowed to add tasks; false: only those not allowed."),
     can_add_nonbillable_tasks: Optional[bool] = Query(None, description="true: only members allowed to add Non billable tasks; false: only those not allowed."),
@@ -29,6 +30,7 @@ def list_members(
     return MemberService.list(
         db, current_user, search, role.value if role else None, status.value if status else None, page, limit,
         can_login=can_login, can_add_tasks=can_add_tasks, can_add_nonbillable_tasks=can_add_nonbillable_tasks,
+        floor=floor.value if floor else None,
     )
 
 

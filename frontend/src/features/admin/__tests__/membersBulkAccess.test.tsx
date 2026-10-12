@@ -64,12 +64,12 @@ const row = (id: number, name: string, extra: Record<string, unknown> = {}) => (
 });
 
 /**
- * The text of a row's Add Task and Login cells only. The Add Non Billable Task cell
- * after them reads "Excluded" for everyone who has not been granted it, which is
- * the normal state, so a whole-row text probe cannot tell these two switches apart.
+ * The first two switches are Add Task and Login. The Non billable switch comes
+ * after them and is normally Excluded, so a whole-row text probe is ambiguous.
  */
 const sharedSwitchText = (tr: Element) =>
-  Array.from(tr.querySelectorAll('td')).slice(7, 9).map((cell) => cell.textContent ?? '').join(' ');
+  Array.from(tr.querySelectorAll('button[role="switch"]')).slice(0, 2)
+    .map((switchButton) => switchButton.parentElement?.textContent ?? '').join(' ');
 
 describe('AdminMembers bulk access', () => {
   let container: HTMLDivElement;
