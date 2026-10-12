@@ -804,6 +804,52 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
         self.assertEqual(len(during), 1, "inside the measured time it is still a conflict")
         self.assertEqual(after, [], "after the evidence ends, the time is free to request")
 
+    def _request_manual_time(self, start, end):
+        """What the member's own manual-time request does, through the real service."""
+        from app.schemas.manual_time_entry import ManualTimeEntryCreate
+        from app.services.manual_time_entry import ManualTimeEntryService
+
+        ist = timezone(timedelta(hours=5, minutes=30))
+        return ManualTimeEntryService.create_manual_entry(
+            self.db,
+            ManualTimeEntryCreate(
+                project_id=self.ids.project_id, task_id=self.ids.task_id,
+                work_date=start.astimezone(ist).date(), total_seconds=int((end - start).total_seconds()),
+                start_time=start, end_time=end, description="worked offline",
+            ),
+            self.user,
+        )
+
+    def test_the_manual_time_workflow_can_recover_what_a_server_closure_cut(self):
+        """The recovery path for legitimate work outside the recovery window, end to end: the
+        server closes a silent entry at last signal + 15 minutes; the member then files the hours
+        they really worked after it, through the same service the web form and desktop use."""
+        now = self._db_now()
+        start = now - timedelta(days=3)
+        seen = start + timedelta(minutes=37)
+        entry = self._running(start, last_seen=seen)
+        self._reconcile()
+        closed_at = self._reload(entry.id).end_time
+        self.assertEqual(closed_at, seen + timedelta(minutes=15))
+
+        asked = self._request_manual_time(closed_at + timedelta(minutes=1), closed_at + timedelta(hours=5))
+
+        self.assertEqual((asked.approval_status, asked.total_seconds), ("pending", 5 * 3600 - 60))
+        # and a request that overlaps the time the entry DID keep is still refused
+        with self.assertRaises(HTTPException) as refused:
+            self._request_manual_time(start + timedelta(minutes=10), start + timedelta(minutes=20))
+        self.assertEqual(refused.exception.status_code, 409)
+
+    def test_until_it_is_closed_a_legacy_entry_that_never_reported_blocks_every_later_request(self):
+        """The cost of leaving entry 5958 open (docs/TIMER_ENTRY_5958_RECONCILIATION_PLAN.md): a row
+        that never reported is measured to now, so it occupies all of the time since it began."""
+        now = self._db_now()
+        entry = self._running(now - timedelta(days=3), last_seen=None)
+        with self.assertRaises(HTTPException) as refused:
+            self._request_manual_time(now - timedelta(days=1), now - timedelta(days=1) + timedelta(hours=2))
+        self.assertEqual(refused.exception.status_code, 409)
+        self.assertIsNone(self._reload(entry.id).end_time)
+
     def test_a_live_or_never_reported_entry_still_blocks_overlapping_manual_time(self):
         from app.repositories.manual_time_entry import ManualTimeEntryRepository as Repo
 
