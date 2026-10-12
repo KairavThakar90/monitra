@@ -10,7 +10,7 @@ import {
   useDeleteMemberMutation,
   useGetMemberDetailsQuery,
 } from '../../store/api/membersApi';
-import type { AccessFilter, Member } from '../../store/api/membersApi';
+import type { AccessFilter, Member, MemberFloor } from '../../store/api/membersApi';
 import { useGetProjectMetadataQuery } from '../../store/api/projectsApi';
 import { isTeamScoped } from '../../utils/roles';
 import { MemberLogModal } from './MemberLogModal';
@@ -37,6 +37,7 @@ const ACCESS_SUMMARY_POLL_MS = 15_000;
  * on the end of their name. One string, so renaming it is one edit.
  */
 const NON_BILLABLE_TASK_LABEL = 'Add Non Billable Task';
+const MEMBER_FLOORS: readonly MemberFloor[] = ['3rd floor', '4th floor', '6th floor'];
 
 const GRADIENT_CYAN_PURPLE = 'bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[#8b5cf6]';
 
@@ -244,12 +245,8 @@ const MemberProfileView: React.FC<{ member: Member }> = ({ member }) => {
                 <span className="text-sm font-semibold text-slate-700">{memberDetails.email}</span>
               </div>
               <div className="py-3 flex justify-between items-center">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Date of Joining</span>
-                <span className="text-sm font-semibold text-slate-700">{formatDate(memberDetails.date_of_joining)}</span>
-              </div>
-              <div className="py-3 flex justify-between items-center">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Date of Birth</span>
-                <span className="text-sm font-semibold text-slate-700">{formatDate(memberDetails.date_of_birth)}</span>
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Floor</span>
+                <span className="text-sm font-semibold text-slate-700">{memberDetails.floor || '-'}</span>
               </div>
               {memberDetails.organization && (
                 <div className="py-3 flex justify-between items-center">
@@ -485,6 +482,7 @@ export const AdminMembers: React.FC = () => {
   const [filterAddTask, setFilterAddTask] = useState<AccessFilter>('All');
   const [filterLogin, setFilterLogin] = useState<AccessFilter>('All');
   const [filterBillableTask, setFilterBillableTask] = useState<AccessFilter>('All');
+  const [filterFloor, setFilterFloor] = useState<MemberFloor | 'All'>('All');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
@@ -514,6 +512,7 @@ export const AdminMembers: React.FC = () => {
     can_add_tasks: filterAddTask,
     can_login: filterLogin,
     can_add_nonbillable_tasks: filterBillableTask,
+    floor: filterFloor,
   });
 
   // The headcounts beside Add Task and Login. Deliberately not derived from
@@ -558,9 +557,8 @@ export const AdminMembers: React.FC = () => {
   const [formEmail, setFormEmail] = useState('');
   const [formRole, setFormRole] = useState('employee');
   const [formStatus, setFormStatus] = useState('active');
-  const [formDOJ, setFormDOJ] = useState('');
-  const [formDOB, setFormDOB] = useState('');
   const [formDesignation, setFormDesignation] = useState('');
+  const [formFloor, setFormFloor] = useState<MemberFloor | ''>('');
 
   // The role list is the server's, so the enum's permitted values are read from
   // it each render rather than hardcoded. A member whose stored role the server
@@ -577,9 +575,21 @@ export const AdminMembers: React.FC = () => {
     role: { rule: 'enum', label: 'Role', required: true, allowed: allowedRoles },
     status: { rule: 'enum', label: 'Status', required: true, allowed: ['active', 'inactive'] },
     designation: { rule: 'name', label: 'Designation' },
-    dateOfJoining: { rule: 'date', label: 'Date of joining' },
-    dateOfBirth: { rule: 'date', label: 'Date of birth' },
+    floor: { rule: 'enum', label: 'Floor', allowed: MEMBER_FLOORS },
   });
+
+  const openCreateDrawer = () => {
+    setDrawerMode('create');
+    setEditingId(null);
+    setFormName('');
+    setFormEmail('');
+    setFormRole('employee');
+    setFormStatus('active');
+    setFormDesignation('');
+    setFormFloor('');
+    memberForm.clear();
+    setIsDrawerOpen(true);
+  };
 
   const openEditDrawer = (member: Member) => {
     setDrawerMode('edit');
@@ -588,9 +598,8 @@ export const AdminMembers: React.FC = () => {
     setFormEmail(member.email);
     setFormRole(member.role);
     setFormStatus(member.status);
-    setFormDOJ(member.date_of_joining || '');
-    setFormDOB(member.date_of_birth || '');
     setFormDesignation(member.designation || '');
+    setFormFloor(member.floor || '');
     memberForm.clear();
     setIsDrawerOpen(true);
   };
@@ -607,8 +616,7 @@ export const AdminMembers: React.FC = () => {
       role: formRole,
       status: formStatus,
       designation: formDesignation,
-      dateOfJoining: formDOJ,
-      dateOfBirth: formDOB,
+      floor: formFloor,
     });
     if (!check.ok) {
       showToast('Please correct the highlighted fields.', 'error');
@@ -623,9 +631,10 @@ export const AdminMembers: React.FC = () => {
       email: check.values.email as string,
       role: formRole,
       status: formStatus,
-      date_of_joining: (check.values.dateOfJoining as string) || null,
-      date_of_birth: (check.values.dateOfBirth as string) || null,
+      // No dates: the form does not ask for them, and leaving the keys out
+      // means an edit keeps whatever dates a member already has.
       designation: check.values.designation as string,
+      floor: (check.values.floor as MemberFloor) || null,
     };
 
     try {
@@ -765,6 +774,7 @@ export const AdminMembers: React.FC = () => {
             page: pageNumber, limit: 100, role: filterRole, status: 'All', search: searchTerm,
             can_add_tasks: filterAddTask, can_login: filterLogin,
             can_add_nonbillable_tasks: filterBillableTask,
+            floor: filterFloor,
           },
           true,
         ).unwrap();
@@ -872,7 +882,7 @@ export const AdminMembers: React.FC = () => {
       return on !== target;
     });
   // Placeholder rows span every column, including the optional ones.
-  const columnCount = 9 + (canManageAccess ? 1 : 0) + (canManageMembers ? 1 : 0);
+  const columnCount = 8 + (canManageAccess ? 1 : 0) + (canManageMembers ? 1 : 0);
 
 
   const selectedMember = selectedProfileId ? data?.items?.find(m => m.id === selectedProfileId) : null;
@@ -899,7 +909,7 @@ export const AdminMembers: React.FC = () => {
 
   return (
     <V2Shell
-      title="Members Directory"
+      title={data && !isError ? `Members Directory (${totalMembers})` : 'Members Directory'}
       subtitle={canManageMembers
         ? "Manage employees, their roles, and company details."
         : isTeamScoped(currentUser)
@@ -912,12 +922,12 @@ export const AdminMembers: React.FC = () => {
         canManageMembers ? (
           <div className="flex items-center gap-3">
             <InlineRefreshIndicator active={isRevalidating || isUpdatingMember || isDeletingMember} />
-            {/* <button
+            <button
               onClick={openCreateDrawer}
               className={`rounded-lg px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90 ${GRADIENT_CYAN_PURPLE}`}
             >
               + Add Member
-            </button> */}
+            </button>
           </div>
         ) : undefined
       }
@@ -1001,6 +1011,24 @@ export const AdminMembers: React.FC = () => {
               value={filterBillableTask}
               onChange={(value) => { setFilterBillableTask(value); setPage(1); }}
             />
+            <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+              <label htmlFor="member-floor-filter" className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Floor:</label>
+              <div className="relative">
+                <select
+                  id="member-floor-filter"
+                  aria-label="Filter by floor"
+                  value={filterFloor}
+                  onChange={(e) => { setFilterFloor(e.target.value as MemberFloor | 'All'); setPage(1); }}
+                  className="w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 outline-none shadow-sm transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15"
+                >
+                  <option value="All">All Floors</option>
+                  {MEMBER_FLOORS.map((floor) => <option key={floor} value={floor}>{floor}</option>)}
+                </select>
+                <svg className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+                </svg>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1095,8 +1123,7 @@ export const AdminMembers: React.FC = () => {
                   <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Role</th>
                   <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Status</th>
                   <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Designation</th>
-                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Date of Joining</th>
-                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Date of Birth</th>
+                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Floor</th>
                   <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">
                     Add Task<HeaderCount value={accessSummary?.add_task_allowed} meaning="allowed to add tasks" />
                   </th>
@@ -1162,8 +1189,7 @@ export const AdminMembers: React.FC = () => {
                         <StatusBadge status={member.status} />
                       </td>
                       <td className="px-4 py-4 font-medium text-slate-600">{member.designation || '-'}</td>
-                      <td className="px-4 py-4 font-medium text-slate-600">{formatDate(member.date_of_joining)}</td>
-                      <td className="px-4 py-4 font-medium text-slate-600">{formatDate(member.date_of_birth)}</td>
+                      <td className="px-4 py-4 font-medium text-slate-600">{member.floor || '-'}</td>
                       <td className="px-4 py-4">
                         <AddTaskSwitch
                           allowed={member.can_add_tasks !== false}
@@ -1349,38 +1375,23 @@ export const AdminMembers: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-100">
-                  <div>
-                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Date of Joining</label>
-                    <input
-                      type="date"
-                      value={formDOJ}
-                      onChange={e => setFormDOJ(e.target.value)}
-                      onBlur={() => memberForm.validateField('dateOfJoining', formDOJ)}
-                      {...memberForm.fieldProps('dateOfJoining')}
-                      className="w-full rounded-lg border border-slate-300 px-4 py-2.5 outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6] text-sm font-medium text-slate-700"
-                    />
-                    <FieldError
-                      id={memberForm.errorId('dateOfJoining')}
-                      message={memberForm.errors.dateOfJoining}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Date of Birth</label>
-                    <input
-                      type="date"
-                      value={formDOB}
-                      onChange={e => setFormDOB(e.target.value)}
-                      onBlur={() => memberForm.validateField('dateOfBirth', formDOB)}
-                      {...memberForm.fieldProps('dateOfBirth')}
-                      className="w-full rounded-lg border border-slate-300 px-4 py-2.5 outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6] text-sm font-medium text-slate-700"
-                    />
-                    <FieldError
-                      id={memberForm.errorId('dateOfBirth')}
-                      message={memberForm.errors.dateOfBirth}
-                    />
-                  </div>
+                <div>
+                  <label htmlFor="member-floor" className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Floor</label>
+                  <select
+                    id="member-floor"
+                    aria-label="Member floor"
+                    value={formFloor}
+                    onChange={(e) => setFormFloor(e.target.value as MemberFloor | '')}
+                    onBlur={() => memberForm.validateField('floor', formFloor)}
+                    {...memberForm.fieldProps('floor')}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
+                  >
+                    <option value="">Select floor</option>
+                    {MEMBER_FLOORS.map((floor) => <option key={floor} value={floor}>{floor}</option>)}
+                  </select>
+                  <FieldError id={memberForm.errorId('floor')} message={memberForm.errors.floor} />
                 </div>
+
               </form>
             </div>
             

@@ -23,6 +23,23 @@ def valid_member(**overrides):
 
 
 class MemberSchemaTests(unittest.TestCase):
+    def test_a_member_can_be_created_without_either_date(self):
+        # The Add Member form no longer asks for them; both columns are nullable.
+        values = valid_member()
+        del values["date_of_joining"], values["date_of_birth"]
+        member = MemberCreate(**values)
+        self.assertIsNone(member.date_of_joining)
+        self.assertIsNone(member.date_of_birth)
+        self.assertIsNone(member.model_dump()["date_of_joining"])
+
+    def test_a_date_that_is_given_must_still_not_be_in_the_future(self):
+        from datetime import timedelta
+        future = date.today() + timedelta(days=1)
+        with self.assertRaises(ValueError):
+            MemberCreate(**valid_member(date_of_joining=future))
+        with self.assertRaises(ValueError):
+            MemberCreate(**valid_member(date_of_birth=future))
+
     def test_member_input_is_normalized(self):
         member = MemberCreate(**valid_member())
         self.assertEqual(member.name, "Ada Lovelace")
@@ -41,6 +58,16 @@ class MemberSchemaTests(unittest.TestCase):
             MemberCreate(**valid_member(role="manager"))
         with self.assertRaises(ValidationError):
             MemberCreate(**valid_member(date_of_birth=date.today() + timedelta(days=1)))
+
+    def test_member_floor_accepts_only_the_supported_floors(self):
+        for floor in ("3rd floor", "4th floor", "6th floor"):
+            self.assertEqual(MemberCreate(**valid_member(floor=floor)).floor.value, floor)
+        with self.assertRaises(ValidationError):
+            MemberCreate(**valid_member(floor="5th floor"))
+
+    def test_floor_can_be_updated_or_cleared(self):
+        self.assertEqual(MemberUpdate(floor="4th floor").floor.value, "4th floor")
+        self.assertIsNone(MemberUpdate(floor=None).floor)
 
 
 class MemberUpdateTrackingSettingsTests(unittest.TestCase):
@@ -87,5 +114,7 @@ class MemberCreationDefaultsTests(unittest.TestCase):
             "email": "new@example.com", "name": "New Member",
             "designation": "Engineer", "role": "employee", "status": "active",
             "date_of_joining": date(2026, 1, 1), "date_of_birth": date(1990, 1, 1),
+            "floor": "6th floor",
         })
         self.assertEqual(member.capture_frequency, 10)
+        self.assertEqual(member.floor, "6th floor")

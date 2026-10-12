@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 
 from .rules import (
     ALLOWED_URL_SCHEMES,
+    CODE_SNIPPET_PATTERNS,
     CONTROL_CHARACTER_PATTERN,
     DATE_PATTERN,
     DESCRIPTION_MAX_LENGTH,
@@ -117,6 +118,16 @@ def find_structured_content(value: str) -> Optional[str]:
     return None
 
 
+def contains_code_snippet(value: str) -> bool:
+    """True when *value* contains code even though it carries no markup tag.
+
+    The stricter, opt-in companion to :func:`find_structured_content`; see the
+    note above ``CODE_SNIPPET_SOURCES`` in ``rules`` for why it is not folded
+    into it.
+    """
+    return any(pattern.search(value) for pattern in CODE_SNIPPET_PATTERNS)
+
+
 def contains_letter_or_digit(value: str) -> bool:
     """True if *value* holds at least one letter or digit, in any script.
 
@@ -212,12 +223,18 @@ def validate_description(
     field_label: str = "Description",
     max_length: int = DESCRIPTION_MAX_LENGTH,
     required: bool = False,
+    reject_code: bool = False,
 ) -> Optional[str]:
     """Multi-line prose: descriptions, reasons, comments, feedback.
 
     Line breaks, punctuation, digits and Unicode are all fine — this is where
     people write sentences, and over-restricting it makes the product hostile.
     The limits are length and structure only.
+
+    *reject_code* additionally refuses code that carries no markup tag (jQuery,
+    JavaScript, CSS rule blocks, ...). It is for the fields that must be plain
+    sentences -- a project's or a task's description -- and is off elsewhere,
+    where pasting a snippet into a bug report is the point.
     """
     if value is None:
         if required:
@@ -236,6 +253,10 @@ def validate_description(
             f"{field_label} must be at most {max_length} characters."
         )
     ensure_plain_text(normalized, field_label=field_label)
+    if reject_code and contains_code_snippet(normalized):
+        raise InputValidationError(
+            f"{field_label}: Code is not allowed here. Please describe it in plain text."
+        )
     require_meaningful_content(normalized, field_label=field_label)
     return normalized
 
@@ -741,6 +762,7 @@ __all__ = [
     "require_meaningful_content",
     "contains_letter_or_digit",
     "validate_name",
+    "contains_code_snippet",
     "validate_description",
     "validate_plain_text",
     "validate_search_term",

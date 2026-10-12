@@ -173,6 +173,34 @@ Two deliberate exclusions:
   it is alphanumeric. Accepted knowingly: for a project name or a task
   description, refusing is the right answer far more often than not.
 
+### Descriptions that must be prose: `reject_code`
+
+A project's description and a task's description are read by other people, in
+other tools, and are never code. They use `OptionalPlainDescription` (backend),
+`validate_description(..., reject_code=True)` (desktop) and
+`{ rule: 'description', rejectCode: true }` (frontend). It is `DESCRIPTION`
+plus one more check: **code that carries no markup tag** is refused too.
+
+`find_structured_content` only sees `<tag>`s, `javascript:` links, event
+handlers, template wrappers and encoded entities. It does not see
+`$('#a').hide()`, `alert(document.cookie)`, `body { color: red; }`,
+`<?php`, `%3Cscript%3E` or `' OR 1=1 --` — none of which has a tag. The extra
+check looks for the *shape* of code, never a bare word, so `the alert system`,
+`Cost is $5 (approx)`, `open document.pdf`, `5 < 10` and `a -> b` all still pass.
+The patterns live in `CODE_SNIPPET_SOURCES` in each `rules` file and are compared
+verbatim across the three layers (`desktop/tests/test_validation_framework.py`).
+
+It is opt-in on purpose. Feedback, manual-time notes and screenshot messages keep
+plain `DESCRIPTION`: a bug report may quote `$(".x").hide()`, and refusing it
+there would make those fields unusable for their job. Use `reject_code` only on a
+field that must be sentences.
+
+What it does not do: it is not a security boundary. React and Qt are what keep a
+stored value inert (React escapes; the desktop shows a description in a
+`PlainText` label), and rows stored before this rule are never re-validated on
+read. A legacy row with markup displays as the literal text; editing that row
+asks for it to be rewritten, like any other refused value.
+
 ### Reject, don't scrub
 
 Invalid input is refused. We do not strip the dangerous part and carry on.

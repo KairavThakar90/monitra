@@ -17,6 +17,7 @@ entry has already been queued for sync.
 from __future__ import annotations
 
 import importlib.util
+import re
 from decimal import Decimal
 from pathlib import Path
 
@@ -516,6 +517,115 @@ def test_desktop_patterns_match_the_backend(pattern_name):
         getattr(desktop_rules, pattern_name).pattern
         == getattr(backend_rules, pattern_name).pattern
     ), f"{pattern_name} differs between desktop and backend"
+
+
+def test_code_snippet_sources_match_the_backend():
+    """The opt-in "no code" check is the same list, in the same order, on both sides.
+
+    Compared by source text *and* case flag, so an entry added, reworded or
+    reordered on one side only fails here -- not as a task the desktop saves
+    that the server then refuses, or the reverse.
+    """
+    from core.validation import rules as desktop_rules
+
+    backend_rules = _load_backend_rules()
+    assert desktop_rules.CODE_SNIPPET_SOURCES == backend_rules.CODE_SNIPPET_SOURCES
+    assert [
+        (p.pattern, bool(p.flags & re.IGNORECASE)) for p in desktop_rules.CODE_SNIPPET_PATTERNS
+    ] == list(backend_rules.CODE_SNIPPET_SOURCES)
+
+
+def test_code_snippet_sources_match_the_frontend():
+    """`frontend/src/validation/rules.ts` carries the same list, verbatim.
+
+    Read as text: the sources are written with `String.raw` so they are
+    character-for-character the Python ones, and the browser's refusals and the
+    server's cannot drift apart.
+    """
+    backend_rules = _load_backend_rules()
+    frontend_rules = (
+        Path(__file__).resolve().parents[2] / "frontend" / "src" / "validation" / "rules.ts"
+    )
+    if not frontend_rules.is_file():
+        pytest.skip("frontend/ is not present in this checkout")
+    text = frontend_rules.read_text(encoding="utf-8")
+    block = text.split("export const CODE_SNIPPET_SOURCES", 1)[1].split("];", 1)[0]
+    found = [
+        (source, flag == "true")
+        for source, flag in re.findall(r"\[String\.raw`([^`]*)`,\s*(true|false)\]", block)
+    ]
+    assert found == list(backend_rules.CODE_SNIPPET_SOURCES)
+
+
+# ---------------------------------------------------------------------------
+# Plain-text descriptions (a project's or a task's): no code, tag or not
+# ---------------------------------------------------------------------------
+
+CODE_PAYLOADS = [
+    "<script>alert(1)</script>",
+    "<style>body{display:none}</style>",
+    "<img src=x onerror=alert(1)>",
+    "<!-- hidden -->",
+    "&lt;script&gt;alert(1)&lt;/script&gt;",
+    "%3Cscript%3Ealert(1)%3C/script%3E",
+    "javascript:alert(1)",
+    "alert('xss')",
+    "alert(document.cookie)",
+    "eval('1+1')",
+    "document.write('x')",
+    "fetch('http://evil.example/steal')",
+    "function foo() { return 1; }",
+    "const run = () => { go(); }",
+    "var a = 1; var b = 2;",
+    "console.log('hi')",
+    "$('#btn').click(function(){ alert(1) })",
+    "$(document).ready(function() { x() })",
+    "jQuery('#a').hide()",
+    "body { color: red; }",
+    ".btn { display: none; }",
+    "@import url(x);",
+    "<?php echo 1; ?>",
+    "' OR 1=1 --",
+    "SELECT * FROM users; DROP TABLE users;",
+    "{{7*7}}",
+]
+
+PROSE = [
+    "Write the Q3 report",
+    "Fix login bug: user can't sign in (see #123)",
+    "Call the client at 5pm & confirm the budget",
+    "5 < 10 and 10 > 5",
+    "Cost is $5 (approx) or $(10)",
+    "Update the colour scheme: red; blue; green",
+    "Use function: sum(a, b) of values",
+    "Line one\nLine two",
+    "日本語のタスク説明",
+    "Задача: подготовить отчёт",
+    "Fix the alert system (the alarm notification)",
+    "Open document.pdf and send it to O'Brien & Sons",
+    "Plan -> Build -> Ship",
+]
+
+
+@pytest.mark.parametrize("payload", CODE_PAYLOADS)
+def test_code_is_refused_when_the_field_asks_for_plain_text(payload):
+    result = validate_description(payload, field_label="Description", reject_code=True)
+    assert not result.ok
+    assert result.error.startswith("Description:")
+
+
+@pytest.mark.parametrize("sentence", PROSE)
+def test_prose_is_accepted_unchanged_when_the_field_asks_for_plain_text(sentence):
+    result = validate_description(sentence, reject_code=True)
+    assert result.ok and result.value == sentence
+
+
+def test_other_description_fields_are_not_made_stricter():
+    """A bug report or a manual-time note may quote a snippet; only the fields
+    that opt in refuse it, exactly as on the backend."""
+    quoted = "The button breaks when I run $('.x').hide() in the console"
+    assert validate_description(quoted).ok
+    assert not validate_description(quoted, reject_code=True).ok
 
 
 # ---------------------------------------------------------------------------

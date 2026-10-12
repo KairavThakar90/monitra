@@ -1,7 +1,7 @@
 from pydantic import BaseModel, ConfigDict
 from datetime import date, datetime
 from typing import Optional
-from app.core.validation import Name, OptionalDescription, OptionalName
+from app.core.validation import Name, OptionalName, OptionalPlainDescription
 
 
 class ProjectBase(BaseModel):
@@ -24,14 +24,14 @@ class ProjectBase(BaseModel):
 
 class ProjectCreate(BaseModel):
     project_name: Name
-    description: OptionalDescription = None
+    description: OptionalPlainDescription = None
     start_date: Optional[date] = None
     is_billable: bool = True
 
 
 class ProjectUpdate(BaseModel):
     project_name: OptionalName = None
-    description: OptionalDescription = None
+    description: OptionalPlainDescription = None
     status: Optional[str] = None
     start_date: Optional[date] = None
     completed_at: Optional[datetime] = None

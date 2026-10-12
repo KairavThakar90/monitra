@@ -90,6 +90,7 @@ from .types import (
     IdentifierList,
     Name,
     OptionalDescription,
+    OptionalPlainDescription,
     OptionalIdempotencyKey,
     OptionalIdentifier,
     OptionalName,
@@ -118,6 +119,7 @@ from .types import (
 )
 from .validators import (
     InputValidationError,
+    contains_code_snippet,
     contains_letter_or_digit,
     ensure_plain_text,
     find_structured_content,
@@ -202,6 +204,7 @@ __all__ = [
     "ensure_plain_text",
     "reject_control_characters",
     "require_meaningful_content",
+    "contains_code_snippet",
     "contains_letter_or_digit",
     "find_structured_content",
     "looks_like_json_document",
@@ -210,6 +213,7 @@ __all__ = [
     "OptionalName",
     "Description",
     "OptionalDescription",
+    "OptionalPlainDescription",
     "PlainText",
     "OptionalPlainText",
     "Email",

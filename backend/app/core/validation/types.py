@@ -78,11 +78,20 @@ def description_field(
     label: str = "Description",
     max_length: int = DESCRIPTION_MAX_LENGTH,
     required: bool = False,
+    reject_code: bool = False,
 ) -> BeforeValidator:
-    """Multi-line prose with a custom limit or error label."""
+    """Multi-line prose with a custom limit or error label.
+
+    ``reject_code=True`` also refuses tagless code (jQuery, JavaScript, CSS);
+    see :data:`PlainDescription`.
+    """
     return BeforeValidator(
         lambda value: v.validate_description(
-            value, field_label=label, max_length=max_length, required=required
+            value,
+            field_label=label,
+            max_length=max_length,
+            required=required,
+            reject_code=reject_code,
         )
     )
 
@@ -200,6 +209,13 @@ Description = Annotated[str, description_field(required=True)]
 #: Optional multi-line prose. Blank input normalises to ``None``.
 OptionalDescription = Annotated[Optional[str], description_field()]
 
+#: A project's or a task's description: ``OptionalDescription``, and additionally
+#: no code -- not HTML, and not jQuery, JavaScript, CSS or SQL either. The only
+#: difference from ``OptionalDescription`` is that stricter content check, so
+#: feedback, notes and screenshot messages (where a pasted snippet is the point)
+#: keep using the plain one.
+OptionalPlainDescription = Annotated[Optional[str], description_field(reject_code=True)]
+
 #: Required single-line free text, at most 255 characters.
 PlainText = Annotated[str, plain_text_field(required=True)]
 
@@ -289,6 +305,7 @@ __all__ = [
     "OptionalName",
     "Description",
     "OptionalDescription",
+    "OptionalPlainDescription",
     "PlainText",
     "OptionalPlainText",
     "Email",

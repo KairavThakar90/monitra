@@ -18,6 +18,7 @@
 
 import {
   ALLOWED_URL_SCHEMES,
+  CODE_SNIPPET_PATTERNS,
   CONTROL_CHARACTER_PATTERN,
   DATE_PATTERN,
   DESCRIPTION_MAX_LENGTH,
@@ -99,6 +100,17 @@ export function findStructuredContent(value: string): string | null {
 }
 
 /**
+ * True when `value` contains code even though it carries no markup tag — a
+ * jQuery call, a bare `alert(document.cookie)`, a CSS rule block.
+ *
+ * The stricter, opt-in companion to `findStructuredContent`; see the note above
+ * `CODE_SNIPPET_SOURCES` in `./rules` for why it is not folded into it.
+ */
+export function containsCodeSnippet(value: string): boolean {
+  return CODE_SNIPPET_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+/**
  * Return an error if `raw` contains a control character other than tab/newline.
  *
  * This runs on the value **as submitted**, before any normalisation. That
@@ -163,6 +175,13 @@ export type TextOptions = {
   maxLength?: number;
   minLength?: number;
   required?: boolean;
+  /**
+   * `validateDescription` only: also refuse code that carries no markup tag
+   * (jQuery, JavaScript, CSS ...). For a project's or a task's description; off
+   * elsewhere, because the backend applies the same switch to the same fields
+   * and a client must never be stricter than the backend.
+   */
+  rejectCode?: boolean;
 };
 
 /**
@@ -223,6 +242,9 @@ export function validateDescription(
   }
   const structural = ensurePlainText(normalized, label);
   if (structural !== null) return fail(structural);
+  if (options?.rejectCode === true && containsCodeSnippet(normalized)) {
+    return fail(`${label}: Code is not allowed here. Please describe it in plain text.`);
+  }
   return ok(normalized);
 }
 

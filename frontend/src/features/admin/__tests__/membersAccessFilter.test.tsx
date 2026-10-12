@@ -60,6 +60,7 @@ type Row = ReturnType<typeof row>;
 const row = (id: number, name: string, can_login: boolean, can_add_tasks: boolean) => ({
   id, name, email: `${name.toLowerCase()}@example.invalid`, role: 'employee', status: 'active',
   date_of_joining: '2026-01-01', date_of_birth: '1990-01-01', designation: 'Dev',
+  floor: id === 11 ? '3rd floor' : id === 12 ? '4th floor' : id === 13 ? '6th floor' : null,
   idle_enabled: true, idle_minutes: 5, capture_frequency: 10, can_login, can_add_tasks,
 });
 
@@ -113,8 +114,29 @@ describe('AdminMembers Add Task / Login filters', () => {
     await settle();
   };
 
+  const pickFloor = async (value: string) => {
+    const select = container.querySelector('select[aria-label="Filter by floor"]') as HTMLSelectElement;
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(select, value);
+    await act(async () => {
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await settle();
+  };
+  const pickFormFloor = async (value: string) => {
+    const select = container.querySelector('select[aria-label="Member floor"]') as HTMLSelectElement;
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(select, value);
+    await act(async () => select.dispatchEvent(new Event('change', { bubbles: true })));
+  };
+  const submitForm = async () => {
+    await act(async () => {
+      container.querySelector('form#member-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await settle();
+  };
+
   const select = (label: 'Add Task' | 'Login') =>
     container.querySelector(`select[aria-label="Filter by ${label} access"]`) as HTMLSelectElement | null;
+  const floorSelect = () => container.querySelector('select[aria-label="Filter by floor"]') as HTMLSelectElement | null;
   // The member's name cell (the email under it is not `font-bold`).
   const names = () =>
     Array.from(container.querySelectorAll('tbody tr')).map((tr) => tr.querySelector('.font-bold.truncate')?.textContent ?? '');
@@ -148,13 +170,27 @@ describe('AdminMembers Add Task / Login filters', () => {
         });
         return json({ updated, failed: [] });
       }
+      if (method === 'POST' && url.pathname.endsWith('/members')) {
+        const body = JSON.parse(request ? await request.text() : String(init?.body));
+        const created = { ...row(15, String(body.name), true, true), ...body, id: 15, floor: body.floor ?? null };
+        directory.push(created);
+        return json(created, 201);
+      }
+      if (method === 'PATCH' && /\/members\/\d+$/.test(url.pathname)) {
+        const body = JSON.parse(request ? await request.text() : String(init?.body));
+        const id = Number(url.pathname.split('/').pop());
+        const member = directory.find((item) => item.id === id)!;
+        Object.assign(member, body);
+        return json({ ...member });
+      }
       if (url.pathname.endsWith('/members') && method === 'GET') {
         listQueries.push(url.searchParams);
         const wants = (param: string, value: boolean) => {
           const asked = url.searchParams.get(param);
           return asked === null || (asked === 'true') === value;
         };
-        const items = directory.filter((m) => wants('can_login', m.can_login) && wants('can_add_tasks', m.can_add_tasks));
+        const floor = url.searchParams.get('floor');
+        const items = directory.filter((m) => wants('can_login', m.can_login) && wants('can_add_tasks', m.can_add_tasks) && (!floor || m.floor === floor));
         const limit = Number(url.searchParams.get('limit') ?? 20);
         return json({ items: items.slice(0, limit), page: 1, limit, total: items.length, pages: 1 });
       }
@@ -179,6 +215,49 @@ describe('AdminMembers Add Task / Login filters', () => {
       expect(Array.from(select(label)!.options).map((o) => o.textContent)).toEqual(['All', 'Allowed', 'Not allowed']);
       expect(select(label)!.value).toBe('All');
     }
+  });
+
+  it('filters by floor and returns to all floors', async () => {
+    await render();
+    expect(Array.from(floorSelect()!.options).map((option) => option.textContent)).toEqual([
+      'All Floors', '3rd floor', '4th floor', '6th floor',
+    ]);
+
+    await pickFloor('4th floor');
+    expect(lastList().get('floor')).toBe('4th floor');
+    expect(names()).toEqual(['Bob']);
+
+    await pickFloor('All');
+    expect(listQueries[0].has('floor')).toBe(false);
+    expect(names()).toEqual(['Alice', 'Bob', 'Cara', 'Dan']);
+  });
+
+  it('saves floor assignments when creating and editing a member', async () => {
+    await render();
+    await click(Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Add Member'))!);
+
+    const setInput = async (selector: string, value: string) => {
+      const input = container.querySelector(selector) as HTMLInputElement;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+      await act(async () => input.dispatchEvent(new Event('input', { bubbles: true })));
+    };
+
+    await setInput('input[placeholder="E.g. John Doe"]', 'New Member');
+    await setInput('input[type="email"]', 'new-member@example.invalid');
+    await setInput('input[placeholder="e.g. Full Stack Developer"]', 'Developer');
+    // The form no longer asks for a date of joining or of birth.
+    expect(container.querySelector('#member-form input[type="date"]')).toBeNull();
+    await pickFormFloor('6th floor');
+    await submitForm();
+
+    expect(directory.find((member) => member.id === 15)?.floor).toBe('6th floor');
+
+    await click(Array.from(rowOf('Alice')!.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'Edit')!);
+    const editFloor = container.querySelector('select[aria-label="Member floor"]') as HTMLSelectElement;
+    expect(editFloor.value).toBe('3rd floor');
+    await pickFormFloor('4th floor');
+    await submitForm();
+    expect(directory.find((member) => member.id === 11)?.floor).toBe('4th floor');
   });
 
   it('sends no access filter until one is chosen, and lists everyone', async () => {

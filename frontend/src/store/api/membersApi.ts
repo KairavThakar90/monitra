@@ -2,6 +2,8 @@ import { baseApi } from './baseApi';
 import { patchEveryCachedQuery } from './optimistic';
 import { ENDPOINTS } from '../../api/endpoints';
 
+export type MemberFloor = '3rd floor' | '4th floor' | '6th floor';
+
 export interface Member {
   id: number;
   name: string;
@@ -11,6 +13,7 @@ export interface Member {
   date_of_joining: string | null;
   date_of_birth: string | null;
   designation: string;
+  floor?: MemberFloor | null;
   idle_enabled?: boolean;
   idle_minutes?: number;
   capture_frequency?: number;
@@ -53,6 +56,7 @@ export type GetMembersArgs = {
   can_login?: AccessFilter;
   can_add_tasks?: AccessFilter;
   can_add_nonbillable_tasks?: AccessFilter;
+  floor?: MemberFloor | 'All';
 };
 
 export interface MemberAccessArgs {
@@ -109,6 +113,7 @@ const matchesFilters = (member: Member, arg: GetMembersArgs | undefined) => {
   if (!matchesAccess(member.can_login, arg?.can_login)) return false;
   if (!matchesAccess(member.can_add_tasks, arg?.can_add_tasks)) return false;
   if (!matchesGrant(member.can_add_nonbillable_tasks, arg?.can_add_nonbillable_tasks)) return false;
+  if (arg?.floor && arg.floor !== 'All' && member.floor !== arg.floor) return false;
   return true;
 };
 
@@ -203,6 +208,7 @@ export const membersApi = baseApi.injectEndpoints({
         else if (params.can_add_tasks === 'not_allowed') queryParams.append('can_add_tasks', 'false');
         if (params.can_add_nonbillable_tasks === 'allowed') queryParams.append('can_add_nonbillable_tasks', 'true');
         else if (params.can_add_nonbillable_tasks === 'not_allowed') queryParams.append('can_add_nonbillable_tasks', 'false');
+        if (params.floor && params.floor !== 'All') queryParams.append('floor', params.floor);
 
         return { url: `${ENDPOINTS.MEMBERS.GET_ALL}?${queryParams.toString()}` };
       },
@@ -257,7 +263,7 @@ export const membersApi = baseApi.injectEndpoints({
       query: ({ id, body }) => ({ url: ENDPOINTS.MEMBERS.UPDATE(id), method: 'PATCH', body }),
       // Team summaries count members by role/status, so they are marked stale
       // and refresh the next time a Teams screen is opened — no request now.
-      invalidatesTags: [{ type: 'Team', id: 'LIST' }, ACCESS_SUMMARY_TAG],
+      invalidatesTags: [{ type: 'Member', id: 'LIST' }, { type: 'Team', id: 'LIST' }, ACCESS_SUMMARY_TAG],
       async onQueryStarted({ id, body }, { dispatch, getState, queryFulfilled }) {
         const optimistic = patchEveryCachedQuery({ dispatch, getState }, 'getMembers', (draft, arg) => {
           const index = draft.items?.findIndex((m: Member) => m.id === id) ?? -1;

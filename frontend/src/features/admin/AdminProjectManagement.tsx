@@ -593,7 +593,7 @@ export const AdminProjectManagement: React.FC = () => {
    */
   const projectForm = useFormValidation({
     name: { rule: 'name', label: 'Project name', required: true },
-    description: { rule: 'description', label: 'Description' },
+    description: { rule: 'description', label: 'Description', rejectCode: true },
     // Optional, matching the backend: `ProjectCreate.deadline` is
     // `Optional[date]` (the column is nullable and the app already renders
     // "No Deadline"). The rule still validates the format of a date that
