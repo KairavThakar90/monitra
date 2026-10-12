@@ -62,11 +62,30 @@ _TILE = {ICON_FULL: (48, 24, 14, 14), ICON_SMALL: (24, 14, 8, 10)}
 #: The small icon's chrome: the card's side margins, the tile and its gap.
 _CARD_CHROME_WIDTH_SMALL = 16 + 18 + _TILE[ICON_SMALL][0] + _TILE[ICON_SMALL][3]
 
-#: Room for the card's *value*. Measured, not guessed: "01:02:05" in the
-#: 17pt mono face the total-time card uses is 184px wide. The sub-line and the
-#: caption may be shortened when a card is narrow; the number the card exists
-#: to show may not, so this is the card's floor.
+#: The text room a card is *given* before it earns the full icon tile. This is a
+#: design comfort figure, not what the card needs: the full tile (and the
+#: 1226px threshold built on it) is only used where every card has this much.
+#:
+#: It began as the clock's measured width, and that measurement was wrong. The
+#: card labels are set to 17pt/18pt, but the application stylesheet pins
+#: `QWidget { font-size: 13px }`, which wins, so in the running app the clock
+#: "03:42:10" is 54px wide (and a 17pt Consolas one would be 104px, not 184).
+#: Used as a *floor* it made every card reserve three and a half times the
+#: room its value needs, which is what wrapped the cards 2x2 at 150% scaling,
+#: where the content area is 934px. The compact forms therefore use the real
+#: needs below instead.
 _CARD_VALUE_WIDTH = 190
+
+#: What each card's text actually needs to show without eliding anything that
+#: must not be cut: its caption, the widest thing in it, at the application's
+#: 13px Segoe UI, plus a margin of a few pixels for other fonts. Measured:
+#: "PROJECT STATUS" 117px, "PROJECT HOURS" 115px, "TODAY'S ACTIVITY" 131px (the
+#: clock, the status and the percentage are all narrower than their captions).
+#: The sub-lines and values may elide, as they always have; a card narrower than
+#: its floor never happens, so a caption is never cut.
+_COMPACT_TEXT_STATUS = 124
+_COMPACT_TEXT_HOURS = 122
+_COMPACT_TEXT_ACTIVITY = 138
 
 #: Gap between cards, in both directions.
 _CARD_SPACING = 14
@@ -74,10 +93,23 @@ _CARD_SPACING = 14
 #: Gap between a card's text and a trailing action.
 _ACTION_SPACING = 12
 
+#: The ACTIVE TASK card has the Break In / Break Out button beside its text. Its
+#: compact floor is the task name's room (96px: about "DP-72 AxonPept..." with
+#: the full name on hover), the gap, and the button. The gap is the same in every
+#: icon form (see `_apply_tile`).
+_ACTIVE_NAME_MIN_WIDTH = 96
+_ACTION_TOTAL_GAP = _TILE[ICON_FULL][3] + _ACTION_SPACING
+_COMPACT_TEXT_ACTIVE = _ACTIVE_NAME_MIN_WIDTH + _ACTION_TOTAL_GAP + BREAK_BUTTON_WIDTH
+
+#: The four cards' compact text widths, in their order on screen.
+_COMPACT_TEXT_WIDTHS = (
+    _COMPACT_TEXT_STATUS, _COMPACT_TEXT_HOURS, _COMPACT_TEXT_ACTIVE, _COMPACT_TEXT_ACTIVITY,
+)
+
 #: How much wider the ACTIVE TASK card's floor is than the others', for its
-#: Break In / Break Out button. Deliberately less than the button's own
-#: 108px: the button is paid for partly by the card and partly by the task
-#: name, which elides. A task name shortens gracefully and a clock does not,
+#: Break In / Break Out button, *in the full form*. Deliberately less than the
+#: button's own 96px plus its gap: the button is paid for partly by the card and
+#: partly by the task name, which elides. A task name shortens gracefully and a clock does not,
 #: and adding the button's whole width to the floor would have moved the
 #: one-row threshold past what a 1600px-wide window has left for content,
 #: wrapping the cards two-by-two on a screen that showed them in one row
@@ -157,9 +189,13 @@ class StatCard(QFrame):
         icon_name: str,
         tile: str,
         parent: Optional[QWidget] = None,
+        compact_text_width: int = _CARD_VALUE_WIDTH,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("StatCard")
+        #: The text room this card needs in the small-icon and no-icon forms
+        #: (see `_COMPACT_TEXT_*`). The full form keeps `_CARD_VALUE_WIDTH`.
+        self._compact_text_width = compact_text_width
         self._tile_key = tile
         self._accent = STAT_TILE_GRADIENTS[tile][2]
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -289,12 +325,10 @@ class StatCard(QFrame):
             state = ICON_NONE
         elif state is False:
             state = ICON_FULL
-        chrome = {
-            ICON_FULL: _CARD_CHROME_WIDTH,
-            ICON_SMALL: _CARD_CHROME_WIDTH_SMALL,
-            ICON_NONE: _CARD_CHROME_WIDTH_COMPACT,
-        }[state]
-        return chrome + _CARD_VALUE_WIDTH + self._extra_min_width
+        if state == ICON_FULL:
+            return _CARD_CHROME_WIDTH + _CARD_VALUE_WIDTH + self._extra_min_width
+        chrome = _CARD_CHROME_WIDTH_SMALL if state == ICON_SMALL else _CARD_CHROME_WIDTH_COMPACT
+        return chrome + self._compact_text_width
 
     def _apply_tile(self, state: str) -> None:
         """Size, glyph, shape and spacing of the icon for `state`."""
@@ -325,13 +359,16 @@ class StatCard(QFrame):
     def stretch_weight(self) -> int:
         """What this card counts for when the row shares out spare width.
 
-        The small icon is only there because it *fits*; it must not change how
-        wide the cards are. So in that state the weight is the no-icon floor,
-        exactly what the same row used before the small icon existed, and the
-        four cards keep the widths they had.
+        The weights are the cards' *designed* proportions and nothing else:
+        the full form's floor in the full form, and the no-icon form's old floor
+        (`_CARD_VALUE_WIDTH` of text) in both compact forms. The compact floors
+        are lower than that now, but they only say how narrow a card may get;
+        the width a card is given when there is room is still shared in these
+        proportions, so every layout that fit before looks exactly as it did.
         """
-        state = ICON_NONE if self._icon_state == ICON_SMALL else self._icon_state
-        return self.minimum_width_for(state)
+        if self._icon_state == ICON_FULL:
+            return self.minimum_width_for(ICON_FULL)
+        return _CARD_CHROME_WIDTH_COMPACT + _CARD_VALUE_WIDTH + self._extra_min_width
 
     def _apply_floor(self) -> None:
         self.setMinimumWidth(self.minimum_width_for(self._icon_state))
@@ -414,14 +451,12 @@ class StatCardsRow(QWidget):
     #: the cards stay on one row and lose only the gradient tile; at
     #: `SINGLE_ROW_MINIMUM_WIDTH` and wider they are exactly as designed.
     COMPACT_ICON_ROW_MINIMUM_WIDTH = (
-        (_CARD_CHROME_WIDTH_SMALL + _CARD_VALUE_WIDTH) * 4
-        + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING * 3
+        sum(_CARD_CHROME_WIDTH_SMALL + t for t in _COMPACT_TEXT_WIDTHS) + _CARD_SPACING * 3
     )
     #: The width at or above which all four fit on one line with no icon at all:
     #: the last resort, used where even the small icon would not fit.
     COMPACT_ROW_MINIMUM_WIDTH = (
-        (_CARD_CHROME_WIDTH_COMPACT + _CARD_VALUE_WIDTH) * 4
-        + ACTIVE_CARD_EXTRA_WIDTH + _CARD_SPACING * 3
+        sum(_CARD_CHROME_WIDTH_COMPACT + t for t in _COMPACT_TEXT_WIDTHS) + _CARD_SPACING * 3
     )
     #: The width at or above which two fit on a line -- the widget's own floor.
     #: Unchanged by the fourth card: at two columns the ACTIVE TASK card is
@@ -451,10 +486,14 @@ class StatCardsRow(QWidget):
         self._grid.setSizeConstraint(QGridLayout.SizeConstraint.SetNoConstraint)
         self.setMinimumWidth(self.TWO_COLUMN_MINIMUM_WIDTH)
 
-        self.status_card = StatCard("Project status", "task_alt", "blue", self)
-        self.total_card = StatCard("Project hours", "timer", "violet", self)
-        self.active_card = StatCard("Active task", "trending_up", "green", self)
-        self.activity_card = StatCard("Today's activity", "bolt", "amber", self)
+        self.status_card = StatCard(
+            "Project status", "task_alt", "blue", self, _COMPACT_TEXT_STATUS)
+        self.total_card = StatCard(
+            "Project hours", "timer", "violet", self, _COMPACT_TEXT_HOURS)
+        self.active_card = StatCard(
+            "Active task", "trending_up", "green", self, _COMPACT_TEXT_ACTIVE)
+        self.activity_card = StatCard(
+            "Today's activity", "bolt", "amber", self, _COMPACT_TEXT_ACTIVITY)
 
         self._cards = (self.status_card, self.total_card, self.active_card, self.activity_card)
 

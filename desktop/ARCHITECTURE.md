@@ -1420,7 +1420,7 @@ area is invisible; below it, a scrollbar appears instead of a clipped window.
 | What | Rule | Where |
 |---|---|---|
 | Screenshot columns | `screenshot_columns(width)`: as many as fit at >= 220px a card, 1..4, equal stretch; unused columns stretch 0 | `ui/activity_section.py` |
-| Summary cards | four cards on one row in three icon forms, chosen by the row's width alone (never by the scale factor): the full 48px tile from `SINGLE_ROW_MINIMUM_WIDTH` (1226px), a 24px tile from `COMPACT_ICON_ROW_MINIMUM_WIDTH` (1114px), no icon from `COMPACT_ROW_MINIMUM_WIDTH` (978px); 2x2 of full cards below that. Each threshold is the sum of the four cards' floors in that form | `ui/stat_cards.py` |
+| Summary cards | four cards on one row in three icon forms, chosen by the row's width alone (never by the scale factor): the full 48px tile from `SINGLE_ROW_MINIMUM_WIDTH` (1226px), a 24px tile from `COMPACT_ICON_ROW_MINIMUM_WIDTH` (916px), no icon from `COMPACT_ROW_MINIMUM_WIDTH` (780px); 2x2 of full cards below that. The compact thresholds are the sum of the four cards' *real* needs (caption width; for Active Task, 96px of name room plus the Break In button), not of a guessed value width | `ui/stat_cards.py` |
 | Task / Activity split | opens at 60/40 (`TASK_SECTION_SHARE`/`ACTIVITY_SECTION_SHARE`); the user drags it between the task list's 200px floor and Activity's *header alone*; a chevron in the Activity header does the same by click | `ui/activity_splitter.py`, `ui/dashboard_window.py` |
 | Top bar | compact (icon-only Add Task/Request, short date, no Ctrl+K chip) below the full form's minimum width | `ui/topbar.py` |
 | Task name column | the one stretch column; its *applied* width gives way (to 160px) only while the section is narrower than the model needs | `ui/task_table.py` |
@@ -1444,17 +1444,35 @@ in its own cell, order is whatever the data gives, and a state panel already sho
 is left alone. Loading, empty and loaded all have the same minimum height
 (`SCREENSHOT_STATE_MIN_HEIGHT`).
 
-### The summary-card icon
+### The summary cards: what decides how many fit
 
-The icon is the first thing a card gives up when the row is short of room, and it gives it
-up in steps: the full 48px tile, then the same tile at 24px (glyph 14px, gap 10px), then
-none. The small form exists because 125% scaling on a 1920x1080 screen leaves the content
-area about 1196px wide, 30px short of four full cards, which used to drop the icons
-altogether. The thresholds are sums of the card floors, so the rule is "what fits", not
-"what scale factor". The small icon is centred on the card and the card is a fixed 96px,
-so no text, baseline or card width moves: only the text's left edge shifts by the room the
-icon takes. In the small form the columns are weighted exactly as in the no-icon form
-(`StatCard.stretch_weight`), so the icon never changes how wide the cards are.
+The cards go from four full cards, to four with a small icon, to four with none, to 2x2,
+purely by the width the row is given. Each form's threshold is the sum of the four cards'
+floors in that form.
+
+**The floors are what the cards really need, not a guess.** They used to reserve 190px of
+text room per card, from a comment saying the clock is 184px wide. It is 54px. The labels
+are given 17pt and 18pt fonts in code, but the application stylesheet pins
+`QWidget { font-size: 13px }` and that wins, so in the running app every value is 13px.
+That inflated floor put the one-row threshold at 978px, 44px above the 934px that 150%
+scaling leaves on a 1920x1080 screen, and the cards wrapped 2x2 there. The compact forms
+now use each card's caption width (the widest thing in it: 117, 115 and 131px at 13px
+Segoe UI, plus a few pixels of margin) and, for Active Task, 96px of name room, the gap
+and the button. The *full* form keeps its 190px of comfort, so its 1226px threshold and
+the look at 100% are unchanged.
+
+**The widths do not move.** Spare width is shared in the cards' designed proportions
+(`StatCard.stretch_weight`, which are the old floors) in every form. The compact floors
+only say how narrow a card may get, so every layout that fit before has the same card
+widths as before (measured: 372/371/423/372 at 100%, 276/276/326/276 at 125%).
+
+The small icon is 24px (glyph 14px, gap 10px), centred on a 96px card, so no text or
+baseline moves: only the text's left edge shifts by the room the icon takes. The
+Break In / Break Out button keeps the same distance from the card's edge in every form.
+
+Measured on the real window: 100% -> 1580px of content, full icons; 125% -> 1196px, small
+icons; 150% -> 940px, small icons, one row; 175% and 200% -> 751px and 686px, 2x2 (below
+the 780px that four cards need). The scale factor is never an input.
 
 ### How the content area is divided
 

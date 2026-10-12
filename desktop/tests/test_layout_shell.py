@@ -447,17 +447,19 @@ class TestSummaryCards:
         pump()
 
     def test_the_thresholds_are_ordered_and_derived_from_the_card_floors(self, qapp):
-        from ui.stat_cards import ACTIVE_CARD_EXTRA_WIDTH, StatCardsRow
+        from ui.stat_cards import ICON_FULL, ICON_NONE, ICON_SMALL, StatCardsRow
 
         assert StatCardsRow.TWO_COLUMN_MINIMUM_WIDTH < StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH
-        assert StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH < StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH
+        assert StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH < StatCardsRow.COMPACT_ICON_ROW_MINIMUM_WIDTH
+        assert StatCardsRow.COMPACT_ICON_ROW_MINIMUM_WIDTH < StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH
         row = StatCardsRow()
-        floors = [card.minimum_width_for(True) for card in row._cards]
-        assert sum(floors) + 3 * 14 == StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH
-        floors = [card.minimum_width_for(False) for card in row._cards]
-        assert sum(floors) + 3 * 14 == StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH
-        # The active card is the one that carries the Break In / Break Out button.
-        assert row.active_card.minimum_width_for(True) - row.status_card.minimum_width_for(True) == ACTIVE_CARD_EXTRA_WIDTH
+        for state, threshold in (
+            (ICON_NONE, StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH),
+            (ICON_SMALL, StatCardsRow.COMPACT_ICON_ROW_MINIMUM_WIDTH),
+            (ICON_FULL, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH),
+        ):
+            floors = [card.minimum_width_for(state) for card in row._cards]
+            assert sum(floors) + 3 * 14 == threshold, state
 
     def test_wide_means_four_full_cards_with_their_tiles(self, qapp, pump, row):
         from ui.stat_cards import StatCardsRow
@@ -516,6 +518,10 @@ class TestSummaryCards:
 
     def test_every_value_stays_readable_in_the_compact_form(self, qapp, pump, row):
         from ui.stat_cards import StatCardsRow
+        from ui.styles import APP_QSS
+
+        # As in the running application, whose stylesheet pins the labels' font size.
+        qapp.setStyleSheet(APP_QSS)
 
         row.set_total_seconds(3 * 3600 + 42 * 60 + 10, False)
         row.set_project_status("Active", "#10B981")
@@ -666,7 +672,7 @@ class TestSmallIcon:
         from ui.stat_cards import ICON_FULL, ICON_NONE, ICON_SMALL, StatCardsRow
 
         row = StatCardsRow()
-        spacing, extra = 14, row.active_card.minimum_width_for(ICON_NONE) - row.status_card.minimum_width_for(ICON_NONE)
+        spacing = 14
         for state, threshold in (
             (ICON_FULL, StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH),
             (ICON_SMALL, StatCardsRow.COMPACT_ICON_ROW_MINIMUM_WIDTH),
@@ -676,7 +682,9 @@ class TestSmallIcon:
             assert sum(floors) + 3 * spacing == threshold, state
         assert (StatCardsRow.TWO_COLUMN_MINIMUM_WIDTH < StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH
                 < StatCardsRow.COMPACT_ICON_ROW_MINIMUM_WIDTH < StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH)
-        assert extra == 40, "the active card's Break In / Break Out room is the same in every state"
+        # The full form's floors are unchanged: the 1226px threshold is the one the
+        # design was approved at.
+        assert StatCardsRow.SINGLE_ROW_MINIMUM_WIDTH == 1226
 
     def test_the_small_icon_costs_clearly_less_room_than_the_full_tile(self, qapp):
         from ui.stat_cards import ICON_FULL, ICON_NONE, ICON_SMALL, StatCardsRow
@@ -728,7 +736,8 @@ class TestSmallIcon:
     def test_no_icon_is_the_last_resort(self, qapp, pump, row):
         from ui.stat_cards import ICON_NONE, StatCardsRow
 
-        for width in (StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH, 1026, StatCardsRow.COMPACT_ICON_ROW_MINIMUM_WIDTH - 1):
+        middle = (StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH + StatCardsRow.COMPACT_ICON_ROW_MINIMUM_WIDTH) // 2
+        for width in (StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH, middle, StatCardsRow.COMPACT_ICON_ROW_MINIMUM_WIDTH - 1):
             self._at(row, pump, width)
             assert row.columns() == 4 and row.icon_state() == ICON_NONE, width
             assert not any(card._tile.isVisible() for card in row._cards)
@@ -809,20 +818,34 @@ class TestSmallIcon:
             xs = {c._tile.mapTo(c, QPoint(0, 0)).x() for c in row._cards}
             assert len(xs) == 1, "and starts at the same place in each"
 
-    def test_the_small_icon_does_not_change_how_wide_the_cards_are(self, qapp, pump, row):
-        from ui.stat_cards import ICON_NONE, ICON_SMALL, StatCardsRow
+    def test_the_compact_forms_do_not_change_how_wide_the_cards_are(self, qapp, pump, row):
+        from ui.stat_cards import ICON_FULL, ICON_NONE, ICON_SMALL
 
         self._at(row, pump, 1196)
         assert row.icon_state() == ICON_SMALL
-        for card in row._cards:
-            assert card.stretch_weight() == card.minimum_width_for(ICON_NONE), (
-                "the cards share the width exactly as they did before the small icon existed")
+        # The weights are the designed proportions in every form: the compact floors
+        # say only how narrow a card may *get*, never how wide it is when there is room.
+        weights = [card.stretch_weight() for card in row._cards]
+        full = [card.minimum_width_for(ICON_FULL) - 62 for card in row._cards]   # 96 chrome -> 34
+        assert weights == full, (weights, full)
         small_widths = [c.width() for c in row._cards]
         # The same row, forced to the no-icon form at the same width, shares it identically.
         row._set_icon_state(ICON_NONE)
         row._arrange(4)
         QApplication.processEvents()
         assert [c.width() for c in row._cards] == small_widths
+
+    @pytest.mark.parametrize("width,expected", [
+        (1580, [372, 371, 423, 372]),     # full, as designed
+        (1196, [276, 276, 326, 276]),     # small, exactly as the no-icon form had it
+        (746, [390, 342, 390, 342]),      # 2x2
+    ])
+    def test_card_widths_are_what_they_were_before_the_compact_floors_changed(self, qapp, pump, row, width, expected):
+        # Measured on the real window before the change; the arithmetic is the layout's
+        # (weights and floors), so it holds with any font.
+        self._at(row, pump, width)
+        assert all(abs(c.width() - e) <= 1 for c, e in zip(row._cards, expected)), (
+            [c.width() for c in row._cards], expected)
 
     def test_the_text_clears_the_icon_and_stays_inside_the_card(self, qapp, pump, row):
         from PySide6.QtCore import QPoint
@@ -920,8 +943,8 @@ class TestSmallIconOnTheRealDashboard:
     CASES = [
         ("1920x1080 @100%", (1920, 1000), "full", 4),
         ("1920x1080 @125%", (1536, 816), "small", 4),
-        ("1920x1080 @150%", (1280, 688), "full", 2),
-        ("1366x768 @100%", (1366, 728), "none", 4),
+        ("1920x1080 @150%", (1280, 688), "small", 4),
+        ("1366x768 @100%", (1366, 728), "small", 4),
         ("1366x768 @125%", (1092, 578), "full", 2),
         ("1536x816", (1536, 816), "small", 4),
         ("1092x578", (1092, 578), "full", 2),
@@ -950,12 +973,12 @@ class TestSmallIconOnTheRealDashboard:
             assert right <= dashboard.width()
 
     def test_the_icon_form_changes_nothing_around_the_cards(self, qapp, pump, dashboard):
-        # 1196px of content is the small-icon case; a window 100px narrower (1096px
+        # 1196px of content is the small-icon case; a window 336px narrower (860px
         # of content) is the no-icon one. The task list, Activity, sidebar and top
         # bar do not care which.
         dashboard.show()
         results = {}
-        for size in ((1536, 816), (1436, 816)):
+        for size in ((1536, 816), (1200, 816)):
             dashboard.resize(*size)
             pump(25)
             results[size] = (
@@ -963,7 +986,192 @@ class TestSmallIconOnTheRealDashboard:
                 dashboard._sidebar.width(), dashboard._topbar.height(),
                 dashboard._content_splitter.sizes(),
             )
-        small, none = results[(1536, 816)], results[(1436, 816)]
+        small, none = results[(1536, 816)], results[(1200, 816)]
         assert small[0] == "small" and none[0] == "none"
         assert small[1:4] == none[1:4], "cards height, sidebar and top bar are the same"
         assert abs(sum(small[4]) - sum(none[4])) == 0, "the same room for task list and Activity"
+
+
+def _segoe_available() -> bool:
+    """Whether the application's own font is installed. The compact floors were
+    measured in it, so a claim about text fitting is only checkable where it is."""
+    from PySide6.QtGui import QFont, QFontInfo
+
+    font = QFont("Segoe UI")
+    font.setPixelSize(13)
+    return QFontInfo(font).family() == "Segoe UI"
+
+
+class TestOneRowAt150Percent:
+    """1920x1080 at 150% scaling: a 1280px-wide logical window, 934-940px of content.
+
+    The cards wrapped 2x2 there. The cause was the card floor: it reserved 190px of
+    text room per card for a clock that, with the application's 13px font, is 54px
+    wide, so the one-row floor (978px) sat 44px above the 934px the layout had. The
+    compact forms now ask for what the cards really need: their captions, and for
+    the Active Task card the room for a task name and the Break In button.
+    """
+
+    CONTENT_WIDTHS = [934, 940]          # with and without the content pane's scrollbar
+
+    @pytest.fixture
+    def row(self, qapp, pump):
+        from ui.stat_cards import StatCardsRow
+        from ui.styles import APP_QSS
+
+        qapp.setStyleSheet(APP_QSS)
+        row = StatCardsRow()
+        row.show()
+        pump()
+        yield row
+        row.close()
+
+    def _at(self, row, pump, width):
+        row.resize(width, row.sizeHint().height())
+        pump()
+
+    def test_the_content_width_at_150_percent_is_one_row_with_small_icons(self, qapp, pump, row):
+        from ui.stat_cards import ICON_SMALL
+
+        for width in self.CONTENT_WIDTHS:
+            self._at(row, pump, width)
+            assert row.columns() == 4, width
+            assert row.icon_state() == ICON_SMALL, width
+            assert {c.height() for c in row._cards} == {96}
+
+    def test_it_is_the_floor_that_changed_not_the_threshold_alone(self, qapp):
+        from ui.stat_cards import _CARD_VALUE_WIDTH, ICON_NONE, StatCardsRow
+
+        assert StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH < 934, "no-icon one row now fits where it did not"
+        assert StatCardsRow.COMPACT_ICON_ROW_MINIMUM_WIDTH <= 934, "and so does the small icon"
+        # The old floors, for the record: 190px of text per card.
+        assert (34 + _CARD_VALUE_WIDTH) * 4 + 40 + 42 == 978
+        assert StatCardsRow().status_card.minimum_width_for(ICON_NONE) < 34 + _CARD_VALUE_WIDTH
+
+    def test_no_text_that_must_not_be_cut_is_cut_and_nothing_overlaps(self, qapp, pump, row):
+        from PySide6.QtCore import QPoint
+
+        row.set_project_status("Active", "#10B981")
+        row.set_total_seconds(70, True)
+        row.set_active_task("DP-72 AxonPeptide - Revamp", "AxonPeptide - Rachna Upwork - WooCommerce Store")
+        row.set_today_activity(0, has_measurement=True, is_tracking=True)
+        for width in self.CONTENT_WIDTHS:
+            self._at(row, pump, width)
+            for card in row._cards:
+                assert card.width() >= card.minimumWidth(), (width, "a card below its floor")
+                if _segoe_available():
+                    assert card._caption.text() == card._caption.full_text(), (width, "caption cut")
+            assert row.total_card._value.text() == row.total_card._value.full_text(), "the clock"
+            assert row.status_card._value.text() == "Active"
+            assert row.activity_card._value.text() == "0%"
+            assert row.activity_card._progress.isVisible()
+            button, card = row.break_button, row.active_card
+            assert button.isVisible()
+            assert button.mapTo(card, QPoint(button.width(), 0)).x() <= card.width()
+            assert card._value.mapTo(card, QPoint(card._value.width(), 0)).x() <= button.mapTo(card, QPoint(0, 0)).x(), (
+                "the task name stops before the button")
+            rects = [c.geometry() for c in row._cards]
+            for i, a in enumerate(rects):
+                assert a.left() >= 0 and a.right() <= row.width()
+                for b in rects[i + 1:]:
+                    assert not a.intersects(b)
+
+    def test_long_names_and_values_elide_but_are_never_dropped(self, qapp, pump, row):
+        row.set_project_status("Waiting on customer sign-off for the extraordinarily long programme", "#F59E0B")
+        row.set_total_seconds(100 * 3600 + 59 * 60 + 59, True)
+        row.set_active_task("Reconcile the quarterly invoices for the Extraordinarily Long Customer Migration Programme",
+                            "Extraordinarily Long Customer Migration Programme " * 2)
+        row.set_today_activity(100, has_measurement=True, is_tracking=False)
+        for width in self.CONTENT_WIDTHS:
+            self._at(row, pump, width)
+            assert row.total_card._value.text() == row.total_card._value.full_text() == "100:59:59"
+            assert row.status_card._value.full_text().startswith("Waiting on customer")
+            assert row.active_card._value.full_text().startswith("Reconcile the quarterly")
+            assert row.break_button.isVisible()
+
+    def test_the_compact_floors_cover_the_real_captions(self, qapp):
+        # With the application's own font (Segoe UI) available, a card at its compact
+        # floor has room for its caption. Skipped where that font is not installed,
+        # because the figures were measured in it.
+        from PySide6.QtGui import QFont, QFontMetrics
+
+        from ui.stat_cards import _CARD_CHROME_WIDTH_COMPACT, ICON_NONE, StatCardsRow
+
+        if not _segoe_available():
+            pytest.skip("Segoe UI is not installed here")
+        font = QFont("Segoe UI")
+        font.setPixelSize(13)
+        font.setWeight(QFont.Weight.Bold)
+        row = StatCardsRow()
+        for card in (row.status_card, row.total_card, row.activity_card):
+            natural = QFontMetrics(font).horizontalAdvance(card._caption.full_text())
+            room = card.minimum_width_for(ICON_NONE) - _CARD_CHROME_WIDTH_COMPACT
+            assert natural <= room, (card._caption.full_text(), natural, room)
+
+    def test_the_same_rule_gives_the_same_answer_at_every_scale(self, qapp, pump, row):
+        # 175% and 200%: the content is narrower than any one-row floor, so the cards
+        # take the safe 2x2 -- by the width, not by the scale. Nothing here knows the scale.
+        from ui.stat_cards import ICON_FULL, StatCardsRow
+
+        for label, content in (("175%", 757), ("200%", 640)):
+            self._at(row, pump, content)
+            assert content < StatCardsRow.COMPACT_ROW_MINIMUM_WIDTH, label
+            assert (row.columns(), row.icon_state()) == (2, ICON_FULL), label
+
+    def test_repeated_resizing_settles_on_the_same_layout(self, qapp, pump, row):
+        widths = [934, 1100, 780, 760, 1230, 934, 2220, 934, 915, 934]
+        seen = {}
+        for width in widths * 2:
+            self._at(row, pump, width)
+            state = (row.columns(), row.icon_state(), [c.width() for c in row._cards])
+            assert seen.setdefault(width, state) == state, width
+
+
+class TestOneRowAt150PercentOnTheRealDashboard:
+    @pytest.mark.parametrize("size", [(1280, 688), (1280, 720), (1280, 800)])
+    def test_the_window_that_wrapped_now_has_one_row_and_a_sound_layout(self, qapp, pump, dashboard, size):
+        from PySide6.QtCore import QPoint
+
+        dashboard.show()
+        dashboard.resize(*size)
+        stats = dashboard._stat_cards
+        stats.set_project_status("Active", "#10B981")
+        stats.set_total_seconds(70, True)
+        stats.set_active_task("DP-72 AxonPeptide - Revamp", "AxonPeptide - Rachna Upwork - WooCommerce Store")
+        stats.set_today_activity(0, has_measurement=True, is_tracking=True)
+        pump(25)
+        assert (stats.columns(), stats.icon_state()) == (4, "small"), stats.width()
+        assert stats.height() == 96
+        assert not dashboard._content_scroll.horizontalScrollBar().isVisible()
+        assert not dashboard._activity_section._scroll_area.horizontalScrollBar().isVisible()
+        assert not dashboard._task_section._scroll.horizontalScrollBar().isVisible()
+        assert dashboard._sidebar.width() == 300
+        # The task header still lies over its columns.
+        section = dashboard._task_section
+        assert section._header_layout.contentsMargins().left() == section.HEADER_LEFT_MARGIN
+        # And the 110px the second row used to take is the task list's and Activity's.
+        tasks, activity = dashboard._content_splitter.sizes()
+        assert tasks >= 200 and activity >= dashboard._activity_section.header_only_height()
+        for card in stats._cards:
+            assert card.mapTo(dashboard, QPoint(card.width(), 0)).x() <= dashboard.width()
+
+    def test_sidebar_and_activity_states_do_not_disturb_the_row(self, qapp, pump, dashboard):
+        dashboard.show()
+        dashboard.resize(1280, 688)
+        stats = dashboard._stat_cards
+        pump(25)
+        before = (stats.columns(), stats.icon_state())
+        for _ in range(2):
+            dashboard._content_splitter.set_collapsed(True)
+            pump(15)
+            assert (stats.columns(), stats.icon_state()) == before
+            dashboard._content_splitter.set_collapsed(False)
+            pump(15)
+            assert (stats.columns(), stats.icon_state()) == before
+        # Collapsing the sidebar gives the cards 240px more: wider, never fewer per row.
+        dashboard._sidebar.toggle_collapse()
+        pump(20)
+        assert stats.columns() == 4
+        dashboard._sidebar.toggle_collapse()
+        pump(20)
+        assert (stats.columns(), stats.icon_state()) == before

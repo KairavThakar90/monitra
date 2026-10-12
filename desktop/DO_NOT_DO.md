@@ -940,6 +940,25 @@ reported ~8 MB while Task Manager showed 700 MB. Read what the OS reports
 application), and read it over time: a number that climbs and then falls off a
 cliff is a collector dependency, not a leak, and is fixed differently.
 
+### ❌ Do not size a layout floor from the font a widget is *given* in code
+
+```python
+self._value.setFont(QFont("Consolas", 17, QFont.Weight.Black))    # "01:02:05" is 184px wide
+_CARD_VALUE_WIDTH = 190                                            # so every card needs 190px
+```
+
+**What it caused:** the application stylesheet sets `QWidget { font-size: 13px }`, and a
+stylesheet font beats `setFont`. The clock really renders at 54px (a 17pt Consolas one
+would be 104px, never 184), so every summary card reserved three and a half times the room
+its value needs, and the one-row threshold landed 44px above what 150% scaling leaves.
+The cards wrapped 2x2 on a screen that had room for one row. The comment said "measured";
+it had been measured on a widget that was not styled the way the running app styles it.
+**Instead:** measure on the real, styled widget (`ensurePolished()` first, or in the
+running app), take a floor from what *cannot* be cut -- here the caption -- and let the
+rest elide. Keep the design's comfortable figure only where it is a policy (the full tile),
+and keep the weights that share spare width apart from the floors that bound it, so
+lowering a floor cannot change how a layout that already fit looks.
+
 ---
 
 ## Naming
