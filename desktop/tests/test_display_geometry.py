@@ -175,22 +175,22 @@ class TestCanvasBounds:
 class TestOutputSize:
     def test_one_display_is_scaled_exactly_as_it_always_was(self):
         # The same arithmetic `image_processor.process` has always applied to a
-        # single capture: 1000/1920 of the source, rounded.
+        # single capture: 1500/1920 of the source, rounded.
         displays = [_display(1, 0, 0, 1920, 1080, primary=True)]
         bounds = compositor.canvas_bounds(displays)
-        assert compositor.output_size(bounds, displays) == (1000, 562)
+        assert compositor.output_size(bounds, displays) == (1500, 844)
 
     def test_a_second_display_widens_the_image_instead_of_shrinking_the_first(self):
         # This is the whole legibility argument. Letterboxing 3840x1080 into
-        # the 1000px square would leave each monitor 500px wide and unreadable;
-        # each display keeps the ~1000px it would have had on its own.
+        # the 1500px square would leave each monitor 750px wide and unreadable;
+        # each display keeps the ~1500px it would have had on its own.
         displays = [
             _display(1, 0, 0, 1920, 1080, primary=True),
             _display(2, 1920, 0, 1920, 1080),
         ]
         bounds = compositor.canvas_bounds(displays)
         width, height = compositor.output_size(bounds, displays)
-        assert (width, height) == (2000, 562)
+        assert (width, height) == (3000, 844)
 
     def test_three_displays_scale_the_same_way(self):
         displays = [
@@ -199,7 +199,8 @@ class TestOutputSize:
             _display(3, 3840, 0, 1920, 1080),
         ]
         bounds = compositor.canvas_bounds(displays)
-        assert compositor.output_size(bounds, displays) == (3000, 562)
+        # 4500 wide at 1500px a display, held to the 4000px long edge the backend accepts.
+        assert compositor.output_size(bounds, displays) == (4000, 750)
 
     def test_a_high_dpi_primary_does_not_shrink_the_other_displays(self):
         # A 4K primary next to a 1080p secondary: scaling against the primary
@@ -210,8 +211,8 @@ class TestOutputSize:
         ]
         bounds = compositor.canvas_bounds(displays)
         width, height = compositor.output_size(bounds, displays)
-        # Scaled by 1000/3840 against the 4K primary: the canvas is 5760x2160.
-        assert (width, height) == (1500, 562)
+        # Scaled by 1500/3840 against the 4K primary: the canvas is 5760x2160.
+        assert (width, height) == (2250, 844)
 
     def test_an_extreme_arrangement_is_capped_rather_than_unbounded(self):
         displays = [
