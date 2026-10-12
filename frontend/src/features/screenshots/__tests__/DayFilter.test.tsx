@@ -55,8 +55,13 @@ describe('DayFilter', () => {
     for (const label of ['Today', 'Yesterday', '2 days ago', '3 days ago', 'A week ago']) {
       expect(buttonByText(label), label).toBeDefined();
     }
-    // Two panes, each with Mo..Su headers.
-    expect(container.textContent!.match(/Mo/g)).toHaveLength(2);
+    // Two panes, each with Mo..Su headers. Counted as header cells, not as the letters "Mo" in
+    // the text: the trigger's own date label contains "Mon" on a Monday, which made this test
+    // fail every Monday and pass every other day.
+    const mondayHeaders = Array.from(container.querySelectorAll('*')).filter(
+      (el) => el.children.length === 0 && el.textContent === 'Mo',
+    );
+    expect(mondayHeaders).toHaveLength(2);
   });
 
   it('commits a preset on one click and closes', async () => {
