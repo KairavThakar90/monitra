@@ -123,11 +123,18 @@ def _friday():
     return start, start + timedelta(minutes=27)
 
 
-def _hold_the_heartbeat(desktop, entry_id):
-    """The desktop would beat again within two minutes and undo the move in
-    time; this test is about what happens when it does not."""
-    desktop.sync._heartbeat_entry_id = entry_id
-    desktop.sync._heartbeat_due_at = time.monotonic() + 3600
+def _silence_the_heartbeat(desktop):
+    """Call this BEFORE the timer starts. The desktop's first beat goes out the moment
+    the entry is bound, and one that landed after the test had moved the row in time
+    would rewrite `last_seen_at` to now and undo the move -- a race that holding the
+    beat only after the bind was observed could lose. These tests are about what
+    happens when the desktop does not speak."""
+    desktop.sync._heartbeat_unsupported_until = time.monotonic() + 3600
+
+
+def _let_the_heartbeat_speak(desktop):
+    desktop.sync._heartbeat_unsupported_until = 0.0
+    desktop.sync.request_heartbeat()            # what a resume from sleep does
 
 
 # ── 1. a running timer reports in ────────────────────────────────────────────
@@ -166,10 +173,10 @@ def test_friday_start_monday_morning_the_job_reports_then_closes_at_last_signal_
     """Report first (nothing written), then apply: 42 minutes of Friday, not
     65 hours, in the row, the API and every report."""
     timer = desktop.timer
+    _silence_the_heartbeat(desktop)
     timer.start_tracking(principal["project_id"], principal["task_id"], "E2E task")
     _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
     entry_id = timer.entry_id
-    _hold_the_heartbeat(desktop, entry_id)
     start, seen = _friday()
     _move_in_time(db, entry_id, start=start, last_seen=seen)
 
@@ -217,15 +224,15 @@ def test_the_desktop_learns_its_entry_was_closed_and_says_why(qapp, desktop, api
     told, finalized = [], []
     timer.timer_closed_by_server.connect(told.append)
     timer.timer_finalized.connect(finalized.append)
+    _silence_the_heartbeat(desktop)
     timer.start_tracking(principal["project_id"], principal["task_id"], "E2E task")
     _pump(qapp, lambda: timer.entry_id is not None, 30, "the start to be bound")
     entry_id = timer.entry_id
-    _hold_the_heartbeat(desktop, entry_id)
     start, seen = _friday()
     _move_in_time(db, entry_id, start=start, last_seen=seen)
     assert _job(backend, "?dry_run=false")["closed"] == 1
 
-    desktop.sync.request_heartbeat()            # what a resume from sleep does
+    _let_the_heartbeat_speak(desktop)
     _pump(qapp, lambda: bool(told), 30, "the heartbeat to find the closed entry")
 
     assert not timer.is_running(), "the local session ended"
