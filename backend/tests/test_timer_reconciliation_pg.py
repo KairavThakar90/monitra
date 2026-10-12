@@ -101,6 +101,23 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
         self.assertEqual(audit[0].ended_at, closed.end_time)
         self.assertEqual(audit[0].policy["no_signal_grace_seconds"], 900)
 
+    def test_the_closing_decision_compares_the_database_clock_with_itself(self):
+        """`last_seen_at` is written with the database's `now()`. An application server
+        whose clock is three hours fast used to see an entry silent for thirty minutes as
+        silent for three and a half hours, and close it."""
+        now = self._db_now()
+        entry = self._running(now - timedelta(hours=6), last_seen=now - timedelta(minutes=30))
+
+        class FastClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.now(tz) + timedelta(hours=3)
+
+        with patch("app.services.time_entry_reconciliation.datetime", FastClock):
+            report = self._reconcile()
+        self.assertEqual((report["candidates"], report["closed"]), (0, 0), report)
+        self.assertIsNone(self._reload(entry.id).end_time)
+
     def test_a_second_run_changes_nothing(self):
         start = datetime(2026, 10, 9, 11, 53, 21, tzinfo=UTC)
         entry = self._running(start, last_seen=start + timedelta(minutes=27))
@@ -257,6 +274,88 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
         self.assertEqual(sum(results), 1, results)
         self.assertEqual(self.db.scalar(select(func.count()).select_from(TimeEntryReconciliation)), 1)
         self.assertEqual(self._reload(entry.id).total_seconds, 42 * 60)
+
+    def test_a_stop_racing_a_reconcile_of_an_entry_with_a_pending_prompt_cannot_deadlock(self):
+        """The user's Stop takes the idle-period row first and the entry second (the
+        order `resolve_pending_for_stop` then the compare-and-set give it). The reconciler
+        used to take the entry first: with a prompt pending, each then waited on the
+        other's row and PostgreSQL had to kill one of them. Held here by hand: the stop
+        side owns the idle row and now wants the entry."""
+        from app.models.time_entry_idle_period import TimeEntryIdlePeriod
+        from app.repositories.time_entry_idle_period import TimeEntryIdlePeriodRepository
+
+        now = self._db_now()
+        start = now - timedelta(hours=6)
+        entry = self._running(start, last_seen=now - timedelta(hours=3))
+        self.db.add(TimeEntryIdlePeriod(
+            organization_id=1, user_id=self.ids.user_id, time_entry_id=entry.id,
+            original_project_id=self.ids.project_id, original_task_id=self.ids.task_id,
+            idle_started_at=now - timedelta(hours=3, minutes=10), idle_detected_at=now - timedelta(hours=3),
+            status="pending",
+        ))
+        self.db.commit()
+
+        stop_side = self.Session()
+        self.addCleanup(stop_side.close)
+        TimeEntryIdlePeriodRepository.list_pending_for_entry(stop_side, entry.id)   # holds the idle row
+        outcome = {}
+
+        def reconciler():
+            from app.services.time_entry_reconciliation import TimeEntryReconciliationService
+
+            db = self.Session()
+            try:
+                outcome["report"] = TimeEntryReconciliationService.run(db, apply=True)
+            except Exception as error:  # noqa: BLE001
+                outcome["error"] = error
+            finally:
+                db.close()
+
+        worker = threading.Thread(target=reconciler)
+        worker.start()
+        import time as _time
+
+        _time.sleep(0.6)                                  # the reconciler is now waiting on the idle row
+        stopped_at = now - timedelta(hours=2, minutes=40)
+        stop_side.execute(text(
+            "UPDATE time_entries SET end_time = :e, status = 'stopped', total_seconds = :t "
+            "WHERE id = :i AND end_time IS NULL"
+        ), {"e": stopped_at, "t": int((stopped_at - start).total_seconds()), "i": entry.id})
+        stop_side.commit()                                # no deadlock: the entry was free
+        worker.join(30)
+
+        self.assertFalse(worker.is_alive(), "the reconciler never finished")
+        self.assertNotIn("error", outcome, outcome.get("error"))
+        report = outcome["report"]
+        self.assertEqual((report["closed"], report["failed"]), (0, 0), report)
+        self.assertEqual(self._reload(entry.id).end_time, stopped_at, "the user's stop stands")
+
+    def test_a_closure_that_cannot_get_its_locks_fails_alone_and_is_retried(self):
+        """A stuck transaction on the idle row costs one failed closure, not a hung run."""
+        from app.models.time_entry_idle_period import TimeEntryIdlePeriod
+        from app.repositories.time_entry_idle_period import TimeEntryIdlePeriodRepository
+        from app.services import time_entry_reconciliation as module
+
+        now = self._db_now()
+        entry = self._running(now - timedelta(hours=6), last_seen=now - timedelta(hours=3))
+        self.db.add(TimeEntryIdlePeriod(
+            organization_id=1, user_id=self.ids.user_id, time_entry_id=entry.id,
+            original_project_id=self.ids.project_id, original_task_id=self.ids.task_id,
+            idle_started_at=now - timedelta(hours=3, minutes=10), idle_detected_at=now - timedelta(hours=3),
+            status="pending",
+        ))
+        self.db.commit()
+        stuck = self.Session()
+        self.addCleanup(stuck.close)
+        TimeEntryIdlePeriodRepository.list_pending_for_entry(stuck, entry.id)   # never released
+
+        with patch.object(module, "LOCK_WAIT_MILLISECONDS", 300):
+            report = self._reconcile()
+        self.assertEqual((report["closed"], report["failed"]), (0, 1), report)
+        self.assertIsNone(self._reload(entry.id).end_time)
+
+        stuck.rollback()                                   # the stuck transaction ends
+        self.assertEqual(self._reconcile()["closed"], 1, "the next run closes it")
 
     def test_a_heartbeat_during_the_run_keeps_the_entry_open(self):
         from app.services.time_entry_liveness import TimeEntryLivenessService
@@ -420,6 +519,150 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
             select(func.sum(TimeTrackingRepository._duration_expression())).select_from(TimeEntry)
         )
         self.assertAlmostEqual(float(total), 42 * 60, delta=2)
+
+    def test_the_screenshot_pages_time_worked_stops_where_a_silent_entry_does(self):
+        """Both interval reads behind the screenshots page's "time worked" used to close a
+        running entry at now, so the Friday row credited its owner with the weekend there
+        too (they read the entries directly, not through `effective_now`)."""
+        from app.repositories.time_entry_screenshot import TimeEntryScreenshotRepository as Repo
+
+        now = self._db_now()
+        start = now - timedelta(days=3)
+        seen = start + timedelta(minutes=27)
+        self._running(start, last_seen=seen)
+        window = (start - timedelta(days=1), now + timedelta(days=1))
+
+        by_user = Repo.list_tracked_intervals_by_user(self.db, 1, *window)
+        by_project = Repo.list_tracked_intervals_by_projects(self.db, 1, [self.ids.project_id], *window)
+        for rows in (by_user, by_project):
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0][2], seen + timedelta(minutes=15))
+
+    def test_the_screenshot_pages_time_worked_still_follows_a_live_entry_to_now(self):
+        from app.repositories.time_entry_screenshot import TimeEntryScreenshotRepository as Repo
+
+        now = self._db_now()
+        self._running(now - timedelta(hours=2), last_seen=now - timedelta(seconds=20))
+        rows = Repo.list_tracked_intervals_by_user(self.db, 1, now - timedelta(days=1), now + timedelta(days=1))
+        self.assertEqual(len(rows), 1)
+        self.assertAlmostEqual((rows[0][2] - datetime.now(UTC)).total_seconds(), 0, delta=5)
+
+    def test_a_silent_entry_no_longer_blocks_the_owners_manual_time_after_its_evidence(self):
+        """The recovery path for hours lost to a dead desktop is a manual-time request.
+        A running entry used to be open-ended in the overlap check, so the forgotten
+        Friday timer refused every request for the days after it."""
+        from app.repositories.manual_time_entry import ManualTimeEntryRepository as Repo
+
+        now = self._db_now()
+        start = now - timedelta(days=3)
+        seen = start + timedelta(minutes=27)
+        self._running(start, last_seen=seen)
+
+        def overlapping(slot_start, slot_end):
+            return Repo.find_overlapping_time_entries(self.db, 1, self.ids.user_id, slot_start, slot_end)
+
+        during = overlapping(start + timedelta(minutes=10), start + timedelta(minutes=20))
+        after = overlapping(now - timedelta(days=2), now - timedelta(days=2) + timedelta(hours=2))
+        self.assertEqual(len(during), 1, "inside the measured time it is still a conflict")
+        self.assertEqual(after, [], "after the evidence ends, the time is free to request")
+
+    def test_a_live_or_never_reported_entry_still_blocks_overlapping_manual_time(self):
+        from app.repositories.manual_time_entry import ManualTimeEntryRepository as Repo
+
+        now = self._db_now()
+        other = self.db.execute(text(
+            "INSERT INTO users (organization_id, username, email, name, role_name, capture_frequency) "
+            "VALUES (1, 'asha', 'asha@example.invalid', 'Asha', 'employee', 3) RETURNING id"
+        )).scalar()
+        self.db.commit()
+        self._running(now - timedelta(hours=3), last_seen=now - timedelta(seconds=30))
+        self._running(now - timedelta(days=3), last_seen=None, user_id=other)
+        slot = (now - timedelta(hours=2), now - timedelta(hours=1))
+        self.assertEqual(len(Repo.find_overlapping_time_entries(self.db, 1, self.ids.user_id, *slot)), 1)
+        self.assertEqual(len(Repo.find_overlapping_time_entries(
+            self.db, 1, other, now - timedelta(days=1), now - timedelta(days=1) + timedelta(hours=1))), 1)
+
+    def test_the_read_only_sql_report_sorts_every_running_entry_and_agrees_with_the_dry_run(self):
+        """`scripts/stale_running_entries_report.sql` is what the owner runs in pgAdmin
+        before anything is enabled, so it is executed here against real rows -- and its
+        proposed closures must be the ones the application's own dry run reports."""
+        import pathlib
+
+        from app.models.time_entry_activity import TimeEntryActivity
+        from app.models.time_entry_idle_period import TimeEntryIdlePeriod
+
+        sql = (pathlib.Path(__file__).resolve().parents[1] / "scripts"
+               / "stale_running_entries_report.sql").read_text(encoding="utf-8")
+        now = self._db_now()
+        users = {}
+        for name in ("live", "stale30", "silent3h", "nothing", "oldupload", "future", "alive30h", "idle"):
+            users[name] = self.db.execute(text(
+                "INSERT INTO users (organization_id, username, email, name, role_name, capture_frequency) "
+                "VALUES (1, :n, :e, :n, 'employee', 3) RETURNING id"
+            ), {"n": name, "e": f"{name}@example.invalid"}).scalar()
+        self.db.commit()
+        entries = {
+            "live": self._running(now - timedelta(hours=1), last_seen=now - timedelta(seconds=30), user_id=users["live"]),
+            "stale30": self._running(now - timedelta(hours=5), last_seen=now - timedelta(minutes=30), user_id=users["stale30"]),
+            "silent3h": self._running(now - timedelta(hours=6), last_seen=now - timedelta(hours=3), user_id=users["silent3h"]),
+            "nothing": self._running(now - timedelta(days=3), last_seen=None, user_id=users["nothing"]),
+            "oldupload": self._running(now - timedelta(days=3), last_seen=None, user_id=users["oldupload"]),
+            "future": self._running(now - timedelta(hours=2), last_seen=now + timedelta(hours=1), user_id=users["future"]),
+            "alive30h": self._running(now - timedelta(hours=30), last_seen=now - timedelta(seconds=20), user_id=users["alive30h"]),
+            "idle": self._running(now - timedelta(hours=9), last_seen=now - timedelta(seconds=30), user_id=users["idle"]),
+        }
+        old_start = entries["oldupload"].start_time
+        self.db.add(TimeEntryActivity(
+            organization_id=1, time_entry_id=entries["oldupload"].id, recorded_at=old_start + timedelta(minutes=30),
+            keyboard_strokes=10, mouse_clicks=2, mouse_movements=40, activity_percentage=50, window_seconds=60,
+        ))
+        self.db.add(TimeEntryIdlePeriod(
+            organization_id=1, user_id=users["idle"], time_entry_id=entries["idle"].id,
+            original_project_id=self.ids.project_id, original_task_id=self.ids.task_id,
+            idle_started_at=now - timedelta(hours=6, minutes=10), idle_detected_at=now - timedelta(hours=6),
+            status="pending",
+        ))
+        self.db.commit()
+
+        rows = {r["time_entry_id"]: r for r in self.db.execute(text(sql)).mappings().all()}
+        self.assertEqual(set(rows), {e.id for e in entries.values()}, "one row per running entry")
+        category = {name: rows[e.id]["category"] for name, e in entries.items()}
+        self.assertEqual(category, {
+            "live": "confirmed_active", "stale30": "potentially_stale", "silent3h": "potentially_stale",
+            "nothing": "unverified", "oldupload": "potentially_stale", "future": "manual_review",
+            "alive30h": "manual_review", "idle": "confirmed_active",
+        })
+        action = {name: rows[e.id]["policy_action"] for name, e in entries.items()}
+        self.assertEqual(action["live"], "leave open")
+        self.assertEqual(action["stale30"], "leave open", "inside the stop-after window: could be offline-but-working")
+        self.assertEqual(action["silent3h"], "close: no_signal")
+        self.assertTrue(action["nothing"].startswith("operator only"), action["nothing"])
+        self.assertTrue(action["oldupload"].startswith("operator only"), action["oldupload"])
+        self.assertEqual(action["idle"], "close: idle_unanswered")
+        self.assertIsNone(rows[entries["live"].id]["proposed_end"], "nothing to propose for a live entry")
+        self.assertIsNone(rows[entries["alive30h"].id]["proposed_end"], "nor for one that is long but reporting in")
+        self.assertEqual(rows[entries["live"].id]["can_report_liveness"], "yes: this entry has reported liveness")
+        self.assertTrue(rows[entries["nothing"].id]["can_report_liveness"].startswith("unknown"))
+        # What Active Users showed before the policy, and what it shows now.
+        silent = rows[entries["silent3h"].id]
+        self.assertAlmostEqual(silent["measured_before_policy_seconds"], 6 * 3600, delta=5)
+        # Started 6 h ago, last heard from 3 h ago: it is measured to last signal + 15 min.
+        self.assertAlmostEqual(silent["measured_with_policy_seconds"], 3 * 3600 + 15 * 60, delta=5)
+
+        # The proposals are the application's own dry run, to the second.
+        dry = {i["time_entry_id"]: i for i in self._reconcile(apply=False)["items"]}
+        for name in ("silent3h", "idle"):
+            proposed = rows[entries[name].id]["proposed_end"]
+            would = datetime.fromisoformat(dry[entries[name].id]["would_end_at"])
+            self.assertAlmostEqual((proposed - would).total_seconds(), 0, delta=2, msg=name)
+        self.assertNotIn(entries["nothing"].id, dry, "the scheduled run never reaches a legacy entry")
+        operator = self._reconcile(
+            apply=False, include_unreported=True, entry_ids=[entries["oldupload"].id],
+        )["items"][0]
+        proposed = rows[entries["oldupload"].id]["proposed_end"]
+        self.assertAlmostEqual(
+            (proposed - datetime.fromisoformat(operator["would_end_at"])).total_seconds(), 0, delta=2,
+        )
 
     def test_a_closure_across_midnight_is_apportioned_to_both_days(self):
         """Midnight splitting and the policy together: started Friday 23:50

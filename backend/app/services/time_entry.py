@@ -195,9 +195,23 @@ class TimeEntryService:
             # exactly as before.
             from app.services.time_entry_reconciliation import TimeEntryReconciliationService
 
-            if TimeEntryReconciliationService.close_if_replaced_by_start(
-                db, active_timer, start_time, now=now, request_id=request_id,
-            ):
+            try:
+                replaced = TimeEntryReconciliationService.close_if_replaced_by_start(
+                    db, active_timer, start_time, now=now, request_id=request_id,
+                )
+            except Exception:  # noqa: BLE001 -- see below
+                # Closing the old entry is a kindness to the start, never its
+                # precondition: a lock timeout or a deadlock with the person's own
+                # Stop must not turn into a 500 on Start. Fall back to what always
+                # happened -- the 409 that names the running entry.
+                db.rollback()
+                log.exception(
+                    "START_REPLACE_FAILED entry=%s user=%s; answering with the conflict",
+                    active_timer.id, current_user.id,
+                )
+                replaced = False
+                active_timer = TimeEntryRepository.get_active_for_user(db, current_user.id)
+            if replaced:
                 active_timer = TimeEntryRepository.get_active_for_user(db, current_user.id)
         if active_timer:
             TimeEntryService._raise_active_conflict(active_timer, current_user, client_op, request_id)

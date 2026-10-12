@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, or_, false, func
+from sqlalchemy import select, and_, false, func
 from typing import List, Optional, Tuple
 from datetime import date, datetime
 from app.models.manual_time_entry import ManualTimeEntry
@@ -208,12 +208,23 @@ class ManualTimeEntryRepository:
         end_time: datetime,
     ) -> List[TimeEntry]:
         """Automatic sessions (and any already-approved-and-mirrored manual
-        entries, which live here too) overlapping the requested slot."""
+        entries, which live here too) overlapping the requested slot.
+
+        A running entry occupies the time it is *measured* over
+        (`effective_now`): up to now while its desktop reports in, and only up to
+        the end of its evidence once it has gone quiet. Treating it as open-ended
+        made a forgotten Friday timer refuse every manual-time request for the
+        days after it -- the one way its owner can ask for the time they really
+        worked -- until somebody closed the row."""
+        from app.repositories.time_entry_liveness import effective_now
+
         query = select(TimeEntry).where(
             TimeEntry.organization_id == organization_id,
             TimeEntry.user_id == user_id,
             TimeEntry.start_time < end_time,
-            or_(TimeEntry.end_time.is_(None), TimeEntry.end_time > start_time),
+            func.coalesce(
+                TimeEntry.end_time, effective_now(TimeEntry.last_seen_at, TimeEntry.start_time)
+            ) > start_time,
         )
         return list(db.scalars(query).all())
 

@@ -6,7 +6,7 @@ Repositories here own SQL and nothing else. What the numbers *mean* -- when an
 entry is stale, when it is closed, at which instant -- is
 `app.core.timer_policy` and `app.services.time_entry_reconciliation`.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from sqlalchemy import and_, case, func, literal_column, select, update
@@ -49,6 +49,21 @@ def effective_now(last_seen_at, start_time, policy: Optional[TimerPolicy] = None
 
 
 class TimeEntryLivenessRepository:
+    @staticmethod
+    def db_now(db: Session) -> datetime:
+        """The database's clock -- the one `last_seen_at` is written with.
+
+        A closure compares "how long since the desktop was last heard from" with
+        a deadline, so both sides must come from one clock: `last_seen_at` is
+        `now()` in the database, and an application server a few minutes out
+        would otherwise shift every silence by that much. (PostgreSQL's `now()`
+        is the transaction's start, the same instant `touch` wrote.)
+        """
+        value = db.scalar(select(func.now()))
+        if not isinstance(value, datetime):          # a stand-in session in a unit test
+            return datetime.now(timezone.utc)
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
     @staticmethod
     def touch(db: Session, entry_id: int, user_id: int) -> bool:
         """Record that the entry's desktop is alive, on the database clock.

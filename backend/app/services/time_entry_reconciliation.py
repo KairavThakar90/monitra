@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -53,6 +54,20 @@ timing_log = logging.getLogger("app.timing")
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+#: How long a closure waits for a row somebody else holds (a user's Stop, an idle answer).
+LOCK_WAIT_MILLISECONDS = 5000
+
+
+def _bound_lock_wait(db: Session) -> None:
+    """Fail a closure that cannot take its locks in a few seconds, rather than queue
+    behind a stuck transaction (the scheduler runs every five minutes and tries again).
+    PostgreSQL only -- `SET LOCAL` ends with the transaction, so nothing leaks into the
+    session's next use."""
+    bind = db.get_bind() if hasattr(db, "get_bind") else None
+    if bind is not None and getattr(bind.dialect, "name", None) == "postgresql":
+        db.execute(text(f"SET LOCAL lock_timeout = {int(LOCK_WAIT_MILLISECONDS)}"))
 
 
 @dataclass(frozen=True)
@@ -162,14 +177,24 @@ class TimeEntryReconciliationService:
         """
         from app.services.time_entry import TimeEntryService
 
-        now = now or datetime.now(timezone.utc)
+        now = now or TimeEntryLivenessRepository.db_now(db)
         policy = policy or TimerPolicy.current()
 
+        # Lock order: idle-period rows, then the entry. The user's own Stop takes them
+        # in that order (`resolve_pending_for_stop`, then the compare-and-set on the
+        # entry) and so does answering an idle prompt. Taking the entry first made a
+        # late Stop racing the reconcile of an entry with a pending prompt a deadlock:
+        # each held what the other wanted. The wait is bounded either way, so a stuck
+        # transaction costs one failed (and retried) closure, not a stuck run.
+        _bound_lock_wait(db)
+        TimeEntryIdlePeriodRepository.list_pending_for_entry(db, entry_id)
         entry = TimeEntryLivenessRepository.lock_running(db, entry_id)
         if entry is None:
             db.rollback()
             return None
 
+        # Read again now that both are held: a prompt may have opened or been
+        # answered between the two locks.
         pending = TimeEntryIdlePeriodRepository.get_pending_for_entry(db, entry.id)
         evidence = None
         if include_unreported and entry.last_seen_at is None:
@@ -291,7 +316,7 @@ class TimeEntryReconciliationService:
         that has no evidence of life, however it is configured.
         """
         policy = TimerPolicy.current()
-        now = now or datetime.now(timezone.utc)
+        now = now or TimeEntryLivenessRepository.db_now(db)
         limit = limit or settings.TIMER_RECONCILER_BATCH_SIZE
         if include_unreported and not entry_ids:
             raise ValueError("include_unreported requires explicit entry_ids")

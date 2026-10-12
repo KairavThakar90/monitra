@@ -336,14 +336,20 @@ class TimeEntryScreenshotRepository:
 
         Rows come back as ``(user_id, began, ended)``, unclipped, so the caller
         can intersect them with whatever span it is describing. A still-running
-        entry is closed at "now", which is what makes a live session contribute
-        the time it has actually accumulated.
+        entry is closed at "now" while its desktop is reporting in, which is
+        what makes a live session contribute the time it has actually
+        accumulated; once the desktop has gone quiet it is closed where the
+        evidence stops (`timer_policy.effective_end`), the same instant Active
+        Users and Time Tracking measure to -- not at a "now" that would credit a
+        machine that is switched off with every hour since.
         """
+        from app.core.timer_policy import TimerPolicy, effective_end
         from app.models.time_entry import TimeEntry
 
         now = datetime.now(timezone.utc)
+        policy = TimerPolicy.current()
         query = db.query(
-            TimeEntry.user_id, TimeEntry.start_time, TimeEntry.end_time
+            TimeEntry.user_id, TimeEntry.start_time, TimeEntry.end_time, TimeEntry.last_seen_at
         ).filter(
             TimeEntry.organization_id == organization_id,
             TimeEntry.start_time < end,
@@ -351,7 +357,10 @@ class TimeEntryScreenshotRepository:
         )
         if user_ids is not None:
             query = query.filter(TimeEntry.user_id.in_(user_ids))
-        return [(int(row[0]), row[1], row[2] or now) for row in query.all()]
+        return [
+            (int(row[0]), row[1], effective_end(row[1], row[2], row[3], now, policy))
+            for row in query.all()
+        ]
 
     @staticmethod
     def list_tracked_intervals(
@@ -488,20 +497,25 @@ class TimeEntryScreenshotRepository:
 
         :return: ``(user_id, began, ended)``, unclipped.
         """
+        from app.core.timer_policy import TimerPolicy, effective_end
         from app.models.time_entry import TimeEntry
 
         if not project_ids:
             return []
         now = datetime.now(timezone.utc)
+        policy = TimerPolicy.current()
         rows = db.query(
-            TimeEntry.user_id, TimeEntry.start_time, TimeEntry.end_time
+            TimeEntry.user_id, TimeEntry.start_time, TimeEntry.end_time, TimeEntry.last_seen_at
         ).filter(
             TimeEntry.organization_id == organization_id,
             TimeEntry.project_id.in_(project_ids),
             TimeEntry.start_time < end,
             or_(TimeEntry.end_time.is_(None), TimeEntry.end_time > start),
         ).all()
-        return [(int(row[0]), row[1], row[2] or now) for row in rows]
+        return [
+            (int(row[0]), row[1], effective_end(row[1], row[2], row[3], now, policy))
+            for row in rows
+        ]
 
     @staticmethod
     def count_for_organization(db: Session, organization_id: int) -> int:

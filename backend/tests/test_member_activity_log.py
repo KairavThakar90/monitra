@@ -526,6 +526,35 @@ class TrackedDayTests(unittest.TestCase):
         self.assertEqual(result.summary.total_tracked_seconds,
                          sum(e.duration_seconds for e in result.timeline if e.entry_type == "tracked"))
 
+    def test_a_silent_running_entry_is_measured_to_where_its_evidence_stops(self):
+        """The Friday-to-Monday row: still `running` on the server, its desktop gone quiet
+        at 09:27. The day's log says 42 minutes (27 + the 15-minute grace), the figure
+        Active Users and Time Tracking show -- not the hours since."""
+        entry = _entry(self.db, 1, _at(9), None)
+        entry.last_seen_at = _at(9) + timedelta(minutes=27)
+        self.db.commit()
+        result = self.world.build()
+        row = result.timeline[0]
+        self.assertTrue(row.is_running)
+        self.assertEqual(row.duration_seconds, 42 * 60)
+        self.assertEqual(result.summary.total_tracked_seconds, 42 * 60)
+
+    def test_a_silent_running_entry_adds_nothing_to_the_days_after_its_evidence(self):
+        entry = _entry(self.db, 1, _at(9), None)
+        entry.last_seen_at = _at(9) + timedelta(minutes=27)
+        self.db.commit()
+        later = self.world.build(day=DAY + timedelta(days=1))
+        self.assertEqual(later.timeline, [])
+        self.assertEqual(later.summary.total_tracked_seconds, 0)
+
+    def test_a_running_entry_that_never_reported_is_measured_as_before(self):
+        """No heartbeat column value means no evidence either way: the log does not
+        guess that it is dead, so a legacy row keeps being measured to now."""
+        _entry(self.db, 1, _at(9), None)
+        self.db.commit()
+        later = self.world.build(day=DAY + timedelta(days=1))
+        self.assertEqual(later.summary.total_tracked_seconds, 24 * 3600)
+
     def test_pending_idle_on_the_running_entry_is_reported_live(self):
         today = ist_today()
         now = datetime.now(UTC)

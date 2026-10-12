@@ -329,7 +329,7 @@ class MemberActivityLogService:
         day_start, day_end, now,
     ) -> Optional[dict]:
         raw_start = _as_utc(entry.start_time)
-        raw_end = _as_utc(entry.end_time) or now
+        raw_end = MemberActivityLogService._measured_end(entry, now)
         placed = day_span(raw_start, raw_end, day_start, day_end)
         if placed is None:
             return None
@@ -497,9 +497,20 @@ class MemberActivityLogService:
                 "reassigned": reassigned, "pending": 0}
 
     @staticmethod
+    def _measured_end(entry, now: datetime) -> datetime:
+        """Where a day's log measures this entry to: its own end, or for a running
+        one `timer_policy.effective_end` -- `now` while its desktop reports in, the
+        end of the evidence once it has gone quiet. The same instant Active Users and
+        Time Tracking use; a log that said "still running" up to now would credit a
+        machine that is switched off with every hour since."""
+        if entry.end_time is not None:
+            return _as_utc(entry.end_time)
+        return _as_utc(effective_end(entry.start_time, None, getattr(entry, "last_seen_at", None), now))
+
+    @staticmethod
     def _idle_event(period, entry, project, task, day_start, day_end, now) -> Optional[dict]:
         raw_start = _as_utc(entry.start_time)
-        raw_end = _as_utc(entry.end_time) or now
+        raw_end = MemberActivityLogService._measured_end(entry, now)
         split = MemberActivityLogService._idle_split(period, raw_start, raw_end, day_start, day_end, now)
         if split is None:
             return None

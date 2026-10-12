@@ -842,6 +842,32 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400, response.text)
         run.assert_not_called()
 
+    def test_an_operator_request_must_say_whether_it_is_a_look_or_a_closure(self):
+        """With the job enabled an omitted `dry_run` means "apply", so a request that was
+        only meant to look at a legacy row would have closed it."""
+        response, run = self._run("?include_unreported=true&entry_id=5958", enabled=True)
+        self.assertEqual(response.status_code, 400, response.text)
+        run.assert_not_called()
+
+    def test_an_operator_look_at_a_named_unreported_entry_is_report_only(self):
+        response, run = self._run("?include_unreported=true&entry_id=5958&dry_run=true", enabled=True)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(run.call_args.kwargs["apply"])
+        self.assertTrue(run.call_args.kwargs["include_unreported"])
+
+    def test_the_get_alias_runs_the_scheduled_pass_but_not_an_operator_closure(self):
+        with patch("app.api.time_entry_reconcile.TimeEntryReconciliationService.run",
+                   return_value={"dry_run": True, "policy": POLICY.as_dict()}) as run:
+            plain = self.client.get("/internal/time-entries/reconcile", headers=self._headers())
+            forced = self.client.get("/internal/time-entries/reconcile?dry_run=false", headers=self._headers())
+            named = self.client.get(
+                "/internal/time-entries/reconcile?include_unreported=true&entry_id=5958&dry_run=true",
+                headers=self._headers(),
+            )
+        self.assertEqual(plain.status_code, 200, plain.text)
+        self.assertEqual((forced.status_code, named.status_code), (400, 400))
+        self.assertEqual(run.call_count, 1, "only the plain scheduled pass ran")
+
 
 if __name__ == "__main__":
     unittest.main()
