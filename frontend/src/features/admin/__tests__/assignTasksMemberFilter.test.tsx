@@ -66,6 +66,7 @@ const PROJECTS = [
 describe('Assign Tasks: member filter', () => {
   let container: HTMLDivElement;
   let root: Root;
+  let onLoad: { tasks: (string | null)[]; projects: (string | null)[]; toggle: string | null };
 
   const flush = async () => {
     for (let i = 0; i < 6; i += 1) {
@@ -124,12 +125,35 @@ describe('Assign Tasks: member filter', () => {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
     }
     await flush();
+    // The page opens with every project collapsed (asserted below). These tests are about the
+    // filters, which act on the tasks, so they start from the projects expanded.
+    onLoad = { tasks: taskNames(), projects: projectNames(), toggle: buttonByText('Expand All')?.textContent ?? null };
+    await click(buttonByText('Expand All'));
   });
 
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+  });
+
+  it('opens with every project collapsed, offering Expand All, and Expand All / Collapse All flip them', async () => {
+    expect(onLoad.projects).toEqual(['Alpha Portal', 'Beta Redesign']);
+    expect(onLoad.tasks).toEqual([]);
+    expect(onLoad.toggle).toBe('Expand All');
+    // beforeEach has now expanded them
+    expect(taskNames().length).toBe(6);
+
+    await click(buttonByText('Collapse All'));
+
+    expect(taskNames()).toEqual([]);
+    expect(projectNames()).toEqual(['Alpha Portal', 'Beta Redesign']);
+    expect(buttonByText('Expand All')).toBeTruthy();
+  });
+
+  it('has no "+ Assign Task" button in the header; tasks are still edited from their own Edit button', () => {
+    expect(buttonByText('+ Assign Task')).toBeUndefined();
+    expect(container.querySelector('button[aria-label="Edit Design the logo"]')).toBeTruthy();
   });
 
   it('puts the Reports page member filter in the toolbar, on everyone, narrowing nothing', () => {

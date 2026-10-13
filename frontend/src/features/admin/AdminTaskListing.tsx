@@ -630,7 +630,7 @@ export const AdminTaskListing: React.FC = () => {
             <div className="h-8 w-8 animate-spin rounded-full border-4 border-blue-500 border-t-transparent"></div>
           </div>
         ) : (
-          <div className="relative space-y-6">
+          <div className="relative space-y-3">
             {projects.length === 0 ? (
               <div className="rounded-xl border border-slate-200 bg-white p-12 text-center shadow-sm">
                 <svg
@@ -674,14 +674,14 @@ export const AdminTaskListing: React.FC = () => {
                         are direct children so `order` can move them. */}
                     <div
                       onClick={() => toggleProject(project.id)}
-                      className="flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-2 bg-slate-50 p-4 transition hover:bg-slate-100 sm:gap-x-6 sm:p-6"
+                      className="flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-2 bg-slate-50 px-3 py-2 transition hover:bg-slate-100 sm:gap-x-6 sm:px-4 sm:py-2.5"
                     >
-                      <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] text-sm font-bold text-white shadow-sm">
+                      <div className="flex min-w-0 flex-1 items-center gap-3">
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] text-xs font-bold text-white shadow-sm">
                           {project.project_name ? project.project_name.charAt(0).toUpperCase() : 'P'}
                         </div>
                         <div className="min-w-0">
-                          <h3 className="break-words text-base font-black text-slate-800 sm:text-lg">
+                          <h3 className="break-words text-base font-black leading-tight text-slate-800">
                             {project.project_name}
                           </h3>
                           <div className="mt-0.5 flex flex-wrap items-center gap-2">
@@ -715,7 +715,7 @@ export const AdminTaskListing: React.FC = () => {
                       </div>
                       <span className="order-3 w-full whitespace-nowrap pl-[52px] text-[11px] font-bold text-slate-400 sm:order-none sm:w-auto sm:pl-0 sm:text-xs">Created {formatDate(project.created_date)}</span>
                       <svg
-                        className={`order-2 h-5 w-5 shrink-0 text-slate-400 transition-transform sm:order-none ${isExpanded ? "rotate-180" : ""}`}
+                        className={`order-2 h-4 w-4 shrink-0 text-slate-400 transition-transform sm:order-none ${isExpanded ? "rotate-180" : ""}`}
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"

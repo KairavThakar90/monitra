@@ -111,7 +111,9 @@ export const AdminAssignTasks: React.FC = () => {
   const [projectIds, setProjectIds] = useState<string[]>([]);
   // The Reports page's member filter: empty is everyone; picked members narrow the page to the tasks they hold.
   const [memberIds, setMemberIds] = useState<string[]>([]);
-  const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
+  // Every project opens collapsed: only a project the user has expanded is listed here, so
+  // projects that load later (or appear on another page) start collapsed too.
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const [dialog, setDialog] = useState<DialogState>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -176,13 +178,6 @@ export const AdminAssignTasks: React.FC = () => {
       actions={
         <div className="flex items-center gap-3">
           <InlineRefreshIndicator active={isFetching && !showFirstLoad} />
-          <button
-            type="button"
-            onClick={() => openDialog(null)}
-            className="rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90"
-          >
-            + Assign Task
-          </button>
         </div>
       }
     >
@@ -225,15 +220,15 @@ export const AdminAssignTasks: React.FC = () => {
             <button
               type="button"
               onClick={() => {
-                const anyOpen = pageProjects.some((project) => !collapsed[project.id]);
-                setCollapsed((previous) => ({
+                const anyOpen = pageProjects.some((project) => expanded[project.id]);
+                setExpanded((previous) => ({
                   ...previous,
-                  ...Object.fromEntries(pageProjects.map((project) => [project.id, anyOpen])),
+                  ...Object.fromEntries(pageProjects.map((project) => [project.id, !anyOpen])),
                 }));
               }}
               className="h-9 rounded-lg border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
             >
-              {pageProjects.some((project) => !collapsed[project.id]) ? 'Collapse All' : 'Expand All'}
+              {pageProjects.some((project) => expanded[project.id]) ? 'Collapse All' : 'Expand All'}
             </button>
           </div>
         </div>
@@ -265,32 +260,32 @@ export const AdminAssignTasks: React.FC = () => {
             </p>
           </div>
         ) : (
-          <div className="space-y-6">
+          <div className="space-y-3">
             {pageProjects.map((project) => {
               const tasks = project.tasks ?? [];
-              const open = !collapsed[project.id];
+              const open = !!expanded[project.id];
               return (
                 <section key={project.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                   <button
                     type="button"
                     aria-expanded={open}
-                    onClick={() => setCollapsed((previous) => ({ ...previous, [project.id]: open }))}
-                    className="flex w-full items-center justify-between gap-3 bg-slate-50 p-4 text-left transition hover:bg-slate-100 sm:p-5"
+                    onClick={() => setExpanded((previous) => ({ ...previous, [project.id]: !open }))}
+                    className="flex w-full items-center justify-between gap-3 bg-slate-50 px-3 py-2 text-left transition hover:bg-slate-100 sm:px-4 sm:py-2.5"
                   >
-                    <div className="flex min-w-0 items-center gap-3 sm:gap-4">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] text-sm font-bold text-white shadow-sm">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] text-xs font-bold text-white shadow-sm">
                         {project.project_name ? project.project_name.charAt(0).toUpperCase() : 'P'}
                       </div>
                       <div className="min-w-0">
-                        <h3 className="truncate text-lg font-black text-slate-800">{project.project_name}</h3>
-                        <p className="text-xs font-semibold text-slate-500">
+                        <h3 className="truncate text-base font-black leading-tight text-slate-800">{project.project_name}</h3>
+                        <p className="text-xs font-semibold leading-tight text-slate-500">
                           {tasks.length} task{tasks.length === 1 ? '' : 's'} &bull; {project.employee_count} member
                           {project.employee_count === 1 ? '' : 's'}
                         </p>
                       </div>
                     </div>
                     <svg
-                      className={`h-5 w-5 shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}
+                      className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}
                       fill="none"
                       stroke="currentColor"
                       viewBox="0 0 24 24"
