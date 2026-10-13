@@ -30,6 +30,7 @@ caller's address when the request had a valid one.
 | `screenshot` | `screenshot_deleted` | An administrator or HR permanently deletes a screenshot. Names whose screenshot and when it was taken. A deletion that failed is not recorded. | `TimeEntryScreenshotService.delete_screenshot` |
 | `member` | `member_created` / `_updated` / `_deleted` (and `_deactivated`, written before Delete became permanent), `login_excluded` / `login_allowed`, `add_tasks_excluded` / `add_tasks_allowed` | The member directory. A switch is recorded only when it actually moved. | `MemberService` |
 | `feedback` | `feedback_status_changed` | An administrator marks feedback Working or Resolved. | `FeedbackService.update_status` |
+| `feedback` | `feedback_deleted` | An administrator permanently deletes a feedback and its attachments. Names whose feedback. | `FeedbackService.delete_feedback` |
 | `screenshot` | `screenshot_notice_sent` | A reviewer emails a notice about an employee's screenshot. | `TimeEntryScreenshotService.send_notice` |
 | `system` | `maintenance_enabled` / `_disabled` | The maintenance notice (predates this document). | `MaintenanceModeService` |
 

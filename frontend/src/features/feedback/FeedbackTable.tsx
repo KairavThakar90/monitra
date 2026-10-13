@@ -1,5 +1,9 @@
-import React, { useState } from "react";
-import { FEEDBACK_CATEGORY_LABELS, useUpdateFeedbackStatusMutation } from "../../store/api/feedbackApi";
+import React, { useEffect, useState } from "react";
+import {
+  FEEDBACK_CATEGORY_LABELS,
+  useDeleteFeedbackMutation,
+  useUpdateFeedbackStatusMutation,
+} from "../../store/api/feedbackApi";
 import type { Feedback } from "../../store/api/feedbackApi";
 import { useFeedback } from "../../components/FeedbackProvider";
 import { formatISTDate } from "../../utils/duration";
@@ -8,6 +12,9 @@ import {
   ACTION_LABELS,
   canPerformAction,
   confirmationFor,
+  DELETE_SUCCESS_MESSAGE,
+  deleteConfirmation,
+  deleteErrorMessage,
   errorMessage,
   isActionComplete,
   NO_REPLY_NOTE,
@@ -122,7 +129,7 @@ const ACTION_STYLES: Record<FeedbackAction, { idle: string; done: string }> = {
 };
 
 const actionButton =
-  "rounded-lg border px-3 py-1.5 text-[11px] font-bold transition disabled:cursor-not-allowed";
+  "min-w-[88px] whitespace-nowrap rounded-lg border px-3 py-1.5 text-center text-[11px] font-bold transition disabled:cursor-not-allowed";
 
 /**
  * The Working / Resolved / View controls for one row.
@@ -142,10 +149,14 @@ const RowActions: React.FC<{
   item: Feedback;
   canManage: boolean;
   onView: () => void;
-}> = ({ item, canManage, onView }) => {
+  /** One unwrapped line, for the table's Action column. */
+  inline?: boolean;
+}> = ({ item, canManage, onView, inline = false }) => {
   const { showToast, confirmAction } = useFeedback();
   const [updateStatus] = useUpdateFeedbackStatusMutation();
+  const [deleteFeedback] = useDeleteFeedbackMutation();
   const [pending, setPending] = useState<FeedbackAction | null>(null);
+  const [deleting, setDeleting] = useState(false);
   // Resolved asks for its optional note in a dialog, which is also its
   // confirmation; Working keeps the plain confirmation.
   const [resolveOpen, setResolveOpen] = useState(false);
@@ -186,6 +197,24 @@ const RowActions: React.FC<{
     await send(action, null);
   };
 
+  const remove = async () => {
+    // Re-checked here, like `perform`: the menu closes on press, but a second
+    // press landing before React re-renders must not send a second request.
+    if (deleting || pending !== null) return;
+    const { title, message } = deleteConfirmation(item.employee_name);
+    if (!(await confirmAction(title, message))) return;
+    setDeleting(true);
+    try {
+      await deleteFeedback(item.id).unwrap();
+      showToast(DELETE_SUCCESS_MESSAGE, "success");
+    } catch (err) {
+      console.error("Failed to delete feedback", err);
+      showToast(deleteErrorMessage((err as { status?: number } | null)?.status), "error");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const confirmResolve = async (note: string | null) => {
     if (!canPerformAction(item.status, "resolved", pending)) return;
     // Closed only on success: a failure leaves the dialog open with the note
@@ -195,7 +224,9 @@ const RowActions: React.FC<{
   };
 
   return (
-    <div className="flex flex-wrap justify-end gap-1.5">
+    // In the table the three controls are one line in every row, so the
+    // buttons line up down the column; the stacked card is narrow and may wrap.
+    <div className={`flex items-center justify-end gap-1.5 ${inline ? "flex-nowrap" : "flex-wrap"}`}>
       {resolveOpen && (
         <ResolveFeedbackDialog
           employeeName={item.employee_name}
@@ -244,14 +275,111 @@ const RowActions: React.FC<{
           </button>
         );
       })}
+      <ManageMenu
+        canDelete={canManage}
+        deleting={deleting}
+        disabled={pending !== null}
+        onView={onView}
+        onDelete={() => void remove()}
+      />
+    </div>
+  );
+};
+
+/**
+ * The row's Manage dropdown, drawn like Project Management's: a grey Manage
+ * button, and a small white menu of View and (for an administrator) Delete.
+ * There is no Edit -- feedback is a record of what someone wrote, and the
+ * workflow buttons beside this are the only changes it takes.
+ *
+ * The menu is `fixed`, placed from the button's position when it opens, so the
+ * table's own `overflow` cannot clip it; it opens upward when there is no room
+ * below, and closes on a click elsewhere, Escape, scroll or resize.
+ */
+const ManageMenu: React.FC<{
+  canDelete: boolean;
+  deleting: boolean;
+  disabled: boolean;
+  onView: () => void;
+  onDelete: () => void;
+}> = ({ canDelete, deleting, disabled, onView, onDelete }) => {
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const open = position !== null;
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = () => setPosition(null);
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const toggle = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (open) {
+      setPosition(null);
+      return;
+    }
+    const trigger = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 128;
+    const menuHeight = canDelete ? 80 : 44;
+    const opensUpward = trigger.bottom + menuHeight > window.innerHeight && trigger.top > menuHeight;
+    setPosition({
+      left: Math.max(12, Math.min(trigger.right - menuWidth, window.innerWidth - menuWidth - 12)),
+      top: opensUpward ? trigger.top - menuHeight - 6 : trigger.bottom + 6,
+    });
+  };
+
+  return (
+    <>
       <button
         type="button"
-        onClick={onView}
-        className="rounded-lg border border-[#2563EB]/25 bg-[#EFF6FF] px-3 py-1.5 text-[11px] font-bold text-[#2563EB] transition hover:bg-[#DBEAFE]"
+        onClick={toggle}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="flex items-center gap-2 rounded-lg border border-transparent bg-slate-100 px-3 py-1.5 text-[11px] font-bold text-slate-700 transition hover:bg-slate-200"
       >
-        View
+        Manage
+        <svg className="h-3 w-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
       </button>
-    </div>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setPosition(null)} />
+          <div
+            role="menu"
+            className="fixed z-50 w-32 overflow-hidden rounded-lg border border-slate-200 bg-white text-left shadow-xl"
+            style={{ left: position.left, top: position.top }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => { setPosition(null); onView(); }}
+              className="block w-full px-3 py-2 text-left text-xs font-bold text-indigo-600 transition hover:bg-indigo-50"
+            >
+              View
+            </button>
+            {canDelete && (
+              <button
+                type="button"
+                role="menuitem"
+                disabled={disabled || deleting}
+                onClick={() => { setPosition(null); onDelete(); }}
+                className="block w-full px-3 py-2 text-left text-xs font-bold text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Delete
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </>
   );
 };
 
@@ -298,7 +426,7 @@ export const FeedbackTable: React.FC<{
             <col style={{ width: 190 }} />
             <col />
             <col style={{ width: 130 }} />
-            {showActions && <col style={{ width: 270 }} />}
+            {showActions && <col style={{ width: 340 }} />}
           </colgroup>
           <thead className="border-b border-[#E2E8F0] bg-[#F8FAFC]">
             <tr>
@@ -320,21 +448,22 @@ export const FeedbackTable: React.FC<{
                     <Submitter item={item} />
                   </td>
                 )}
-                <td className="px-5 py-3.5 align-top">
+                <td className="px-5 py-3.5 align-middle">
                   <CategoryPill category={item.category} />
                 </td>
-                <td className="px-5 py-3.5 align-top text-[13px] leading-5 text-[#334155]">
+                <td className="px-5 py-3.5 align-middle text-[13px] leading-5 text-[#334155]">
                   <DescriptionCell
                     message={item.message}
                     attachmentCount={attachmentCountOf(item)}
                   />
                 </td>
-                <td className="whitespace-nowrap px-5 py-3.5 text-right align-top text-[12px] font-semibold text-[#64748B]">
+                <td className="whitespace-nowrap px-5 py-3.5 text-right align-middle text-[12px] font-semibold text-[#64748B]">
                   {formatISTDate(item.created_at)}
                 </td>
                 {showActions && (
-                  <td className="px-5 py-3.5 text-right align-top">
+                  <td className="px-5 py-3.5 text-right align-middle">
                     <RowActions
+                      inline
                       item={item}
                       canManage={canManage}
                       onView={() => setSelectedDescription(item)}

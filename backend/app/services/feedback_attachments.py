@@ -542,6 +542,40 @@ class FeedbackAttachmentService:
                     user_id, client_op, file_id, why,
                 )
 
+    @staticmethod
+    def delete_stored_files(file_ids: Sequence[str], feedback_id: int) -> None:
+        """Remove a deleted feedback's objects from Drive, or refuse.
+
+        Unlike `_discard` this is a deletion somebody asked for, so a failure
+        must be loud: the caller keeps the database rows until every object is
+        confirmed gone, the way the screenshot delete does. An object that is
+        already gone counts as removed, which also makes a retry after a partial
+        failure finish the job instead of being blocked by what it already did.
+        """
+        for file_id in file_ids:
+            try:
+                drive_service.delete_file_strict(file_id)
+            except GoogleDriveFileNotFound:
+                continue
+            except GoogleDriveNotAccessible as exc:
+                logger.error(
+                    "FEEDBACK_DELETE_STORAGE_FAILED feedback=%s drive_file=%s reason=not_accessible detail=%s",
+                    feedback_id, file_id, exc,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Attachment storage is not available on this server; nothing was deleted.",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "FEEDBACK_DELETE_STORAGE_FAILED feedback=%s drive_file=%s reason=%s",
+                    feedback_id, file_id, type(exc).__name__,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Attachment storage is temporarily unavailable; nothing was deleted.",
+                ) from exc
+
     # ── Read ──────────────────────────────────────────────────────────────────
 
     @staticmethod

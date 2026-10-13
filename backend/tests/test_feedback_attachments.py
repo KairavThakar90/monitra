@@ -659,6 +659,107 @@ class ReadTests(AttachmentCase):
         self.assertEqual(response.json()["attachment_count"], 1)
 
 
+# ── Deleting ──────────────────────────────────────────────────────────────────
+
+
+class DeleteTests(AttachmentCase):
+    """`DELETE /feedback/{id}`: Admin only, storage first, rows only when it is gone."""
+
+    def setUp(self):
+        super().setUp()
+        self.as_user(ALICE)
+        self.body = self.submit(
+            [("a.png", png(), "image/png"), ("b.png", png(9, 9), "image/png")]
+        ).json()
+        self.feedback_id = self.body["id"]
+        self.url = f"/feedback/{self.feedback_id}"
+
+    def delete(self, user_id, url=None):
+        self.as_user(user_id)
+        return self.client.delete(url or self.url)
+
+    def test_an_administrator_deletes_the_feedback_its_rows_and_its_files(self):
+        self.assertEqual(len(self.drive.objects), 2)
+
+        response = self.delete(ADMIN)
+
+        self.assertEqual(response.status_code, 204, response.text)
+        self.assertEqual(response.content, b"")
+        self.assertEqual(self.count(FeedbackRequest), 0)
+        self.assertEqual(self.count(FeedbackAttachment), 0)
+        self.assertEqual(self.drive.objects, {})
+        self.as_user(ADMIN)
+        self.assertEqual(self.client.get(self.url).status_code, 404)
+
+    def test_a_feedback_without_attachments_deletes_too(self):
+        legacy = FeedbackRequest(organization_id=ORG, user_id=BOB, category="other", message="old", status="new")
+        self.db.add(legacy)
+        self.db.commit()
+
+        self.assertEqual(self.delete(ADMIN, f"/feedback/{legacy.id}").status_code, 204)
+
+        self.assertEqual(self.count(FeedbackRequest), 1)       # only Alice's remains
+
+    def test_only_the_one_feedback_is_removed(self):
+        self.as_user(BOB)
+        other = self.submit([("c.png", png(7, 7), "image/png")], client_op="b" * 32).json()
+
+        self.assertEqual(self.delete(ADMIN).status_code, 204)
+
+        self.assertEqual(self.count(FeedbackRequest), 1)
+        self.assertEqual(self.count(FeedbackAttachment), 1)
+        self.assertEqual(len(self.drive.objects), 1)
+        self.as_user(ADMIN)
+        self.assertEqual(self.client.get(f"/feedback/{other['id']}").status_code, 200)
+
+    def test_hr_leader_manager_and_the_submitter_are_refused_and_nothing_goes(self):
+        for user in (HR, LEADER, MANAGER, ALICE, BOB):
+            with self.subTest(user=user):
+                self.assertEqual(self.delete(user).status_code, 403)
+        self.assertEqual(self.count(FeedbackRequest), 1)
+        self.assertEqual(self.count(FeedbackAttachment), 2)
+        self.assertEqual(len(self.drive.objects), 2)
+
+    def test_another_organizations_administrator_gets_a_404_and_deletes_nothing(self):
+        self.assertEqual(self.delete(OUTSIDER).status_code, 404)
+        self.assertEqual(self.count(FeedbackRequest), 1)
+        self.assertEqual(len(self.drive.objects), 2)
+
+    def test_a_missing_id_is_a_404(self):
+        self.assertEqual(self.delete(ADMIN, "/feedback/987654").status_code, 404)
+
+    def test_an_unauthenticated_caller_is_refused(self):
+        app.dependency_overrides.pop(get_current_user)
+        self.assertIn(TestClient(app).delete(self.url).status_code, (401, 403))
+        self.assertEqual(self.count(FeedbackRequest), 1)
+
+    def test_a_storage_outage_deletes_nothing_and_a_retry_finishes_the_job(self):
+        self.drive.fail_delete = True
+        with self.assertLogs(LOG, level="ERROR") as logs:
+            failed = self.delete(ADMIN)
+        self.assertEqual(failed.status_code, 502)
+        self.assertTrue(any("FEEDBACK_DELETE_STORAGE_FAILED" in line for line in logs.output))
+        self.assertEqual(self.count(FeedbackRequest), 1)
+        self.assertEqual(self.count(FeedbackAttachment), 2)
+        self.assertEqual(len(self.drive.objects), 2)
+
+        self.drive.fail_delete = False
+        self.assertEqual(self.delete(ADMIN).status_code, 204)
+        self.assertEqual(self.count(FeedbackRequest), 0)
+        self.assertEqual(self.drive.objects, {})
+
+    def test_a_file_already_gone_from_storage_does_not_block_the_delete(self):
+        self.drive.objects.clear()
+        self.assertEqual(self.delete(ADMIN).status_code, 204)
+        self.assertEqual(self.count(FeedbackRequest), 0)
+        self.assertEqual(self.count(FeedbackAttachment), 0)
+
+    def test_nobody_is_emailed(self):
+        with patch("app.services.feedback.queue_feedback_status_notification") as queued:
+            self.assertEqual(self.delete(ADMIN).status_code, 204)
+        queued.assert_not_called()
+
+
 # ── Email ─────────────────────────────────────────────────────────────────────
 
 

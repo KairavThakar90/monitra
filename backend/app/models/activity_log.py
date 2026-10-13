@@ -104,6 +104,7 @@ class ActivityLogAction:
     ADD_NONBILLABLE_TASKS_ALLOWED = "add_nonbillable_tasks_allowed"
 
     FEEDBACK_STATUS_CHANGED = "feedback_status_changed"
+    FEEDBACK_DELETED = "feedback_deleted"
 
     SCREENSHOT_NOTICE_SENT = "screenshot_notice_sent"
     SCREENSHOT_DELETED = "screenshot_deleted"

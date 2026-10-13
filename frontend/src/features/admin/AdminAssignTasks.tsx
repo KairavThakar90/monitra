@@ -17,7 +17,7 @@ import { useAuth } from '../auth/authContext';
 import { formatApiError } from '../../api/utils';
 import { SEARCH_MAX_LENGTH } from '../../validation';
 import { AssignTaskDialog, type AssignTaskSubmit } from './AssignTaskDialog';
-import { filterByCreated, filterByHolders, filterByProjectIds, filterProjects, holdersOf, taskHolderOptions } from './assignTasks';
+import { createdLabel, filterByCreated, filterByHolders, filterByProjectIds, filterProjects, holdersOf, taskHolderOptions } from './assignTasks';
 import { DEFAULT_RANGE, DateRangeFilter, MemberMultiSelect, ProjectMultiSelect, type DateRange } from '../dashboard/v2/filters';
 
 /** Page sizes the footer offers; the first is the default. */
@@ -306,6 +306,10 @@ export const AdminAssignTasks: React.FC = () => {
                           <li key={task.id} className="flex flex-col gap-2 px-4 py-3 transition hover:bg-slate-50/50 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-4 sm:px-5 sm:py-4">
                             <div className="min-w-0 sm:flex-1 sm:basis-56">
                               <h4 className="break-words text-sm font-bold text-slate-700 sm:truncate" title={task.name}>{task.name}</h4>
+                            </div>
+                            <div className="text-xs font-semibold text-slate-500 sm:w-32 sm:shrink-0" data-testid="task-created">
+                              <span className="font-bold text-slate-400 sm:hidden">Created </span>
+                              {createdLabel(task.created_at) || '-'}
                             </div>
                             <div className="min-w-0 sm:basis-56">
                               <Holders people={holdersOf(task)} />

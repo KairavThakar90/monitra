@@ -76,6 +76,7 @@ const ACTION_LABELS: Record<string, string> = {
   add_nonbillable_tasks_excluded: 'Excluded from adding Non billable tasks',
   add_nonbillable_tasks_allowed: 'Allowed to add Non billable tasks',
   feedback_status_changed: 'Updated feedback',
+  feedback_deleted: 'Deleted feedback',
   screenshot_notice_sent: 'Sent screenshot notice',
   screenshot_deleted: 'Deleted screenshot',
   client_invited: 'Invited client',

@@ -156,6 +156,16 @@ describe('Assign Tasks: member filter', () => {
     expect(container.querySelector('button[aria-label="Edit Design the logo"]')).toBeTruthy();
   });
 
+  it('shows the date each task was created, in the gap between its name and who holds it', () => {
+    const expected = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(now));
+    const cells = Array.from(container.querySelectorAll('[data-testid="task-created"]'));
+    expect(cells.length).toBe(6);
+    for (const cell of cells) expect(cell.textContent).toContain(expected);
+    const row = cells[0].closest('li')!;
+    const order = Array.from(row.children).map((child) => child.querySelector('h4') ? 'name' : child.getAttribute('data-testid') === 'task-created' ? 'created' : 'other');
+    expect(order.slice(0, 2)).toEqual(['name', 'created']);
+  });
+
   it('puts the Reports page member filter in the toolbar, on everyone, narrowing nothing', () => {
     expect(buttonByText('All members')).toBeTruthy();
     expect(projectNames()).toEqual(['Alpha Portal', 'Beta Redesign']);

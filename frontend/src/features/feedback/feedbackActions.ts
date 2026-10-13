@@ -144,6 +144,35 @@ export const errorMessage = (status?: number) => {
   }
 };
 
+/**
+ * The confirmation shown before Delete. It says what is lost -- the message and
+ * its attachments -- and that nobody is told, because the other two actions on
+ * the row both send an email and an administrator may expect this one to.
+ */
+export const deleteConfirmation = (employeeName: string) => ({
+  title: 'Delete feedback?',
+  message: `${employeeName}'s feedback and its attachments will be permanently removed. They will not be notified.`,
+});
+
+export const DELETE_SUCCESS_MESSAGE = 'Feedback deleted.';
+
+/** What to say when a delete fails, chosen by status code; see `errorMessage`. */
+export const deleteErrorMessage = (status?: number) => {
+  switch (status) {
+    case 401:
+      return 'Your session has expired. Please sign in again.';
+    case 403:
+      return 'Only an administrator can delete feedback.';
+    case 404:
+      return 'That feedback no longer exists.';
+    case 502:
+    case 503:
+      return 'Attachment storage is unavailable, so nothing was deleted. Please try again.';
+    default:
+      return 'Unable to delete this feedback. Please try again.';
+  }
+};
+
 /** How a row's current state is presented in the Action column. */
 export const STATUS_LABELS: Record<FeedbackStatus, string> = {
   new: 'New',

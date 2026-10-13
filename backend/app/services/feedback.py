@@ -7,12 +7,14 @@ from typing import Optional
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.database import end_transaction
 from app.core.permissions import resolve_role_alias
 from app.models.feedback_request import FeedbackRequest
 from app.models.user import User
 from app.repositories.feedback import FeedbackRepository, FeedbackRow
 from app.repositories.feedback_attachment import FeedbackAttachmentRepository
 from app.schemas.feedback import FeedbackCreate, FeedbackStatus, FeedbackStatusAction
+from app.services.feedback_attachments import FeedbackAttachmentService
 from app.services.email import (
     deliver_in_background, feedback_status_dedupe_key, queue_feedback_notification,
     queue_feedback_status_notification,
@@ -477,6 +479,58 @@ class FeedbackService:
             attachments=FeedbackService._attachments_of(db, feedback.id),
             replies=FeedbackService._replies_of(db, feedback.id),
         )
+
+    @staticmethod
+    def delete_feedback(db: Session, current_user: User, feedback_id: int) -> None:
+        """Permanently delete one feedback and its attachments. Admin only.
+
+        The same gate and tenant scope as `update_status`: another
+        organization's feedback and a non-existent id are both a 404. The
+        attachment objects in Drive are removed **first** and the rows only once
+        every object is confirmed gone (see `delete_stored_files`), so a storage
+        outage leaves the feedback in place to be deleted again rather than
+        leaving files in Drive that nothing points at. Nothing is emailed: the
+        submitter is not told, and any status email already queued is untouched.
+        """
+        organization_id = FeedbackService._require_manage(current_user)
+
+        row = FeedbackRepository.get_for_organization(
+            db, feedback_id=feedback_id, organization_id=organization_id
+        )
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Feedback not found."
+            )
+        feedback, _employee_id, employee_name = row
+        file_ids = [
+            a.google_drive_file_id
+            for a in FeedbackService._attachments_of(db, feedback.id)
+            if a.google_drive_file_id
+        ]
+        deleted_id = feedback.id
+
+        # Read into locals above; the Drive wait below must not hold a connection.
+        end_transaction(db)
+        FeedbackAttachmentService.delete_stored_files(file_ids, deleted_id)
+
+        feedback = FeedbackRepository.get_by_id(db, deleted_id)
+        if feedback is not None:
+            FeedbackRepository.delete(db, feedback=feedback)
+
+        logger.info(
+            "FEEDBACK_DELETED: feedback=%s admin=%s organization=%s attachments=%d",
+            deleted_id, current_user.id, organization_id, len(file_ids),
+        )
+
+        from app.models.activity_log import ActivityLogAction, ActivityLogModule
+        from app.services.activity_log import ActivityLogService
+
+        ActivityLogService.capture(db, lambda: {
+            "actor": current_user,
+            "module": ActivityLogModule.FEEDBACK, "action": ActivityLogAction.FEEDBACK_DELETED,
+            "description": f"Deleted {employee_name}'s feedback",
+            "entity_id": deleted_id,
+        })
 
     @staticmethod
     def _response(

@@ -178,6 +178,9 @@ export const ENDPOINTS = {
     // feedback's own submitter, so this carries an id, a status and an optional
     // note to print in the email -- and nothing that could name a recipient.
     STATUS: (id: string | number) => `${API_BASE_URL}/feedback/${id}/status`,
+    // Admin only. `DELETE` on the same path as GET_BY_ID: removes the feedback,
+    // its attachment rows and the stored files, and emails no one.
+    DELETE: (id: string | number) => `${API_BASE_URL}/feedback/${id}`,
     // The bytes of one attached file, behind the same permission check as the
     // feedback it belongs to. Bearer token required, so it is fetched and shown
     // from an object URL, never linked; add `?download=true` for an attachment

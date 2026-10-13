@@ -1,6 +1,6 @@
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models.feedback_attachment import FeedbackAttachment
@@ -33,6 +33,15 @@ class FeedbackAttachmentRepository:
         for row in rows:
             grouped.setdefault(row.feedback_id, []).append(row)
         return grouped
+
+    @staticmethod
+    def delete_for_feedback(db: Session, feedback_id: int) -> None:
+        """Remove every attachment row of one feedback; the caller commits.
+
+        The foreign key cascades in PostgreSQL, but the rows are removed here
+        explicitly so the delete does not depend on the database to enforce it.
+        """
+        db.execute(delete(FeedbackAttachment).where(FeedbackAttachment.feedback_id == feedback_id))
 
     @staticmethod
     def get_with_feedback(

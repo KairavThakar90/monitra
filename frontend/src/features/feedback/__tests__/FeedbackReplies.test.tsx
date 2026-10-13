@@ -88,10 +88,14 @@ describe('the reply in the View dialog', () => {
     await settle();
   };
 
-  const rowView = (index = 0) =>
-    Array.from(container.querySelectorAll('tbody button')).filter((b) => b.textContent === 'View')[index] as HTMLButtonElement;
+  // View lives in the row's Manage dropdown: open the menu, then press View.
   const open = async (index = 0) => {
-    await act(async () => { rowView(index).click(); });
+    const manage = Array.from(container.querySelectorAll('tbody button'))
+      .filter((b) => b.textContent?.trim() === 'Manage')[index] as HTMLButtonElement;
+    await act(async () => { manage.click(); });
+    const view = Array.from(document.querySelectorAll('[role="menuitem"]'))
+      .find((b) => b.textContent === 'View') as HTMLButtonElement;
+    await act(async () => { view.click(); });
     await settle();
   };
   const modal = () => document.querySelector('h2')?.closest('.rounded-2xl') as HTMLElement | null;

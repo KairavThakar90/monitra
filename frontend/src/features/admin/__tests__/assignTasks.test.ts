@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { Project, ProjectTask, ProjectUser } from '../../../store/api/projectsApi';
 import { ALL_TIME_RANGE, rangeFor } from '../../dashboard/v2/filters';
 import {
+  createdLabel,
   filterByCreated,
   filterByHolders,
   filterByProjectIds,
@@ -148,6 +149,18 @@ describe('filterByProjectIds', () => {
 
   it('keeps only the selected projects, matching the picker string ids', () => {
     expect(filterByProjectIds(projects, ['1', '3']).map((p) => p.id)).toEqual([1, 3]);
+  });
+});
+
+describe('createdLabel', () => {
+  it('writes the viewer-zone day the way the date range chip does', () => {
+    expect(createdLabel(new Date(2026, 9, 7, 12).toISOString())).toBe('07 Oct 2026');
+  });
+
+  it('is empty for a missing or unreadable timestamp, never a made-up date', () => {
+    expect(createdLabel(undefined)).toBe('');
+    expect(createdLabel('')).toBe('');
+    expect(createdLabel('not a date')).toBe('');
   });
 });
 

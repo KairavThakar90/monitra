@@ -308,3 +308,33 @@ def update_feedback_status(
         db, current_user, feedback_id, update.status,
         background_tasks=background_tasks, message=update.message,
     )
+
+
+@router.delete(
+    "/{feedback_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Permanently delete one feedback and its attachments (Admin only).",
+    description=(
+        "Removes the feedback, its attachment rows and the attachment files in "
+        "storage. **Admin only**, enforced server-side: HR and Leader read "
+        "feedback and may not delete it. Another organization's feedback is "
+        "answered with 404, identically to an id that does not exist.\n\n"
+        "The stored files are deleted first and the database rows only once "
+        "every file is confirmed gone; if storage cannot be reached the "
+        "response is 502/503, nothing is deleted, and the request may be "
+        "repeated. Nobody is emailed."
+    ),
+    responses={
+        403: {"description": "The caller is not an Admin."},
+        404: {"description": "No such feedback in this organization."},
+        502: {"description": "Attachment storage is temporarily unavailable; nothing was deleted."},
+        503: {"description": "Attachment storage is not available; nothing was deleted."},
+    },
+)
+def delete_feedback(
+    feedback_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db, scope="function"),
+):
+    FeedbackService.delete_feedback(db, current_user, feedback_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

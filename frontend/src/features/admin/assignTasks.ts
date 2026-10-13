@@ -126,6 +126,19 @@ const localDate = (timestamp: string): string => {
 };
 
 /**
+ * The day a task was created, as the date range chip writes it ("07 Oct 2026");
+ * empty for a missing or unreadable timestamp. Read in the viewer's own zone,
+ * the same day `filterByCreated` compares, so a task listed under "Last 7 days"
+ * never shows a date outside them.
+ */
+export const createdLabel = (timestamp: string | null | undefined): string => {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).format(date);
+};
+
+/**
  * The projects with only the tasks **created** inside `range`, dropping a
  * project left with none. The page has no tracked-time data, so creation is
  * the date a task honestly has; the "All Time" range (empty bounds) filters

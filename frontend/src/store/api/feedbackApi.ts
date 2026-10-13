@@ -226,6 +226,22 @@ export const feedbackApi = baseApi.injectEndpoints({
         { type: 'Feedback' as const, id: 'MINE' },
       ],
     }),
+
+    /**
+     * Permanently delete one feedback. Admin only, enforced server-side.
+     *
+     * Both list tags are invalidated, for the reason `updateFeedbackStatus`
+     * gives: the row is removed by the server, so the lists are re-read from it
+     * rather than the browser dropping what it assumed was gone. A refused or
+     * failed delete (403, 502) invalidates nothing the caller must undo.
+     */
+    deleteFeedback: builder.mutation<void, number>({
+      query: (id) => ({ url: ENDPOINTS.FEEDBACK.DELETE(id), method: 'DELETE' }),
+      invalidatesTags: [
+        { type: 'Feedback' as const, id: 'ALL' },
+        { type: 'Feedback' as const, id: 'MINE' },
+      ],
+    }),
   }),
 });
 
@@ -235,4 +251,5 @@ export const {
   useGetAllFeedbackItemsQuery,
   useGetMyFeedbackItemsQuery,
   useUpdateFeedbackStatusMutation,
+  useDeleteFeedbackMutation,
 } = feedbackApi;

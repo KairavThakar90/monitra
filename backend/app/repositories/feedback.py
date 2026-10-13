@@ -10,6 +10,7 @@ from app.models.email_notification import (
 from app.models.feedback_attachment import FeedbackAttachment
 from app.models.feedback_request import FeedbackRequest
 from app.models.user import User
+from app.repositories.feedback_attachment import FeedbackAttachmentRepository
 
 #: A listing row: the feedback plus the submitter's id and display name. The
 #: submitter is joined in the same statement rather than fetched per row, so a
@@ -263,6 +264,17 @@ class FeedbackRepository:
             )
         ).first()
         return (row[0], row[1]) if row else None
+
+    @staticmethod
+    def delete(db: Session, *, feedback: FeedbackRequest) -> None:
+        """Permanently remove one already-loaded feedback, with its attachment rows.
+
+        One transaction: the feedback and its attachment rows go together or
+        not at all. Takes the instance for the same reason `set_status` does.
+        """
+        FeedbackAttachmentRepository.delete_for_feedback(db, feedback.id)
+        db.delete(feedback)
+        db.commit()
 
     @staticmethod
     def set_status(

@@ -109,10 +109,14 @@ describe('FeedbackTable attachments', () => {
   const contentCalls = () => calls.filter((call) => call.url.includes('/feedback/attachments/'));
   const buttonByLabel = (label: string) =>
     Array.from(document.querySelectorAll('button')).filter((b) => b.getAttribute('aria-label') === label) as HTMLButtonElement[];
-  const rowView = (index = 0) =>
-    Array.from(container.querySelectorAll('tbody button')).filter((b) => b.textContent === 'View')[index] as HTMLButtonElement;
+  // View lives in the row's Manage dropdown: open the menu, then press View.
   const open = async (index = 0) => {
-    await act(async () => { rowView(index).click(); });
+    const manage = Array.from(container.querySelectorAll('tbody button'))
+      .filter((b) => b.textContent?.trim() === 'Manage')[index] as HTMLButtonElement;
+    await act(async () => { manage.click(); });
+    const view = Array.from(document.querySelectorAll('[role="menuitem"]'))
+      .find((b) => b.textContent === 'View') as HTMLButtonElement;
+    await act(async () => { view.click(); });
     await settle();
   };
   const modal = () => document.querySelector('h2')?.closest('.rounded-2xl') as HTMLElement | null;
@@ -440,7 +444,7 @@ describe('FeedbackTable attachments', () => {
 
     it('offers no controls to a read-only viewer, but still shows the attachments', async () => {
       await render([row(1, { attachment_count: 1, attachments: [PNG] })], { canManage: false });
-      expect(container.querySelectorAll('tbody button')).toHaveLength(1); // View only
+      expect(container.querySelectorAll('tbody button')).toHaveLength(1); // Manage only (View inside)
       await open();
       expect(modal()!.textContent).toContain('problem.png');
     });
