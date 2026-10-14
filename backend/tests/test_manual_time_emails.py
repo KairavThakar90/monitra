@@ -1,7 +1,7 @@
 """Manual time request emails — the properties that have to hold in production.
 
-1. **Submit.** A new request queues one review email per approver (admins and
-   the requester's leaders) plus a receipt to the requester, each keyed so a
+1. **Submit.** A new request queues a review email to the leader of the
+   request's project only, plus a receipt to the requester, each keyed so a
    retry can never send a second copy.
 2. **Decide.** Approving or rejecting queues exactly one outcome email to the
    requester, and to nobody else.
@@ -414,24 +414,34 @@ class TestServiceHooks(unittest.TestCase):
 
 
 class TestApproverQuery(unittest.TestCase):
-    """The recipient query names exactly the admin and leader roles."""
+    """The recipient query names project leaders only."""
 
-    def test_the_roles_are_admins_and_leaders_only(self):
-        from app.repositories.manual_time_notification import ADMIN_ROLES, LEADER_ROLES
+    def test_the_roles_are_leaders_only(self):
+        from app.repositories import manual_time_notification as module
 
-        self.assertEqual(ADMIN_ROLES, {"administrator", "org_admin", "super_admin", "hr", "manager"})
-        self.assertEqual(LEADER_ROLES, {"leader", "project_leader"})
-        self.assertNotIn("employee", ADMIN_ROLES | LEADER_ROLES)
+        self.assertEqual(module.LEADER_ROLES, {"leader", "project_leader"})
+        self.assertFalse(hasattr(module, "ADMIN_ROLES"))
 
-    def test_every_org_wide_role_that_can_approve_is_notified(self):
-        """Anyone who can approve any request in the organisation must be told
-        about new ones -- a role added to the approvers must be added here too."""
-        from app.core.permissions import ROLE_PERMISSIONS
-        from app.repositories.manual_time_notification import ADMIN_ROLES, LEADER_ROLES
+    def test_the_query_selects_leaders_of_the_projects_involved_and_no_admin_role(self):
+        """Compile the real query: it must filter on the leader roles and on
+        `Project.leader_id`, and must not name any organisation-wide role."""
+        from app.repositories.manual_time_notification import ManualTimeNotificationRepository
 
-        approvers = {role for role, perms in ROLE_PERMISSIONS.items()
-                     if "manual_time_entries:approve" in perms}
-        self.assertEqual(approvers - LEADER_ROLES, set(ADMIN_ROLES))
+        db = MagicMock()
+        db.scalars.return_value.all.return_value = []
+        ManualTimeNotificationRepository.list_approvers(
+            db, organization_id=7, requester_id=42, project_id=3,
+        )
+        sql = str(db.scalars.call_args.args[0].compile(compile_kwargs={"literal_binds": True}))
+        self.assertIn("leader", sql)
+        self.assertIn("project_leader", sql)
+        self.assertIn("projects.leader_id", sql)
+        # Only the request's own project (id 3): the requester's other projects
+        # no longer widen the list, so there is no project_members lookup.
+        self.assertIn("projects.id = 3", sql)
+        self.assertNotIn("project_members", sql)
+        for role in ("administrator", "org_admin", "super_admin", "'hr'", "'manager'"):
+            self.assertNotIn(role, sql)
 
 
 if __name__ == "__main__":  # pragma: no cover

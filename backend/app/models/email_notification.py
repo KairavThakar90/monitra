@@ -77,8 +77,8 @@ TYPE_WEEKLY_REPORT = "weekly_report"
 #: same reason the weekly key is the week start: every retry and re-run of
 #: the same month computes `month:2026-08-01:user:42` and collapses onto it.
 TYPE_MONTHLY_REPORT = "monthly_report"
-#: A manual time request is waiting for review. One row per approver (the
-#: organisation's admins and the requester's leaders), keyed
+#: A manual time request is waiting for review. One row for the leader of
+#: the request's project, keyed
 #: `manual:<entry id>:approver:<user id>`, so each approver is told once.
 TYPE_MANUAL_TIME_REQUEST = "manual_time_request"
 #: "Your manual time request was submitted", to the requester. Keyed
