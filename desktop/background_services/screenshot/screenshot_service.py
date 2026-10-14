@@ -86,6 +86,7 @@ from background_services.notifications import NotificationLevel
 from background_services.screenshot import (
     capture, config, health, image_processor, mac_diagnostics, scheduler, screen_access, store,
 )
+from background_services.screenshot.url_rules import url_matches_rule
 from core.service import BaseService
 from sync.local_cache import CACHE_OWNER_KEY
 from tracking.active_window import get_active_window_details
@@ -710,10 +711,8 @@ class ScreenshotService(BaseService):
                 if browser_info and browser_info.url:
                     for excl in self._privacy_config.get("excluded_urls", []):
                         url_obj = urls_by_id.get(excl["url_id"])
-                        if url_obj:
-                            pattern = url_obj["url_pattern"].replace("*", "")
-                            if pattern.lower() in browser_info.url.lower():
-                                return False, None, None, f"url excluded by privacy config ({url_obj['domain']})"
+                        if url_obj and url_matches_rule(browser_info.url, url_obj):
+                            return False, None, None, f"url excluded by privacy config ({url_obj.get('domain')})"
                 
                 # Check Applications. `app_name` comes from
                 # `get_active_window_details()`, which -- per

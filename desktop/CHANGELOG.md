@@ -41,6 +41,20 @@ re-grant a permission.
 
 ### Fixed
 
+- **A program that stops responding is no longer reported as "Ghost".** When a program hangs
+  while you are using it, Windows swaps its window for a placeholder, and Monitra recorded the
+  time under that placeholder's technical name, "Ghost", in the Apps report. It now records
+  the program that stopped responding (for example Excel). If Windows will not say which
+  program it was, nothing is recorded for that moment, rather than a made-up name. Time
+  already recorded as "Ghost" is not changed.
+
+- **Website privacy rules now hide the sites they name.** A screenshot was still taken
+  while a website the admin had excluded (for example Upwork) was open, whenever the rule's
+  URL pattern was written in a common form such as `https://*.upwork.com/*` or
+  `https://upwork.com/*`: Monitra compared the pattern to the address letter for letter, so
+  these never matched. Rules now ignore `http`/`https`, `www.` and capitals, cover the
+  site's subdomains, and treat `*` as a wildcard. Screenshot capture is unchanged otherwise.
+
 - **Notifications still reach you if Windows has switched them off for Monitra.** If
   notifications were turned off for Monitra in Windows settings (or for the whole account,
   or by a policy), Windows silently threw away every reminder, timer message and update

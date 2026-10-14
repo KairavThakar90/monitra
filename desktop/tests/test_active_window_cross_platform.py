@@ -174,3 +174,66 @@ def test_macos_dispatch_falls_back_to_app_name_with_no_on_screen_window():
     assert window_title == "Slack"  # falls back to the app name itself
     assert exe_path is None
     assert pid == 100
+
+
+def _ghost_windll(*, hung_hwnd, hung_exe, class_by_hwnd=None):
+    """A fake `ctypes.windll` where the foreground window (1) is a ghost of 2."""
+    ghost, class_names = 1, {1: "Ghost", **(class_by_hwnd or {})}
+    titles = {1: "Report.xlsx - Excel (Not Responding)", 2: "Report.xlsx - Excel"}
+    pids = {1: 900, 2: 4242}
+
+    def class_name(hwnd, buf, size):
+        buf.value = class_names.get(hwnd, "XLMAIN")
+
+    def text(hwnd, buf, size):
+        buf.value = titles[hwnd]
+
+    def thread_pid(hwnd, pid_ref):
+        pid_ref._obj.value = pids[hwnd]
+
+    def image_name(handle, flags, buf, size_ref):
+        # Windows refuses the ghost's owner (handle 98); the hung program opens.
+        if handle != 99:
+            return 0
+        buf.value = hung_exe
+        return 1
+
+    windll = MagicMock()
+    windll.user32.GetForegroundWindow.return_value = ghost
+    windll.user32.GetClassNameW.side_effect = class_name
+    windll.user32.GetWindowTextLengthW.side_effect = lambda h: len(titles[h])
+    windll.user32.GetWindowTextW.side_effect = text
+    windll.user32.GetWindowThreadProcessId.side_effect = thread_pid
+    windll.user32.HungWindowFromGhostWindow.return_value = hung_hwnd
+    windll.kernel32.OpenProcess.side_effect = lambda access, inherit, pid: 99 if pid == 4242 else 98
+    windll.kernel32.QueryFullProcessImageNameW.side_effect = image_name
+    return windll
+
+
+def test_a_ghost_window_is_reported_as_the_application_that_stopped_responding():
+    """A program that hangs while focused is replaced by a window of class
+    "Ghost", and the app used to be recorded as `Ghost`."""
+    exe = os.sep.join(["C:", "Program Files", "Microsoft Office", "root", "Office16", "EXCEL.EXE"])
+    with patch.object(ctypes, "windll", _ghost_windll(hung_hwnd=2, hung_exe=exe), create=True):
+        app_name, title, exe_path, pid, hwnd = active_window._windows_active_window_details()
+
+    assert app_name == "EXCEL"
+    assert exe_path == exe
+    assert title == "Report.xlsx - Excel"
+    assert pid == 4242
+    assert hwnd == 2
+
+
+def test_a_ghost_with_no_original_window_names_no_application():
+    """Nothing identifies the program, so no placeholder -- least of all
+    "Ghost" -- is recorded for the sample."""
+    with patch.object(ctypes, "windll", _ghost_windll(hung_hwnd=0, hung_exe="x"), create=True):
+        assert active_window._windows_active_window_details() == (None, None, None, None, None)
+
+
+def test_a_windows_without_the_ghost_lookup_names_no_application():
+    windll = _ghost_windll(hung_hwnd=2, hung_exe="x")
+    del windll.user32.HungWindowFromGhostWindow  # the export is missing
+    with patch.object(ctypes, "windll", windll, create=True):
+        assert active_window._windows_active_window_details() == (None, None, None, None, None)
+

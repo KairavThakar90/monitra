@@ -47,10 +47,44 @@ log = get_logger("tracking.active_window")
 _warned_unsupported = False
 
 
+_GHOST_WINDOW_CLASS = "Ghost"
+
+
+def _hung_window_behind_ghost(ctypes_module, hwnd):
+    """The real window behind a Windows "ghost" window; any other window as is.
+
+    When a program stops responding, Windows hides its window and puts a
+    "ghost" in its place: a window of class ``Ghost`` titled "<title> (Not
+    Responding)", owned by a system process. The ghost is what holds focus
+    and so is what ``GetForegroundWindow`` returns, and Windows refuses the
+    process lookup for it, so the application used to be recorded under the
+    window class, as "Ghost". The program the person was in is the hung one;
+    ``HungWindowFromGhostWindow`` (exported by user32 since Windows Vista,
+    though undocumented) names it.
+
+    Returns 0 when `hwnd` is a ghost whose original cannot be found -- there
+    is then no application to name, and no placeholder stands in for one.
+    """
+    user32 = ctypes_module.windll.user32
+    buf = ctypes_module.create_unicode_buffer(64)
+    user32.GetClassNameW(hwnd, buf, 64)
+    if buf.value != _GHOST_WINDOW_CLASS:
+        return hwnd
+    try:
+        resolve = user32.HungWindowFromGhostWindow
+        resolve.restype = ctypes_module.c_void_p
+        resolve.argtypes = [ctypes_module.c_void_p]
+        return resolve(hwnd) or 0
+    except (AttributeError, OSError):
+        return 0
+
+
 def _windows_active_window_details():
     import ctypes
 
     hwnd = ctypes.windll.user32.GetForegroundWindow()
+    if hwnd:
+        hwnd = _hung_window_behind_ghost(ctypes, hwnd)
     if not hwnd:
         # No foreground window: a locked screen, a desktop with focus
         # nowhere, or the instant between one window closing and the next
