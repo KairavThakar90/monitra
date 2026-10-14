@@ -111,68 +111,92 @@ const ManualRequestDetailsModal: React.FC<{ request: ManualTimeEntryRequest; onC
   }, [onClose]);
 
   const status = REQUEST_STATUS_STYLES[request.approval_status] ?? REQUEST_STATUS_STYLES.pending;
+  const decided = request.approval_status !== 'pending' && request.approved_at;
   const decidedLabel = request.approval_status === 'approved' ? 'Approved on' : 'Rejected on';
-  const fields: [string, React.ReactNode][] = [
+  const stamp = (iso: string) => `${formatISTDate(iso)}, ${formatISTTime(iso)}`;
+  const details: [string, React.ReactNode][] = [
     ['Project', request.project_name || '-'],
     ['Task', request.task_name || '-'],
-    ['Date', formatDate(request.work_date)],
-    ['Start time (IST)', formatDateTime(request.start_time)],
-    ['End time (IST)', formatDateTime(request.end_time)],
-    ['Total time', formatHMS(request.total_seconds)],
-    ['Billable', request.is_billable ? 'Yes' : 'No'],
     ['Reason', manualReasonLabel(request.reason)],
-    ['Requested on', request.created_at ? `${formatISTDate(request.created_at)}, ${formatISTTime(request.created_at)}` : '-'],
+    ['Requested on', request.created_at ? stamp(request.created_at) : '-'],
+    ...(decided ? [[decidedLabel, stamp(request.approved_at as string)] as [string, React.ReactNode]] : []),
   ];
-  if (request.approval_status !== 'pending' && request.approved_at) {
-    fields.push([decidedLabel, `${formatISTDate(request.approved_at)}, ${formatISTTime(request.approved_at)}`]);
-  }
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm"
       onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
-      <div className="max-h-[90vh] w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" role="dialog" aria-modal="true" aria-label="Manual time request details">
-        <div className="flex items-start justify-between border-b border-slate-100 bg-slate-50 px-6 py-5">
+      <div className="flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" role="dialog" aria-modal="true" aria-label="Manual time request details">
+        <div className="flex items-start justify-between gap-4 px-6 pb-4 pt-5">
           <div>
             <h2 className="text-xl font-black text-slate-800">Manual Time Request</h2>
             <p className="mt-1 text-sm font-semibold text-slate-500">Details of the time that was requested</p>
           </div>
-          <button type="button" onClick={onClose} className="rounded-lg p-2 text-slate-400 transition hover:bg-white hover:text-slate-700" aria-label="Close request details">
+          <button type="button" onClick={onClose} className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" aria-label="Close request details">
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
-        <div className="max-h-[calc(90vh-86px)] overflow-y-auto p-6">
-          <div className="flex items-center gap-4 rounded-xl border border-blue-100 bg-blue-50/60 p-4">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-[#0ea5e9] to-[#8b5cf6] text-sm font-black text-white">
+
+        <div className="flex-1 space-y-4 overflow-y-auto px-6 pb-6">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-r from-[#0ea5e9] to-[#8b5cf6] text-sm font-black text-white">
               {(request.member_name || 'U').slice(0, 2).toUpperCase()}
             </div>
             <div className="min-w-0 flex-1">
               <h3 className="truncate font-black text-slate-800">{request.member_name || 'Unknown'}</h3>
               <p className="truncate text-sm text-slate-500">{request.member_email || 'No email'}</p>
             </div>
-            <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ${status.tone}`}>{status.label}</span>
+            <span className={`inline-flex shrink-0 items-center rounded-full px-3 py-1 text-xs font-bold ${status.tone}`}>{status.label}</span>
           </div>
 
           {request.has_conflict && request.approval_status === 'pending' && (
-            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
               ⚠️ This request overlaps time that is already recorded for this member.
             </div>
           )}
 
-          <dl className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-3">
-            {fields.map(([label, value]) => (
-              <div key={label} className="min-h-[76px] rounded-xl border border-slate-100 bg-slate-50 p-4">
-                <dt className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</dt>
-                <dd className="mt-2 break-words text-sm font-bold leading-5 text-slate-800">{value}</dd>
+          <div className="rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50 to-violet-50 p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Date</p>
+                <p className="mt-1 text-sm font-bold text-slate-800">{formatDate(request.work_date)}</p>
+              </div>
+              <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ${request.is_billable ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+                {request.is_billable ? 'Billable' : 'Non-billable'}
+              </span>
+            </div>
+            <div className="mt-4 flex items-end justify-between gap-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Time (IST)</p>
+                <p className="mt-1 flex items-center gap-2 text-2xl font-black tabular-nums text-slate-800">
+                  <span>{formatDateTime(request.start_time)}</span>
+                  <svg className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14m-6-6l6 6-6 6" /></svg>
+                  <span>{formatDateTime(request.end_time)}</span>
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Total time</p>
+                <p className="mt-1 text-2xl font-black tabular-nums text-blue-600">{formatHMS(request.total_seconds)}</p>
+              </div>
+            </div>
+          </div>
+
+          <dl className="divide-y divide-slate-100 rounded-xl border border-slate-100">
+            {details.map(([label, value]) => (
+              <div key={label} className="flex items-baseline justify-between gap-6 px-4 py-3">
+                <dt className="shrink-0 text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</dt>
+                <dd className="min-w-0 break-words text-right text-sm font-bold text-slate-800">{value}</dd>
               </div>
             ))}
           </dl>
 
-          <h3 className="mt-6 text-xs font-black uppercase tracking-widest text-blue-500">Description</h3>
-          <p className="mt-2 whitespace-pre-wrap break-words rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm leading-6 text-slate-700">
-            {request.description?.trim() || 'No description was provided.'}
-          </p>
+          <div>
+            <h3 className="text-xs font-black uppercase tracking-widest text-blue-500">Description</h3>
+            <p className="mt-2 whitespace-pre-wrap break-words rounded-xl border-l-4 border-blue-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700">
+              {request.description?.trim() || 'No description was provided.'}
+            </p>
+          </div>
         </div>
       </div>
     </div>
