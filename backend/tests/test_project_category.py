@@ -101,6 +101,7 @@ class CategoryCreateTests(unittest.TestCase):
 
     def _session(self) -> MagicMock:
         db = MagicMock()
+        db.execute.return_value.first.return_value = None  # no other project has this name
         db.scalar.return_value = User(
             id=OWNER, organization_id=ORG, role_name="administrator", permissions={},
             is_active=True, can_own_projects=True,

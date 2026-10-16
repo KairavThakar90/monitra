@@ -696,16 +696,11 @@ export const AdminProjectManagement: React.FC = () => {
       deadline: formDeadline,
       billingHours: formBillingType === 'fixed' ? formBillingHours : '',
     });
-    // A new project must name its owner; the backend refuses one without
-    // ("Project owner is required."), so this only saves the round trip. An
-    // edit may leave a project that predates owners without one.
-    const ownerMissing = drawerMode === 'create' && formOwner === '';
-    setOwnerError(ownerMissing ? 'Project owner is required.' : null);
     // Likewise the organization: required to create (the backend refuses a
     // create without one), and an edit may leave an older project without.
     const categoryMissing = drawerMode === 'create' && formCategory === '';
     setCategoryError(categoryMissing ? 'Organization is required.' : null);
-    if (!check.ok || ownerMissing || categoryMissing) {
+    if (!check.ok || categoryMissing) {
       showToast('Please correct the highlighted fields.', 'error');
       return;
     }
@@ -725,8 +720,10 @@ export const AdminProjectManagement: React.FC = () => {
       project_name: check.values.name as string,
       description: check.values.description as string,
       status_id: formStatusId,
-      // Omitted rather than sent as null when no owner is chosen: on an edit
-      // that means "keep the current owner", and the backend refuses a null.
+      // The create form has no Owner field (it is set from the edit form), so
+      // `formOwner` is blank there. Omitted rather than sent as null when no
+      // owner is chosen: on an edit that means "keep the current owner", and
+      // the backend refuses a null.
       ...(formOwner === '' ? {} : { owner_id: Number(formOwner) }),
       leader_id: formLeader === '' ? null : Number(formLeader),
       employee_ids: formEmployees,
@@ -1473,25 +1470,29 @@ export const AdminProjectManagement: React.FC = () => {
                         message={projectForm.errors.description}
                       />
                     </div>
-                    <div>
-                      <label htmlFor="project-owner" className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Owner</label>
-                      <select
-                        id="project-owner"
-                        value={formOwner}
-                        onChange={e => { setFormOwner(e.target.value); setOwnerError(null); }}
-                        disabled={ownerIsFixed}
-                        title={ownerIsFixed ? 'Only an administrator can change the project owner.' : undefined}
-                        aria-invalid={ownerError ? true : undefined}
-                        aria-describedby={ownerError ? 'project-owner-error' : undefined}
-                        className={`w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6] ${ownerIsFixed ? 'bg-slate-100 cursor-not-allowed' : 'bg-white'}`}
-                      >
-                        <option value="" disabled hidden>{drawerMode === 'edit' ? 'No owner assigned' : 'Select the owner...'}</option>
-                        {ownerOptions.map(o => (
-                          <option key={o.id} value={o.id}>{o.name}</option>
-                        ))}
-                      </select>
-                      <FieldError id="project-owner-error" message={ownerError} />
-                    </div>
+                    {/* Not asked for when a project is created: it is chosen afterwards
+                        from the edit form, where an existing owner is also kept. */}
+                    {drawerMode === 'edit' && (
+                      <div>
+                        <label htmlFor="project-owner" className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Owner</label>
+                        <select
+                          id="project-owner"
+                          value={formOwner}
+                          onChange={e => { setFormOwner(e.target.value); setOwnerError(null); }}
+                          disabled={ownerIsFixed}
+                          title={ownerIsFixed ? 'Only an administrator can change the project owner.' : undefined}
+                          aria-invalid={ownerError ? true : undefined}
+                          aria-describedby={ownerError ? 'project-owner-error' : undefined}
+                          className={`w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6] ${ownerIsFixed ? 'bg-slate-100 cursor-not-allowed' : 'bg-white'}`}
+                        >
+                          <option value="" disabled hidden>No owner assigned</option>
+                          {ownerOptions.map(o => (
+                            <option key={o.id} value={o.id}>{o.name}</option>
+                          ))}
+                        </select>
+                        <FieldError id="project-owner-error" message={ownerError} />
+                      </div>
+                    )}
                     <div className="grid grid-cols-2 gap-4">
                       <div>
                         <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">

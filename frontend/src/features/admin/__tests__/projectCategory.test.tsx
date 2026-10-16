@@ -156,7 +156,6 @@ const drawerField = <T extends Element>(label: string) => {
 
 const fillRequiredFields = async () => {
   await setValue(drawerField<HTMLInputElement>('Project Name'), 'Categorised project');
-  await setValue(container.querySelector<HTMLSelectElement>('#project-owner')!, String(OWNER.id));
   await setValue(drawerField<HTMLSelectElement>('Leader'), String(LEADER.id));
   await setValue(drawerField<HTMLInputElement>('Deadline'), futureDate());
   // Looked up inside the form: a listed Flexible Time project's table chip carries the same words.

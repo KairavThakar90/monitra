@@ -143,6 +143,7 @@ for every project; those have no WFPM id.
 | `201` | Created. Body is the project (see §2.3) |
 | `200` | **This WFPM id was already linked.** Body is the existing project, unchanged — nothing in this request was applied. Safe to treat as success |
 | `409` | This WFPM id is linked to a project that is archived, or that this user cannot access |
+| `409` | The project name is already used by another project in the organization (archived ones count). `detail` names it: *A project named "…" already exists…*. The same applies to a rename through route 3 |
 | `400` | A Monitra rule refused it (an `employee_ids` entry is not an active user of the organization, …) |
 | `403` | The user's role may not create a project through WFPM |
 | `422` | A field is malformed |

@@ -76,6 +76,7 @@ class CreateProjectTests(unittest.TestCase):
 
     def _create(self, project_status_id, project_status_name, todo_id, todo_name):
         db = MagicMock()
+        db.execute.return_value.first.return_value = None  # no other project has this name
         db.scalar.return_value = _eligible_owner()
         leader = User(id=2, organization_id=1, role_name="project_leader", permissions={})
         # In order: _users(leader), then the membership read-back after the

@@ -34,7 +34,8 @@ import { ResolveFeedbackDialog } from "./ResolveFeedbackDialog";
  * The two pages differ only in which endpoint fills this table and whether the
  * submitter is shown, so the markup lives in one place. `showEmployee` is off
  * on the member screen: a person reading their own submissions already knows
- * who sent them, and an id column there is noise, not information.
+ * who sent them. The id column stays on both, since it is the number the
+ * status email quotes back to the member.
  *
  * `canManage` turns the row controls from labels into buttons. It is false for
  * HR and Leader, who see the same rows and the same states read-only, and the
@@ -422,6 +423,7 @@ export const FeedbackTable: React.FC<{
         */}
         <table className="w-full min-w-[640px] table-fixed border-collapse">
           <colgroup>
+            <col style={{ width: 84 }} />
             {showEmployee && <col style={{ width: 250 }} />}
             <col style={{ width: 190 }} />
             <col />
@@ -430,6 +432,7 @@ export const FeedbackTable: React.FC<{
           </colgroup>
           <thead className="border-b border-[#E2E8F0] bg-[#F8FAFC]">
             <tr>
+              <th className={columnHead}>ID</th>
               {showEmployee && <th className={columnHead}>Employee</th>}
               <th className={columnHead}>Category</th>
               <th className={columnHead}>{showEmployee ? "Description" : "Reason"}</th>
@@ -443,6 +446,9 @@ export const FeedbackTable: React.FC<{
                 key={item.id}
                 className="border-b border-[#F1F5F9] transition-colors last:border-0 hover:bg-[#F8FAFC]"
               >
+                <td className="whitespace-nowrap px-5 py-3.5 align-middle text-[12px] font-bold tabular-nums text-[#64748B]">
+                  #{item.id}
+                </td>
                 {showEmployee && (
                   <td className="px-5 py-3.5">
                     <Submitter item={item} />
@@ -484,6 +490,7 @@ export const FeedbackTable: React.FC<{
           <div className="flex items-start justify-between gap-3">
             <CategoryPill category={item.category} />
             <span className="shrink-0 text-[12px] font-semibold text-[#64748B]">
+              <span className="mr-2 font-bold tabular-nums">#{item.id}</span>
               {formatISTDate(item.created_at)}
             </span>
           </div>
@@ -528,6 +535,7 @@ export const FeedbackTable: React.FC<{
                 </div>
                 <h2 className="mt-1 text-lg font-black text-[#0F172A]">Feedback Description</h2>
                 <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px] font-semibold text-[#64748B]">
+                  <span>Feedback #{selectedDescription.id}</span>
                   {showEmployee && <span>{selectedDescription.employee_name}</span>}
                   <span>{formatISTDate(selectedDescription.created_at)}</span>
                 </div>

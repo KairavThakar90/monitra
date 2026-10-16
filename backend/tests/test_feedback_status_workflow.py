@@ -501,12 +501,30 @@ class StatusEmailTemplateTests(unittest.TestCase):
         self.assertNotIn("The timer resets after sleep.", message.html)
         self.assertNotIn("The timer resets after sleep.", message.text)
 
-    def test_the_email_exposes_no_internal_identifier(self):
+    def test_the_email_exposes_no_internal_identifier_except_the_feedback_id(self):
         message = self._build("resolved")
 
         for leak in ("feedback_id", "user_id", "status_changed_by", "in_progress"):
             with self.subTest(leak=leak):
                 self.assertNotIn(leak, message.html)
+
+    def test_the_email_tells_the_submitter_their_feedback_id(self):
+        for status in ("in_progress", "resolved"):
+            with self.subTest(status=status):
+                message = self._build(status, feedback_id=17)
+
+                self.assertIn("Feedback ID", message.html)
+                self.assertIn("#17", message.html)
+                self.assertIn("Feedback ID  #17", message.text)
+
+    def test_a_payload_without_a_usable_id_leaves_the_row_out(self):
+        for bad in (None, "", "abc", 0, -4):
+            with self.subTest(feedback_id=bad):
+                message = self._build("resolved", feedback_id=bad)
+
+                self.assertNotIn("Feedback ID", message.html)
+                self.assertNotIn("None", message.html)
+                self.assertNotIn("Feedback ID", message.text)
 
     def test_the_context_shown_is_category_status_and_the_submission_date(self):
         message = self._build("in_progress")

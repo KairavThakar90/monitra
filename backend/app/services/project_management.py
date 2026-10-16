@@ -349,14 +349,48 @@ class ProjectManagementService:
         return payloads
 
     @staticmethod
+    def _duplicate_name_error(db: Session, organization_id: int, name: str, exclude_project_id: Optional[int] = None, wfpm_project_id: Optional[str] = None) -> Optional[HTTPException]:
+        """A readable 409 when `name` is already a project in this organization.
+
+        The database holds a unique index on `(organization_id, project_name)`
+        (`uq_projects_org_name`, see docs/Database_Documentation.md). It counts
+        archived projects too, and an archived project is invisible in the
+        list -- so an administrator who has never seen "Website Revamp" would
+        be told the name is taken with nothing on screen to explain why. The
+        message says so when that is the case. Without this check the insert
+        fails inside the database and the caller sees a bare 500.
+
+        `wfpm_project_id` is the WFPM integration's: a row that already carries
+        *that same* WFPM id is the project this create is a replay of, not a
+        name clash, so it is not reported here. The insert then fails on the
+        WFPM unique index and `WfpmSyncService.create_project` answers with the
+        existing row, exactly as it did before this check existed.
+        """
+        query = select(Project.id, Project.status).where(Project.organization_id == organization_id, Project.project_name == name)
+        if exclude_project_id is not None:
+            query = query.where(Project.id != exclude_project_id)
+        if wfpm_project_id is not None:
+            query = query.where(Project.wfpm_project_id.is_distinct_from(wfpm_project_id))
+        existing = db.execute(query.limit(1)).first()
+        if existing is None:
+            return None
+        if existing.status == "archived":
+            detail = f'A project named "{name}" already exists in the archive. Project names must be unique, so please choose a different name.'
+        else:
+            detail = f'A project named "{name}" already exists. Project names must be unique, so please choose a different name.'
+        return HTTPException(status.HTTP_409_CONFLICT, detail)
+
+    @staticmethod
     def create(db: Session, user: User, payload: ProjectCreate, owner_required: bool = True, wfpm_project_id: Optional[str] = None, category_required: bool = True):
         """Create a project.
 
-        `owner_required=False` is for the WFPM integration alone: its callers
-        have no notion of an owner, and inventing one would record a decision
-        nobody made, so its projects start without one -- exactly like every
-        project that predates owners. Every other caller must name an eligible
-        owner.
+        `owner_required=False` is for callers with no owner to name: the WFPM
+        integration, whose callers have no notion of one, and the create form,
+        which no longer asks for one (it is set from the edit form afterwards).
+        Inventing one would record a decision nobody made, so such a project
+        starts without one -- exactly like every project that predates owners.
+        An owner that *is* sent is still checked for eligibility whatever this
+        says; the default (`True`) is for a caller that must name one.
 
         `category_required=False` is the WFPM integration's too, for the same
         reason: WFPM has no notion of an organization, so its projects start
@@ -386,6 +420,8 @@ class ProjectManagementService:
         # `visible_project_ids` is keyed on leadership and membership.
         leader_id = user.id if is_team_scoped(user) else payload.leader_id
         project_status, leader, employees = ProjectManagementService._validate_project_fields(db, user, payload.status_id, leader_id, payload.employee_ids, payload.deadline, payload.billing_type, payload.fixed_hours)
+        if (duplicate := ProjectManagementService._duplicate_name_error(db, user.organization_id, payload.project_name, wfpm_project_id=wfpm_project_id)) is not None:
+            raise duplicate
         try:
             project = Project(organization_id=user.organization_id, project_name=payload.project_name, description=payload.description, status=ProjectManagementService._legacy_status(project_status, PROJECT_STATUS_NAMES, "project"), status_id=project_status.id, owner_id=owner.id if owner else None, leader_id=leader.id, deadline=payload.deadline, billing_type=payload.billing_type.value, category=payload.category.value if payload.category else None, fixed_hours=payload.fixed_hours, is_billable=payload.billing_type == BillingType.fixed, created_by=user.id, wfpm_project_id=wfpm_project_id)
             db.add(project)
@@ -415,8 +451,14 @@ class ProjectManagementService:
                 db.add(Task(organization_id=user.organization_id, project_id=project.id, task_name=task_name, status=todo_legacy, status_id=todo_status.id, created_by=user.id))
             db.commit()
             db.refresh(project)
-        except Exception:
+        except Exception as exc:
             db.rollback()
+            # Two creates of the same name racing past the check above: the
+            # unique index let one through. Anything else that is an
+            # IntegrityError (the WFPM id race, which its caller handles)
+            # propagates untouched.
+            if isinstance(exc, IntegrityError) and (duplicate := ProjectManagementService._duplicate_name_error(db, user.organization_id, payload.project_name, wfpm_project_id=wfpm_project_id)) is not None:
+                raise duplicate from exc
             raise
         # After the commit and outside its `try`: the project exists whatever
         # becomes of its audit row, and `capture` never raises.
@@ -599,7 +641,10 @@ class ProjectManagementService:
                 raise HTTPException(status.HTTP_403_FORBIDDEN, "Leaders cannot change a project's owner.")
             owner = resolve_owner(db, user, values["owner_id"])
         project_status, leader, employees = ProjectManagementService._validate_project_fields(db, user, status_id, leader_id, employee_ids if employee_ids is not None else [item.user_id for item in db.scalars(select(ProjectMember).where(ProjectMember.project_id == project.id)).all()], values.get("deadline", project.deadline), billing_type, fixed_hours)
-        if "project_name" in values: project.project_name = values["project_name"]
+        if "project_name" in values:
+            if values["project_name"] != project.project_name and (duplicate := ProjectManagementService._duplicate_name_error(db, user.organization_id, values["project_name"], exclude_project_id=project.id)) is not None:
+                raise duplicate
+            project.project_name = values["project_name"]
         if "description" in values: project.description = values["description"]
         project.status_id = status_id
         project.status = ProjectManagementService._legacy_status(project_status, PROJECT_STATUS_NAMES, "project")
@@ -616,7 +661,14 @@ class ProjectManagementService:
             for employee in employees:
                 db.add(ProjectMember(project_id=project.id, organization_id=user.organization_id, user_id=employee.id, created_by=user.id))
         previous_version = project.budget_version
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            # A rename racing another project of the same name; see `create`.
+            if "project_name" in values and (duplicate := ProjectManagementService._duplicate_name_error(db, user.organization_id, values["project_name"], exclude_project_id=project_id)) is not None:
+                raise duplicate from exc
+            raise
         db.refresh(project)
         if project.budget_version != previous_version:
             # A new budget: record, silently, every threshold already behind the

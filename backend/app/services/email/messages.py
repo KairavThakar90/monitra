@@ -658,6 +658,19 @@ def _team_message_block(note: Any, presentation: dict[str, str]) -> Markup:
     ).format(accent=presentation["accent"], body=body)
 
 
+def _feedback_reference(payload: dict[str, Any]) -> Optional[str]:
+    """"#17", or None when the payload carries no usable id.
+
+    Payloads queued before the id was shown still hold `feedback_id`; anything
+    unreadable simply leaves the row out rather than printing "#None".
+    """
+    try:
+        feedback_id = int(payload.get("feedback_id"))
+    except (TypeError, ValueError):
+        return None
+    return f"#{feedback_id}" if feedback_id > 0 else None
+
+
 def build_feedback_status_email(
     payload: dict[str, Any], recipients: list[str]
 ) -> OutgoingEmail:
@@ -678,12 +691,14 @@ def build_feedback_status_email(
         ),
     )
 
-    # Three fields: what they sent, where it now stands, and when they sent it
-    # — enough for someone with several submissions open to tell which one this
-    # is about. No feedback id, no internal reference, no administrator's name:
-    # an identifier means nothing to the reader, and the other two are ours
+    # Four fields: which submission it is, what they sent, where it now stands,
+    # and when they sent it. The id is the one the Admin/HR feedback page shows
+    # for the same row, so the reader can quote it ("feedback #17") and be found.
+    # No internal user reference and no administrator's name: those are ours
     # rather than theirs.
+    feedback_ref = _feedback_reference(payload)
     rows = detail_rows([
+        ("Feedback ID", feedback_ref),
         ("Category", label),
         ("Status", presentation["label"]),
         ("Submitted", day),
@@ -718,10 +733,12 @@ def build_feedback_status_email(
     if team_message:
         # Verbatim: plain text needs no escaping, and the same words as the HTML.
         text_lines += ["Message from our team:", team_message, ""]
+    if feedback_ref:
+        text_lines.append(f"  Feedback ID  {feedback_ref}")
     text_lines += [
-        f"  Category   {label}",
-        f"  Status     {presentation['label']}",
-        f"  Submitted  {day}",
+        f"  Category     {label}",
+        f"  Status       {presentation['label']}",
+        f"  Submitted    {day}",
     ]
     if (support := (settings.MONITRA_SUPPORT_EMAIL or "").strip()):
         text_lines += ["", f"Need a hand? Write to {support}."]

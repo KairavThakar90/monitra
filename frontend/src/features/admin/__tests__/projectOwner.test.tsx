@@ -224,40 +224,28 @@ afterEach(async () => {
 });
 
 describe('Owner field — create', () => {
-  it('renders Owner before Leader and Deadline, then Status', async () => {
+  it('does not ask for an owner when a project is created', async () => {
     await renderPage();
     await openCreateDrawer();
     const labels = Array.from(container.querySelectorAll('#project-form label'))
       .map(labelText)
       .filter((text) => ['Project Name', 'Description', 'Owner', 'Leader', 'Deadline', 'Status', 'Project Members'].includes(text || ''));
-    expect(labels).toEqual(['Project Name', 'Description', 'Owner', 'Leader', 'Deadline', 'Status', 'Project Members']);
-    expect(ownerSelect()).toBeTruthy();
+    expect(labels).toEqual(['Project Name', 'Description', 'Leader', 'Deadline', 'Status', 'Project Members']);
+    expect(container.querySelector('#project-owner')).toBeNull();
   });
 
-  it('offers exactly the owners the API returned', async () => {
+  it('creates the project without an owner and sends no owner_id', async () => {
     await renderPage();
     await openCreateDrawer();
-    expect(requests('GET', /\/projects\/assignable-owners$/)).toHaveLength(1);
-    expect(optionLabels(ownerSelect())).toEqual(['Owner Alpha', 'Owner Beta']);
-  });
+    await fillRequiredFields();
+    await submit();
 
-  it('follows the API when it answers with different people', async () => {
-    owners = [
-      { id: 11, name: 'Deepak Gunani', email: 'd@example.invalid', role: 'administrator' },
-      { id: 12, name: 'Piyush Gunani', email: 'p@example.invalid', role: 'administrator' },
-      { id: 13, name: 'Bharat Gunani', email: 'b@example.invalid', role: 'administrator' },
-    ];
-    await renderPage();
-    await openCreateDrawer();
-    expect(optionLabels(ownerSelect())).toEqual(['Deepak Gunani', 'Piyush Gunani', 'Bharat Gunani']);
-    expect(Array.from(ownerSelect().options).filter((o) => o.value).map((o) => o.value)).toEqual(['11', '12', '13']);
-  });
-
-  it('offers nobody when the API lists nobody (no names are built in)', async () => {
-    owners = [];
-    await renderPage();
-    await openCreateDrawer();
-    expect(optionLabels(ownerSelect())).toEqual([]);
+    const [created] = requests('POST', /\/projects$/);
+    expect(created.body).not.toHaveProperty('owner_id');
+    expect(created.body.leader_id).toBe(LEADERS[0].id);
+    expect(created.body.deadline).toBe(futureDate());
+    expect(container.querySelector('#project-owner-error')).toBeNull();
+    expect(showToast).toHaveBeenCalledWith('Project created successfully.', 'success');
   });
 
   it('never names the designated owners in client source', () => {
@@ -266,44 +254,15 @@ describe('Owner field — create', () => {
     }
   });
 
-  it('submits the chosen owner id with the leader and deadline', async () => {
-    await renderPage();
-    await openCreateDrawer();
-    await fillRequiredFields();
-    await setValue(ownerSelect(), '702');
-    await submit();
-
-    const [created] = requests('POST', /\/projects$/);
-    expect(created.body.owner_id).toBe(702);
-    expect(created.body.leader_id).toBe(LEADERS[0].id);
-    expect(created.body.deadline).toBe(futureDate());
-    expect(showToast).toHaveBeenCalledWith('Project created successfully.', 'success');
-  });
-
-  it('shows a field error and sends nothing when no owner is chosen', async () => {
+  it("shows the backend's own reason when a project name is already taken", async () => {
+    const reason = 'A project named "Owner feature project" already exists. Project names must be unique, so please choose a different name.';
+    createReply = { status: 409, body: { detail: reason } };
     await renderPage();
     await openCreateDrawer();
     await fillRequiredFields();
     await submit();
 
-    expect(requests('POST', /\/projects$/)).toHaveLength(0);
-    expect(container.querySelector('#project-owner-error')?.textContent).toBe('Project owner is required.');
-    expect(ownerSelect().getAttribute('aria-invalid')).toBe('true');
-    expect(showToast).toHaveBeenCalledWith('Please correct the highlighted fields.', 'error');
-
-    await setValue(ownerSelect(), '701');
-    expect(container.querySelector('#project-owner-error')).toBeNull();
-  });
-
-  it("shows the backend's own reason when it refuses the owner", async () => {
-    createReply = { status: 400, body: { detail: 'Selected owner is not eligible to own projects.' } };
-    await renderPage();
-    await openCreateDrawer();
-    await fillRequiredFields();
-    await setValue(ownerSelect(), '701');
-    await submit();
-
-    expect(showToast).toHaveBeenCalledWith('Selected owner is not eligible to own projects.', 'error');
+    expect(showToast).toHaveBeenCalledWith(reason, 'error');
     expect(showToast).not.toHaveBeenCalledWith('Unable to save project. Please try again.', 'error');
   });
 });
@@ -315,6 +274,34 @@ describe('Owner field — edit and list', () => {
     expect(headers.indexOf('Owner')).toBeGreaterThan(-1);
     expect(headers.indexOf('Owner')).toBeLessThan(headers.indexOf('Leader'));
     expect(container.querySelector('tbody')?.textContent).toContain('Owner Alpha');
+  });
+
+  it('offers exactly the owners the API returned', async () => {
+    await renderPage();
+    await openEditDrawer('Existing project');
+    expect(requests('GET', /\/projects\/assignable-owners$/)).toHaveLength(1);
+    expect(optionLabels(ownerSelect())).toEqual(['Owner Alpha', 'Owner Beta']);
+  });
+
+  it('follows the API when it answers with different people', async () => {
+    owners = [
+      { id: 11, name: 'Deepak Gunani', email: 'd@example.invalid', role: 'administrator' },
+      { id: 12, name: 'Piyush Gunani', email: 'p@example.invalid', role: 'administrator' },
+      { id: 13, name: 'Bharat Gunani', email: 'b@example.invalid', role: 'administrator' },
+    ];
+    listed = [project({ owner: owners[0] })];
+    await renderPage();
+    await openEditDrawer('Existing project');
+    expect(optionLabels(ownerSelect())).toEqual(['Deepak Gunani', 'Piyush Gunani', 'Bharat Gunani']);
+    expect(Array.from(ownerSelect().options).filter((o) => o.value).map((o) => o.value)).toEqual(['11', '12', '13']);
+  });
+
+  it('offers nobody new when the API lists nobody (no names are built in)', async () => {
+    owners = [];
+    listed = [project({ owner: null })];
+    await renderPage();
+    await openEditDrawer('Existing project');
+    expect(optionLabels(ownerSelect())).toEqual([]);
   });
 
   it('preselects the current owner and saves a change as an id', async () => {

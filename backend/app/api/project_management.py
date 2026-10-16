@@ -62,7 +62,9 @@ def task_statuses(db: Session = Depends(get_db, scope="function")):
 
 @router.post("/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_permission("projects:create"))], summary="Create a project")
 def create_project(payload: ProjectCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
-    return ProjectManagementService.create(db, user, payload)
+    # The create form no longer asks for an owner: it is set afterwards from the
+    # edit form. One sent by an API client is still validated and stored.
+    return ProjectManagementService.create(db, user, payload, owner_required=False)
 
 
 @router.get("/projects", response_model=ProjectListResponse, dependencies=[Depends(require_permission("projects:view"))], summary="List projects")

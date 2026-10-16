@@ -74,9 +74,9 @@ class ProjectCreate(BaseModel):
     #: is stored as no description rather than as whitespace.
     description: OptionalPlainDescription = None
     status_id: int = Field(..., gt=0)
-    #: Optional in the schema only because the WFPM route builds this model
-    #: and has no owner to name. `ProjectManagementService.create` requires it
-    #: for every other caller, with a message rather than a bare 422.
+    #: Optional: the WFPM route builds this model and has no owner to name, and
+    #: the create form leaves it blank (an owner is set from the edit form).
+    #: One that is sent is checked by `ProjectManagementService.create`.
     owner_id: Optional[int] = Field(None, gt=0)
     leader_id: int = Field(..., gt=0)
     employee_ids: list[int] = Field(default_factory=list)

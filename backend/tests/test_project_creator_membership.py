@@ -51,6 +51,7 @@ def _create(existing_member_ids, employee_ids):
     """Run create() with the database reporting `existing_member_ids` already
     present on the new project -- which is what the trigger leaves behind."""
     db = MagicMock()
+    db.execute.return_value.first.return_value = None  # no other project has this name
     db.scalar.return_value = _eligible_owner()
 
     leader = User(id=LEADER_ID, organization_id=1, role_name="project_leader", permissions={})

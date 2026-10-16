@@ -157,7 +157,6 @@ const fieldError = () => container.querySelector('#project-form [role="alert"]')
 /** Everything the form needs but the description, which each test types. */
 const fillRequiredFields = async () => {
   await setValue(field<HTMLInputElement>('Project Name'), 'Internal tooling');
-  await setValue(container.querySelector<HTMLSelectElement>('#project-owner')!, String(OWNER.id));
   await setValue(field<HTMLSelectElement>('Leader'), String(LEADER.id));
   await setValue(field<HTMLInputElement>('Deadline'), futureDate());
   await setValue(container.querySelector<HTMLSelectElement>('#project-category')!, 'kyle');

@@ -42,6 +42,7 @@ def _payload(billing_type, fixed_hours=None):
 def _create(billing_type, fixed_hours=None) -> Project:
     """Run `create()` against a stubbed session and return the Project it added."""
     db = MagicMock()
+    db.execute.return_value.first.return_value = None  # no other project has this name
     db.scalar.return_value = User(
         id=OWNER_ID, organization_id=1, role_name="administrator", permissions={},
         is_active=True, can_own_projects=True,

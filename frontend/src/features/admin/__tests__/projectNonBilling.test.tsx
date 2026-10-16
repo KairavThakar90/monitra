@@ -174,7 +174,6 @@ const NOT_BILLED_NOTE = 'This project is not billed and has no hour budget.';
 /** Everything the form needs except the billing choice, which each test makes. */
 const fillRequiredFields = async () => {
   await setValue(field<HTMLInputElement>('Project Name'), 'Internal tooling');
-  await setValue(container.querySelector<HTMLSelectElement>('#project-owner')!, String(OWNER.id));
   await setValue(field<HTMLSelectElement>('Leader'), String(LEADER.id));
   await setValue(field<HTMLInputElement>('Deadline'), futureDate());
   // The Organization is required to create a project.

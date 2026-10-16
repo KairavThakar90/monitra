@@ -84,6 +84,7 @@ def _create(payload, *, owner_lookup=None, actor=None, owner_required=True):
     everything after that is the payload read-back and finds nothing.
     """
     db = MagicMock()
+    db.execute.return_value.first.return_value = None  # no other project has this name
     db.scalar.return_value = owner_lookup
     answers = [[_person(LEADER_ID, role="leader")], []]
     db.scalars.return_value.all.side_effect = lambda: answers.pop(0) if answers else []
@@ -110,6 +111,7 @@ def _update(project, payload, *, actor=None, lookups=()):
     own, and the owner rules must hold whatever it decides.
     """
     db = MagicMock()
+    db.execute.return_value.first.return_value = None  # no other project has this name
     db.scalar.side_effect = [project, *lookups]
     db.scalars.return_value.all.return_value = []
     status_row = SimpleNamespace(id=1, name="Active")
@@ -392,11 +394,24 @@ class RouteTests(unittest.TestCase):
             })
         self.assertEqual(response.status_code, 201, response.text)
         self.assertEqual(created.call_args.args[2].owner_id, OWNER_ID)
-        self.assertEqual(len(created.call_args.args), 3, "the API route must not opt out of the owner rule")
-        self.assertNotIn("owner_required", created.call_args.kwargs)
+        self.assertEqual(len(created.call_args.args), 3)
+        # The create form no longer asks for an owner, so the route accepts a
+        # project without one -- but an owner that is sent is still validated.
+        self.assertIs(created.call_args.kwargs.get("owner_required"), False)
         # Nor from the organization rule: only the WFPM routes opt out of that.
         self.assertNotIn("category_required", created.call_args.kwargs)
         self.assertEqual(response.json()["owner"]["id"], OWNER_ID)
+
+    def test_the_create_route_accepts_a_project_without_an_owner(self):
+        self._as("administrator")
+        with patch.object(ProjectManagementService, "create", return_value=_project_read()) as created:
+            response = self.client.post("/api/v1/projects", json={
+                "project_name": "X", "status_id": 1, "leader_id": 2,
+                "deadline": "2099-01-01", "billing_type": "free",
+            })
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertIsNone(created.call_args.args[2].owner_id)
+        self.assertIs(created.call_args.kwargs.get("owner_required"), False)
 
     def test_the_wfpm_route_opts_out_of_the_owner_rule(self):
         self._as("administrator")
