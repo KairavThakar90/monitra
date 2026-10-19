@@ -7,6 +7,44 @@ fired by a timer of the host's own kind, and a host without its timers sends the
 email of each action and nothing after that: no retries, no weekly or monthly report,
 no budget alerts, no WFPM timer events, no daily roll-up.
 
+## State of production on 2026-10-19 (read before deploying)
+
+Found from outside the server (live `/health`, the dispatch-token dry runs, and read-only
+queries of the database the live API answers for):
+
+- **The scheduled jobs have never run on the Windows server.** `Install-MonitraJobs.ps1`
+  (12 Oct) was never executed there: the production outbox holds no weekly, monthly or
+  project-summary row at all, and the reconcile heartbeat on `/health` had never been
+  written. The weekly job due Monday 19 Oct 09:00 IST did not fire. Nothing "stopped":
+  the timers were never installed on this host.
+- **Production's database is `DATABASE_URL`** (the `ep-cool-frog…` Neon database, 88
+  active users; the weekly dry run reports 68 eligible). The live API says
+  `environment: development`, which with this codebase means the server's real
+  environment exports `DATABASE_URL` (that always wins) while `ENV` was left at its
+  default. It works, but every `/health` and preflight line is mislabelled: set
+  `ENV=production` in the service environment when you next touch it.
+- **The outbox was clean** (29 rows, all sent, none pending): every email so far went out
+  on its immediate attempt. The first SMTP hiccup would have been a permanently lost
+  email, because no sweep ever ran.
+- **`alembic upgrade head` was impossible** from 12 Oct to 19 Oct: two migrations
+  (`c3f7a1d9e2b4` floor, `e3a7c1d95b40` liveness) shared a parent, and the production
+  database had both applied by hand. `d8e4f2a6b9c1` merges them; a test now fails on a
+  second head.
+- **`/internal/*` answers from the internet** (401 without the token). Step 4 below was
+  not done.
+- **The sender is still `gmail.com`** and `storetransform.com` still has two SPF and two
+  DMARC records (see "Emails that land in spam"). Nothing in code can change that.
+
+What changed in code on 2026-10-19, so that this cannot go unnoticed again:
+
+| Where | What |
+|---|---|
+| `scheduled_job_runs` (migration `e9f5a3b7c2d4`) | Every `/internal/*` job writes a row when it starts and completes it when it returns: job, host, duration, tally, or the error. Dry runs are marked and do not count as the scheduler firing. |
+| `GET /health?deep=1` | Carries `scheduled_jobs` (per job: last run, outcome, overdue?) and is **`degraded`** while any frequent job has never run or is overdue — point an outside uptime monitor at it; that is the alert that does not depend on email. |
+| `GET /internal/jobs/status` | The full picture behind the dispatch token: each job's last run and next expected firing, the outbox (pending, overdue, oldest age, failures), and the recent report periods with no rows at all. |
+| `POST /internal/reports/catch-up` and `scripts/report_catch_up.py` | Finds weeks/months with no report rows and, only with `dry_run=false` / `--apply`, queues them through the ordinary runs. Idempotent: a second call queues nothing. |
+| `scripts/email_preflight.py` | Now also reads the ledger ("Job ran: …", FAIL when a frequent job has never run or is overdue) and lists missing report periods. |
+
 | Host | Timers | Installed with |
 |---|---|---|
 | Windows server (current) | Task Scheduler tasks in `\Monitra\` — `deploy/backend/scheduled-jobs-windows/` | `Install-MonitraJobs.ps1` |
@@ -56,7 +94,7 @@ delivered.**
    cd <repo>\deploy\backend\scheduled-jobs-windows
    .\Install-MonitraJobs.ps1 -BackendPath D:\monitra\backend -Port 8000 -RunNow
    ```
-   It checks that the token is found and the backend answers, registers seven tasks
+   It checks that the token is found and the backend answers, registers eight tasks
    under `\Monitra\`, and fires `email-dispatch` once to prove the whole path. It is safe
    to run again; `-WhatIf` and `-ShowXml` show what it would do, `-Status` shows how the
    jobs are doing, `-Uninstall` removes them. By default the tasks run as `SYSTEM`; for a
@@ -136,13 +174,35 @@ delivered.**
 
 ## Checking that it keeps working
 
+Five different things can be true, and each has its own witness. Do not infer one from another:
+
+| Question | Where the answer is |
+|---|---|
+| 1. Is the task installed and enabled? | `Install-MonitraJobs.ps1 -Status` (Task Scheduler) |
+| 2. Did the job actually call the backend? | `scheduled_job_runs` — `GET /internal/jobs/status`, `/health?deep=1`, preflight "Job ran" lines |
+| 3. Was the email created? | `email_notifications` row (`EMAIL_QUEUED` in the backend log; outbox counts on the status endpoint) |
+| 4. Did the mail server accept it? | row `status=sent` (`EMAIL_SENT` log line). SMTP acceptance, nothing more. |
+| 5. Did it reach the inbox? | Only the recipient's mailbox can say. Not recorded anywhere here. |
+
 On the Windows server:
 
 ```powershell
-.\Install-MonitraJobs.ps1 -Status                 # state, last result and next run of every job, and the last log lines
+.\Install-MonitraJobs.ps1 -Status                 # (1) state, last result and next run of every job, and the last log lines
 Get-Content C:\ProgramData\Monitra\logs\monitra-jobs.log -Tail 40
-python scripts\email_preflight.py                 # from the backend folder: includes the overdue-outbox check
+python scripts\email_preflight.py                 # from the backend folder: (2) ledger, (3)(4) outbox, missing periods, tasks
 ```
+
+From anywhere, with the dispatch token (read-only, sends nothing):
+
+```powershell
+$h = @{ 'X-Email-Dispatch-Token' = '<token>' }
+Invoke-RestMethod -Uri https://api.peakworkos.com/internal/jobs/status -Headers $h | ConvertTo-Json -Depth 6
+Invoke-RestMethod -Uri 'https://api.peakworkos.com/health?deep=1' | ConvertTo-Json -Depth 5   # no token; `degraded` while jobs are missing
+```
+
+Point an uptime monitor at `https://api.peakworkos.com/health?deep=1` and alert on
+`"status":"degraded"`: that is the one alarm that does not depend on the email the
+scheduler failed to send.
 
 A job that fails exits non-zero, so Task Scheduler shows a non-zero **Last Run Result** for it
 and the preflight fails. On the Linux VM:
@@ -153,6 +213,28 @@ systemctl list-timers 'monitra-job-*'            # next and last run of each job
 ```
 
 A job that fails exits non-zero, and `systemctl --failed` lists it.
+
+## Catching up reports the scheduler missed
+
+A week or month whose job never fired has **no** outbox rows for that period. The
+ordinary run only ever reports the *previous* period, so the gap stays until someone looks.
+
+```powershell
+cd D:\monitra\backend
+python scripts\report_catch_up.py                  # lists the missing periods and how many emails each would queue; queues nothing
+python scripts\report_catch_up.py --apply          # queues them (the email-dispatch task delivers within five minutes)
+python scripts\report_catch_up.py --weeks 8 --months 3 --apply
+```
+
+Or over HTTP: `GET /internal/reports/catch-up` lists; `POST /internal/reports/catch-up?dry_run=false`
+queues. Both are keyed on the period, so running them twice queues nothing new, and a period
+that already has *some* rows is left to the ordinary run for that period
+(`/internal/reports/weekly/run?week_start=YYYY-MM-DD`), which queues only what it still lacks.
+
+**Read the dry run before applying.** Every missing week is one email per eligible person,
+all delivered on the same morning. On 2026-10-19 the production dry run was: week 12–18 Oct
+→ 68 emails; September monthly report → 68; September project summary → 9. Decide whether
+staff should receive the September monthly reports three weeks late, or only the missed week.
 
 ## Required configuration
 
@@ -206,7 +288,15 @@ filed as spam is not a fair test of the template.
    Gmail > Spam, Phishing and Malware; menu names move between console versions). That is immediate
    and covers every Workspace user at once, but only them: it does nothing for recipients outside
    the domain, which is what authentication is for.
-5. **A user can retrain their own filter** by opening a spam-filed Monitra message and choosing
+5. **Look at the standing copy before the first Monday run.** `EMAIL_CC_ADDRESSES` defaults to
+   four fixed mailboxes that are copied on *every* email, the personal weekly and monthly reports
+   included. With 68 eligible staff that is 68 near-identical "Your Monitra Weekly Report" messages
+   into each of those four inboxes every Monday morning, from a `gmail.com` sender — exactly the
+   pattern Gmail's "similar to messages that were identified as spam in the past" clustering reacts
+   to, and one "Report spam" on any of them trains the filter against the whole series. Decide
+   whether the reports should carry the copy at all (`EMAIL_CC_ADDRESSES=` empty switches it off
+   for everything; exempting only the reports is a code change).
+6. **A user can retrain their own filter** by opening a spam-filed Monitra message and choosing
    **Report not spam**. Gmail's note "similar to messages that were identified as spam in the past"
    most likely means that earlier Monitra messages were marked as spam (during testing, say) and
    Gmail is filing look-alikes the same way. Step 1 is what tells you whether that is the case or
