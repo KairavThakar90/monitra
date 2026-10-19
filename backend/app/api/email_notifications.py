@@ -54,12 +54,14 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.email_notification import (
     DispatchResult, MonthlyProjectSummaryRunResult, MonthlyReportRunResult,
-    ProjectBudgetAlertRunResult, WeeklyReportRunResult,
+    ProjectBudgetAlertRunResult, ReportCatchUpResult, ScheduledJobsStatus,
+    WeeklyReportRunResult,
 )
 from app.services.email import EmailOutboxService
 from app.services.email import assets as email_assets
 from app.services.monthly_project_summary import MonthlyProjectSummaryService
 from app.services.monthly_report import MonthlyReportService
+from app.services.scheduled_jobs import record_job_run, scheduler_status
 from app.services.weekly_report import WeeklyReportService
 
 logger = logging.getLogger("uvicorn.error")
@@ -138,15 +140,18 @@ def dispatch_email_notifications(
     _: None = Depends(require_dispatch_token),
     db: Session = Depends(get_db, scope="function"),
 ):
-    result = EmailOutboxService.dispatch_pending(db, limit=limit)
-    # `dispatch_pending` returns only the outcomes that actually occurred;
-    # the schema's defaults fill in the rest as zero.
-    if result.pop("unconfigured", None) is True:
-        result["unconfigured"] = result.get("attempted", 0) or 0
-    return DispatchResult(**{
-        key: value for key, value in result.items()
-        if key in DispatchResult.model_fields
-    })
+    with record_job_run("email-dispatch") as run:
+        result = EmailOutboxService.dispatch_pending(db, limit=limit)
+        # `dispatch_pending` returns only the outcomes that actually occurred;
+        # the schema's defaults fill in the rest as zero.
+        if result.pop("unconfigured", None) is True:
+            result["unconfigured"] = result.get("attempted", 0) or 0
+        response = DispatchResult(**{
+            key: value for key, value in result.items()
+            if key in DispatchResult.model_fields
+        })
+        run.record(response)
+    return response
 
 
 @router.get(
@@ -212,13 +217,16 @@ def run_weekly_reports(
     _: None = Depends(require_dispatch_token),
     db: Session = Depends(get_db, scope="function"),
 ):
-    return WeeklyReportRunResult(**{
-        key: value
-        for key, value in WeeklyReportService.run(
-            db, week_start=week_start, user_id=user_id, dry_run=dry_run,
-        ).items()
-        if key in WeeklyReportRunResult.model_fields
-    })
+    with record_job_run("weekly-report", dry_run=dry_run) as run:
+        response = WeeklyReportRunResult(**{
+            key: value
+            for key, value in WeeklyReportService.run(
+                db, week_start=week_start, user_id=user_id, dry_run=dry_run,
+            ).items()
+            if key in WeeklyReportRunResult.model_fields
+        })
+        run.record(response)
+    return response
 
 
 @router.get(
@@ -314,13 +322,16 @@ def run_monthly_reports(
     _: None = Depends(require_dispatch_token),
     db: Session = Depends(get_db, scope="function"),
 ):
-    return MonthlyReportRunResult(**{
-        key: value
-        for key, value in MonthlyReportService.run(
-            db, month_start=month_start, user_id=user_id, dry_run=dry_run,
-        ).items()
-        if key in MonthlyReportRunResult.model_fields
-    })
+    with record_job_run("monthly-report", dry_run=dry_run) as run:
+        response = MonthlyReportRunResult(**{
+            key: value
+            for key, value in MonthlyReportService.run(
+                db, month_start=month_start, user_id=user_id, dry_run=dry_run,
+            ).items()
+            if key in MonthlyReportRunResult.model_fields
+        })
+        run.record(response)
+    return response
 
 
 @router.get(
@@ -397,13 +408,16 @@ def run_monthly_project_summary(
     _: None = Depends(require_dispatch_token),
     db: Session = Depends(get_db, scope="function"),
 ):
-    return MonthlyProjectSummaryRunResult(**{
-        key: value
-        for key, value in MonthlyProjectSummaryService.run(
-            db, month_start=month_start, user_id=user_id, dry_run=dry_run,
-        ).items()
-        if key in MonthlyProjectSummaryRunResult.model_fields
-    })
+    with record_job_run("monthly-project-summary", dry_run=dry_run) as run:
+        response = MonthlyProjectSummaryRunResult(**{
+            key: value
+            for key, value in MonthlyProjectSummaryService.run(
+                db, month_start=month_start, user_id=user_id, dry_run=dry_run,
+            ).items()
+            if key in MonthlyProjectSummaryRunResult.model_fields
+        })
+        run.record(response)
+    return response
 
 
 @router.get(
@@ -472,11 +486,14 @@ def run_project_budget_alerts(
 ):
     from app.services.project_budget_alerts import ProjectBudgetAlertService
 
-    result = ProjectBudgetAlertService.run(
-        db, project_ids=[project_id] if project_id else None, dry_run=dry_run,
-        source="manual" if project_id else "reconciliation",
-    )
-    return ProjectBudgetAlertRunResult(**{k: v for k, v in result.items() if k in ProjectBudgetAlertRunResult.model_fields})
+    with record_job_run("budget-alerts", dry_run=dry_run) as run:
+        result = ProjectBudgetAlertService.run(
+            db, project_ids=[project_id] if project_id else None, dry_run=dry_run,
+            source="manual" if project_id else "reconciliation",
+        )
+        response = ProjectBudgetAlertRunResult(**{k: v for k, v in result.items() if k in ProjectBudgetAlertRunResult.model_fields})
+        run.record(response)
+    return response
 
 
 @router.get(
@@ -530,6 +547,111 @@ def preview_project_budget_alert(
         internal=split.internal_seconds, recipient_user=user, generated_at=datetime.now(timezone.utc),
     )
     return HTMLResponse(content=messages.build_project_budget_alert_email(payload, ["preview@example.invalid"]).html)
+
+
+@router.get(
+    "/internal/jobs/status",
+    response_model=ScheduledJobsStatus,
+    summary="Whether every scheduled job is actually firing, and the state of the outbox (scheduler only).",
+    description=(
+        "The durable answer to 'is the scheduler running?'. For each registered "
+        "job: when it last ran on this backend (from the `scheduled_job_runs` "
+        "ledger, dry runs excluded), whether that is overdue for its schedule, "
+        "its last tally and, if it failed, why. Plus the outbox: how much is "
+        "pending, how much of that is overdue, how long the oldest row has waited, "
+        "and the report periods in the recent window that have no rows at all.\n\n"
+        "Counts and timestamps only -- never a recipient, a subject or a figure. "
+        "Read-only. Authenticate with `EMAIL_DISPATCH_TOKEN`."
+    ),
+    responses={
+        401: {"description": "Missing or incorrect dispatch token."},
+        503: {"description": "EMAIL_DISPATCH_TOKEN is not configured."},
+    },
+)
+def scheduled_jobs_status(
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db, scope="function"),
+):
+    from datetime import datetime, timezone
+
+    from app.repositories.email_notification import EmailNotificationRepository
+    from app.services.report_catch_up import missing_report_periods
+
+    now = datetime.now(timezone.utc)
+    status_ = scheduler_status(db, now=now)
+    outbox = EmailNotificationRepository.queue_snapshot(db, now=now)
+    missing = missing_report_periods(db)
+    if outbox["pending_overdue"]:
+        status_["problems"].append(
+            f"{outbox['pending_overdue']} outbox row(s) overdue by 15+ minutes -- email-dispatch is not delivering"
+        )
+    for report_type, periods in missing.items():
+        if periods:
+            status_["problems"].append(
+                f"{report_type}: no rows for {', '.join(periods)} -- see POST /internal/reports/catch-up"
+            )
+    status_["healthy"] = not status_["problems"]
+    return ScheduledJobsStatus(**status_, outbox=outbox, missing_report_periods=missing)
+
+
+@router.post(
+    "/internal/reports/catch-up",
+    response_model=ReportCatchUpResult,
+    summary="Find report periods that were never queued and, on request, queue them (scheduler only).",
+    description=(
+        "Looks back `weeks_back` completed weeks and `months_back` completed months "
+        "for periods that have **no** weekly report, monthly report or monthly "
+        "project summary row at all, and runs the ordinary job for each missing "
+        "period with the period named explicitly. The result per period is the "
+        "same tally that period's scheduled run would have returned, with the same "
+        "recipients, content and idempotency.\n\n"
+        "**`dry_run=true` (the default) queues nothing** and lists what would be "
+        "queued. Pass `dry_run=false` only after reading that list: every missing "
+        "week is one email per eligible person, delivered by the next dispatch "
+        "sweep. A period that already has even one row is left to the ordinary run "
+        "endpoint for that period, which queues only what it still lacks.\n\n"
+        "Authenticate with `EMAIL_DISPATCH_TOKEN`."
+    ),
+    responses={
+        401: {"description": "Missing or incorrect dispatch token."},
+        503: {"description": "EMAIL_DISPATCH_TOKEN is not configured."},
+    },
+)
+def catch_up_reports(
+    weeks_back: int = Query(4, ge=0, le=12, description="Completed weeks to inspect."),
+    months_back: int = Query(2, ge=0, le=6, description="Completed months to inspect."),
+    dry_run: bool = Query(True, description="List the gaps without queueing anything (default)."),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db, scope="function"),
+):
+    from app.services.report_catch_up import catch_up
+
+    with record_job_run("report-catch-up", dry_run=dry_run) as run:
+        response = ReportCatchUpResult(**catch_up(
+            db, weeks_back=weeks_back, months_back=months_back, dry_run=dry_run,
+        ))
+        run.record({"dry_run": dry_run, "queued_total": response.queued_total,
+                    "missing_weeks": len(response.missing.get("weekly_report", [])),
+                    "missing_months": len(response.missing.get("monthly_report", []))})
+    return response
+
+
+@router.get(
+    "/internal/reports/catch-up",
+    response_model=ReportCatchUpResult,
+    include_in_schema=False,
+    summary="List report periods that were never queued (scheduler only, read-only).",
+)
+def catch_up_reports_get(
+    weeks_back: int = Query(4, ge=0, le=12),
+    months_back: int = Query(2, ge=0, le=6),
+    _: None = Depends(require_dispatch_token),
+    db: Session = Depends(get_db, scope="function"),
+):
+    """A GET is a safe method, so this alias only ever lists: queueing is the POST."""
+    from app.services.report_catch_up import catch_up
+
+    return ReportCatchUpResult(**catch_up(db, weeks_back=weeks_back, months_back=months_back, dry_run=True))
 
 
 @router.get(

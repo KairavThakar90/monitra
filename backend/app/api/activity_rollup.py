@@ -28,9 +28,17 @@ router = APIRouter(tags=["Time Entry Activity"])
 
 
 def _run(day, days, user_id, dry_run, db):
-    return DailyActivityRollupResult(**DailyActivitySummaryService.rollup(
-        db, day=day, days=days, user_id=user_id, dry_run=dry_run,
-    ))
+    from app.services.scheduled_jobs import prune_ledger, record_job_run
+
+    with record_job_run("daily-rollup", dry_run=dry_run) as run:
+        response = DailyActivityRollupResult(**DailyActivitySummaryService.rollup(
+            db, day=day, days=days, user_id=user_id, dry_run=dry_run,
+        ))
+        run.record(response)
+    if not dry_run:
+        # Once a day is often enough to keep the job ledger to its retention.
+        prune_ledger()
+    return response
 
 
 @router.post(

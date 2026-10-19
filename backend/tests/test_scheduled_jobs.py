@@ -119,6 +119,44 @@ class TestScheduledJobs(unittest.TestCase):
             with self.subTest(file=path.name):
                 self.assertNotIn(b"\r\n", path.read_bytes())
 
+    def test_the_backend_registry_is_the_same_schedule(self):
+        """`app.services.scheduled_jobs.JOBS` is how the backend knows how often each job
+        *should* call it (the staleness verdict). It must name exactly the jobs the runners
+        name, at exactly vercel.json's crons."""
+        from app.services.scheduled_jobs import JOBS
+
+        crons = {c["path"]: c["schedule"] for c in json.loads((ROOT / "vercel.json").read_text(encoding="utf-8"))["crons"]}
+        self.assertEqual({job.endpoint: job.cron for job in JOBS}, crons)
+        self.assertEqual({job.name for job in JOBS}, set(runner_jobs()))
+        self.assertEqual({job.name: job.endpoint for job in JOBS}, runner_jobs())
+
+    def test_every_job_leaves_a_ledger_row(self):
+        """Each `/internal/*` job must record its run: that ledger is the only durable
+        evidence that a scheduler is calling this backend at all."""
+        import inspect
+
+        from app.services.scheduled_jobs import JOBS
+        from app.api import activity_rollup, email_notifications, time_entry_reconcile
+        from app.WFPM import router as wfpm_router
+
+        sources = "".join(inspect.getsource(m) for m in (activity_rollup, email_notifications, time_entry_reconcile, wfpm_router))
+        for job in JOBS:
+            with self.subTest(job=job.name):
+                self.assertIn(f'record_job_run("{job.name}"', sources)
+
+
+class TestMigrations(unittest.TestCase):
+
+    def test_alembic_has_exactly_one_head(self):
+        """Two heads make `alembic upgrade head` -- the deploy step -- refuse to run.
+        It happened on 2026-10-12 (floor + liveness, both off b6d1f8a4c2e9) and the
+        production database was upgraded by hand around it. A merge revision is the fix."""
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        heads = ScriptDirectory.from_config(Config(str(ROOT / "backend" / "alembic.ini"))).get_heads()
+        self.assertEqual(len(heads), 1, f"multiple Alembic heads: {heads} -- add a merge revision")
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

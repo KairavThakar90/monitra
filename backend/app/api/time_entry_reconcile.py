@@ -113,12 +113,19 @@ def _run(
     # Applies when explicitly asked (`dry_run=false`) or when the deployment
     # has switched the scheduled run on; otherwise it only reports.
     apply = dry_run is False or (dry_run is None and settings.TIMER_RECONCILER_ENABLED and not read_only)
-    result = TimeEntryReconciliationService.run(
-        db, apply=apply, limit=limit, user_id=user_id, entry_ids=entry_id,
-        include_unreported=include_unreported,
-        decided_by="operator" if (include_unreported or dry_run is False) else "system:reconciler",
-    )
-    result = ReconcileRunResult(**result)
+    from app.services.scheduled_jobs import record_job_run
+
+    # The scheduled pass is a run whether or not the deployment lets it apply
+    # (report-only is its shipped mode); only an explicit `dry_run=true` is a
+    # preview that must not count as the scheduler having fired.
+    with record_job_run("timer-reconcile", dry_run=dry_run is True) as run:
+        result = TimeEntryReconciliationService.run(
+            db, apply=apply, limit=limit, user_id=user_id, entry_ids=entry_id,
+            include_unreported=include_unreported,
+            decided_by="operator" if (include_unreported or dry_run is False) else "system:reconciler",
+        )
+        result = ReconcileRunResult(**result)
+        run.record({**result.model_dump(), "applied": apply, "read_only": read_only})
     _remember(result)
     return result
 

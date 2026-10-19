@@ -157,6 +157,49 @@ def check_database() -> None:
                f"admins={counts[0]} owners={counts[1]} leaders={counts[2]}")
 
 
+def check_job_ledger() -> None:
+    """What the `scheduled_job_runs` ledger says: did each job actually call this backend?
+
+    An installed task is not evidence that it runs (wrong port, wrong token, wrong
+    server); a ledger row is. "Never ran" is a FAIL for the frequent jobs -- five
+    minutes after installation they must exist -- and a WARN for the rare ones,
+    which have no run until their day comes.
+    """
+    from app.core.database import get_session_local
+    from app.services.scheduled_jobs import scheduler_status
+
+    with get_session_local()() as db:
+        verdict = scheduler_status(db)
+    for name, info in verdict["jobs"].items():
+        frequent = info["cron_utc"].startswith("*/")
+        if info["never_ran"]:
+            report("FAIL" if frequent else "WARN", f"Job ran: {name}",
+                   "no run recorded on this backend yet -- the task is not calling it"
+                   + ("" if frequent else f" (first firing expected {info['next_expected_at']})"))
+        elif info["stale"]:
+            report("FAIL", f"Job ran: {name}",
+                   f"last ran {info['last_started_at']} on {info['last_host']} -- overdue for {info['cron_utc']} UTC")
+        elif info["last_status"] == "failed":
+            report("FAIL", f"Job ran: {name}", f"last run failed: {info['last_error']}")
+        else:
+            report("OK", f"Job ran: {name}",
+                   f"{info['last_started_at']} on {info['last_host']} -> {info['last_summary']}")
+
+
+def check_missing_report_periods() -> None:
+    """Report periods in the recent window with no outbox rows at all -- weeks the job missed."""
+    from app.core.database import get_session_local
+    from app.services.report_catch_up import DEFAULT_MONTHS_BACK, DEFAULT_WEEKS_BACK, missing_report_periods
+
+    with get_session_local()() as db:
+        missing = missing_report_periods(db)
+    gaps = [f"{kind}: {', '.join(periods)}" for kind, periods in missing.items() if periods]
+    report("WARN" if gaps else "OK",
+           f"Report periods queued (last {DEFAULT_WEEKS_BACK} weeks / {DEFAULT_MONTHS_BACK} months)",
+           ("; ".join(gaps) + " -- review with `python scripts\\report_catch_up.py`, queue with `--apply`")
+           if gaps else "every period has its rows")
+
+
 #: Task Scheduler "last result" values that are not failures: success, running, never run yet.
 _TASK_RESULT_FINE = (0, 267009, 267011)
 
@@ -333,7 +376,8 @@ def main() -> int:
     args = parser.parse_args()
 
     print(f"Monitra email preflight — environment={getattr(settings, 'ENV', '?')}\n")
-    for step in (check_configuration, check_sender_dns, *( [check_smtp_login] if args.smtp_login else [] ), check_database, check_scheduler):
+    for step in (check_configuration, check_sender_dns, *( [check_smtp_login] if args.smtp_login else [] ),
+                 check_database, check_job_ledger, check_missing_report_periods, check_scheduler):
         try:
             step()
         except Exception as error:  # noqa: BLE001 - one check must not hide the rest

@@ -413,7 +413,9 @@ class Settings(BaseSettings):
     #: trigger for outbound mail is an open relay with extra steps.
     EMAIL_DISPATCH_TOKEN: str = ""
     #: Public base URL the email templates load their logos from, e.g.
-    #: "https://staff.peakworkos.com/email-assets". Left empty, the logos are
+    #: "https://api.peakworkos.com/email-assets" -- the *backend* host, which is
+    #: what serves `/email-assets/{filename}`; the web client's host answers
+    #: that path with the SPA's HTML page. Left empty, the logos are
     #: attached to the message and referenced by Content-ID instead, which is
     #: what a deployment without public asset hosting should use. Never point
     #: this at localhost: the recipient's mail client, not this server, is what

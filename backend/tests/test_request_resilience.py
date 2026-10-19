@@ -240,7 +240,27 @@ class TestDeepHealth(unittest.TestCase):
 
     def test_deep_reports_latency_when_it_is_up(self):
         client = TestClient(main_module.app)
-        with patch.object(main_module, "_probe_database", return_value={"status": "ok", "latency_ms": 12}):
+        with patch.object(main_module, "_probe_database", return_value={"status": "ok", "latency_ms": 12}), \
+             patch.object(main_module, "_probe_scheduled_jobs", return_value={"healthy": True, "problems": [], "jobs": {}}):
             body = client.get("/health?deep=1").json()
         self.assertEqual(body["status"], "healthy")
         self.assertEqual(body["database"]["latency_ms"], 12)
+
+    def test_deep_is_degraded_when_the_scheduler_is_not_firing(self):
+        """A scheduler that was never installed, or stopped, must show up on the URL an
+        outside monitor polls -- through a channel that is not the email it failed to send."""
+        client = TestClient(main_module.app)
+        verdict = {"healthy": False, "problems": ["email-dispatch has never run on this backend"], "jobs": {}}
+        with patch.object(main_module, "_probe_database", return_value={"status": "ok", "latency_ms": 12}), \
+             patch.object(main_module, "_probe_scheduled_jobs", return_value=verdict):
+            body = client.get("/health?deep=1").json()
+        self.assertEqual(body["status"], "degraded")
+        self.assertEqual(body["scheduled_jobs"]["problems"], verdict["problems"])
+
+    def test_deep_skips_the_ledger_when_the_database_is_down(self):
+        client = TestClient(main_module.app)
+        with patch.object(main_module, "_probe_database", return_value={"status": "unreachable", "error": "x", "latency_ms": 1}), \
+             patch.object(main_module, "_probe_scheduled_jobs", side_effect=AssertionError("must not probe")):
+            body = client.get("/health?deep=1").json()
+        self.assertEqual(body["status"], "degraded")
+        self.assertNotIn("scheduled_jobs", body)

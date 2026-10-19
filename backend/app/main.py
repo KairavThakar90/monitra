@@ -306,8 +306,52 @@ def health_check(deep: bool = False):
         payload["database"] = _probe_database()
         if payload["database"]["status"] != "ok":
             payload["status"] = "degraded"
+        else:
+            # Whether the host's timers are actually calling this backend, from the
+            # durable job ledger. A scheduler that was never installed, or stopped,
+            # makes the deployment `degraded` here -- so an outside monitor polling
+            # this URL raises the alarm through a channel that is not the email the
+            # missing scheduler would have sent. Counts and timestamps only.
+            payload["scheduled_jobs"] = _probe_scheduled_jobs()
+            if not payload["scheduled_jobs"].get("healthy", False):
+                payload["status"] = "degraded"
 
     return payload
+
+
+def _probe_scheduled_jobs() -> dict:
+    from app.core.database import get_session_local
+    from app.services.scheduled_jobs import scheduler_status
+
+    db = None
+    try:
+        db = get_session_local()()
+        verdict = scheduler_status(db)
+        # The compact form: a monitor wants the verdict and the per-job last run,
+        # not every tally. `/internal/jobs/status` carries the rest.
+        return {
+            "healthy": verdict["healthy"],
+            "problems": verdict["problems"],
+            "jobs": {
+                name: {
+                    "last_started_at": info["last_started_at"],
+                    "last_status": info["last_status"],
+                    "stale": info["stale"],
+                    "never_ran": info["never_ran"],
+                    "next_expected_at": info["next_expected_at"],
+                }
+                for name, info in verdict["jobs"].items()
+            },
+        }
+    except Exception as exc:  # noqa: BLE001 - health must stay answerable
+        logger.warning("HEALTH_SCHEDULED_JOBS_PROBE_FAILED: %s", type(exc).__name__)
+        return {"healthy": False, "problems": [f"ledger unavailable: {type(exc).__name__}"], "jobs": {}}
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _probe_database() -> dict:

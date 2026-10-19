@@ -235,3 +235,48 @@ class EmailNotificationRepository:
             .group_by(EmailNotification.status)
         ).all()
         return {status: count for status, count in rows}
+
+    #: A pending row due longer ago than this has been missed by at least three
+    #: five-minute sweeps: the dispatch job is not running.
+    OVERDUE_AFTER_SECONDS = 15 * 60
+
+    @staticmethod
+    def queue_snapshot(db: Session, *, now: datetime) -> dict:
+        """The state of the queue as numbers: for the status endpoint and the preflight.
+
+        Counts and ages only -- never a recipient, a subject or a payload.
+        """
+        from datetime import timedelta
+
+        from sqlalchemy import func
+
+        pending = select(EmailNotification).where(EmailNotification.status == STATUS_PENDING).subquery()
+        pending_total, pending_due, pending_overdue, oldest_created = db.execute(
+            select(
+                func.count(pending.c.id),
+                func.count(pending.c.id).filter(pending.c.next_attempt_at <= now),
+                func.count(pending.c.id).filter(
+                    pending.c.next_attempt_at <= now - timedelta(seconds=EmailNotificationRepository.OVERDUE_AFTER_SECONDS)
+                ),
+                func.min(pending.c.created_at),
+            )
+        ).one()
+        failed_last_7_days = db.scalar(
+            select(func.count(EmailNotification.id)).where(
+                EmailNotification.status == "failed",
+                EmailNotification.updated_at >= now - timedelta(days=7),
+            )
+        ) or 0
+        if oldest_created is not None and oldest_created.tzinfo is None:
+            oldest_created = oldest_created.replace(tzinfo=now.tzinfo)
+        return {
+            "counts_by_status": EmailNotificationRepository.counts_by_status(db),
+            "pending": int(pending_total or 0),
+            "pending_due": int(pending_due or 0),
+            "pending_overdue": int(pending_overdue or 0),
+            "oldest_pending_created_at": oldest_created.isoformat(timespec="seconds") if oldest_created else None,
+            "oldest_pending_age_seconds": (
+                int((now - oldest_created).total_seconds()) if oldest_created else None
+            ),
+            "failed_last_7_days": int(failed_last_7_days),
+        }

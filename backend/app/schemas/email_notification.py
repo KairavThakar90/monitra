@@ -108,3 +108,52 @@ class MonthlyReportRunResult(BaseModel):
     disabled: bool = Field(
         False, description="MONTHLY_REPORT_ENABLED is false, so nothing was queued.",
     )
+
+
+class ReportCatchUpResult(BaseModel):
+    """What a catch-up found and, unless it was a dry run, queued.
+
+    Period start dates and per-period tallies only -- the same counts the
+    ordinary run endpoints return, never a recipient or a figure.
+    """
+
+    dry_run: bool = Field(True, description="True: nothing was queued; the lists say what would be.")
+    weeks_back: int = Field(0, description="Completed weeks inspected.")
+    months_back: int = Field(0, description="Completed months inspected.")
+    missing: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Per report type, the ISO start dates of periods with no outbox rows at all.",
+    )
+    weekly: list[dict] = Field(default_factory=list, description="One weekly-run tally per missing week.")
+    monthly: list[dict] = Field(default_factory=list, description="One monthly-run tally per missing month.")
+    monthly_project_summary: list[dict] = Field(
+        default_factory=list, description="One summary-run tally per missing month.",
+    )
+    queued_total: int = Field(0, description="Emails newly queued (0 on a dry run).")
+
+
+class ScheduledJobsStatus(BaseModel):
+    """Whether the scheduler is actually firing, from the job ledger and the outbox.
+
+    Counts and timestamps only. `problems` is what a person reads; `healthy`
+    is true when it is empty.
+    """
+
+    checked_at: str
+    healthy: bool
+    problems: list[str] = Field(default_factory=list)
+    jobs: dict[str, dict] = Field(
+        default_factory=dict,
+        description="Per registered job: last real run, its outcome, whether it is overdue, when the next is due.",
+    )
+    other_jobs: dict[str, dict] = Field(
+        default_factory=dict, description="Ledger entries for on-demand jobs (report-catch-up).",
+    )
+    outbox: dict = Field(
+        default_factory=dict,
+        description="Rows by status, how many pending rows are overdue, and how long the oldest has waited.",
+    )
+    missing_report_periods: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Per report type, recent completed periods that have no outbox rows at all.",
+    )

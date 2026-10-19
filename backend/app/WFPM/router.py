@@ -294,10 +294,15 @@ def sync_unassign_task(wfpm_task_id: WfpmId, user: User = Depends(get_current_us
 # ── Monitra → WFPM: the timer-event sweeper ─────────────────────────────────
 
 def _dispatch(limit: Optional[int], db: Session) -> WfpmTimerDispatchResult:
-    result = WfpmTimerSync.dispatch_pending(db, limit=limit)
-    return WfpmTimerDispatchResult(**{
-        key: value for key, value in result.items() if key in WfpmTimerDispatchResult.model_fields
-    })
+    from app.services.scheduled_jobs import record_job_run
+
+    with record_job_run("wfpm-timer-dispatch") as run:
+        result = WfpmTimerSync.dispatch_pending(db, limit=limit)
+        response = WfpmTimerDispatchResult(**{
+            key: value for key, value in result.items() if key in WfpmTimerDispatchResult.model_fields
+        })
+        run.record(response)
+    return response
 
 
 @internal_router.post(
