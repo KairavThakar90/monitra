@@ -719,8 +719,41 @@ reading the period back before it is called a failure.
 is raised again (4 s, 8 s, ...) and from the second repeat the tray is told as
 well. The dialog is **unparented** -- an owned window is hidden by Windows when
 its owner is minimised or hidden to the tray, while Qt still reports it
-visible -- and the one tick it already owns puts it back if it is ever not
-visible and unsticks its own buttons after `BUSY_LIMIT_S`.
+visible -- and the one tick it already owns unsticks its own buttons after
+`BUSY_LIMIT_S`.
+
+**The popup is reachable, or it is put back.** The popup is application-modal,
+so a popup the user cannot see is an application that has stopped taking
+input -- and `isVisible()` cannot tell. `IdleAlertDialog.ensure_reachable()`,
+run from the same tick, asks the operating system through
+[ui/native_window.py](ui/native_window.py) (`IsWindowVisible`, `IsIconic`,
+`IVirtualDesktopManager`; pure ctypes, `None` off Windows) and acts only on an
+abnormal state, so it is not a focus loop:
+
+| State | How it happens | Recovery |
+|---|---|---|
+| `hidden` | Qt itself says not shown | `show()` |
+| `minimised` | Show Desktop, the taskbar, a tool | `showNormal()` |
+| `offscreen` | the display it was on is gone | moved to the screen under the pointer |
+| `os_hidden` | `WS_VISIBLE` cleared while Qt says visible | `hide()` + `show()` |
+| `other_desktop` | created on a virtual desktop the user has left | `MoveWindowToDesktop` to the user's desktop, named by the main window when it is visible, else the foreground window |
+
+Measured on Windows 11 ([tests/e2e/real_window_idle_popup_probe.py](tests/e2e/real_window_idle_popup_probe.py)):
+re-showing a window does *not* change its virtual desktop, and activating it
+*switches the user* to its desktop -- so the popup is moved, never the user.
+A recovery of one kind is logged loudly once per 30 s (`IDLE_POPUP_RECOVERED
+kind=… screens=…`), reported once as `event=popup_recovered`, and backed off to
+one attempt per 30 s after five in a minute (`IDLE_POPUP_RECOVERY_BACKOFF`): a
+shell that keeps undoing it is not fought once a second.
+
+**Whoever asks for Monitra is asking for the prompt.** `MainWindow.restore_window`
+-- the tray icon, a clicked notification, and a second launch (below) -- ends
+with `DashboardWindow.bring_idle_popup_forward(reason)`: the recorded popup is
+recovered and raised (`IDLE_POPUP_BROUGHT_FORWARD`), one that is gone is rebuilt
+from the period the service still holds (`IDLE_POPUP_REBUILT`), and a
+provisional gap the user chose to decide later is left alone. Sign-out and
+session expiry close the popup in `reset_state` (`AUTH_CLEANUP idle_popup=…`),
+so no dialog from one session can block the next.
 
 **The loop is supervised.** `IdleService.supervised = True`; the
 `ServiceManager` (the owner of services) checks it every 15 s
@@ -735,7 +768,8 @@ are supervised; none of this is a new thread or a second timer per service.
 `IDLE_STRETCH_HELD`, `IDLE_INTERRUPTION_WITHDRAWN` / `_DEFERRED`,
 `IDLE_RETRY_NOW`, `IDLE_INFLIGHT_TIMEOUT`, `IDLE_RESOLVE_FAILED`,
 `IDLE_REASSIGN_FAILED` / `_RECONCILED`, `IDLE_POPUP_CREATE_FAILED` /
-`_NOT_ACKNOWLEDGED` / `_HIDDEN` / `_STALE` / `_BUSY_TIMEOUT`,
+`_NOT_ACKNOWLEDGED` / `_RECOVERED` / `_RECOVERY_BACKOFF` / `_BROUGHT_FORWARD` /
+`_REBUILT` / `_STALE` / `_BUSY_TIMEOUT`,
 `IDLE_MONITOR_RESTARTED`, `SERVICE_LOOP_DIED` / `_STALLED` / `_REPLACED`,
 `IDLE_HEALTH` (every 10 minutes while tracking). The notable ones are also
 sent, throttled, to `POST /idle-periods/diagnostics`, which the backend logs as
@@ -1192,6 +1226,32 @@ to hang. The stop an explicit quit issues is queued durably and *awaited*
 through the event loop (`ApplicationRuntime.prepare_exit`), never called
 synchronously; anything still outstanding when the budget runs out is
 durable and completes on the next run.
+
+### One instance, and the second launch as a request
+
+[core/single_instance.py](core/single_instance.py) holds one lock per data
+directory for the life of the process -- a named mutex on Windows (the name
+the installer checks), an `flock` elsewhere -- released by the OS on any exit,
+so there is no stale lock to clean up and no manual release to get wrong.
+
+A second launch is almost always the user *looking for* Monitra: hidden in the
+tray, minimised, on another virtual desktop, or blocked by an idle popup they
+cannot see. So it does not dead-end. It writes a request file into
+`<data dir>/activation/`, which the lock holder watches with a
+`QFileSystemWatcher` (`ActivationListener`, owned by the main window; no thread
+of ours, no QtNetwork, which the packaged build leaves out), waits up to 3 s
+for the file to be taken, and exits quietly (`SINGLE_INSTANCE_ACTIVATION sent
+and taken`). The running instance restores its window and brings the idle
+popup forward (`restore_window("second-launch")`). Only an unanswered request
+shows the "already running" explanation, now saying that the running copy did
+not answer -- the one case where that text is the whole truth. Only the lock
+holder removes requests, including stale ones (older than 10 s) left by a
+launch that gave up; the second instance never touches the other process's
+lock and never ends it. On Windows the second launch first calls
+`AllowSetForegroundWindow(ASFW_ANY)`, which is what lets the running
+instance's `activateWindow()` actually come to the front. Two real processes
+prove the hand-over in
+[tests/e2e/test_single_instance_activation_e2e.py](tests/e2e/test_single_instance_activation_e2e.py).
 
 ---
 

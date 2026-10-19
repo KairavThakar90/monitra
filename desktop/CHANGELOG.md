@@ -41,6 +41,19 @@ re-grant a permission.
 
 ### Fixed
 
+- **The idle-time prompt can no longer leave Monitra stuck behind a window you cannot
+  see.** The prompt must be answered before Monitra takes another click. If it had been
+  minimised with everything else by Show Desktop, left on a monitor that was then
+  unplugged, hidden by Windows, or left behind on another virtual desktop, Monitra's
+  window came back but nothing in it responded, and there was no prompt in sight.
+  Monitra now checks once a second where the prompt actually is and brings it back onto
+  your screen, next to you. Opening Monitra from the notification area, or clicking a
+  Monitra notification, also brings the prompt to the front. What the prompt asks, and
+  what Stop and Resume do with your idle time, is unchanged.
+- **Launching Monitra while it is already running now brings its window back** instead of
+  showing "Monitra is already running" and leaving you where you were. The copy that is
+  running shows its window (and the idle prompt, if one is waiting) and the second copy
+  closes by itself. The message is shown only if the running copy does not answer.
 - **A program that stops responding is no longer reported as "Ghost".** When a program hangs
   while you are using it, Windows swaps its window for a placeholder, and Monitra recorded the
   time under that placeholder's technical name, "Ghost", in the Apps report. It now records

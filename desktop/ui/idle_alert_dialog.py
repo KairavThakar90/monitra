@@ -25,6 +25,22 @@ The card itself is the grab handle: press anywhere on it that is not a
 control and drag, and the popup follows the pointer anywhere on screen. It
 still cannot be closed that way; moving it is the one thing dragging does.
 
+Mandatory means it must be *reachable*
+--------------------------------------
+Application-modal cuts both ways: while this popup is up, nothing else in
+Monitra takes a click. A popup the user cannot see is therefore an
+application that has stopped responding -- and Qt's `isVisible()` does not
+know when that has happened. Show Desktop minimises a stays-on-top window
+like any other; a monitor that is unplugged leaves it at coordinates no
+screen covers; a window created while the user was on another *virtual
+desktop* stays there when they switch back, visible to every API and to no
+one. `ensure_reachable()` asks the operating system (`ui.native_window`)
+once a second, from the one tick this dialog already owns, and puts the
+popup right only when something is actually wrong -- it is not a focus loop.
+`bring_forward()` is the same check on demand, for the tray, the taskbar
+and a second launch of Monitra: whoever asks for Monitra is asking for the
+prompt that is blocking it.
+
 The one number this widget computes
 -----------------------------------
 The live "you have been idle for" figure, from the period's own
@@ -48,6 +64,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.logging_setup import get_logger
+from ui import native_window
 from ui.reassign_time_dialog import ReassignTimeDialog
 from ui.styles import (
     BORDER_LIGHT, BORDER_MID, BUTTON_GRADIENT, BUTTON_GRADIENT_HOVER,
@@ -124,6 +141,17 @@ class IdleAlertDialog(QDialog):
     RETRY_NOW_AFTER_S = 5.0
     DEFER_AFTER_S = 60.0
 
+    #: A recovery of the same kind is logged at error level (and reported to
+    #: the backend) at most this often; repeats inside the window are debug.
+    RECOVERY_LOG_INTERVAL_S = 30.0
+    #: If the same kind of recovery is needed this many times inside
+    #: RECOVERY_BACKOFF_WINDOW_S, something is undoing it as fast as it is
+    #: done (a tool hiding windows, a display flapping). Fighting it once a
+    #: second helps nobody: back off to one attempt per RECOVERY_BACKOFF_S.
+    RECOVERY_BACKOFF_THRESHOLD = 5
+    RECOVERY_BACKOFF_WINDOW_S = 60.0
+    RECOVERY_BACKOFF_S = 30.0
+
     #: Fixed width of the dialog, and the width the project/task column gets
     #: within it once the "Reassign time" action and the padding are taken
     #: out. Used to elide names before the first layout has happened.
@@ -142,6 +170,7 @@ class IdleAlertDialog(QDialog):
         project_name_resolver: Optional[Callable[[Optional[int]], Optional[str]]] = None,
         project_loader: Optional[Callable[[], list]] = None,
         task_loader: Optional[Callable[[int], list]] = None,
+        companion: Optional[QWidget] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         """
@@ -152,9 +181,15 @@ class IdleAlertDialog(QDialog):
         `IdleService.interruption_pending`, but its actions stay locked until
         `bind_confirmed_period()` is called with the backend's real period —
         the backend decides everything but the on-screen count, always.
+
+        `companion` is the application's main window: NOT a parent (see
+        `DashboardWindow._build_idle_dialog` for why this popup is never
+        owned), only the window whose virtual desktop names "where the user
+        is" when they have come back to Monitra and the popup is elsewhere.
         """
         super().__init__(parent)
         self.api = api
+        self._companion = companion
         self._locked = provisional is not None and period is None
         source = provisional if self._locked else period
         self._period = dict(source or {})
@@ -182,7 +217,10 @@ class IdleAlertDialog(QDialog):
         )
         self._retry_after = self.RETRY_NOW_AFTER_S
         self._defer_after = self.DEFER_AFTER_S
-        self._last_hidden_log = 0.0
+        #: When each kind of recovery was last logged loudly, and when each
+        #: was performed (for the back-off). Both keyed by kind.
+        self._recovery_logged: Dict[str, float] = {}
+        self._recovery_times: Dict[str, list] = {}
         self._reassign_dialog: Optional[ReassignTimeDialog] = None
         #: Where the pointer was, relative to the window's top-left corner,
         #: when a drag began; None while no drag is in progress.
@@ -533,18 +571,7 @@ class IdleAlertDialog(QDialog):
         """
         if self._finished:
             return
-        # A top-level window the OS hid while Qt still believes it is shown
-        # (the failure that parenting to the main window caused) reports
-        # `isVisible()` true; the reverse -- hidden by anything else -- is
-        # caught here, and put right.
-        if self._was_shown and not self.isVisible():
-            now = time.monotonic()
-            if now - self._last_hidden_log > 30:
-                self._last_hidden_log = now
-                log.error("IDLE_POPUP_HIDDEN the popup was not visible; showing it again")
-            self.show()
-            self.raise_()
-            self.activateWindow()
+        self.ensure_reachable("tick")
         if self._locked:
             elapsed = time.time() - self._waiting_since_epoch
             self.retry_btn.setVisible(elapsed >= self._retry_after)
@@ -565,6 +592,151 @@ class IdleAlertDialog(QDialog):
                 recover()
             if self._busy:  # the service did not answer either
                 self._on_resolve_failed("The server did not answer in time.")
+
+    # ── Reachability ──────────────────────────────────────────────────────────
+
+    def ensure_reachable(self, reason: str = "tick") -> Optional[str]:
+        """Put this popup where the user can see and use it, if it is not.
+
+        Asks the operating system, not Qt (see the module docstring and
+        `ui.native_window`), and acts only on an abnormal state -- a popup
+        that is where it should be is not touched, raised or activated, so
+        running this once a second is not a focus loop. Returns the kind of
+        recovery performed, or None when nothing was wrong:
+
+            hidden         Qt itself says it is not shown           -> show()
+            minimised      Show Desktop, or the taskbar             -> showNormal()
+            offscreen      no connected display covers it           -> moved to the user's screen
+            os_hidden      Windows cleared WS_VISIBLE, Qt disagrees -> hide() + show()
+            other_desktop  on a virtual desktop the user left       -> moved to the user's
+                           desktop (MoveWindowToDesktop); nothing else works: a re-shown
+                           window keeps its desktop and an activated one switches the
+                           user to it instead (measured)
+
+        A window the OS keeps undoing is not fought once a second: after
+        RECOVERY_BACKOFF_THRESHOLD recoveries of one kind inside a minute the
+        attempt is made every RECOVERY_BACKOFF_S instead, and said so.
+        """
+        if self._finished or not self._was_shown:
+            return None
+        try:
+            state = native_window.probe(self)
+        except Exception:  # noqa: BLE001 - a probe must never take the popup down
+            log.exception("IDLE_POPUP_PROBE_FAILED")
+            return None
+
+        kind: Optional[str] = None
+        if not state.qt_visible:
+            kind = "hidden"
+        elif state.qt_minimised or state.os_minimised:
+            kind = "minimised"
+        elif not state.on_a_screen:
+            kind = "offscreen"
+        elif state.os_shown is False:
+            kind = "os_hidden"
+        elif state.on_current_desktop is False and self._reassign_dialog is None:
+            # Following the user to their current desktop is right -- the
+            # prompt is mandatory and is blocking Monitra -- but not while the
+            # reassignment form is open on top of it: re-showing the parent
+            # would pull the form out from under them.
+            kind = "other_desktop"
+        if kind is None:
+            return None
+        if self._recovery_backed_off(kind):
+            return None
+
+        if kind == "hidden":
+            self.show()
+        elif kind == "minimised":
+            self.showNormal()
+        elif kind == "offscreen":
+            self._move_onto_a_screen()
+        elif kind == "other_desktop":
+            if not self._move_to_users_desktop():
+                return None  # nothing on the user's desktop to name it by yet; next tick
+        else:
+            self.hide()
+            self.show()
+        self.raise_()
+        # Being followed from desktop to desktop must not also take the
+        # keyboard away from what the user is doing there; every other
+        # recovery is the popup coming back to someone looking for it.
+        if kind != "other_desktop" or reason != "tick":
+            self.activateWindow()
+        self._note_recovery(kind, reason, state)
+        return kind
+
+    def bring_forward(self, reason: str) -> None:
+        """The user asked for Monitra (tray, taskbar, a second launch): make
+        sure the prompt they must answer is in front of them, recovered first
+        if it needs to be. Logged always, at info: this is the line a report
+        of "the window came back but nothing worked" is read against."""
+        if self._finished:
+            return
+        kind = self.ensure_reachable(reason)
+        if kind is None:
+            self.raise_()
+            self.activateWindow()
+        if self._reassign_dialog is not None:
+            self._reassign_dialog.raise_()
+            self._reassign_dialog.activateWindow()
+        log.info(
+            "IDLE_POPUP_BROUGHT_FORWARD reason=%s recovered=%s %s",
+            reason, kind or "none", native_window.probe(self).describe(),
+        )
+
+    def _move_onto_a_screen(self) -> None:
+        screen = native_window.screen_for_recovery()
+        if screen is None:
+            return
+        self.move(screen.availableGeometry().center() - self.rect().center())
+
+    def _move_to_users_desktop(self) -> bool:
+        references = []
+        companion = self._companion
+        if companion is not None:
+            try:
+                if companion.isVisible():
+                    references.append(int(companion.winId()))
+            except RuntimeError:  # the main window is gone
+                self._companion = None
+        try:
+            return native_window.move_to_current_virtual_desktop(int(self.winId()), references)
+        except Exception:  # noqa: BLE001
+            log.debug("could not move the popup to the user's desktop", exc_info=True)
+            return False
+
+    def _recovery_backed_off(self, kind: str) -> bool:
+        now = time.monotonic()
+        times = [t for t in self._recovery_times.get(kind, []) if now - t <= self.RECOVERY_BACKOFF_WINDOW_S]
+        if len(times) >= self.RECOVERY_BACKOFF_THRESHOLD and now - times[-1] < self.RECOVERY_BACKOFF_S:
+            self._recovery_times[kind] = times
+            return True
+        times.append(now)
+        self._recovery_times[kind] = times
+        if len(times) == self.RECOVERY_BACKOFF_THRESHOLD:
+            log.error(
+                "IDLE_POPUP_RECOVERY_BACKOFF kind=%s recovered %d times in %.0fs; something keeps undoing it, "
+                "retrying every %.0fs", kind, len(times), self.RECOVERY_BACKOFF_WINDOW_S, self.RECOVERY_BACKOFF_S,
+            )
+        return False
+
+    def _note_recovery(self, kind: str, reason: str, state: native_window.WindowProbe) -> None:
+        now = time.monotonic()
+        loud = now - self._recovery_logged.get(kind, -1e9) >= self.RECOVERY_LOG_INTERVAL_S
+        (log.error if loud else log.debug)(
+            "IDLE_POPUP_RECOVERED kind=%s reason=%s %s %s",
+            kind, reason, state.describe(), native_window.describe_displays(),
+        )
+        if not loud:
+            return
+        self._recovery_logged[kind] = now
+        note = getattr(self.api.idle, "note_popup_recovered", None)
+        if note is not None:
+            try:
+                note(kind)
+            except Exception:  # noqa: BLE001 - diagnostics must never matter
+                log.debug("popup recovery could not be reported", exc_info=True)
 
     def _render_assignment(self) -> None:
         session = self.api.active_session() or {}

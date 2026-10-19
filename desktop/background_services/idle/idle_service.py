@@ -304,6 +304,9 @@ class IdleService(LoopService):
         self._popup_acked = True
         self._popup_emitted_at = 0.0
         self._popup_repeats = 0
+        #: Times the dashboard's popup had to be put back where the user could
+        #: see it (minimised, off-screen, hidden, on another virtual desktop).
+        self._popup_recoveries = 0
 
         # ── Diagnostics ──────────────────────────────────────────────────────
         self._ticks = 0
@@ -943,6 +946,22 @@ class IdleService(LoopService):
         """
         if self._pending and (period_id is None or self._pending.get("id") == period_id):
             self._popup_acked = True
+
+    def note_popup_recovered(self, kind: str) -> None:
+        """The popup was on record but not where the user could use it, and
+        has been put back (GUI thread; called by the dialog).
+
+        Counted and reported through the ordinary diagnostics channel
+        (throttled there), so a machine on which this keeps happening --
+        a display that comes and goes, a shell that hides windows -- can be
+        found from the server's log for that one user.
+        """
+        self._popup_recoveries += 1
+        self.log.warning(
+            "IDLE_POPUP_RECOVERED_NOTED kind=%s total=%d period=%s",
+            kind, self._popup_recoveries, (self._pending or {}).get("id"),
+        )
+        self._send_diagnostic("popup_recovered", f"kind={kind} total={self._popup_recoveries}")
 
     @Slot()
     def _on_popup_unacked(self) -> None:

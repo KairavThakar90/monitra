@@ -45,11 +45,43 @@ restarts), `resumes` (sleeps noticed), `report_failures`, `last_error_kind` /
 | **B** | Running, but input is being seen | `longest_idle_seconds` stays below `idle_minutes × 60` while the user says they were away: something is generating input (a mouse jiggler, remote-control software, a USB device) — the OS reading is the OS's |
 | **C** | Wrong threshold or disabled | `idle_enabled=False` or `idle_minutes` differs from `server_idle_*`; a `400 threshold_not_reached` in `IDLE_REPORT_REJECTED` shows the figures. (An administrator's setting used to be reverted at login — fixed.) |
 | **D** | Reached, but the popup could not be built | `IDLE_POPUP_CREATE_FAILED` with a traceback; `event=popup_failed` |
-| **E** | Built, but not on screen | `IDLE_POPUP_NOT_ACKNOWLEDGED`, `IDLE_POPUP_HIDDEN`, `IDLE_POPUP_STALE` |
+| **E** | Built, but not on screen | `IDLE_POPUP_NOT_ACKNOWLEDGED`, `IDLE_POPUP_RECOVERED kind=…`, `IDLE_POPUP_STALE`, `IDLE_POPUP_REBUILT`; `event=popup_recovered` |
 | **F** | The backend refused or could not be reached | `IDLE_REPORT_REFUSED status=…` / `IDLE_REPORT_FAILED kind=… attempt=…` (desktop); `IDLE_REPORT_REJECTED reason=…` (backend). `reason=future_timestamps` or `before_entry_start` with a large `skew_s` is a wrong client clock |
 | **G** | The OS will not say | `IDLE_READING_UNAVAILABLE reason=…`; `reading_failure` — `unsupported_platform:darwin` is **macOS, where no inactivity reading exists yet** |
 | **H** | The process stopped | no `IDLE_HEALTH` lines, no reports at all — the machine was off, or Monitra was not running |
 | **I** | Sleep / resume | `IDLE_SYSTEM_RESUMED`, `IDLE_SUSPEND_GAP`, `event=system_resumed` — the sleep is reported as an idle period; absence of these after a known sleep points to the monitor not running (A) |
+
+## "The popup is stuck and Monitra does not respond"
+
+The popup is application-modal: while it is up, nothing else in Monitra takes
+a click. So this report means the popup was somewhere the user could not see
+it. The desktop now checks that once a second against the operating system
+and puts the popup back; the log says what it found:
+
+1. `IDLE_POPUP_RECOVERED kind=<minimised|offscreen|os_hidden|other_desktop|hidden>
+   reason=<tick|tray|second-launch> … screens=N [WxH@x,y×scale …]` — what
+   was wrong, who asked, and the display configuration at the time. Logged
+   loudly once per 30 s per kind; `event=popup_recovered detail=kind=… total=N`
+   reaches the backend once per ten minutes. `other_desktop` is a Windows
+   virtual desktop the user had switched away from; `offscreen` with
+   `screens=1` after a session that had `screens=2` is an unplugged monitor.
+2. `IDLE_POPUP_RECOVERY_BACKOFF kind=…` — the same thing was undone five
+   times in a minute; something on that machine is hiding or minimising
+   windows, and Monitra retries every 30 s instead of fighting it.
+3. `WINDOW_RESTORE_REQUESTED reason=tray|second-launch` followed by
+   `IDLE_POPUP_BROUGHT_FORWARD reason=… recovered=…` — the user clicked the
+   tray icon or launched Monitra again, and the popup was brought to them.
+   `IDLE_POPUP_REBUILT` — the dialog object was gone while the period was
+   still pending; a fresh one was built.
+4. `SINGLE_INSTANCE_ACTIVATION sent and taken` (second launch) and
+   `SINGLE_INSTANCE_ACTIVATION received` (the running instance) — the
+   hand-over worked. `SINGLE_INSTANCE_ACTIVATION unanswered` — the running
+   instance did not take the request within 3 s: its GUI thread is blocked,
+   or it was still starting; the user saw the "already running" explanation.
+5. `AUTH_CLEANUP idle_popup=closed|none` — what the sign-out actually closed.
+   Signing out never resolves a pending period: it lives on the server and
+   the popup returns at the next sign-in (`GET /idle-periods/active`), which
+   is correct and is why "signing out did not fix it" was true.
 
 ## "It got stuck on Confirming with the server…"
 

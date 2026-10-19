@@ -521,8 +521,16 @@ class MainWindow(QMainWindow):
 
     # ── Window lifecycle ──────────────────────────────────────────────────────
 
-    def restore_window(self) -> None:
-        """Bring the window back from the tray or the taskbar."""
+    def restore_window(self, reason: str = "tray") -> None:
+        """Bring the window back from the tray, the taskbar or a second launch.
+
+        `reason` names who asked, for the log: the tray icon, a notification,
+        or another launch of Monitra (`on_activation_requested`).
+        """
+        log.info(
+            "WINDOW_RESTORE_REQUESTED reason=%s visible=%s minimised=%s",
+            reason, self.isVisible(), self.isMinimized(),
+        )
         self.show()
         self.setWindowState(
             (self.windowState() & ~Qt.WindowState.WindowMinimized)
@@ -530,6 +538,22 @@ class MainWindow(QMainWindow):
         )
         self.raise_()
         self.activateWindow()
+        # An idle prompt that is waiting is application-modal: this window
+        # would come back unable to take a click, with the one window that can
+        # be answered possibly minimised, off-screen or on another virtual
+        # desktop. Whoever asked for Monitra is asking for that prompt too.
+        self._dashboard.bring_idle_popup_forward(reason)
+
+    def on_activation_requested(self) -> None:
+        """Another launch of Monitra asked this instance to show itself.
+
+        The user double-clicked the icon because they could not find the
+        window: it is in the tray, minimised, on another virtual desktop, or
+        blocked by a popup they cannot see. Every one of those is answered by
+        the same restore the tray performs.
+        """
+        log.info("SINGLE_INSTANCE_ACTIVATION handling: restoring the window")
+        self.restore_window("second-launch")
 
     def quit_application(self) -> None:
         """Explicit quit: stop the timer, then a full controlled shutdown."""
@@ -733,6 +757,26 @@ class MainWindow(QMainWindow):
         return dialog.result_action or "cancel"
 
 
+def _yield_to_running_instance() -> int:
+    """This is the second launch: hand the user over to the first.
+
+    The running instance is asked to show its window (and the idle prompt,
+    if one is waiting). Only if it does not take the request -- it is hung,
+    or still starting -- is the user told to look in the tray. Nothing here
+    touches the other process's lock, and nothing is killed: the running
+    instance owns the timer, the queue and the database, and a second launch
+    is never a reason to end it.
+    """
+    log.warning("another Monitra instance is already running; asking it to show its window")
+    if single_instance.request_activation():
+        log.info("SINGLE_INSTANCE_ACTIVATION sent and taken; exiting")
+        return 0
+    log.warning("SINGLE_INSTANCE_ACTIVATION unanswered after %.0fs; telling the user",
+                single_instance.ACTIVATION_TIMEOUT_SECONDS)
+    QMessageBox.information(None, APP_NAME, single_instance.already_running_message(unanswered=True))
+    return 0
+
+
 def main() -> int:
     configure_logging()
     # Naming the real directories here (rather than the historical literal
@@ -785,9 +829,7 @@ def main() -> int:
     #     second full runtime: two timers, two sync services draining one
     #     queue, and two writers on one database. See core/single_instance.py.
     if not single_instance.acquire():
-        log.warning("another Monitra instance is already running; exiting")
-        QMessageBox.information(None, APP_NAME, single_instance.already_running_message())
-        return 0
+        return _yield_to_running_instance()
 
     # 2. Runtime: storage, domain services, service container. No threads yet.
     runtime = ApplicationRuntime()
@@ -796,6 +838,12 @@ def main() -> int:
 
     # 3. Shell.
     window = MainWindow(runtime)
+    # 3b. The other half of the single-instance guard: a later launch asks
+    #     this process to show its window instead of being told to look in
+    #     the tray. Owned by the window, so it lives exactly as long as the
+    #     thing it restores. See core/single_instance.py.
+    activation = single_instance.ActivationListener(parent=window)
+    activation.activation_requested.connect(window.on_activation_requested)
 
     # Exactly one shutdown path, whatever triggers the exit. An exit that comes
     # with the OS having asked to end the session stops the timer first.

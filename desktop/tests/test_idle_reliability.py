@@ -776,6 +776,7 @@ def test_the_dashboard_builds_the_popup_unparented(qapp):
         def _project_name_for(self, _pid): return None
         def _on_idle_period_resolved(self, _r): pass
         def _forget_idle_dialog(self, only=None): pass
+        def window(self): return None  # the companion main window; none in this slice
 
     dash = Dash()
     dialog = DashboardWindow._build_idle_dialog(dash, period=_period())

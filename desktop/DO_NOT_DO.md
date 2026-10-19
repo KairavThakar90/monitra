@@ -1831,6 +1831,51 @@ whose construction raised, or that was hidden, means no popup until a restart.
 The dashboard acknowledges (`popup_shown`); an unacknowledged popup is raised
 again and the tray is told.
 
+### ❌ Do not let `isVisible()` decide whether a modal popup is on screen
+
+```python
+if self._was_shown and not self.isVisible():
+    self.show()          # the only check the popup's tick made
+```
+
+**What it caused:** the production report "the idle popup froze, the buttons
+stopped working, a second launch said Monitra is already running, and signing
+out did not help." The popup is application-modal, so a popup the user cannot
+see is an application that takes no input and shows no reason. `isVisible()`
+is Qt's intention, not the screen: it stayed true while the popup was
+minimised (Show Desktop), while Windows had cleared its visible style, while it
+sat at coordinates no connected display covered, and -- the case nothing else
+can see -- while it sat on a *virtual desktop* the user had left, where
+`IsWindowVisible` is true and `IsIconic` is false too. Measured, all four, on
+Windows 11 with real input (`tests/e2e/real_window_idle_popup_probe.py`).
+
+**Instead:** ask the operating system (`ui/native_window.py`) from the tick
+the dialog already owns, and act only on an abnormal state
+(`IdleAlertDialog.ensure_reachable`). For the virtual-desktop case use
+`MoveWindowToDesktop`: re-showing a window keeps its desktop, and activating
+it switches the *user* to its desktop instead.
+
+### ❌ Do not dead-end a second launch with "Monitra is already running"
+
+```python
+if not single_instance.acquire():
+    QMessageBox.information(None, APP_NAME, already_running_message())
+    return 0
+```
+
+**What it caused:** the user who launches Monitra while it is running is
+looking for it -- hidden in the tray, minimised, on another desktop, or blocked
+by a popup they cannot see. The message told them what they already knew and
+left them where they were; the screenshot of that dialog is in the report.
+
+**Instead:** the second launch asks the first to show itself
+(`single_instance.request_activation`, a request file the lock holder's
+`ActivationListener` takes), and exits quietly once it has been taken. The
+first restores its window *and* brings the idle popup forward. The message is
+shown only when the first did not answer -- which is itself the diagnosis
+(hung, or still starting). Nothing touches the other process's lock, and
+nothing is killed.
+
 ## Requests and loading
 
 ### ❌ Do not fold every connection failure into one sentence

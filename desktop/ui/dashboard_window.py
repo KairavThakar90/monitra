@@ -823,6 +823,10 @@ class DashboardWindow(QWidget):
             # not entitled to — and there is no second way of fetching them.
             project_loader=self.project_service.get_projects,
             task_loader=self.task_service.get_tasks_for_project,
+            # The main window, as the window that says which virtual desktop
+            # the user is on once they come back to Monitra. A companion, not
+            # a parent: ownership is what hid the popup with the tray.
+            companion=self.window(),
             parent=None,
         )
         self._idle_dialog = dialog
@@ -863,6 +867,41 @@ class DashboardWindow(QWidget):
         if self._idle_dialog is not None:
             self._idle_dialog.force_close()
             self._forget_idle_dialog()
+
+    def bring_idle_popup_forward(self, reason: str = "restore") -> bool:
+        """The user has come back to Monitra (tray, taskbar, a second launch).
+
+        If an idle prompt is waiting it must be in front of them: the popup is
+        application-modal, so a popup they cannot see -- minimised by Show
+        Desktop, left on another virtual desktop, on a monitor that was
+        unplugged -- is a main window that comes back unable to take a click.
+        A popup this window recorded but which is gone is replaced, from the
+        period the service still holds; a *provisional* gap the user chose to
+        decide later is not re-raised, because they asked for exactly that.
+
+        Returns True if a popup is now in front of the user.
+        """
+        dialog = self._idle_dialog
+        if dialog is not None:
+            try:
+                usable = not dialog.is_done()
+            except RuntimeError:  # the C++ object is gone
+                usable = False
+            if usable:
+                dialog.bring_forward(reason)
+                return True
+            log.warning("IDLE_POPUP_STALE the recorded popup is gone; replacing it (reason=%s)", reason)
+            self._forget_idle_dialog()
+        pending_period = getattr(self.api.idle, "pending_period", None)
+        pending = pending_period() if pending_period is not None else None
+        if pending:
+            log.warning(
+                "IDLE_POPUP_REBUILT period=%s is pending with no popup on screen (reason=%s)",
+                pending.get("id"), reason,
+            )
+            self._on_idle_period_opened(pending)
+            return self._idle_dialog is not None
+        return False
 
     # ── Profile (web client handoff) ──────────────────────────────────────────
 
@@ -1282,6 +1321,11 @@ class DashboardWindow(QWidget):
         self.api.cancel_key("check-active-timer")
         self.api.cancel_key("idle-reassign-projects")
         self.api.cancel_key(SUBMIT_KEY)
+        # Sign-out and session expiry tear the popup down here, so a dialog
+        # from one session can never block the next. Named in the log,
+        # because "signing out did not fix it" is a report that needs to be
+        # read against what the sign-out actually closed.
+        log.info("AUTH_CLEANUP idle_popup=%s", "closed" if self._idle_dialog is not None else "none")
         self._close_idle_dialog()
         self._close_feedback_dialog()
         self._close_update_dialog()
