@@ -48,6 +48,7 @@ user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
 user32.IsIconic.argtypes = [ctypes.c_void_p]
 user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
 user32.GetForegroundWindow.restype = ctypes.c_void_p
+user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
 SW_HIDE, SW_MINIMIZE = 0, 6
 
 
@@ -209,6 +210,8 @@ def main() -> int:
             if user32.GetForegroundWindow() == int(owner.winId()) or QApplication.activeModalWidget() is not None:
                 break
             _alt_tap()  # the documented way a background process may take the foreground
+            user32.SetForegroundWindow(int(owner.winId()))
+            _pump(app, 0.3)
         centre = button.mapToGlobal(button.rect().center())
         real_click(app, centre.x(), centre.y())
         return len(clicks) - before
@@ -327,10 +330,14 @@ def main() -> int:
         report["vdesk_popup_os_visible_after_move"] = _os_visible(popup2) and not _os_iconic(popup2)
         popup2.force_close()
         _pump(app, 0.3)
-        chord(VK_LWIN, VK_CONTROL, VK_RIGHT)    # back to the extra desktop, and close it
-        _pump(app, 1.2)
-        chord(VK_LWIN, VK_CONTROL, VK_F4)
-        _pump(app, 1.2)
+        # Close the extra desktop: go right, and press Win+Ctrl+F4 only once
+        # the main window is confirmed *not* on the current desktop -- F4 on
+        # the wrong desktop would close the user's own.
+        chord(VK_LWIN, VK_CONTROL, VK_RIGHT)
+        _pump(app, 1.5)
+        if native_window.is_on_current_virtual_desktop(int(owner.winId())) is False:
+            chord(VK_LWIN, VK_CONTROL, VK_F4)
+            _pump(app, 1.5)
         report["vdesk_cleaned_up"] = native_window.is_on_current_virtual_desktop(int(owner.winId())) is True
 
     # The control: what parenting it to the window did. If Windows ever stops
