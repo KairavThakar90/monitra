@@ -140,7 +140,7 @@ def dispatch_email_notifications(
     _: None = Depends(require_dispatch_token),
     db: Session = Depends(get_db, scope="function"),
 ):
-    with record_job_run("email-dispatch") as run:
+    with record_job_run(db, "email-dispatch") as run:
         result = EmailOutboxService.dispatch_pending(db, limit=limit)
         # `dispatch_pending` returns only the outcomes that actually occurred;
         # the schema's defaults fill in the rest as zero.
@@ -217,7 +217,7 @@ def run_weekly_reports(
     _: None = Depends(require_dispatch_token),
     db: Session = Depends(get_db, scope="function"),
 ):
-    with record_job_run("weekly-report", dry_run=dry_run) as run:
+    with record_job_run(db, "weekly-report", dry_run=dry_run) as run:
         response = WeeklyReportRunResult(**{
             key: value
             for key, value in WeeklyReportService.run(
@@ -322,7 +322,7 @@ def run_monthly_reports(
     _: None = Depends(require_dispatch_token),
     db: Session = Depends(get_db, scope="function"),
 ):
-    with record_job_run("monthly-report", dry_run=dry_run) as run:
+    with record_job_run(db, "monthly-report", dry_run=dry_run) as run:
         response = MonthlyReportRunResult(**{
             key: value
             for key, value in MonthlyReportService.run(
@@ -408,7 +408,7 @@ def run_monthly_project_summary(
     _: None = Depends(require_dispatch_token),
     db: Session = Depends(get_db, scope="function"),
 ):
-    with record_job_run("monthly-project-summary", dry_run=dry_run) as run:
+    with record_job_run(db, "monthly-project-summary", dry_run=dry_run) as run:
         response = MonthlyProjectSummaryRunResult(**{
             key: value
             for key, value in MonthlyProjectSummaryService.run(
@@ -486,7 +486,7 @@ def run_project_budget_alerts(
 ):
     from app.services.project_budget_alerts import ProjectBudgetAlertService
 
-    with record_job_run("budget-alerts", dry_run=dry_run) as run:
+    with record_job_run(db, "budget-alerts", dry_run=dry_run) as run:
         result = ProjectBudgetAlertService.run(
             db, project_ids=[project_id] if project_id else None, dry_run=dry_run,
             source="manual" if project_id else "reconciliation",
@@ -626,7 +626,7 @@ def catch_up_reports(
 ):
     from app.services.report_catch_up import catch_up
 
-    with record_job_run("report-catch-up", dry_run=dry_run) as run:
+    with record_job_run(db, "report-catch-up", dry_run=dry_run) as run:
         response = ReportCatchUpResult(**catch_up(
             db, weeks_back=weeks_back, months_back=months_back, dry_run=dry_run,
         ))

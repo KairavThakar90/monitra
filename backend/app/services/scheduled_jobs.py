@@ -201,27 +201,30 @@ class JobRun:
         self.summary = counts_only(result)
 
 
-def _default_session_factory() -> Callable[[], Session]:
-    from app.core.database import get_session_local
+def _write(db: Session, action: Callable[[Session], Any]) -> Any:
+    """One ledger write on the job's own session. Never raises: the job matters more.
 
-    return get_session_local()
+    The session is rolled back first. At the start of a request that is a
+    no-op; at the end it discards whatever the job left uncommitted -- which
+    is exactly what `get_db`'s `close()` would have done a moment later, so the
+    job's transactional behaviour is unchanged and the ledger row is the only
+    thing this commits. A failed write is rolled back and logged.
 
-
-def _write(session_factory: Optional[Callable[[], Session]], action: Callable[[Session], Any]) -> Any:
-    """Run one ledger write on its own session. Never raises: the job matters more."""
-    db = None
+    It is deliberately the request's session and not a second one: a second
+    session, opened from the global session factory, would reach the real
+    configured database even where the route's session is a test double, and
+    a unit test must never be able to write to the development database.
+    """
     try:
-        db = (session_factory or _default_session_factory())()
+        db.rollback()
         return action(db)
     except Exception:  # noqa: BLE001 - a ledger problem must not stop an email
         logger.warning("SCHEDULED_JOB_LEDGER_FAILED", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
         return None
-    finally:
-        if db is not None:
-            try:
-                db.close()
-            except Exception:  # noqa: BLE001
-                logger.warning("SCHEDULED_JOB_LEDGER_CLOSE_FAILED", exc_info=True)
 
 
 def _describe(error: BaseException) -> str:
@@ -231,29 +234,25 @@ def _describe(error: BaseException) -> str:
 
 
 @contextmanager
-def record_job_run(
-    job: str, *, dry_run: bool = False,
-    session_factory: Optional[Callable[[], Session]] = None,
-) -> Iterator[JobRun]:
+def record_job_run(db: Session, job: str, *, dry_run: bool = False) -> Iterator[JobRun]:
     """Record one execution of `job` around the block that performs it.
 
-    The row is written before the work starts and completed after it ends, on a
-    session of its own -- not the request's -- so the record is independent of
-    whatever the job does to its transaction. An exception is recorded as a
-    failed run and re-raised unchanged.
+    The row is written before the work starts and completed after it ends, on
+    the job's own session (see `_write` for why not a second one). An exception
+    is recorded as a failed run and re-raised unchanged.
     """
     run = JobRun(job)
     started = _now()
-    run.id = _write(session_factory, lambda db: ScheduledJobRunRepository.start(
-        db, job=job, dry_run=dry_run, host=_host(), now=started,
+    run.id = _write(db, lambda session: ScheduledJobRunRepository.start(
+        session, job=job, dry_run=dry_run, host=_host(), now=started,
     ))
     try:
         yield run
     except BaseException as error:
         if run.id is not None:
             summary = json.dumps(run.summary) if run.summary else None
-            _write(session_factory, lambda db: ScheduledJobRunRepository.finish(
-                db, run_id=run.id, status=STATUS_FAILED, summary=summary,
+            _write(db, lambda session: ScheduledJobRunRepository.finish(
+                session, run_id=run.id, status=STATUS_FAILED, summary=summary,
                 error=_describe(error), now=_now(),
             ))
         logger.error(
@@ -264,8 +263,8 @@ def record_job_run(
     finished = _now()
     if run.id is not None:
         summary = json.dumps(run.summary) if run.summary else None
-        _write(session_factory, lambda db: ScheduledJobRunRepository.finish(
-            db, run_id=run.id, status=STATUS_OK, summary=summary, error=None, now=finished,
+        _write(db, lambda session: ScheduledJobRunRepository.finish(
+            session, run_id=run.id, status=STATUS_OK, summary=summary, error=None, now=finished,
         ))
     logger.info(
         "SCHEDULED_JOB_RUN: job=%s run=%s dry_run=%s duration_ms=%d summary=%s",
@@ -273,10 +272,10 @@ def record_job_run(
     )
 
 
-def prune_ledger(session_factory: Optional[Callable[[], Session]] = None) -> int:
+def prune_ledger(db: Session) -> int:
     """Drop ledger rows past retention. Called by the daily job; never raises."""
     cutoff = _now() - timedelta(days=LEDGER_RETENTION_DAYS)
-    removed = _write(session_factory, lambda db: ScheduledJobRunRepository.prune(db, older_than=cutoff))
+    removed = _write(db, lambda session: ScheduledJobRunRepository.prune(session, older_than=cutoff))
     return int(removed or 0)
 
 

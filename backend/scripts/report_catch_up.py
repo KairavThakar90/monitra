@@ -45,7 +45,7 @@ def main() -> int:
           f"{'DRY RUN (nothing queued)' if dry_run else 'APPLY'}\n")
 
     with get_session_local()() as db:
-        with record_job_run("report-catch-up", dry_run=dry_run) as run:
+        with record_job_run(db, "report-catch-up", dry_run=dry_run) as run:
             result = catch_up(db, weeks_back=weeks, months_back=months, dry_run=dry_run)
             run.record({"dry_run": dry_run, "queued_total": result["queued_total"]})
 

@@ -142,7 +142,10 @@ class TestScheduledJobs(unittest.TestCase):
         sources = "".join(inspect.getsource(m) for m in (activity_rollup, email_notifications, time_entry_reconcile, wfpm_router))
         for job in JOBS:
             with self.subTest(job=job.name):
-                self.assertIn(f'record_job_run("{job.name}"', sources)
+                # On the request's own session: a second session would let a unit test with a
+                # mocked `get_db` reach the real development database.
+                self.assertIn(f'record_job_run(db, "{job.name}"', sources)
+        self.assertNotIn("get_session_local", inspect.getsource(__import__("app.services.scheduled_jobs", fromlist=["x"])))
 
 
 class TestMigrations(unittest.TestCase):

@@ -13,7 +13,7 @@ import json
 import unittest
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
 from app.models.email_notification import EmailNotification
@@ -47,7 +47,7 @@ class LedgerCase(unittest.TestCase):
 class TestRecordJobRun(LedgerCase):
 
     def test_a_successful_run_leaves_an_ok_row_with_its_tally(self):
-        with record_job_run("email-dispatch", session_factory=self.factory) as run:
+        with self.factory() as db, record_job_run(db, "email-dispatch") as run:
             run.record({"attempted": 3, "sent": 3, "notification_ids": [1, 2, 3], "reason": None})
         [row] = self.rows()
         self.assertEqual((row.job, row.status, row.dry_run), ("email-dispatch", STATUS_OK, False))
@@ -58,8 +58,8 @@ class TestRecordJobRun(LedgerCase):
         self.assertEqual(json.loads(row.summary), {"attempted": 3, "sent": 3})
 
     def test_an_exception_is_recorded_as_failed_and_re_raised(self):
-        with self.assertRaises(RuntimeError):
-            with record_job_run("weekly-report", session_factory=self.factory):
+        with self.assertRaises(RuntimeError), self.factory() as db:
+            with record_job_run(db, "weekly-report"):
                 raise RuntimeError("boom")
         [row] = self.rows()
         self.assertEqual(row.status, STATUS_FAILED)
@@ -71,32 +71,50 @@ class TestRecordJobRun(LedgerCase):
         from app.core.config import settings
 
         with patch.object(settings, "SMTP_PASSWORD", "hunter2secret"):
-            with self.assertRaises(RuntimeError):
-                with record_job_run("email-dispatch", session_factory=self.factory):
+            with self.assertRaises(RuntimeError), self.factory() as db:
+                with record_job_run(db, "email-dispatch"):
                     raise RuntimeError("login failed for hunter2secret")
         [row] = self.rows()
         self.assertNotIn("hunter2secret", row.error)
         self.assertIn("[redacted]", row.error)
 
     def test_a_dry_run_is_marked_as_such(self):
-        with record_job_run("monthly-report", dry_run=True, session_factory=self.factory):
+        with self.factory() as db, record_job_run(db, "monthly-report", dry_run=True):
             pass
         self.assertTrue(self.rows()[0].dry_run)
 
     def test_a_ledger_failure_never_fails_the_job(self):
-        def broken_factory():
-            raise RuntimeError("database away")
+        """A session without the table (a test double, an unmigrated database): the job
+        still runs and returns; the failure is logged, and the session is left usable."""
+        engine = create_engine("sqlite://")
+        _sqlite_schema(engine, EmailNotification)  # no scheduled_job_runs table
+        with sessionmaker(bind=engine)() as db:
+            with record_job_run(db, "email-dispatch") as run:
+                run.record({"sent": 1})
+            self.assertIsNone(run.id)
+            self.assertEqual(db.scalar(select(func.count(EmailNotification.id))), 0)
 
-        with record_job_run("email-dispatch", session_factory=broken_factory) as run:
-            run.record({"sent": 1})
-        self.assertIsNone(run.id)
+    def test_the_jobs_uncommitted_work_is_not_committed_by_the_ledger(self):
+        """Exactly what `get_db`'s close() does today: anything the job left uncommitted is
+        discarded. The ledger must not turn a dry run's uncommitted writes into real ones."""
+        with self.factory() as db:
+            with record_job_run(db, "budget-alerts", dry_run=True):
+                db.add(EmailNotification(
+                    notification_type="weekly_report", dedupe_key="week:2026-10-12:user:1", recipients="[]",
+                    subject="s", payload="{}", status="pending", attempt_count=0, max_attempts=6,
+                    next_attempt_at=datetime.now(UTC), created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+                ))
+                db.flush()
+        with self.factory() as db:
+            self.assertEqual(db.scalar(select(func.count(EmailNotification.id))), 0)
+        self.assertEqual(self.rows()[0].status, STATUS_OK)
 
     def test_prune_drops_only_rows_past_retention(self):
         with self.factory() as db:
             ScheduledJobRunRepository.start(db, job="email-dispatch", dry_run=False, host="h",
                                             now=datetime.now(UTC) - timedelta(days=120))
             ScheduledJobRunRepository.start(db, job="email-dispatch", dry_run=False, host="h", now=datetime.now(UTC))
-        self.assertEqual(prune_ledger(session_factory=self.factory), 1)
+            self.assertEqual(prune_ledger(db), 1)
         self.assertEqual(len(self.rows()), 1)
 
 

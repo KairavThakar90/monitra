@@ -118,7 +118,7 @@ def _run(
     # The scheduled pass is a run whether or not the deployment lets it apply
     # (report-only is its shipped mode); only an explicit `dry_run=true` is a
     # preview that must not count as the scheduler having fired.
-    with record_job_run("timer-reconcile", dry_run=dry_run is True) as run:
+    with record_job_run(db, "timer-reconcile", dry_run=dry_run is True) as run:
         result = TimeEntryReconciliationService.run(
             db, apply=apply, limit=limit, user_id=user_id, entry_ids=entry_id,
             include_unreported=include_unreported,
