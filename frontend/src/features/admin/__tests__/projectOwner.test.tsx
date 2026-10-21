@@ -268,12 +268,13 @@ describe('Owner field — create', () => {
 });
 
 describe('Owner field — edit and list', () => {
-  it('shows the owner in the project table', async () => {
+  it('has no Owner column in the project table, and none to switch on', async () => {
     await renderPage();
     const headers = Array.from(container.querySelectorAll('thead th')).map((th) => th.textContent);
-    expect(headers.indexOf('Owner')).toBeGreaterThan(-1);
-    expect(headers.indexOf('Owner')).toBeLessThan(headers.indexOf('Leader'));
-    expect(container.querySelector('tbody')?.textContent).toContain('Owner Alpha');
+    expect(headers).not.toContain('Owner');
+    expect(headers).toContain('Leader');
+    expect(container.querySelector('tbody')?.textContent).not.toContain('Owner Alpha');
+    expect(container.textContent).not.toContain('Unassigned Owner');
   });
 
   it('offers exactly the owners the API returned', async () => {
@@ -318,9 +319,10 @@ describe('Owner field — edit and list', () => {
     expect(patched.body.leader_id).toBe(LEADERS[0].id);
     expect(patched.body.deadline).toBe('2099-06-30');
     expect(showToast).toHaveBeenCalledWith('Project updated successfully.', 'success');
-    const row = Array.from(container.querySelectorAll('tbody tr')).find((item) => item.textContent?.includes('Existing project'));
-    expect(row?.textContent).toContain('Owner Beta');
-    expect(row?.textContent).not.toContain('Owner Alpha');
+    // The table no longer shows owners, so the saved change is read back
+    // from the edit form.
+    await openEditDrawer('Existing project');
+    expect(ownerSelect().value).toBe('702');
   });
 
   it('saves a project that predates owners without inventing one', async () => {

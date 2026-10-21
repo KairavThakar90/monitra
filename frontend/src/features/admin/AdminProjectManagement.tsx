@@ -330,7 +330,10 @@ const StatusPillDropdown = ({
   const [isOpen, setIsOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0, width: 160 });
-  const selected = options?.find((o) => o.id === value) || options?.[0];
+  // A project with no status shows "Select Status". It used to fall back to the
+  // first option, so a project that never had a status read as "Active" -- a
+  // status nobody gave it.
+  const selected = options?.find((o) => o.id === value) || (value === undefined ? undefined : options?.[0]);
 
   const toggleMenu = () => {
     if (isOpen) {
@@ -439,7 +442,7 @@ const ToolbarSelect: React.FC<{
   </div>
 );
 
-type ColumnKey = 'select' | 'project' | 'wfpmId' | 'category' | 'status' | 'owner' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'created' | 'started' | 'manage';
+type ColumnKey = 'select' | 'project' | 'wfpmId' | 'category' | 'status' | 'leader' | 'team' | 'tasks' | 'billing' | 'usedHours' | 'internalHours' | 'remainingHours' | 'created' | 'started' | 'manage';
 const COLUMNS: { key: ColumnKey; label: string }[] = [
   // The tick boxes for assigning an organization to several projects at once.
   // Off until someone turns them on here: most visits are for reading the table.
@@ -448,7 +451,6 @@ const COLUMNS: { key: ColumnKey; label: string }[] = [
   { key: 'wfpmId', label: 'WFPM ID' },
   { key: 'category', label: 'Organization' },
   { key: 'status', label: 'Status' },
-  { key: 'owner', label: 'Owner' },
   { key: 'leader', label: 'Leader' },
   { key: 'team', label: 'Team' },
   { key: 'tasks', label: 'Tasks' },
@@ -510,7 +512,7 @@ export const AdminProjectManagement: React.FC = () => {
     // form's dropdown and the detail view are unaffected -- hiding a column never
     // hides its filter.)
     // Select (the bulk-assign tick boxes) starts hidden too.
-    select: false, project: true, wfpmId: true, category: false, status: true, owner: true, leader: true, team: true, tasks: false, billing: true,
+    select: false, project: true, wfpmId: true, category: false, status: true, leader: true, team: true, tasks: false, billing: true,
     usedHours: true, internalHours: true, remainingHours: true, created: true, started: false, manage: true
   });
   const [showColumnDropdown, setShowColumnDropdown] = useState(false);
@@ -765,26 +767,17 @@ export const AdminProjectManagement: React.FC = () => {
 
   const handleUpdateProjectInline = async (proj: Project, newStatusId?: number, newEmployeeIds?: number[]) => {
     try {
-      const payload = {
-        project_name: proj.project_name,
-        description: proj.description,
-        status_id: newStatusId !== undefined ? newStatusId : proj.status?.id,
-        // No leader_id here: this function only ever changes status or team,
-        // never the leader, and `updateProject` sends only the keys present
-        // in this object (`exclude_unset` on the backend). Sending
-        // `proj.leader?.id || null` unconditionally used to mean that
-        // changing the status or the team on a project with no leader
-        // assigned -- shown in this same table as "Unassigned" -- always
-        // failed with "leader_id is required", because the backend saw an
-        // explicit null rather than a field that was simply not part of
-        // this request.
-        employee_ids: newEmployeeIds !== undefined
-          ? newEmployeeIds
-          : (proj.employees || []).map((e: any) => e.id),
-        deadline: proj.deadline ? proj.deadline.split('T')[0] : null,
-        billing_type: proj.billing_type || 'fixed',
-        fixed_hours: proj.fixed_hours ? Number(proj.fixed_hours) : null,
-      };
+      // Only the one thing this control changes. `updateProject` sends the keys
+      // that are present and the backend applies only those (`exclude_unset`),
+      // so everything else stays as the server has it. This used to send the
+      // project's whole shape read from the row as rendered: a status change
+      // then wrote back the team that row showed -- and a member assigned a
+      // moment earlier, whose answer had not landed yet, was removed again. The
+      // same goes for the leader: `proj.leader?.id || null` on a project with
+      // no leader failed every inline change with "leader_id is required".
+      const payload: { status_id?: number; employee_ids?: number[] } = {};
+      if (newStatusId !== undefined) payload.status_id = newStatusId;
+      if (newEmployeeIds !== undefined) payload.employee_ids = newEmployeeIds;
       await updateProject({ id: proj.id, body: payload }).unwrap();
     } catch (err) {
       console.error(err);
@@ -1165,7 +1158,6 @@ export const AdminProjectManagement: React.FC = () => {
                   {visibleColumns.wfpmId && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">WFPM ID</th>}
                   {visibleColumns.category && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Organization</th>}
                   {visibleColumns.status && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Status</th>}
-                  {visibleColumns.owner && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Owner</th>}
                   {visibleColumns.leader && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Leader</th>}
                   {visibleColumns.team && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Team</th>}
                   {visibleColumns.tasks && <th className="px-6 py-4 font-bold uppercase tracking-wider text-[11px]">Tasks</th>}
@@ -1221,14 +1213,6 @@ export const AdminProjectManagement: React.FC = () => {
                         options={metadata?.project_statuses || []}
                         onChange={(val) => handleUpdateProjectInline(proj, val, undefined)}
                       />
-                    </td>}
-                    {visibleColumns.owner && <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        <div className={`flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold text-white shadow-sm ${GRADIENT_CYAN_PURPLE}`}>
-                          {(proj.owner?.name || 'U').substring(0, 2).toUpperCase()}
-                        </div>
-                        <div className="font-semibold text-slate-700">{proj.owner?.name || 'Unassigned'}</div>
-                      </div>
                     </td>}
                     {visibleColumns.leader && <td className="px-6 py-4">
                       <div className="flex items-center gap-2">

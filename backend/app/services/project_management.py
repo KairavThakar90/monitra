@@ -165,8 +165,10 @@ class ProjectManagementService:
         return [found[item_id] for item_id in ids]
 
     @staticmethod
-    def _validate_project_fields(db: Session, user: User, status_id: int, leader_id: int, employee_ids: list[int], deadline: Optional[date], billing_type: BillingType, fixed_hours):
-        project_status = ProjectManagementService._status(db, ProjectStatus, status_id, "project")
+    def _validate_project_fields(db: Session, user: User, status_id: Optional[int], leader_id: int, employee_ids: list[int], deadline: Optional[date], billing_type: BillingType, fixed_hours):
+        # `None` is an edit that is not about the status (see `update`): there is
+        # nothing to validate, and the project keeps whatever status it has.
+        project_status = ProjectManagementService._status(db, ProjectStatus, status_id, "project") if status_id is not None else None
         # Both spellings of the leader role, matching `TEAM_SCOPED_ROLES` --
         # a `project_leader` pinned as their own project's leader by `create`
         # must not then be rejected as an invalid role.
@@ -615,7 +617,12 @@ class ProjectManagementService:
         # What the edit is about to overwrite, so the trail can say "from X to Y".
         before = ProjectActivity.project_before(db, project)
         values = payload.model_dump(exclude_unset=True)
-        status_id = values.get("status_id", project.status_id or 2)
+        # Only an edit that names a status changes one. This used to fall back
+        # to `project.status_id or 2`, so a project with no status_id -- the
+        # ones that predate status ids, shown as "Active" in the list because the
+        # pill falls back to its first option -- was silently set to Paused by an
+        # edit that never mentioned the status, such as assigning a member.
+        status_id = values.get("status_id")
         leader_id = values.get("leader_id", project.leader_id)
         # Leadership is an admin's to assign. A leader editing a project keeps
         # whoever owns it -- they can neither give it away nor take one over.
@@ -646,8 +653,9 @@ class ProjectManagementService:
                 raise duplicate
             project.project_name = values["project_name"]
         if "description" in values: project.description = values["description"]
-        project.status_id = status_id
-        project.status = ProjectManagementService._legacy_status(project_status, PROJECT_STATUS_NAMES, "project")
+        if project_status is not None:
+            project.status_id = project_status.id
+            project.status = ProjectManagementService._legacy_status(project_status, PROJECT_STATUS_NAMES, "project")
         project.leader_id = leader.id
         if owner is not None: project.owner_id = owner.id
         if "deadline" in values: project.deadline = values["deadline"]
