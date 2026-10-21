@@ -1938,10 +1938,15 @@ class DashboardWindow(QWidget):
         # never been about a project or a browsed day, only "how active has
         # this signed-in session been so far today".
         totals = self._today_activity.totals + self.api.live_activity_totals()
+        # Why nothing is being counted, if nothing is: a Mac without Input
+        # Monitoring permission must read as exactly that, not as a quiet
+        # user. Plain attributes on the service, so it costs nothing per tick.
+        capture = self.api.activity_capture_status() if running else {}
         self._stat_cards.set_today_activity(
             totals.percent,
             has_measurement=totals.has_measurement,
             is_tracking=running,
+            capture_blocked=capture.get("blocked"),
         )
 
     def _project_name_for(self, project_id: Optional[int]) -> Optional[str]:

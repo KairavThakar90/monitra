@@ -3,15 +3,18 @@ activity_service — Captures, aggregates and persists user activity.
 """
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import Signal
 
+from background_services.activity import input_access
 from background_services.activity.input_counter import InputEventCounter
 from background_services.activity.input_probe import InputProbe
 from background_services.activity.today_summary import ActivityTotals, totals_from_percent
 from background_services.activity.unwanted_activity import UnwantedActivityMonitor
+from background_services.notifications import NotificationLevel
 from core.service import LoopService
 
 
@@ -105,10 +108,22 @@ class ActivityService(LoopService):
       event is treated as active, so the percentage works there too instead
       of reading unmeasured.
 
+    Capture can be *blocked*: on macOS the Quartz tap needs the user's Input
+    Monitoring permission, and without it the counter hears nothing. That
+    state is named rather than left to look like idleness -- logged once as
+    `ACTIVITY_CAPTURE_BLOCKED`, shown to the user once with the switch's
+    location, exposed to the card through `capture_status()`, and retried
+    every `CAPTURE_RETRY_SECONDS` while the timer runs so a permission
+    granted mid-session is picked up without restarting the timer. The
+    counter's own guards make the retry safe: a second `start()` on a running
+    tap is a no-op, never a second tap.
+
     Signals:
         activity_window_recorded(dict)  — one completed window
         activity_percent_changed(int)   — current session percentage
         unwanted_activity_alert(str)    — user-facing warning to display
+        capture_status_changed(str)     — "" when counting resumed, else the
+                                          blocked state; edges only
     """
 
     name = "activity"
@@ -116,9 +131,20 @@ class ActivityService(LoopService):
     activity_window_recorded = Signal(dict)
     activity_percent_changed = Signal(int)
     unwanted_activity_alert = Signal(str)
+    capture_status_changed = Signal(str)
 
     SAMPLE_INTERVAL_MS = 1000
     WINDOW_SECONDS = 60
+    #: How often, in sampled seconds, a blocked counter is asked to start
+    #: again while a timer runs. One minute: cheap (a refused tap returns at
+    #: once) and quick enough that flipping the switch in System Settings is
+    #: noticed without the user having to do anything else.
+    CAPTURE_RETRY_SECONDS = 60
+    #: A flushed window at least this long with zero counted events, while
+    #: counting is on, is worth a diagnostic line: it is either a genuinely
+    #: idle user or a listener that has gone deaf, and the line carries what
+    #: is needed to tell which.
+    SILENT_WINDOW_MIN_SECONDS = 30
 
     def __init__(self, runtime, cache, parent=None) -> None:
         super().__init__(runtime, parent)
@@ -146,10 +172,33 @@ class ActivityService(LoopService):
         self._mouse_clicks = 0
         self._mouse_movements = 0
         self._held_events: list = []
+        #: The blocked state's name while counting is not running, else None.
+        #: Plain attributes, read by the GUI thread on every tick.
+        self._capture_blocked: Optional[str] = None
+        self._capture_detail: str = ""
+        self._capture_retry_in = 0
+        #: Consecutive flushed windows with no counted event while counting
+        #: was on. Drives the rate of `ACTIVITY_CAPTURE_SILENT` lines.
+        self._silent_windows = 0
 
     @property
     def supported(self) -> bool:
         return self._probe.supported
+
+    def capture_status(self) -> Dict[str, Any]:
+        """
+        Whether keyboard/mouse counting is running right now, and if not, why.
+
+        `blocked` is None while counting, otherwise an `InputAccess` value
+        ("denied", "restart_required", "unavailable"). Reads plain attributes,
+        so the dashboard may call it on every tick.
+        """
+        return {
+            "counting": self._capture_blocked is None,
+            "blocked": self._capture_blocked,
+            "detail": self._capture_detail,
+            "tracking": self._tracking,
+        }
 
     def idle_seconds(self) -> Optional[float]:
         """Seconds since the last system-wide keyboard or mouse input.
@@ -275,8 +324,52 @@ class ActivityService(LoopService):
                 self._keyboard_strokes, self._mouse_clicks, self._mouse_movements,
                 self._entry_id,
             )
+            self._diagnose_window()
             self.activity_window_recorded.emit(record)
         self._reset_window()
+
+    def _diagnose_window(self) -> None:
+        """
+        Say so when a whole window passed with counting on and nothing heard.
+
+        Zero counts have several causes that look identical in the data: a
+        user who was away, a permission that is granted but not in effect,
+        secure keyboard entry swallowing every key, a tap the system disabled.
+        One line per silent streak (and every tenth window of it) carries the
+        counter's own health and, where the OS exposes one, its idle clock --
+        a small `os_idle_seconds` beside zero counts means the user was there
+        and the listener was deaf. Logging only; nothing here changes what is
+        recorded.
+        """
+        counted = self._keyboard_strokes + self._mouse_clicks + self._mouse_movements
+        if counted > 0:
+            if self._silent_windows:
+                self.log.info(
+                    "ACTIVITY_CAPTURE_HEARD input again after %d silent window(s)",
+                    self._silent_windows,
+                )
+            self._silent_windows = 0
+            return
+        if self._capture_blocked is not None or self._sampled < self.SILENT_WINDOW_MIN_SECONDS:
+            return
+        self._silent_windows += 1
+        if self._silent_windows != 1 and self._silent_windows % 10 != 0:
+            return
+        try:
+            diag = dict(self._counter.diagnostics())
+        except Exception:  # noqa: BLE001
+            diag = {}
+        idle = diag.pop("os_idle_seconds", None)
+        if idle is None:
+            idle = self._probe.idle_seconds()
+        self.log.warning(
+            "ACTIVITY_CAPTURE_SILENT windows=%d window_seconds=%d probe_active_seconds=%d "
+            "os_idle_seconds=%s counter=%s; zero keyboard/mouse events were counted "
+            "while counting is on (a small os_idle_seconds here means the user was "
+            "active and the listener did not hear it)",
+            self._silent_windows, self._sampled, self._active,
+            "n/a" if idle is None else f"{idle:.0f}", diag,
+        )
 
     def start_tracker(self, session: Dict[str, Any]) -> None:
         self._entry_id = session.get("entry_id")
@@ -284,13 +377,82 @@ class ActivityService(LoopService):
         self._tracking = True
         self._reset_window()
         self._held_events = []
+        self._silent_windows = 0
         self._monitor.start_session()
         counting = self._counter.start()
+        self._evaluate_capture(counting)
         self.log.info(
             "activity capture started for entry %s (probe supported=%s, "
-            "counting=%s)",
+            "counting=%s, blocked=%s, platform=%s)",
             self._entry_id, self._probe.supported, counting,
+            self._capture_blocked, sys.platform,
         )
+
+    # ── Capture state (permission, availability) ───────────────────────────────
+
+    def _evaluate_capture(self, counting: bool) -> None:
+        """Turn the counter's start answer into a named, user-visible state."""
+        if counting:
+            self._on_capture_restored()
+            return
+        status = input_access.classify(False, getattr(self._counter, "failure", None))
+        self._on_capture_blocked(status)
+
+    def _on_capture_blocked(self, status: input_access.InputAccessStatus) -> None:
+        """Counting is not running. Said once on entering the state; retried
+        quietly every `CAPTURE_RETRY_SECONDS` until it clears."""
+        self._capture_retry_in = self.CAPTURE_RETRY_SECONDS
+        if self._capture_blocked == status.state.value:
+            return
+        self._capture_blocked = status.state.value
+        self._capture_detail = status.detail
+        self.log.warning(
+            "ACTIVITY_CAPTURE_BLOCKED state=%s detail=%s platform=%s; no keyboard/"
+            "mouse activity is being measured and no window is recorded until "
+            "counting starts (retried every %ds while the timer runs)",
+            status.state.value, status.detail, sys.platform, self.CAPTURE_RETRY_SECONDS,
+        )
+        if status.state is input_access.InputAccess.DENIED:
+            # The supported way to put Monitra in the Input Monitoring list
+            # and in front of the user. Grants nothing by itself.
+            input_access.request_input_access()
+        title, message = input_access.guidance(status.state)
+        notifications = getattr(self.runtime, "notifications", None)
+        if notifications is not None:
+            try:
+                notifications.notify(
+                    message, NotificationLevel.WARNING, title=title,
+                    key=f"activity-capture:{status.state.value}",
+                    link=(
+                        input_access.SETTINGS_URL
+                        if status.state is input_access.InputAccess.DENIED else None
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                self.log.exception("could not show the activity-capture notification")
+        self.capture_status_changed.emit(self._capture_blocked)
+
+    def _on_capture_restored(self) -> None:
+        """Counting is running: any earlier blocked state is over."""
+        self._capture_retry_in = 0
+        if self._capture_blocked is None:
+            return
+        self.log.info(
+            "ACTIVITY_CAPTURE_RESTORED after %s; keyboard/mouse counting has resumed",
+            self._capture_blocked,
+        )
+        self._capture_blocked = None
+        self._capture_detail = ""
+        self.capture_status_changed.emit("")
+
+    def _retry_capture(self) -> None:
+        """One sampled second of a blocked session: start the counter again
+        when the retry interval is up. `InputEventCounter.start()` is a no-op
+        on a running listener, so this can never install a second one."""
+        self._capture_retry_in -= 1
+        if self._capture_retry_in > 0:
+            return
+        self._evaluate_capture(self._counter.start())
 
     def bind_entry_id(self, entry_id: int) -> None:
         """
@@ -402,6 +564,9 @@ class ActivityService(LoopService):
                 # noticed here rather than delivered to us still releases the
                 # windows already queued against this session's client_op.
                 self.bind_entry_id(entry_id)
+
+        if not self._counter.supported:
+            self._retry_capture()
 
         counts = self._counter.snapshot_and_reset()
         counted_any = (

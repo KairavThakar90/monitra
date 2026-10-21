@@ -37,6 +37,15 @@ from ui.styles import (
 #: The one authoritative duration formatter (core.time_format.format_hms).
 _fmt = format_hms
 
+#: What TODAY'S ACTIVITY says beneath its value while a timer runs and the
+#: activity service reports that counting is not running, keyed by
+#: `InputAccess` value. Short enough for the card's compact form.
+_CAPTURE_BLOCKED_TEXT = {
+    "denied": "Needs Input Monitoring",
+    "restart_required": "Restart Monitra to resume",
+    "unavailable": "Capture unavailable",
+}
+
 #: What one card needs beside its text: the 48px gradient tile, the layout's
 #: 16/18 margins and the 14px gap.
 _CARD_CHROME_WIDTH = 48 + 16 + 18 + 14
@@ -649,7 +658,8 @@ class StatCardsRow(QWidget):
         self.break_button.set_state(break_status, timer_active)
 
     def set_today_activity(
-        self, percent: int, *, has_measurement: bool, is_tracking: bool
+        self, percent: int, *, has_measurement: bool, is_tracking: bool,
+        capture_blocked: Optional[str] = None,
     ) -> None:
         """Today's duration-weighted keyboard/mouse activity, as a single
         number -- the same figure `background_services.activity.today_summary`
@@ -659,20 +669,40 @@ class StatCardsRow(QWidget):
         `has_measurement` distinguishes an honest "nothing measured yet" from
         a real 0%: a card reading "0%" before the first sample ever came in
         would look like a broken feature rather than an accurate one.
+
+        `capture_blocked` is the activity service's reason counting is not
+        running (`BackgroundApi.activity_capture_status()["blocked"]`), and
+        matters only while a timer runs: a Mac without Input Monitoring
+        permission measures nothing all day, and this card used to say
+        "Not tracking yet" about it -- a denied permission dressed as a quiet
+        user. The reason is named instead, in the warning colour, and a figure
+        already measured earlier in the day is kept with the reason beneath it.
         """
+        blocked_text = (
+            _CAPTURE_BLOCKED_TEXT.get(capture_blocked, "Capture unavailable")
+            if is_tracking and capture_blocked else None
+        )
         if not has_measurement:
             self.activity_card.set_value("—")
-            self.activity_card.set_sub("Not tracking yet")
+            if blocked_text:
+                self.activity_card.set_sub(blocked_text, WARNING)
+            elif is_tracking:
+                self.activity_card.set_sub("Tracking now", SUCCESS)
+            else:
+                self.activity_card.set_sub("Not tracking yet")
             self.activity_card.set_progress(None)
             self.activity_card.set_theme("amber")
             return
-        
+
         percent = max(0, min(100, percent))
         self.activity_card.set_value(f"{percent}%")
-        self.activity_card.set_sub(
-            "Tracking now" if is_tracking else "Based on today's activity",
-            SUCCESS if is_tracking else None,
-        )
+        if blocked_text:
+            self.activity_card.set_sub(blocked_text, WARNING)
+        else:
+            self.activity_card.set_sub(
+                "Tracking now" if is_tracking else "Based on today's activity",
+                SUCCESS if is_tracking else None,
+            )
         self.activity_card.set_progress(percent)
         
         if percent >= 80:

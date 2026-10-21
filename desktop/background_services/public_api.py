@@ -290,6 +290,20 @@ class BackgroundApi:
         """
         return self._runtime.activity.live_window_totals()
 
+    def activity_capture_status(self) -> Dict[str, Any]:
+        """
+        Whether keyboard/mouse counting is running right now, and if not, why.
+
+        ``{"counting": bool, "blocked": str | None, "detail": str,
+        "tracking": bool}``. `blocked` is an ``InputAccess`` value -- on
+        macOS "denied" (Input Monitoring not granted) or "restart_required"
+        (granted after launch), anywhere "unavailable" (the counting backend
+        itself failed). Cheap and non-blocking (plain attributes), so the
+        dashboard may read it on every tick: TODAY'S ACTIVITY must never show
+        a denied permission as a quiet user.
+        """
+        return self._runtime.activity.capture_status()
+
     def today_activity_snapshot(self, day) -> TodaySnapshot:
         """
         Today's persisted activity: the backend's duration-weighted aggregate

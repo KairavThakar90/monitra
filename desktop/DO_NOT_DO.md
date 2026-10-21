@@ -766,6 +766,46 @@ of repetition. Mouse *movement* deliberately does not excuse a hold: it is
 continuous and noisy, and letting it count would turn the rule off for anyone
 resting a hand on the mouse.
 
+### ❌ Do not track a hold for a key whose release is never reported (macOS)
+
+```python
+def _on_mac_key(self, name, pressed=True):
+    identity = ("key", name) if name else None     # "space", "enter", "left"...
+    ...
+    self._press_locked(identity, name, now)         # opens a hold that never closes
+```
+
+**What it caused:** the macOS TODAY'S ACTIVITY card reading lower than
+Windows for the same work. The Quartz tap reports a release only for
+modifiers (`flagsChanged` carries both edges); Space, Enter, Tab, Backspace,
+Esc and the arrows arrive as `keyDown` alone. Each was given a hold identity
+anyway, the hold was never released, and every further press of that key
+inside `HELD_KEY_MAX_SECONDS` was dropped as the "auto-repeat" of the first:
+one Space, one Enter, one Backspace and one arrow per direction **per minute**.
+Replaying what the tap delivers measured eight presses of named keys counted
+as four and a sentence's spaces counted as one — a quarter or more of a
+typist's keystrokes, gone, on every Mac, with nothing in the log.
+
+**Instead:** a hold is opened only for a key in
+`mac_input_tap.RELEASABLE_KEY_NAMES`; every other key is counted on each
+press (the tap has already dropped the OS's own auto-repeats). A watched key
+outside that set is reported as unresolvable rather than silently never
+tallied.
+
+### ❌ Do not let a denied permission look like a quiet user
+
+**What it caused:** a Mac without Input Monitoring ran a timer all day, the
+tap was refused, no window was ever recorded, and the card said "Not tracking
+yet" beneath a dash — indistinguishable, on screen and in the data, from a
+user who sat still. The only trace was one WARNING line in a log the user
+never opens.
+
+**Instead:** `input_access.classify` names the state (`denied`,
+`restart_required`, `unavailable`); the service logs it once, notifies the
+user once with the switch's location, exposes it to the card, and retries the
+counter every minute while the timer runs. An absence of measurement is shown
+as the reason for it, never as a percentage and never as idleness.
+
 ---
 
 ## Styling

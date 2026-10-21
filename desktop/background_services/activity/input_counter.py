@@ -59,11 +59,17 @@ Platform permissions:
 - **macOS**: global input monitoring requires the user to grant this app
   **Input Monitoring** (and, on some versions, Accessibility) permission
   in System Settings → Privacy & Security. If the permission is missing,
-  macOS typically delivers no events rather than raising — so counts stay
-  at zero and activity falls back to "unmeasured", exactly like the
-  pre-existing probe behaviour. A hard failure to create the listener
-  (some macOS versions raise) is caught and reported as unsupported. The
-  app never crashes over a denied permission.
+  the tap is refused rather than raising — `start()` answers False and
+  `failure` says why, `input_access.classify` turns that into a state
+  (denied / restart required / unavailable), and the owning service tells
+  the user, shows it on the card and retries `start()` once a minute. No
+  window is recorded meanwhile and no number is fabricated. The app never
+  crashes over a denied permission.
+- **macOS key releases**: the tap reports a release only for modifiers, so
+  a hold is tracked only for `mac_input_tap.RELEASABLE_KEY_NAMES`; Space,
+  Enter, Backspace, Tab, Esc, the arrows and every printable key are counted
+  on each press (the tap already drops the OS's own auto-repeats). See
+  `_on_mac_key` for the undercount that giving them a hold identity caused.
 
 Threading: pynput runs its listeners on their own native threads (not
 QThreads — the architecture checker's QThread prohibition is about Qt
@@ -80,9 +86,15 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Hashable, Iterable, Optional
 
+from background_services.activity.mac_input_tap import RELEASABLE_KEY_NAMES
 from core.logging_setup import get_logger
 
 log = get_logger("activity.counter")
+
+#: Why `start()` answered False, for `input_access.classify` to turn into a
+#: state the user can act on. The macOS tap has its own set (`FAILURE_*`).
+FAILURE_PYNPUT_MISSING = "pynput_missing"
+FAILURE_LISTENER_FAILED = "listener_failed"
 
 #: How long a key may be considered "still down" before the next repeat is
 #: treated as a fresh press.
@@ -179,6 +191,8 @@ class InputEventCounter:
         self._mouse_listener = None
         self._mac_tap = None  # macOS uses a Quartz tap instead; see _start_macos
         self._supported: Optional[bool] = None  # unknown until first start()
+        #: Why the last start() failed, or None after a success.
+        self._failure: Optional[str] = None
 
     # ── Press bookkeeping (called with the lock held) ─────────────────────────
 
@@ -279,6 +293,35 @@ class InputEventCounter:
         start() gets its chance."""
         return self._supported is not False
 
+    @property
+    def counting(self) -> bool:
+        """True while a listener or tap is actually installed."""
+        return self._mac_tap is not None or self._keyboard_listener is not None
+
+    @property
+    def failure(self) -> Optional[str]:
+        """Why the last `start()` answered False; None after a success."""
+        return self._failure
+
+    def diagnostics(self) -> Dict[str, object]:
+        """What the counting backend can say about its own health. Counts
+        only, never content; for the activity service's diagnostic lines."""
+        out: Dict[str, object] = {
+            "platform": sys.platform,
+            "counting": self.counting,
+            "failure": self._failure,
+        }
+        if self._mac_tap is not None:
+            try:
+                out.update(self._mac_tap.diagnostics())
+            except Exception:  # noqa: BLE001
+                pass
+        if sys.platform == "darwin":
+            from background_services.activity.mac_input_tap import system_idle_seconds
+
+            out["os_idle_seconds"] = system_idle_seconds()
+        return out
+
     def start(self) -> bool:
         """Start counting. Returns True when input events are being counted.
 
@@ -316,20 +359,22 @@ class InputEventCounter:
                     "unavailable (activity falls back to presence detection)"
                 )
             self._supported = False
+            self._failure = FAILURE_PYNPUT_MISSING
             self._keyboard_listener = None
             self._mouse_listener = None
             return False
-        except Exception:  # noqa: BLE001 — e.g. macOS permission refusal
+        except Exception:  # noqa: BLE001 — the OS refused the hook
             if self._supported is not False:
                 log.exception(
-                    "input listeners could not start (on macOS this usually "
-                    "means Input Monitoring permission has not been granted); "
-                    "keyboard/mouse counting is unavailable"
+                    "input listeners could not start; keyboard/mouse counting "
+                    "is unavailable"
                 )
             self._supported = False
+            self._failure = FAILURE_LISTENER_FAILED
             self.stop()
             return False
         self._supported = True
+        self._failure = None
         return True
 
     def _start_macos(self) -> bool:
@@ -358,10 +403,11 @@ class InputEventCounter:
             # Named rather than silently dropped: a rule that never fires is
             # otherwise indistinguishable from a user who never pressed it.
             log.warning(
-                "watched keys %s cannot be identified individually on macOS "
-                "(a printable key's identity depends on the keyboard layout, "
-                "and reading the layout is the call that crashes). They are "
-                "still included in the keystroke total.",
+                "watched keys %s cannot be tallied individually on macOS "
+                "(only a modifier's release is observable there, and a "
+                "printable key's identity depends on the keyboard layout, "
+                "which is the call that crashes). They are still included "
+                "in the keystroke total.",
                 sorted(unresolvable),
             )
 
@@ -369,25 +415,39 @@ class InputEventCounter:
             on_key=self._on_mac_key,
             on_click=lambda: self._on_click(0, 0, None, True),
             on_move=lambda: self._on_move(0, 0),
+            on_scroll=lambda: self._on_scroll(0, 0, 0, 0),
         )
         if not tap.start():
             self._supported = False
+            self._failure = tap.failure or "tap_refused"
             return False
 
         self._mac_tap = tap
         self._supported = True
+        self._failure = None
         return True
 
     def _on_mac_key(self, name: Optional[str], pressed: bool = True) -> None:
         """Count one macOS key event, already reduced to a name or None.
 
-        The tap reports a release only for modifiers, which is exactly the
-        set the rules watch: a Quartz `flagsChanged` event carries both
-        edges, while an ordinary key delivers only `keyDown`. So holds are
-        tracked for the keys that need them and ordinary keys are simply
-        counted, with the tap having already dropped OS auto-repeats.
+        The tap reports a release only for modifiers (`RELEASABLE_KEY_NAMES`),
+        which is exactly the set the rules watch: a Quartz `flagsChanged`
+        event carries both edges, while an ordinary key delivers only
+        `keyDown`. So a hold is tracked only for a key whose release will
+        arrive; every other key -- printable or named (Space, Enter,
+        Backspace, Tab, Esc, the arrows) -- is simply counted, with the tap
+        having already dropped OS auto-repeats.
+
+        Giving a named non-modifier key an identity is the one thing this
+        must never do again. Its release never comes, so the hold stayed
+        open, and every further press of that key within `HELD_KEY_MAX_SECONDS`
+        was dropped as an auto-repeat: one Space, one Enter, one Backspace and
+        one arrow per direction per minute, on every Mac. That alone cut a
+        typist's counted keystrokes by a quarter or more and made the
+        TODAY'S ACTIVITY card read lower on macOS than on Windows for the
+        same work.
         """
-        identity = ("key", name) if name else None
+        identity = ("key", name) if name in RELEASABLE_KEY_NAMES else None
         now = time.monotonic()
         with self._lock:
             if not pressed:

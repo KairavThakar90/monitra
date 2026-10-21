@@ -38,8 +38,19 @@ after the fact, it is never obtained.
 Permissions: creating an event tap requires **Input Monitoring** (System
 Settings -> Privacy & Security). Without it `CGEventTapCreate` returns None —
 it does not raise and does not crash — so the counter reports itself
-unsupported, counts stay at zero, and activity falls back to "unmeasured",
-exactly as the documented degradation describes.
+unsupported and records why (`failure`), `input_access.classify` names the
+state, and `ActivityService` tells the user, shows it on the card and retries
+the tap once a minute while the timer runs. Nothing is measured and nothing is
+fabricated meanwhile.
+
+What the tap can and cannot see: a release is reported only for modifiers
+(`RELEASABLE_KEY_NAMES`); every other key arrives as `keyDown` alone, so the
+counter must count it on each press and never wait for a key-up. Scroll events
+are reported as chord partners (CMD/CTRL+scroll is zoom) and never counted.
+Keys typed into a secure text field (a password prompt, a terminal with Secure
+Keyboard Entry on) are withheld from every tap by macOS; `system_idle_seconds`
+exists so a window of zero counts can be told apart from an idle user in the
+log.
 
 Threading: one plain Python thread running a CFRunLoop, owned and stopped
 deterministically by `stop()`. Not a QThread — the architecture checker's
@@ -93,19 +104,71 @@ _MODIFIER_MASKS: Dict[str, int] = {
     "fn": 0x00800000,
 }
 
+#: The key names whose *release* this tap reports.
+#:
+#: A modifier arrives as a `flagsChanged` event on both edges, so its hold can
+#: be tracked. Every other key -- Space, Enter, Tab, Backspace, Esc, the arrows
+#: and every printable key -- is delivered as `keyDown` alone: the tap never
+#: sees it come back up. The counter must not wait for a key-up that will not
+#: come. It did, once: a named key was given a hold identity, the hold was
+#: never released, and from the second press on every Space, Enter, Backspace
+#: and arrow key in a minute was dropped as an "auto-repeat" of the first.
+#: Measured by replaying what the tap delivers: eight presses of named keys
+#: counted as four, and a sentence's spaces counted as one.
+RELEASABLE_KEY_NAMES = frozenset(_MODIFIER_MASKS)
+
+#: What `start()` records when the tap is not installed, for the caller to
+#: tell the user something more useful than "counts are zero".
+FAILURE_QUARTZ_UNAVAILABLE = "quartz_unavailable"
+FAILURE_TAP_REFUSED = "tap_refused"
+FAILURE_TAP_ERROR = "tap_error"
+
 
 def unresolvable_watch_keys(watch_keys) -> set:
     """
-    Return the requested watch keys this backend cannot name on macOS.
+    Return the requested watch keys this backend cannot tally per key on macOS.
 
-    A printable character cannot be identified without reading the keyboard
-    layout through TSM, which is the call that crashes. Such a key is still
+    A per-key tally counts *bare* presses -- down and up with nothing in
+    between -- so it needs the key's release, and this tap reports a release
+    only for modifiers (`RELEASABLE_KEY_NAMES`). A printable character could
+    not even be identified without reading the keyboard layout through TSM,
+    which is the call that crashes; a named non-modifier key (Esc, Space...)
+    can be identified but never seen to come up. Either way the key is still
     counted in the keystroke total; it just cannot be tallied individually.
     The caller logs this once so a rule silently failing to fire is
     attributable rather than mysterious.
     """
-    known = set(_KEYCODE_NAMES.values())
-    return {key for key in watch_keys if key not in known}
+    return {key for key in watch_keys if key not in RELEASABLE_KEY_NAMES}
+
+
+def system_idle_seconds() -> Optional[float]:
+    """
+    Seconds since the last keyboard or mouse event the OS saw. **Log-only.**
+
+    `CGEventSourceSecondsSinceLastEventType` reads the window server's own idle
+    clock and needs no Input Monitoring permission, which is exactly what
+    makes it useful here: when the tap has counted nothing for a whole window,
+    this says whether the user was in fact idle (a large value) or whether the
+    user was working and the tap was deaf to it (a small value) -- secure
+    input, a permission that is not in effect, a tap the system disabled.
+    That distinction cannot be made from the counts alone.
+
+    It feeds a diagnostic line and nothing else: not `active_seconds`, not the
+    percentage, not idle detection. None where it cannot be read. Never
+    raises.
+    """
+    try:
+        from Quartz import (
+            CGEventSourceSecondsSinceLastEventType, kCGAnyInputEventType,
+            kCGEventSourceStateHIDSystemState,
+        )
+
+        value = CGEventSourceSecondsSinceLastEventType(
+            kCGEventSourceStateHIDSystemState, kCGAnyInputEventType
+        )
+        return float(value) if value is not None else None
+    except Exception:  # noqa: BLE001 - a diagnostic must never fail the caller
+        return None
 
 
 class MacInputTap:
@@ -122,24 +185,40 @@ class MacInputTap:
         on_key: Callable[[Optional[str], bool], None],
         on_click: Callable[[], None],
         on_move: Callable[[], None],
+        on_scroll: Optional[Callable[[], None]] = None,
     ) -> None:
         """`on_key(name, pressed)` is called for each key event.
 
         `pressed` is True for a key going down and False for one coming up.
-        Only modifiers report a release: a `flagsChanged` event carries both
-        edges, whereas an ordinary key is delivered as `keyDown` alone. That
-        is enough, because the keys the unwanted-activity rules watch are
-        modifiers, and they are the ones whose holds have to be tracked.
+        Only modifiers report a release (`RELEASABLE_KEY_NAMES`): a
+        `flagsChanged` event carries both edges, whereas an ordinary key is
+        delivered as `keyDown` alone. That is enough, because the keys the
+        unwanted-activity rules watch are modifiers, and they are the ones
+        whose holds have to be tracked.
+
+        `on_scroll` is called for each scroll-wheel or trackpad-scroll event.
+        Scrolling is not counted -- it is reported so the counter can treat it
+        as a chord partner (CMD/CTRL+scroll is zoom), exactly as the Windows
+        listener's scroll callback does.
         """
         self._on_key = on_key
         self._on_click = on_click
         self._on_move = on_move
+        self._on_scroll = on_scroll
 
         self._thread: Optional[threading.Thread] = None
         self._runloop = None
         self._tap = None
         self._ready = threading.Event()
         self._started_ok = False
+        #: Why the tap is not installed (one of the FAILURE_* constants), or
+        #: None while it is. Read by the counter to tell the user why counts
+        #: are zero instead of letting a denied permission look like idleness.
+        self.failure: Optional[str] = None
+        #: Diagnostics. Events the callback saw, and how often the system
+        #: disabled the tap and it was re-armed. Counts only, never content.
+        self._events_seen = 0
+        self._re_enabled = 0
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -194,6 +273,17 @@ class MacInputTap:
         self._tap = None
         self._started_ok = False
 
+    def diagnostics(self) -> Dict[str, object]:
+        """What this tap can say about its own health. Counts only."""
+        thread = self._thread
+        return {
+            "installed": self._started_ok,
+            "failure": self.failure,
+            "thread_alive": bool(thread is not None and thread.is_alive()),
+            "events_seen": self._events_seen,
+            "re_enabled": self._re_enabled,
+        }
+
     # ── Runloop thread ────────────────────────────────────────────────────────
 
     def _run(self) -> None:
@@ -205,14 +295,16 @@ class MacInputTap:
                 kCGEventFlagsChanged, kCGEventKeyDown, kCGEventLeftMouseDown,
                 kCGEventLeftMouseDragged, kCGEventMouseMoved,
                 kCGEventOtherMouseDown, kCGEventRightMouseDown,
-                kCGEventRightMouseDragged, kCGEventTapOptionListenOnly,
-                kCGHeadInsertEventTap, kCGSessionEventTap,
+                kCGEventRightMouseDragged, kCGEventScrollWheel,
+                kCGEventTapOptionListenOnly, kCGHeadInsertEventTap,
+                kCGSessionEventTap,
             )
         except ImportError:
             log.warning(
                 "Quartz (pyobjc-framework-Quartz) is unavailable; "
                 "keyboard/mouse counting is disabled on this machine"
             )
+            self.failure = FAILURE_QUARTZ_UNAVAILABLE
             self._ready.set()
             return
 
@@ -224,6 +316,7 @@ class MacInputTap:
                 kCGEventOtherMouseDown,
                 kCGEventMouseMoved, kCGEventLeftMouseDragged,
                 kCGEventRightMouseDragged,
+                kCGEventScrollWheel,
             ):
                 mask |= CGEventMaskBit(event_type)
 
@@ -240,14 +333,17 @@ class MacInputTap:
                 None,
             )
             if tap is None:
-                # The documented denial path: no exception, no crash.
+                # The documented denial path: no exception, no crash. The
+                # caller (`input_access.classify`) asks macOS whether the
+                # permission is granted and tells the user what to do.
                 log.warning(
                     "could not create the macOS input tap — Input Monitoring "
-                    "permission has not been granted (System Settings → "
-                    "Privacy & Security → Input Monitoring). Keyboard and "
-                    "mouse counts will stay at zero until it is granted and "
-                    "Monitra is restarted."
+                    "permission is not in effect for Monitra (System Settings "
+                    "→ Privacy & Security → Input Monitoring). Keyboard and "
+                    "mouse counts stay at zero until it is; the tap is "
+                    "retried while the timer runs."
                 )
+                self.failure = FAILURE_TAP_REFUSED
                 self._ready.set()
                 return
 
@@ -257,9 +353,11 @@ class MacInputTap:
             CFRunLoopAddSource(self._runloop, source, kCFRunLoopCommonModes)
 
             self._started_ok = True
+            self.failure = None
             log.info("macOS input tap installed (listen-only, counts only)")
         except Exception:  # noqa: BLE001
             log.exception("the macOS input tap could not be installed")
+            self.failure = FAILURE_TAP_ERROR
             self._ready.set()
             return
         finally:
@@ -293,9 +391,9 @@ class MacInputTap:
             kCGEventFlagsChanged, kCGEventKeyDown, kCGEventLeftMouseDown,
             kCGEventLeftMouseDragged, kCGEventMouseMoved,
             kCGEventOtherMouseDown, kCGEventRightMouseDown,
-            kCGEventRightMouseDragged, kCGEventTapDisabledByTimeout,
-            kCGEventTapDisabledByUserInput, kCGKeyboardEventAutorepeat,
-            kCGKeyboardEventKeycode,
+            kCGEventRightMouseDragged, kCGEventScrollWheel,
+            kCGEventTapDisabledByTimeout, kCGEventTapDisabledByUserInput,
+            kCGKeyboardEventAutorepeat, kCGKeyboardEventKeycode,
         )
 
         # The system disables a tap that misbehaves or when the user's input
@@ -303,9 +401,20 @@ class MacInputTap:
         # mid-session, so re-arm and say so.
         if event_type in (kCGEventTapDisabledByTimeout,
                           kCGEventTapDisabledByUserInput):
-            log.warning("macOS input tap was disabled by the system; re-enabling")
+            self._re_enabled += 1
+            log.warning(
+                "macOS input tap was disabled by the system (type=%s, "
+                "occurrence %d); re-enabling", event_type, self._re_enabled,
+            )
             if self._tap is not None:
                 CGEventTapEnable(self._tap, True)
+            return
+
+        self._events_seen += 1
+
+        if event_type == kCGEventScrollWheel:
+            if self._on_scroll is not None:
+                self._on_scroll()
             return
 
         if event_type == kCGEventKeyDown:

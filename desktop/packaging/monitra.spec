@@ -261,10 +261,11 @@ if IS_MACOS:
     #
     #   Input Monitoring / Accessibility (NSInputMonitoringUsageDescription,
     #   NSAppleEventsUsageDescription is deliberately NOT requested)
-    #       pynput's global listeners produce the keyboard/mouse *counts*
-    #       (never keystroke content -- see input_counter.py's privacy
-    #       contract). Denied, counts stay at zero and activity reports as
-    #       unmeasured rather than crashing.
+    #       The listen-only Quartz event tap (mac_input_tap.py) produces the
+    #       keyboard/mouse *counts* (never keystroke content -- see
+    #       input_counter.py's privacy contract). Denied, the tap is refused,
+    #       activity/input_access.py names the state, the user is told where
+    #       the switch is, and nothing is recorded or fabricated meanwhile.
     #
     # No camera, microphone, contacts, location or Apple Events permission is
     # requested, because nothing in this application uses them.

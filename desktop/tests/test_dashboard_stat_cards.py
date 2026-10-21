@@ -250,3 +250,91 @@ def test_today_activity_is_shown_as_tracking_only_while_a_timer_runs(dashboard, 
     dashboard._update_stat_cards()
 
     assert dashboard._stat_cards.activity_card._sub.full_text() == "Tracking now"
+
+
+# ── A blocked capture is named on the card, never shown as a quiet user ──────
+#
+# A Mac without Input Monitoring measures nothing all day. The card used to
+# say "Not tracking yet" about it while a timer ran -- a denied permission
+# dressed as idleness. The reason is named instead, in the warning colour.
+
+def _blocked(state):
+    return lambda: {"counting": False, "blocked": state, "detail": "", "tracking": True}
+
+
+def test_a_denied_permission_is_named_on_the_card(dashboard, monkeypatch):
+    monkeypatch.setattr(dashboard.api, "is_timer_running", lambda: True)
+    monkeypatch.setattr(dashboard.api, "activity_capture_status", _blocked("denied"))
+
+    dashboard._update_stat_cards()
+
+    card = dashboard._stat_cards.activity_card
+    assert card._value.full_text() == "—"
+    assert card._sub.full_text() == "Needs Input Monitoring"
+
+
+def test_a_permission_granted_after_launch_asks_for_a_restart(dashboard, monkeypatch):
+    monkeypatch.setattr(dashboard.api, "is_timer_running", lambda: True)
+    monkeypatch.setattr(dashboard.api, "activity_capture_status", _blocked("restart_required"))
+
+    dashboard._update_stat_cards()
+
+    assert dashboard._stat_cards.activity_card._sub.full_text() == "Restart Monitra to resume"
+
+
+def test_a_figure_measured_earlier_today_is_kept_with_the_reason_beneath_it(dashboard, monkeypatch):
+    """The morning was measured; the afternoon is not. The number stays real
+    and the gap is explained, rather than either hiding the other."""
+    from background_services.public_api import TodaySnapshot
+    from background_services.activity.today_summary import totals_from_percent
+
+    dashboard._on_today_activity_loaded(
+        TodaySnapshot(totals=totals_from_percent(63, 1800), remote_ok=True)
+    )
+    monkeypatch.setattr(dashboard.api, "is_timer_running", lambda: True)
+    monkeypatch.setattr(dashboard.api, "activity_capture_status", _blocked("denied"))
+
+    dashboard._update_stat_cards()
+
+    card = dashboard._stat_cards.activity_card
+    assert card._value.full_text() == "63%"
+    assert card._sub.full_text() == "Needs Input Monitoring"
+
+
+def test_a_running_timer_before_its_first_sample_says_tracking_now(dashboard, monkeypatch):
+    """Counting is on; the first window just has not ticked yet. That is not
+    "Not tracking yet" either."""
+    monkeypatch.setattr(dashboard.api, "is_timer_running", lambda: True)
+    monkeypatch.setattr(
+        dashboard.api, "activity_capture_status",
+        lambda: {"counting": True, "blocked": None, "detail": "", "tracking": True},
+    )
+
+    dashboard._update_stat_cards()
+
+    card = dashboard._stat_cards.activity_card
+    assert card._value.full_text() == "—"
+    assert card._sub.full_text() == "Tracking now"
+
+
+def test_the_capture_status_is_not_consulted_when_no_timer_runs(dashboard, monkeypatch):
+    """With no timer there is nothing to count, so a stale blocked state must
+    not be shown -- and the status must not even be read."""
+    monkeypatch.setattr(dashboard.api, "is_timer_running", lambda: False)
+    monkeypatch.setattr(
+        dashboard.api, "activity_capture_status",
+        lambda: pytest.fail("the capture status is only meaningful while tracking"),
+    )
+
+    dashboard._update_stat_cards()
+
+    assert dashboard._stat_cards.activity_card._sub.full_text() == "Not tracking yet"
+
+
+def test_an_unknown_blocked_state_still_reads_as_a_capture_problem(dashboard, monkeypatch):
+    monkeypatch.setattr(dashboard.api, "is_timer_running", lambda: True)
+    monkeypatch.setattr(dashboard.api, "activity_capture_status", _blocked("something_new"))
+
+    dashboard._update_stat_cards()
+
+    assert dashboard._stat_cards.activity_card._sub.full_text() == "Capture unavailable"

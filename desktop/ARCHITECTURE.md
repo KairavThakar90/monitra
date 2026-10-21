@@ -573,15 +573,34 @@ one number, and must never be summed:
   transmitted. On macOS the probe is unsupported, so a second with any
   counted event is treated as active — the percentage works there through the
   counter. macOS requires the user to grant Input Monitoring permission; when
-  denied, counts read zero and activity falls back to unmeasured (never a
-  crash, never a fabricated number).
+  denied, the tap is refused, nothing is recorded and nothing is fabricated.
+- **input_access** (`input_access.py`): names *why* counting is not running,
+  the way `screenshot/screen_access.py` does for Screen Recording.
+  `CGPreflightListenEventAccess` turns a refused tap into `denied` or
+  `restart_required` (granted after launch; macOS applies it only to a
+  reopened process); a missing backend is `unavailable`. `ActivityService`
+  logs the state once (`ACTIVITY_CAPTURE_BLOCKED`), shows the user one
+  notification with the switch's location, exposes it through
+  `BackgroundApi.activity_capture_status()` so TODAY'S ACTIVITY says "Needs
+  Input Monitoring" rather than "Not tracking yet", and retries the counter
+  every `CAPTURE_RETRY_SECONDS` while the timer runs — `start()` on a running
+  listener is a no-op, so the retry can never install a second one. A window
+  that passes with counting on and nothing heard logs
+  `ACTIVITY_CAPTURE_SILENT` with the OS's own idle clock beside the zero, so
+  a deaf listener can be told from an idle user after the fact.
 
 **One press is one press.** A held key produces a stream of key-down events
 with no key-up between them — Windows auto-repeat, macOS's repeated
 `kCGEventKeyDown`. The counter counts a key when it goes down and not again
 until it has come back up (Windows), and drops events flagged
 `kCGKeyboardEventAutorepeat` (macOS). Without that, leaning on one key read as
-a minute of maximal typing.
+a minute of maximal typing. **On macOS only a modifier's release is
+observable** (`flagsChanged` carries both edges; every other key arrives as
+`keyDown` alone), so the counter tracks a hold only for the keys in
+`mac_input_tap.RELEASABLE_KEY_NAMES` and counts every other key on each press.
+Giving Space, Enter, Backspace or an arrow key a hold identity dropped every
+press of it after the first in a minute as an "auto-repeat" — see
+DO_NOT_DO.md.
 
 **The percentage is never fabricated.** If neither mechanism works on the
 platform, windows are recorded as unmeasured and the UI says so. If no timer is
