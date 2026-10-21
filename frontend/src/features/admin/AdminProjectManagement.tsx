@@ -330,7 +330,10 @@ const StatusPillDropdown = ({
   const [isOpen, setIsOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0, width: 160 });
-  const selected = options?.find((o) => o.id === value) || options?.[0];
+  // A project with no status shows "Select Status". It used to fall back to the
+  // first option, so a project that never had a status read as "Active" -- a
+  // status nobody gave it.
+  const selected = options?.find((o) => o.id === value) || (value === undefined ? undefined : options?.[0]);
 
   const toggleMenu = () => {
     if (isOpen) {
@@ -765,26 +768,17 @@ export const AdminProjectManagement: React.FC = () => {
 
   const handleUpdateProjectInline = async (proj: Project, newStatusId?: number, newEmployeeIds?: number[]) => {
     try {
-      const payload = {
-        project_name: proj.project_name,
-        description: proj.description,
-        status_id: newStatusId !== undefined ? newStatusId : proj.status?.id,
-        // No leader_id here: this function only ever changes status or team,
-        // never the leader, and `updateProject` sends only the keys present
-        // in this object (`exclude_unset` on the backend). Sending
-        // `proj.leader?.id || null` unconditionally used to mean that
-        // changing the status or the team on a project with no leader
-        // assigned -- shown in this same table as "Unassigned" -- always
-        // failed with "leader_id is required", because the backend saw an
-        // explicit null rather than a field that was simply not part of
-        // this request.
-        employee_ids: newEmployeeIds !== undefined
-          ? newEmployeeIds
-          : (proj.employees || []).map((e: any) => e.id),
-        deadline: proj.deadline ? proj.deadline.split('T')[0] : null,
-        billing_type: proj.billing_type || 'fixed',
-        fixed_hours: proj.fixed_hours ? Number(proj.fixed_hours) : null,
-      };
+      // Only the one thing this control changes. `updateProject` sends the keys
+      // that are present and the backend applies only those (`exclude_unset`),
+      // so everything else stays as the server has it. This used to send the
+      // project's whole shape read from the row as rendered: a status change
+      // then wrote back the team that row showed -- and a member assigned a
+      // moment earlier, whose answer had not landed yet, was removed again. The
+      // same goes for the leader: `proj.leader?.id || null` on a project with
+      // no leader failed every inline change with "leader_id is required".
+      const payload: { status_id?: number; employee_ids?: number[] } = {};
+      if (newStatusId !== undefined) payload.status_id = newStatusId;
+      if (newEmployeeIds !== undefined) payload.employee_ids = newEmployeeIds;
       await updateProject({ id: proj.id, body: payload }).unwrap();
     } catch (err) {
       console.error(err);

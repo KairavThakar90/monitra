@@ -177,6 +177,13 @@ export type GetProjectsArgs = {
 type ThunkParts = { dispatch: (action: any) => any; getState: () => any };
 
 /** Runs `mutate` against both project caches: the paginated list and the load-everything one. */
+/**
+ * How many `updateProject` calls are in the air per project. While another one
+ * is still on its way, an answer must not overwrite the optimistic fields the
+ * later call painted (see `updateProject`).
+ */
+const updatesInFlight = new Map<number, number>();
+
 const patchProjectLists = (
   parts: ThunkParts,
   mutate: (items: Project[], draft: any, arg: any) => void,
@@ -393,6 +400,7 @@ export const projectsApi = baseApi.injectEndpoints({
           body.leader_id !== undefined
             ? assignableLeaders?.find((leader) => leader.id === body.leader_id) ?? null
             : undefined;
+        const assignableEmployees = projectsApi.endpoints.getAssignableEmployees.select(undefined)(getState())?.data;
         const assignableOwners = projectsApi.endpoints.getAssignableOwners.select(undefined)(getState())?.data;
         const nextOwner =
           body.owner_id !== undefined
@@ -416,22 +424,50 @@ export const projectsApi = baseApi.injectEndpoints({
           }
           if (nextLeader !== undefined) project.leader = nextLeader;
           if (nextOwner) project.owner = nextOwner;
-          if (body.employee_ids !== undefined) project.employee_count = body.employee_ids.length;
+          if (body.employee_ids !== undefined) {
+            // The team shown is the team just chosen, at once. Without this the
+            // checkbox looked ignored until the server answered, and the next
+            // tick was worked out from a list that was already out of date --
+            // so ticking two members quickly kept only the second. Each person
+            // is taken from the row's current team or the assignable list;
+            // the answer below replaces this with the server's own record.
+            const known = new Map<number, ProjectUser>();
+            for (const person of assignableEmployees ?? []) known.set(person.id, person);
+            for (const person of project.employees ?? []) known.set(person.id, person);
+            project.employees = body.employee_ids.flatMap((employeeId) => {
+              const person = known.get(employeeId);
+              return person ? [person] : [];
+            });
+            project.employee_count = body.employee_ids.length;
+          }
         });
 
+        updatesInFlight.set(id, (updatesInFlight.get(id) ?? 0) + 1);
         try {
           const { data } = await queryFulfilled;
           // Status colour, leader, employee_count and task_count are all
-          // computed server-side, so swap in the authoritative record.
+          // computed server-side, so swap in the authoritative record. If
+          // another change to this project is still in the air, its optimistic
+          // status and team stay on screen -- this answer predates it -- and the
+          // last answer to arrive is the one that settles them.
+          const othersPending = (updatesInFlight.get(id) ?? 1) > 1;
           patchProjectLists({ dispatch, getState }, (items) => {
             const index = items.findIndex((project) => project.id === id);
-            if (index >= 0) items[index] = data;
+            if (index < 0) return;
+            const current = items[index];
+            items[index] = othersPending
+              ? { ...data, status: current.status, employees: current.employees, employee_count: current.employee_count }
+              : data;
           });
           dispatch(
             baseApi.util.updateQueryData('getProjectById' as never, id as never, (() => data) as never),
           );
         } catch {
           optimistic.undo();
+        } finally {
+          const remaining = (updatesInFlight.get(id) ?? 1) - 1;
+          if (remaining > 0) updatesInFlight.set(id, remaining);
+          else updatesInFlight.delete(id);
         }
       },
     }),
