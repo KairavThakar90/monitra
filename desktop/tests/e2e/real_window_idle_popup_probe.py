@@ -13,8 +13,10 @@ minimised owner, an owner hidden to the tray, Show Desktop (Win+D), a window
 hidden at the OS level, a window left off every display, and -- when
 `MONITRA_E2E_VDESK=1` -- a popup created on a virtual desktop the user then
 left. Each case records what the OS saw and whether the popup's own tick put
-it back. Input is proven with real OS clicks (`SendInput`), which Qt's
-application modality blocks or admits exactly as it does a user's mouse.
+it back. Input is proven with clicks posted as the window messages a mouse
+produces, which Qt's application modality blocks or admits exactly as it does
+a user's (`SendInput` shares the pointer with whoever is using the machine and
+was measured to be displaced mid-click in a third of runs).
 
 Prints one JSON object. Exit status 0 means every recovery worked.
 
@@ -49,6 +51,7 @@ user32.IsIconic.argtypes = [ctypes.c_void_p]
 user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
 user32.GetForegroundWindow.restype = ctypes.c_void_p
 user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+user32.PostMessageW.argtypes = [ctypes.c_void_p, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 SW_HIDE, SW_MINIMIZE = 0, 6
 
 
@@ -116,17 +119,23 @@ def _alt_tap() -> None:
     time.sleep(0.05)
 
 
-def real_click(app, x: int, y: int) -> None:
-    """A click the way the mouse delivers one: move, move, press, release."""
-    width, height = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
-    nx, ny = int(x * 65535 / width), int(y * 65535 / height)
-    _send(_mouse(0x8001, nx, ny))
-    _pump(app, 0.15)
-    _send(_mouse(0x8001, nx + 1, ny))
-    _pump(app, 0.15)
-    _send(_mouse(0x0002))
+def real_click(app, hwnd: int, x: int, y: int) -> None:
+    """A left click delivered as the window messages the mouse produces
+    (WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP at client coordinates).
+
+    Posted to the window's queue, so it travels the same path as a real
+    click -- the platform plugin, QWindowSystemInterface, and Qt's
+    application-modality gate, which refuses it exactly as it refuses a
+    user's -- without touching the machine's shared pointer. `SendInput`
+    was measured to be unusable here: the physical mouse moved the pointer
+    away mid-click in a third of runs, and a displaced click proves nothing.
+    """
+    lparam = (y << 16) | (x & 0xFFFF)
+    user32.PostMessageW(ctypes.c_void_p(hwnd), 0x0200, 0, lparam)       # WM_MOUSEMOVE
     _pump(app, 0.1)
-    _send(_mouse(0x0004))
+    user32.PostMessageW(ctypes.c_void_p(hwnd), 0x0201, 0x0001, lparam)  # WM_LBUTTONDOWN, MK_LBUTTON
+    _pump(app, 0.1)
+    user32.PostMessageW(ctypes.c_void_p(hwnd), 0x0202, 0, lparam)       # WM_LBUTTONUP
     _pump(app, 0.4)
 
 
@@ -203,30 +212,39 @@ def main() -> int:
         measuring the shell, not the popup's modality.
         """
         before = len(clicks)
-        for _attempt in range(3):
+        # Deterministic precondition: unless a modal window is up (in which
+        # case the click is expected to be refused whoever is in front), the
+        # main window must be the foreground window before the click is sent.
+        # Right after a modal window closes, Windows is still re-activating
+        # windows for a few hundred milliseconds; a click sent inside that
+        # window is spent on activation. Waiting for a settled foreground is
+        # what a user's hand does for free.
+        for _attempt in range(15):
+            if QApplication.activeModalWidget() is not None:
+                break
             owner.raise_()
             owner.activateWindow()
-            _pump(app, 0.4)
-            if user32.GetForegroundWindow() == int(owner.winId()) or QApplication.activeModalWidget() is not None:
-                break
+            _pump(app, 0.2)
+            if user32.GetForegroundWindow() == int(owner.winId()):
+                _pump(app, 0.2)
+                if user32.GetForegroundWindow() == int(owner.winId()):
+                    break
             _alt_tap()  # the documented way a background process may take the foreground
             user32.SetForegroundWindow(int(owner.winId()))
-            _pump(app, 0.3)
-        centre = button.mapToGlobal(button.rect().center())
-        real_click(app, centre.x(), centre.y())
+            _pump(app, 0.2)
+        local = button.mapTo(owner, button.rect().center())
+        fg_before = user32.GetForegroundWindow()
+        real_click(app, int(owner.winId()), local.x(), local.y())
+        report.setdefault("click_diagnostics(info)", []).append({
+            "fg_was_owner": fg_before == int(owner.winId()),
+            "modal_up": QApplication.activeModalWidget() is not None,
+            "clicks": len(clicks) - before,
+        })
         return len(clicks) - before
 
     report = {"displays": native_window.describe_displays()}
-    # Baseline sanity check of the input harness itself: the very first
-    # synthetic click of a run is sometimes spent on the shell granting this
-    # process the foreground, so it may take two. The blocking checks below
-    # are strict: one click, and it must not land.
-    attempts = 0
-    for attempts in range(1, 3):
-        if click_main_window() == 1:
-            break
-    report["main_window_takes_a_click_before_the_popup"] = len(clicks) >= 1
-    report["baseline_click_attempts(info)"] = attempts
+    # Baseline sanity check of the input harness itself: one click, strict.
+    report["main_window_takes_a_click_before_the_popup"] = click_main_window() == 1
 
     # Exactly how the dashboard builds it now: no owner.
     popup = IdleAlertDialog(_Api(), _period(), parent=None)
@@ -253,11 +271,13 @@ def main() -> int:
     # 2. Show Desktop (Win+D). Informational: whether the shell minimises a
     #    stays-on-top frameless popup along with everything else varies; what
     #    must hold is that the popup is back, usable, after the tick.
+    popup._tick_timer.stop()  # hold the repair so the state is recorded before it
     chord(VK_LWIN, VK_D)
     _pump(app, 1.2)
     report["show_desktop_minimised_main_window(info)"] = _os_iconic(owner)
     report["show_desktop_minimised_popup(info)"] = _os_iconic(popup)
     report["show_desktop_qt_still_says_popup_visible(info)"] = popup.isVisible()
+    popup._tick_timer.start()
     _tick(popup, app)
     report["popup_usable_after_show_desktop"] = not _os_iconic(popup) and _os_visible(popup)
     if _os_iconic(owner):
@@ -269,42 +289,44 @@ def main() -> int:
     report["main_window_still_blocked_after_recovery(real_click)"] = click_main_window() == 0
 
     # 3. Hidden at the OS level while Qt believes it is shown.
+    popup._tick_timer.stop()
     user32.ShowWindow(int(popup.winId()), SW_HIDE)
     _pump(app, 0.3)
     report["os_hidden_qt_still_says_visible"] = popup.isVisible() and not _os_visible(popup)
+    popup._tick_timer.start()
     _tick(popup, app)
     report["popup_restored_after_os_hide"] = _os_visible(popup)
 
     # 4. Minimised by the OS directly (what a taskbar or a tool does).
+    popup._tick_timer.stop()
     user32.ShowWindow(int(popup.winId()), SW_MINIMIZE)
     _pump(app, 0.3)
     report["os_minimised"] = _os_iconic(popup)
+    popup._tick_timer.start()
     _tick(popup, app)
     report["popup_restored_after_os_minimise"] = not _os_iconic(popup)
 
     # 5. Off every connected display.
+    popup._tick_timer.stop()
     popup.move(-20000, -20000)
     _pump(app, 0.3)
     report["offscreen_qt_still_says_visible"] = popup.isVisible()
+    popup._tick_timer.start()
     _tick(popup, app)
     report["popup_moved_back_onto_a_screen"] = native_window.rect_is_on_a_screen(popup.frameGeometry())
 
     # 6. bring_forward from a minimised state (what the tray / a second launch does).
+    popup._tick_timer.stop()
     user32.ShowWindow(int(popup.winId()), SW_MINIMIZE)
     _pump(app, 0.3)
     popup.bring_forward("probe")
+    popup._tick_timer.start()
     _pump(app, 0.5)
     report["bring_forward_restores_a_minimised_popup"] = not _os_iconic(popup) and _os_visible(popup)
     popup.force_close()
     popup.deleteLater()
     _pump(app, 0.8)
-    # Two attempts, as for the baseline: the first click after a modal window
-    # goes away may be spent on re-activating the main window.
-    before = len(clicks)
-    for _ in range(2):
-        if click_main_window() == 1:
-            break
-    report["main_window_takes_a_click_once_the_popup_is_answered(real_click)"] = len(clicks) > before
+    report["main_window_takes_a_click_once_the_popup_is_answered(real_click)"] = click_main_window() == 1
 
     # 7. Virtual desktops (opt-in: it creates and closes one).
     if os.environ.get("MONITRA_E2E_VDESK") == "1":
