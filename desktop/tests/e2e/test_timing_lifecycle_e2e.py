@@ -155,9 +155,21 @@ def api(backend, principal):
 
 @pytest.fixture
 def clean_slate(api, db, principal):
-    """No running entry before each test, whatever the previous one did."""
+    """No running entry, and no recorded time, before each test.
+
+    Stopping is not enough since ef477ac: a start never begins inside time
+    the user already has recorded, so the aged start the idle suites use (an
+    entry begun "eight minutes ago", to fit a six-minute idle period) is moved
+    to the end of the previous test's entry, and the idle period then starts
+    before its own entry and is refused. The principal is disposable and every
+    satellite table cascades from time_entries, so the day is simply emptied.
+    """
+    from sqlalchemy import text
+
     for (entry_id,) in _running_rows(db, principal["user_id"]):
         api.post(f"/time-entries/{entry_id}/stop", json={})
+    with db.begin() as conn:
+        conn.execute(text("DELETE FROM time_entries WHERE user_id = :u"), {"u": principal["user_id"]})
     yield
 
 
