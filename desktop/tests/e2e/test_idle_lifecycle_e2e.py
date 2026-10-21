@@ -187,10 +187,18 @@ def test_the_popup_answer_reaches_every_display(
 
         # ── the running entry, on the web ──
         assert abs(read["net_seconds"] - timer.elapsed_seconds()) <= TOLERANCE_SECONDS
+        # The desktop's figure was checked against the entry just above. The
+        # clock is running and the web reads are round trips to the cloud
+        # database that take a couple of seconds each, on a database whose
+        # clock is not this machine's (measured four seconds ahead), so the two
+        # web surfaces are held to the server's own figure for the entry, read
+        # before and after them. A deduction applied on one surface and not
+        # another is hundreds of seconds and still fails.
+        lo = finished_before + api.get(f"/time-entries/{entry_id}").json()["net_seconds"]
         web = _web(api, principal, day)
-        live = finished_before + timer.elapsed_seconds()
-        assert abs(web["time_tracking"] - live) <= TOLERANCE_SECONDS, (web, live)
-        assert abs(web["dashboard"] - live) <= TOLERANCE_SECONDS, (web, live)
+        hi = finished_before + api.get(f"/time-entries/{entry_id}").json()["net_seconds"]
+        for surface in ("time_tracking", "dashboard"):
+            assert lo - TOLERANCE_SECONDS <= web[surface] <= hi + TOLERANCE_SECONDS, (surface, web, lo, hi)
 
         # ── then the user stops from the task row ──
         display_at_stop = timer.elapsed_seconds()

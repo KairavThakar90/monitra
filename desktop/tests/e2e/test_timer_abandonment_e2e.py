@@ -326,12 +326,17 @@ def test_a_stop_pressed_nine_days_ago_ends_the_entry_nine_days_ago(api, db, prin
         "started_at": now.isoformat(), "client_time": now.isoformat(), "client_op": "timer:e2e:old:0001",
     })
     entry_id = started.json()["id"]
-    start = now - timedelta(days=10)
+    # Re-read the clock after the start's round trip: against the cloud database
+    # that trip takes seconds, and `client_time` has to be the client's clock at
+    # the moment the stop is sent -- a stale one is, correctly, read by the
+    # server as clock skew and moved the recorded end by that much.
+    at_stop = datetime.now(UTC)
+    start = at_stop - timedelta(days=10)
     _move_in_time(db, entry_id, start=start, last_seen=None)
-    pressed = now - timedelta(days=9)
+    pressed = at_stop - timedelta(days=9)
 
     stopped = api.post(f"/time-entries/{entry_id}/stop", json={
-        "stopped_at": pressed.isoformat(), "client_time": now.isoformat(),
+        "stopped_at": pressed.isoformat(), "client_time": datetime.now(UTC).isoformat(),
     })
     assert stopped.status_code == 200, stopped.text
     row = _row(db, entry_id)
