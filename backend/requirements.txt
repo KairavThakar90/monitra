@@ -53,4 +53,4 @@ google-auth==2.42.1
 # Reads the real geometry of an uploaded screenshot, so a client cannot claim
 # 1000x1000 and store something else. Optional at runtime: without it the
 # dimension check is skipped and the format check still applies.
-Pillow==12.1.0
+Pillow==13.0.0

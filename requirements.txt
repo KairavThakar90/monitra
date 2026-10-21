@@ -49,7 +49,7 @@ python-multipart==0.0.20
 
 # Reads the real geometry of an uploaded screenshot, so a client cannot claim
 # 1000x1000 and store something else.
-Pillow==12.1.0
+Pillow==13.0.0
 
 # IANA timezone database, for ZoneInfo("Asia/Kolkata").
 tzdata==2026.1
