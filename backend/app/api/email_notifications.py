@@ -576,11 +576,18 @@ def scheduled_jobs_status(
 
     from app.repositories.email_notification import EmailNotificationRepository
     from app.services.report_catch_up import missing_report_periods
+    from app.services.scheduled_jobs import schema_revisions
 
     now = datetime.now(timezone.utc)
     status_ = scheduler_status(db, now=now)
     outbox = EmailNotificationRepository.queue_snapshot(db, now=now)
     missing = missing_report_periods(db)
+    schema = schema_revisions(db)
+    if not schema["at_head"]:
+        status_["problems"].append(
+            f"database schema is at {schema['database']} but the code expects {schema['code_head']} "
+            "-- run `python -m alembic upgrade head` on the server"
+        )
     if outbox["pending_overdue"]:
         status_["problems"].append(
             f"{outbox['pending_overdue']} outbox row(s) overdue by 15+ minutes -- email-dispatch is not delivering"
@@ -591,7 +598,7 @@ def scheduled_jobs_status(
                 f"{report_type}: no rows for {', '.join(periods)} -- see POST /internal/reports/catch-up"
             )
     status_["healthy"] = not status_["problems"]
-    return ScheduledJobsStatus(**status_, outbox=outbox, missing_report_periods=missing)
+    return ScheduledJobsStatus(**status_, outbox=outbox, missing_report_periods=missing, schema=schema)
 
 
 @router.post(

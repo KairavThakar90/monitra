@@ -365,3 +365,44 @@ def scheduler_status(db: Session, *, now: Optional[datetime] = None) -> dict[str
         "jobs": jobs,
         "other_jobs": other,
     }
+
+
+# ----------------------------------------------------------------------
+# Schema revision, for the same status endpoint
+# ----------------------------------------------------------------------
+
+def schema_revisions(db: Session) -> dict[str, Any]:
+    """The database's Alembic revision(s) against the code's head.
+
+    Reported by `/internal/jobs/status` so that "is production migrated?" can be
+    answered through the API, from outside the server -- the question that could
+    not be answered on 2026-10-22 because the production database is reachable
+    only from the server itself. Never raises: a database without an
+    `alembic_version` table reports `database: None`.
+    """
+    from sqlalchemy import text
+
+    code_heads: list[str] = []
+    try:
+        import os
+
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        backend = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        code_heads = sorted(ScriptDirectory.from_config(Config(os.path.join(backend, "alembic.ini"))).get_heads())
+    except Exception:  # noqa: BLE001 - a deployment without the alembic tree still answers
+        logger.warning("SCHEMA_STATUS_CODE_HEAD_UNAVAILABLE", exc_info=True)
+
+    database: Optional[list[str]]
+    try:
+        database = sorted(row[0] for row in db.execute(text("SELECT version_num FROM alembic_version")).all())
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        database = None
+
+    return {
+        "database": database,
+        "code_head": code_heads,
+        "at_head": bool(code_heads) and database == code_heads,
+    }

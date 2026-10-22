@@ -17,15 +17,18 @@ queries of the database the live API answers for):
   project-summary row at all, and the reconcile heartbeat on `/health` had never been
   written. The weekly job due Monday 19 Oct 09:00 IST did not fire. Nothing "stopped":
   the timers were never installed on this host.
-- **Production's database is `DATABASE_URL`** (the `ep-cool-frog…` Neon database, 88
-  active users; the weekly dry run reports 68 eligible). The live API says
-  `environment: development`, which with this codebase means the server's real
-  environment exports `DATABASE_URL` (that always wins) while `ENV` was left at its
-  default. It works, but every `/health` and preflight line is mislabelled: set
-  `ENV=production` in the service environment when you next touch it.
-- **The outbox was clean** (29 rows, all sent, none pending): every email so far went out
-  on its immediate attempt. The first SMTP hiccup would have been a permanently lost
-  email, because no sweep ever ran.
+- **Production's database is the server's own, not any URL in the repository's `.env` files.**
+  On 2026-10-19 it was assumed to be the `DATABASE_URL` of `backend/.env` because a dry run on
+  the live API reported the same eligible-user count (68); on 2026-10-22 the live status endpoint
+  showed an outbox of 487 sent rows and a weekly row for the week of 28 Sep, neither of which that
+  database has. **Every production database check goes through `GET /internal/jobs/status` on the
+  live API, or is run on the server itself**; the repository's `.env` copies are stale snapshots.
+  The live API reported `environment: development` until the redeploy of 2026-10-21; it now
+  reports `production`.
+- **The outbox had nothing pending**: every email so far went out on its immediate attempt.
+  The first SMTP hiccup would have been a permanently lost email, because no sweep ran.
+  One weekly report *had* been generated (week of 28 Sep, sent 5 Oct) before the server move;
+  the weeks after it were never queued.
 - **`alembic upgrade head` was impossible** from 12 Oct to 19 Oct: two migrations
   (`c3f7a1d9e2b4` floor, `e3a7c1d95b40` liveness) shared a parent, and the production
   database had both applied by hand. `d8e4f2a6b9c1` merges them; a test now fails on a
@@ -41,7 +44,7 @@ What changed in code on 2026-10-19, so that this cannot go unnoticed again:
 |---|---|
 | `scheduled_job_runs` (migration `e9f5a3b7c2d4`) | Every `/internal/*` job writes a row when it starts and completes it when it returns: job, host, duration, tally, or the error. Dry runs are marked and do not count as the scheduler firing. |
 | `GET /health?deep=1` | Carries `scheduled_jobs` (per job: last run, outcome, overdue?) and is **`degraded`** while any frequent job has never run or is overdue — point an outside uptime monitor at it; that is the alert that does not depend on email. |
-| `GET /internal/jobs/status` | The full picture behind the dispatch token: each job's last run and next expected firing, the outbox (pending, overdue, oldest age, failures), and the recent report periods with no rows at all. |
+| `GET /internal/jobs/status` | The full picture behind the dispatch token: each job's last run and next expected firing, the outbox (pending, overdue, oldest age, failures), the recent report periods with no rows at all, and the database's Alembic revision against the code's head. |
 | `POST /internal/reports/catch-up` and `scripts/report_catch_up.py` | Finds weeks/months with no report rows and, only with `dry_run=false` / `--apply`, queues them through the ordinary runs. Idempotent: a second call queues nothing. |
 | `scripts/email_preflight.py` | Now also reads the ledger ("Job ran: …", FAIL when a frequent job has never run or is overdue) and lists missing report periods. |
 

@@ -157,3 +157,7 @@ class ScheduledJobsStatus(BaseModel):
         default_factory=dict,
         description="Per report type, recent completed periods that have no outbox rows at all.",
     )
+    schema: dict = Field(
+        default_factory=dict,
+        description="The database's alembic_version rows against the code's head, and whether they match.",
+    )

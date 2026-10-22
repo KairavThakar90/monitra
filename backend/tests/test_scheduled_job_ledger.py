@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import create_engine, func, select
@@ -318,3 +319,40 @@ class TestMissingReportPeriods(LedgerCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class TestSchemaRevisions(unittest.TestCase):
+    """`/internal/jobs/status` reports whether the database is migrated, so the question can be
+    answered from outside the server -- where the production database is not reachable."""
+
+    def _db(self, rows):
+        from sqlalchemy import text
+
+        engine = create_engine("sqlite://")
+        db = sessionmaker(bind=engine)()
+        if rows is not None:
+            db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY)"))
+            for row in rows:
+                db.execute(text("INSERT INTO alembic_version VALUES (:v)"), {"v": row})
+            db.commit()
+        return db
+
+    def test_at_head_when_the_database_carries_exactly_the_code_head(self):
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        from app.services.scheduled_jobs import schema_revisions
+
+        [head] = ScriptDirectory.from_config(Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))).get_heads()
+        self.assertTrue(schema_revisions(self._db([head]))["at_head"])
+        two_heads = schema_revisions(self._db(["c3f7a1d9e2b4", "e3a7c1d95b40"]))
+        self.assertFalse(two_heads["at_head"])
+        self.assertEqual(two_heads["database"], ["c3f7a1d9e2b4", "e3a7c1d95b40"])
+        self.assertEqual(two_heads["code_head"], [head])
+
+    def test_a_database_without_alembic_is_reported_not_raised(self):
+        from app.services.scheduled_jobs import schema_revisions
+
+        result = schema_revisions(self._db(None))
+        self.assertIsNone(result["database"])
+        self.assertFalse(result["at_head"])
