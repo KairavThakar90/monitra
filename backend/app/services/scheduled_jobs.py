@@ -404,5 +404,7 @@ def schema_revisions(db: Session) -> dict[str, Any]:
     return {
         "database": database,
         "code_head": code_heads,
-        "at_head": bool(code_heads) and database == code_heads,
+        # None when the code head cannot be read (a deployment without the
+        # alembic tree): "unknown", never a false mismatch.
+        "at_head": (database == code_heads) if code_heads else None,
     }

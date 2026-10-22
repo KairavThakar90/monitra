@@ -583,7 +583,7 @@ def scheduled_jobs_status(
     outbox = EmailNotificationRepository.queue_snapshot(db, now=now)
     missing = missing_report_periods(db)
     schema = schema_revisions(db)
-    if not schema["at_head"]:
+    if schema["at_head"] is False:
         status_["problems"].append(
             f"database schema is at {schema['database']} but the code expects {schema['code_head']} "
             "-- run `python -m alembic upgrade head` on the server"

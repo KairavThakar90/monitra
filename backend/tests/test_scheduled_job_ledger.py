@@ -350,6 +350,16 @@ class TestSchemaRevisions(unittest.TestCase):
         self.assertEqual(two_heads["database"], ["c3f7a1d9e2b4", "e3a7c1d95b40"])
         self.assertEqual(two_heads["code_head"], [head])
 
+    def test_an_unreadable_code_head_is_unknown_not_a_mismatch(self):
+        from unittest.mock import patch
+
+        from app.services.scheduled_jobs import schema_revisions
+
+        with patch("alembic.script.ScriptDirectory.from_config", side_effect=OSError("no alembic tree")):
+            result = schema_revisions(self._db(["e9f5a3b7c2d4"]))
+        self.assertEqual(result["code_head"], [])
+        self.assertIsNone(result["at_head"])
+
     def test_a_database_without_alembic_is_reported_not_raised(self):
         from app.services.scheduled_jobs import schema_revisions
 
