@@ -432,9 +432,15 @@ and fails on the old order. The lock wait is bounded (5 s), so a stuck
 transaction costs one failed closure that the next run retries. The decision
 compares the database's clock with itself (`last_seen_at` is the database's
 `now()`): an application server three hours fast closed an entry that had been
-silent for thirty minutes. The rest of the timing model keeps the application
-server's clock as its reference; a few seconds of skew between the two moves a
-displayed figure by a few seconds and decides nothing.
+silent for thirty minutes. The same clock decides whether a **start** replaces
+a stale entry, is written as a new entry's first `last_seen_at`, and labels
+Active Users' `liveness` beside the figure SQL measured with it -- each of
+those once used the application clock, so the same skew closed a live entry
+on Start, bore every fresh entry "silent" by the skew, or wrote "No signal"
+next to a growing figure (three PostgreSQL tests pin them). The rest of the
+timing model keeps the application server's clock as its reference; a few
+seconds of skew between the two moves a displayed figure by a few seconds and
+decides nothing.
 
 ### 9.4 The choice of numbers, and what they cost
 

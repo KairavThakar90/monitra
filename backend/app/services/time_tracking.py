@@ -13,6 +13,7 @@ from app.models.user import User
 from app.core.time_format import format_hms, ist_day_end_utc, ist_day_start_utc, ist_today
 from app.core.timer_policy import TimerPolicy, effective_end as _effective_end, liveness as _liveness
 from app.repositories.time_entry_activity import TimeEntryActivityRepository
+from app.repositories.time_entry_liveness import TimeEntryLivenessRepository
 from app.repositories.time_tracking import TimeTrackingRepository
 from app.services.member_scope import may_view_member, visible_member_ids
 from app.services.time_entry_activity import weighted_activity_percentage
@@ -202,7 +203,10 @@ class TimeTrackingService:
                 ist_day_end_utc(today),
             )
         items = []
-        now_utc = datetime.now(timezone.utc)
+        # The database's clock: `last_seen_at` and the `elapsed_seconds` above
+        # are both measured with it, so the label and the figure agree even
+        # when this server's clock is out.
+        now_utc = TimeEntryLivenessRepository.db_now(db)
         policy = TimerPolicy.current()
         for entry, member, project, task, elapsed in rows:
             elapsed_seconds = max(0, int(elapsed or 0))

@@ -163,6 +163,32 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
             event.remove(self.engine, "before_cursor_execute", listener)
         return seen
 
+    def _tables_written_during(self, work):
+        """The tables any INSERT/UPDATE/DELETE named, as the statement text names them."""
+        import re
+
+        from sqlalchemy import event
+
+        written = set()
+        pattern = re.compile(r"^\s*(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([\w\".]+)", re.I)
+
+        def listener(conn, cursor, statement, parameters, context, executemany):
+            match = pattern.match(statement)
+            if match:
+                written.add(match.group(1).strip('"').split(".")[-1])
+
+        event.listen(self.engine, "before_cursor_execute", listener)
+        try:
+            work()
+        finally:
+            event.remove(self.engine, "before_cursor_execute", listener)
+        return written
+
+    #: The scheduled endpoint records every run in the job ledger (`record_job_run`), whether or
+    #: not the deployment lets it apply: that row is how /internal/jobs/status shows the scheduler
+    #: is calling. It is the one write a report-only pass is allowed; no timer table is.
+    LEDGER_ONLY = {"scheduled_job_runs"}
+
     def _digest(self):
         return self.db.execute(text(
             "select count(*), md5(string_agg(t::text, '|' order by id)) from time_entries t"
@@ -202,8 +228,8 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             self.assertTrue(response.json()["dry_run"])
 
-        statements = self._statements_during(call)
-        self.assertEqual(set(statements), {"SELECT"}, sorted(set(statements)))
+        written = self._tables_written_during(call)
+        self.assertEqual(written, self.LEDGER_ONLY, f"a report-only pass wrote: {sorted(written)}")
         self.assertEqual(self._digest(), before)
 
     def test_the_get_alias_executes_nothing_but_reads_even_with_the_job_on(self):
@@ -220,7 +246,8 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
                 response = client.get("/internal/time-entries/reconcile", headers={"X-Email-Dispatch-Token": "t" * 12})
             self.assertEqual(response.status_code, 200, response.text)
 
-        self.assertEqual(set(self._statements_during(call)), {"SELECT"})
+        written = self._tables_written_during(call)
+        self.assertEqual(written, self.LEDGER_ONLY, f"the GET alias wrote: {sorted(written)}")
         self.assertEqual(self._digest(), before, "and the candidate is still running")
 
     def test_every_read_only_script_runs_inside_a_read_only_transaction(self):
@@ -472,6 +499,53 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
                 client_op="timer:2:other-device",
             )
         self.assertEqual(error.exception.status_code, 409)
+
+    def test_a_start_decides_staleness_on_the_database_clock_too(self):
+        """The reconciler compares the database clock with itself (above); the start
+        that replaces a silent entry made the same decision on the application clock.
+        Three hours fast, it saw an entry heard from two minutes ago as silent for three
+        hours, closed it, and started -- on a machine whose other half was still working."""
+        from app.services.time_entry import TimeEntryService
+
+        now = self._db_now()
+        live = self._running(now - timedelta(hours=1), last_seen=now - timedelta(minutes=2))
+
+        class FastClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.now(tz) + timedelta(hours=3)
+
+        with patch("app.services.time_entry.datetime", FastClock), \
+             patch("app.services.time_entry_reconciliation.datetime", FastClock):
+            with self.assertRaises(HTTPException) as error:
+                TimeEntryService.start_timer(
+                    self.db, self.ids.project_id, self.ids.task2_id, None, None, self.user,
+                    client_op="timer:2:fast-server", reports_liveness=True,
+                )
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertIsNone(self._reload(live.id).end_time, "the live entry was closed by a skewed clock")
+
+    def test_a_new_entry_is_born_alive_on_the_database_clock(self):
+        """`last_seen_at` is the database's `now()` for every heartbeat and upload; the
+        start wrote the application's. A server a few minutes slow made every fresh entry
+        look silent for that long -- stale, on a bad day, before its first heartbeat."""
+        from app.services.time_entry import TimeEntryService
+
+        class SlowClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.now(tz) - timedelta(minutes=12)
+
+        with patch("app.services.time_entry.datetime", SlowClock):
+            entry, created = TimeEntryService.start_timer(
+                self.db, self.ids.project_id, self.ids.task_id, None, None, self.user,
+                client_op="timer:1:slow-server", reports_liveness=True,
+            )
+        self.assertTrue(created)
+        self.assertAlmostEqual(
+            (self._db_now() - self._reload(entry.id).last_seen_at).total_seconds(), 0, delta=5,
+            msg="born on the application clock, not the database's",
+        )
 
     def test_a_new_start_is_still_refused_for_an_entry_that_never_reported(self):
         from app.services.time_entry import TimeEntryService
@@ -745,6 +819,28 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
         self.assertEqual(item["elapsed_seconds"], 42 * 60)
         self.assertEqual(item["elapsed_time"], "00:42:00")
         self.assertAlmostEqual((item["measured_until"] - (seen + timedelta(minutes=15))).total_seconds(), 0, delta=1)
+
+    def test_active_users_labels_liveness_on_the_clock_its_figure_is_measured_with(self):
+        """`elapsed_seconds` is measured in SQL with the database's `now()`; the label
+        beside it was decided on the application clock. Three hours fast, a desktop heard
+        from two minutes ago read "No signal" next to a figure that was still growing."""
+        from app.services.time_tracking import TimeTrackingService
+
+        now = self._db_now()
+        self._running(now - timedelta(hours=1), last_seen=now - timedelta(minutes=2))
+        admin = pg_support.user_object(self.db, self.ids.user_id)
+        admin.permissions = {"time_entries:view_all": True}
+        admin.role_name = "administrator"
+
+        class FastClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.now(tz) + timedelta(hours=3)
+
+        with patch("app.services.time_tracking.datetime", FastClock):
+            item = TimeTrackingService.list_active(self.db, admin)["items"][0]
+        self.assertEqual(item["liveness"], "live")
+        self.assertAlmostEqual(item["elapsed_seconds"], 3600, delta=5)
 
     def test_a_stale_entry_adds_no_weekend_to_the_daily_report(self):
         from app.models.time_entry import TimeEntry

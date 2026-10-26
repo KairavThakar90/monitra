@@ -34,6 +34,7 @@ from app.models.time_entry import TimeEntry
 from app.models.user import User
 from app.core.time_format import elapsed_seconds
 from app.repositories.time_entry import TimeEntryRepository
+from app.repositories.time_entry_liveness import TimeEntryLivenessRepository
 from app.services.task import TaskService
 from app.models.activity_log import ActivityLogAction, ActivityLogModule
 from app.services.activity_log import ActivityLogService
@@ -180,6 +181,10 @@ class TimeEntryService:
         start_time = TimeEntryService._event_time(
             started_at, label="started_at", client_time=client_time, now=now
         )
+        # Liveness is measured on the database clock (see 3 and `last_seen_at`
+        # below); the event itself stays on this server's clock, the timing
+        # model's reference.
+        db_clock = TimeEntryLivenessRepository.db_now(db)
 
         # 3. One running entry per user. Checked here for a clear answer, and
         #    enforced again by the database for the two requests that both
@@ -196,8 +201,13 @@ class TimeEntryService:
             from app.services.time_entry_reconciliation import TimeEntryReconciliationService
 
             try:
+                # Decided on the database's clock: `last_seen_at` is written with
+                # its `now()`, and this server's clock, a few minutes out, would
+                # otherwise lengthen or shorten every silence by that much -- the
+                # reconciler learnt this the hard way (an application server three
+                # hours fast closed an entry silent for thirty minutes).
                 replaced = TimeEntryReconciliationService.close_if_replaced_by_start(
-                    db, active_timer, start_time, now=now, request_id=request_id,
+                    db, active_timer, start_time, now=db_clock, request_id=request_id,
                 )
             except Exception:  # noqa: BLE001 -- see below
                 # Closing the old entry is a kindness to the start, never its
@@ -232,7 +242,8 @@ class TimeEntryService:
                 is_billable=is_billable if is_billable is not None else False,
                 description=description,
                 client_op=client_op,
-                last_seen_at=now if reports_liveness else None,
+                # The same clock every heartbeat and upload writes it with.
+                last_seen_at=db_clock if reports_liveness else None,
             )
         except IntegrityError:
             # Lost a race: either the same client_op landed twice at once,

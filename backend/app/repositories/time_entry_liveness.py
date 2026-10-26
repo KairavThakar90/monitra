@@ -59,7 +59,8 @@ class TimeEntryLivenessRepository:
         would otherwise shift every silence by that much. (PostgreSQL's `now()`
         is the transaction's start, the same instant `touch` wrote.)
         """
-        value = db.scalar(select(func.now()))
+        scalar = getattr(db, "scalar", None)
+        value = scalar(select(func.now())) if callable(scalar) else None
         if not isinstance(value, datetime):          # a stand-in session in a unit test
             return datetime.now(timezone.utc)
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)

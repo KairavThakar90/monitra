@@ -288,7 +288,8 @@ class TimeEntryReconciliationService:
         always got.
         """
         policy = TimerPolicy.current()
-        now = now or datetime.now(timezone.utc)
+        # The database's clock, as `run` uses: `last_seen_at` was written with it.
+        now = now or TimeEntryLivenessRepository.db_now(db)
         if liveness(active.end_time, active.last_seen_at, now, policy) != STALE:
             return False
         closed = TimeEntryReconciliationService.close(
