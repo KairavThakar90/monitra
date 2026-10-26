@@ -1007,18 +1007,16 @@ export const AdminTimeTracking: React.FC = () => {
 
       {/* The one footer of the Time Entries tab: the same component every other list uses. */}
       {activeTab === 'entries' && totalPages > 1 && (
-        <div className="rounded-xl border border-slate-200 bg-white px-6 pb-4 shadow-sm">
-          <Pagination
-            page={page}
-            totalPages={totalPages}
-            totalItems={totalEntries}
-            limit={pageSize}
-            setPage={setPage}
-            setLimit={(size) => { setPageSize(size); setRequestsPage(1); }}
-            noun="entries"
-            className="mt-4"
-          />
-        </div>
+        <Pagination
+          page={page}
+          totalPages={totalPages}
+          totalItems={totalEntries}
+          limit={pageSize}
+          setPage={setPage}
+          setLimit={(size) => { setPageSize(size); setRequestsPage(1); }}
+          noun="entries"
+          className="mt-2"
+        />
       )}
 
       {viewingRequest && (
