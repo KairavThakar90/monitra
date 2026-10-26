@@ -12,7 +12,7 @@ import { useAuth } from '../auth/authContext';
 import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
 import { formatHMS, formatISTDate, formatISTTime, formatISTTime12, istTodayISO, istWallClockToUtcISO } from '../../utils/duration';
 import { useIstToday, useOnResume } from '../../hooks/useResume';
-import { PaginationArrow } from '../../components/PaginationArrow';
+import { Pagination } from '../../components/Pagination';
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
 
 // The IST calendar day, read when needed. This used to be the UTC day frozen
@@ -363,7 +363,8 @@ const ProjectAccordionItem: React.FC<{
 };
 
 
-const PAGE_SIZE = 50;
+/** Rows per page until the person picks another in the footer (the same picker every list has). */
+const DEFAULT_PAGE_SIZE = 50;
 const GRADIENT_CYAN_PURPLE = "bg-gradient-to-r from-[#0ea5e9] to-[#8b5cf6]";
 
 /**
@@ -389,6 +390,7 @@ export const AdminTimeTracking: React.FC = () => {
   const filterEndDate = dateRange.to;
 
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
 
   // "Today" and every other preset are relative to the day it is *now*. A tab
   // left open overnight, or a machine that slept through midnight and woke
@@ -456,7 +458,7 @@ export const AdminTimeTracking: React.FC = () => {
     start_date: filterStartDate || undefined,
     end_date: filterEndDate || undefined,
     page,
-    limit: PAGE_SIZE,
+    limit: pageSize,
   }, livePolling);
   const { data: employeeDetails, isLoading: isLoadingDetails, refetch: refetchDetails } = useGetTimeTrackingDetailsQuery({
     employeeId: selectedEmployeeId || 0,
@@ -513,7 +515,7 @@ export const AdminTimeTracking: React.FC = () => {
   // always see every pending request in the organization by default.
   const { data: requestsData, isLoading: isLoadingRequests } = useGetManualTimeEntryRequestsQuery({
     page: requestsPage,
-    limit: PAGE_SIZE,
+    limit: pageSize,
   });
   
   const [createManualTimeEntry, { isLoading: isSaving }] = useCreateManualTimeEntryRequestMutation();
@@ -662,8 +664,9 @@ export const AdminTimeTracking: React.FC = () => {
     }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [apiEntries, getEmployeeName, search, selectedMembers, filterStartDate, filterEndDate]);
 
-  const totalPages = trackingData?.pagination?.total_pages || Math.ceil(filteredEntries.length / PAGE_SIZE) || 1;
-  const paginatedEntries = trackingData ? filteredEntries : filteredEntries.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const totalPages = trackingData?.pagination?.total_pages || Math.ceil(filteredEntries.length / pageSize) || 1;
+  const totalEntries = trackingData?.pagination?.total ?? filteredEntries.length;
+  const paginatedEntries = trackingData ? filteredEntries : filteredEntries.slice((page - 1) * pageSize, page * pageSize);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -888,30 +891,6 @@ export const AdminTimeTracking: React.FC = () => {
                 </tbody>
               </table>
               
-              {/* Pagination for Time Entries */}
-              {totalPages > 1 && (
-                <div className="flex items-center justify-between border-t border-slate-100 px-6 py-4">
-                  <div className="text-sm font-medium text-slate-500">
-                    Showing <span className="font-bold text-slate-900">{(page - 1) * PAGE_SIZE + 1}</span> to <span className="font-bold text-slate-900">{Math.min(page * PAGE_SIZE, trackingData?.pagination?.total || filteredEntries.length)}</span> of <span className="font-bold text-slate-900">{trackingData?.pagination?.total || filteredEntries.length}</span> entries
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setPage(p => Math.max(1, p - 1))}
-                      disabled={page === 1}
-                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-bold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
-                    >
-                      Previous
-                    </button>
-                    <button
-                      onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                      disabled={page === totalPages}
-                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-bold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
-                    >
-                      Next
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
           ) : (
             <div className={`overflow-x-auto pb-4 transition-all duration-300 ${showBlur ? "blur-[2px] opacity-60 pointer-events-none" : ""}`}>
@@ -1007,47 +986,38 @@ export const AdminTimeTracking: React.FC = () => {
                 </tbody>
               </table>
 
-              {/* Pagination for Requests */}
+              {/* Pagination for Requests: the same footer as every list */}
               {requestsData && requestsData.pagination.total_pages > 1 && (
-                <div className="flex items-center justify-between border-t border-slate-100 px-6 py-4">
-                  <div className="text-sm font-medium text-slate-500">
-                    Showing <span className="font-bold text-slate-900">{(requestsData.pagination.page - 1) * requestsData.pagination.limit + 1}</span> to <span className="font-bold text-slate-900">{Math.min(requestsData.pagination.page * requestsData.pagination.limit, requestsData.pagination.total)}</span> of <span className="font-bold text-slate-900">{requestsData.pagination.total}</span> requests
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setRequestsPage(p => Math.max(1, p - 1))}
-                      disabled={requestsData.pagination.page === 1}
-                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-bold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
-                    >
-                      Previous
-                    </button>
-                    <button
-                      onClick={() => setRequestsPage(p => Math.min(requestsData.pagination.total_pages, p + 1))}
-                      disabled={requestsData.pagination.page === requestsData.pagination.total_pages}
-                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-bold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
-                    >
-                      Next
-                    </button>
-                  </div>
+                <div className="px-6 pb-4">
+                  <Pagination
+                    page={requestsData.pagination.page}
+                    totalPages={requestsData.pagination.total_pages}
+                    totalItems={requestsData.pagination.total}
+                    limit={pageSize}
+                    setPage={setRequestsPage}
+                    setLimit={(size) => { setPageSize(size); setPage(1); setRequestsPage(1); }}
+                    noun="requests"
+                    className="mt-2"
+                  />
                 </div>
               )}
             </div>
           )}
       </div>
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-6 py-4 shadow-sm">
-          <span className="text-xs font-medium text-slate-500">
-            Showing {((page - 1) * PAGE_SIZE) + 1} to {Math.min(page * PAGE_SIZE, trackingData?.pagination?.total || filteredEntries.length)} of {trackingData?.pagination?.total || filteredEntries.length} Entries
-          </span>
-          <div className="flex items-center gap-1">
-            <PaginationArrow direction="prev" disabled={page === 1} onClick={() => setPage(p => Math.max(1, p - 1))} />
-            <div className="flex h-8 items-center justify-center px-3 text-sm font-semibold text-slate-700">
-              {page} / {totalPages}
-            </div>
-            <PaginationArrow direction="next" disabled={page === totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))} />
-          </div>
+      {/* The one footer of the Time Entries tab: the same component every other list uses. */}
+      {activeTab === 'entries' && totalPages > 1 && (
+        <div className="rounded-xl border border-slate-200 bg-white px-6 pb-4 shadow-sm">
+          <Pagination
+            page={page}
+            totalPages={totalPages}
+            totalItems={totalEntries}
+            limit={pageSize}
+            setPage={setPage}
+            setLimit={(size) => { setPageSize(size); setRequestsPage(1); }}
+            noun="entries"
+            className="mt-4"
+          />
         </div>
       )}
 
