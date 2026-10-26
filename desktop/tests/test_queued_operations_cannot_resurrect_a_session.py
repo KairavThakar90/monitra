@@ -81,3 +81,31 @@ def test_an_old_sessions_start_result_never_attaches_to_a_newer_session(qapp, ca
         assert timer.active_session()["client_op"] == new["client_op"]
     finally:
         timer.stop(timeout_ms=500)
+
+
+def test_an_old_sessions_stop_that_lands_late_leaves_the_newer_session_running(qapp, cache, monkeypatch):
+    """The stop queued offline for the OLD entry is delivered after the person has started
+    again. It ends that entry on the server (the backend keys a stop by its entry id) and is
+    reported here as a finalized entry -- the newer session is not that entry and keeps counting."""
+    clock, timer, backend = _offline_session(cache, monkeypatch)
+    try:
+        clock.advance(minutes=20)
+        timer.stop_tracking()
+        clock.advance(minutes=5)
+        backend.fail, backend.entry_id = False, 88
+        timer.start_tracking(1, 7, "Task")
+        new = dict(timer.active_session())
+        finalized = []
+        timer.timer_finalized.connect(finalized.append)
+
+        timer._on_sync_action_completed("s1", "stop_timer", {
+            "id": 77, "status": "stopped", "total_seconds": 20 * 60,
+            "end_time": clock.now.isoformat(),
+        })
+
+        assert timer.is_running() and timer.entry_id == 88, "the late stop was for another entry"
+        assert timer.active_session()["client_op"] == new["client_op"]
+        assert [f["entry"]["id"] for f in finalized] == [77], "the old entry is reported as finished, once"
+        assert cache.load_app_state(TIMER_STATE_KEY)["client_op"] == new["client_op"]
+    finally:
+        timer.stop(timeout_ms=500)

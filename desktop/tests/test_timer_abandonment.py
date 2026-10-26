@@ -267,6 +267,30 @@ def test_a_failing_backend_is_asked_less_and_less_often_up_to_the_interval(beat,
     assert max(delays) == interval * 1.5 and delays[-1] == delays[2], "capped, not growing for ever"
 
 
+def test_a_quarter_hour_outage_on_a_working_machine_ends_nothing_here(beat):
+    """The internet drops for fifteen minutes while the person keeps working. Every beat in
+    that stretch fails. Nothing here ends the session, tells the person anything, or demands a
+    sign-in -- the server measures the silence (stale after ten minutes, frozen at last beat +
+    grace), and the first beat that lands on reconnect makes the entry live again."""
+    beat.tick()
+    assert beat.backend.send_heartbeat.call_count == 1
+    beat.backend.send_heartbeat.side_effect = ApiError("Failed to send heartbeat: Network connection error.")
+    outage_began = beat.now
+    while beat.now < outage_began + 15 * 60:
+        beat.tick(advance=5)
+    assert beat.backend.send_heartbeat.call_count > 1, "it kept trying"
+    assert beat.closed == [] and beat.auth == []
+    beat.timer.end_session_closed_remotely.assert_not_called()
+    beat.timer.stop_tracking.assert_not_called()
+
+    beat.backend.send_heartbeat.side_effect = None
+    beat.sync.request_heartbeat()                      # the network service: reachable again
+    delivered_before = beat.backend.send_heartbeat.call_count
+    beat.tick()
+    assert beat.backend.send_heartbeat.call_count == delivered_before + 1
+    assert beat.sync._heartbeat_failures == 0 and beat.closed == []
+
+
 def test_the_retry_delay_is_jittered_and_never_below_half_of_the_backoff(beat, monkeypatch):
     beat.backend.send_heartbeat.side_effect = ApiError("HTTP 503", status_code=503)
     shortest = lambda low, high: low   # noqa: E731
@@ -480,6 +504,35 @@ def test_the_stop_is_expressed_on_this_machines_clock(qapp, cache, clock):
     timer.adopt_remote_session(_remote(seen))
     stop = [p for a, p, _ in timer.runtime.sync.enqueued if a == "stop_timer"][0]
     assert parse_utc(stop["stopped_at"]) == seen + timedelta(minutes=15) + timedelta(minutes=3)
+
+
+def test_a_launch_that_finds_a_stale_server_entry_shows_no_timer_and_queues_its_stop(qapp, runtime):
+    """The dashboard's half of the same story: Monitra opens on Monday, asks the backend what is
+    running, and is handed Friday's entry. The window must not put it on screen as the day's
+    timer (that read 65:32:33 in the incident); the sidebar stays Idle, nothing is counting,
+    and the entry's stop is in the durable queue at last signal + the cap."""
+    from ui.dashboard_window import DashboardWindow
+
+    widget = DashboardWindow(
+        runtime=runtime, session_manager=runtime.session_manager,
+        project_service=runtime.project_service, task_service=runtime.task_service,
+        time_entry_service=runtime.time_entry_service, api_client=runtime.api_client,
+    )
+    try:
+        widget._projects = [{"id": 3268, "name": "Mobile", "tasks": [{"id": 5298, "name": "Mobile Application Development"}]}]
+        told = []
+        runtime.timer.timer_closed_by_server.connect(told.append)
+
+        widget._on_active_timer_checked(_remote(FRIDAY + timedelta(minutes=27)))
+
+        assert widget._pending_active_timer is None
+        assert not runtime.timer.is_running() and runtime.timer.elapsed_seconds() == 0
+        assert widget._sidebar._is_active is False, "the sidebar says Idle, not Active"
+        assert runtime.cache.has_pending_stop_for_entry(5958), "Friday's entry is being stopped"
+        assert told and told[0]["reason"] == "no_signal"
+    finally:
+        widget.reset_state()
+        widget.deleteLater()
 
 
 @pytest.mark.parametrize("silent_for", [timedelta(minutes=2), timer_module.RECOVERY_CAP_SECONDS and timedelta(seconds=timer_module.RECOVERY_CAP_SECONDS)])
