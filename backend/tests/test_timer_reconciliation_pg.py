@@ -547,6 +547,36 @@ class ReconciliationAgainstPostgres(unittest.TestCase):
             msg="born on the application clock, not the database's",
         )
 
+    def test_a_start_needs_one_request_connection_not_two(self):
+        """The activity trail writes through a session of its own. Taken from the
+        request pool while the start still held its own connection, a burst of starts
+        larger than the pool convoyed: every request held one and waited for a second,
+        until the pool timeout refused new requests with 503 and lost the audit row.
+        A pool of one connection, no overflow, is that burst in miniature: the start
+        must still land in well under the pool timeout, with its audit row."""
+        import time
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import Session
+
+        from app.models.activity_log import ActivityLog
+        from app.services.time_entry import TimeEntryService
+
+        one = create_engine(URL, pool_size=1, max_overflow=0, pool_timeout=3)
+        self.addCleanup(one.dispose)
+        with Session(one) as db:
+            user = pg_support.user_object(db, self.ids.user_id)
+            began = time.monotonic()
+            entry, created = TimeEntryService.start_timer(
+                db, self.ids.project_id, self.ids.task_id, None, None, user,
+                client_op="timer:1:one-connection", reports_liveness=True,
+            )
+            took = time.monotonic() - began
+            self.assertTrue(created)
+            self.assertLess(took, 2.0, f"the start waited on the pool for {took:.1f}s")
+            trail = db.scalars(select(ActivityLog).where(ActivityLog.entity_id == entry.id)).all()
+            self.assertEqual(len(trail), 1, "the audit row was lost to the pool timeout")
+
     def test_a_new_start_is_still_refused_for_an_entry_that_never_reported(self):
         from app.services.time_entry import TimeEntryService
 

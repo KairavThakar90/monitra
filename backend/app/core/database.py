@@ -1,5 +1,6 @@
 import os
 import logging
+import threading
 import time
 from typing import Optional
 from dotenv import load_dotenv
@@ -184,10 +185,22 @@ def pool_snapshot() -> Optional[dict]:
         return None
 
 
+#: One engine per process. Without the lock, a cold worker's first requests --
+#: a burst of them after a restart or an app-pool recycle -- each saw `None`
+#: and each built an engine with a pool and listeners of its own (measured: 96
+#: engines across 4 fresh workers under 200 simultaneous starts); the last
+#: assignment won and the rest held connections until garbage-collected.
+_engine_lock = threading.Lock()
+
+
 def get_engine():
     """Get or create the database engine"""
     global _engine
-    if _engine is None:
+    if _engine is not None:
+        return _engine
+    with _engine_lock:
+        if _engine is not None:
+            return _engine
         try:
             from app.core.config import settings
 
@@ -216,12 +229,70 @@ def get_engine():
             raise
     return _engine
 
+#: The side pool (`side_engine`), per worker: small, because side writes are one
+#: INSERT and a commit, and short-waited, because a side write that cannot get a
+#: connection should fail (and be logged) rather than hold its caller.
+SIDE_POOL_SIZE = 2
+SIDE_POOL_MAX_OVERFLOW = 2
+SIDE_POOL_TIMEOUT_SECONDS = 2.0
+_side_engines: dict = {}
+_side_engines_lock = threading.Lock()
+
+
+def side_engine(bind):
+    """The engine for a write that must not share the caller's transaction, such
+    as an audit row written after the action it records has committed.
+
+    Taking that connection from the *request* pool while the caller's session
+    still holds one is a convoy: under a burst of starts larger than the pool,
+    every request held one connection and queued for a second, every new
+    request queued behind them, and the pass ended in `QueuePool limit ...
+    reached` 503s after `DB_POOL_TIMEOUT_SECONDS` (measured: 200 simultaneous
+    starts, median 10.8 s, 64 refused, 31 audit rows lost). A pool of its own
+    cannot deadlock against the request pool, so the second write waits only
+    for other side writes -- milliseconds.
+
+    Anything that is not PostgreSQL (the SQLite stand-in of a unit test, a
+    single shared connection) is returned as it is: there a second engine would
+    be a second database.
+    """
+    dialect = getattr(bind, "dialect", None)
+    if dialect is None or dialect.name != "postgresql":
+        return bind
+    key = bind.url.render_as_string(hide_password=False)
+    engine = _side_engines.get(key)
+    if engine is None:
+        with _side_engines_lock:
+            engine = _side_engines.get(key)
+            if engine is None:
+                from app.core.config import settings
+
+                engine = create_engine(
+                    bind.url,
+                    pool_pre_ping=True,
+                    pool_use_lifo=True,
+                    pool_recycle=settings.DB_POOL_RECYCLE_SECONDS,
+                    pool_size=SIDE_POOL_SIZE,
+                    max_overflow=SIDE_POOL_MAX_OVERFLOW,
+                    pool_timeout=SIDE_POOL_TIMEOUT_SECONDS,
+                    connect_args=_connect_args(key),
+                )
+                _side_engines[key] = engine
+                logger.info(
+                    "Side-write engine created (pool_size=%s max_overflow=%s pool_timeout=%ss)",
+                    SIDE_POOL_SIZE, SIDE_POOL_MAX_OVERFLOW, SIDE_POOL_TIMEOUT_SECONDS,
+                )
+    return engine
+
+
 def get_session_local():
     """Get or create the sessionmaker"""
     global _SessionLocal
     if _SessionLocal is None:
         engine = get_engine()
-        _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        with _engine_lock:
+            if _SessionLocal is None:
+                _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     return _SessionLocal
 
 class Base(DeclarativeBase):

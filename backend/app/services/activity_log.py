@@ -38,6 +38,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.database import side_engine
 from app.core.request_context import current_request_context
 from app.core.time_format import ist_day_start_utc, ist_today
 from app.models.activity_log import ActivityLog, ActivityLogAction, ActivityLogModule
@@ -213,7 +214,11 @@ class ActivityLogService:
         # for the response; committing the audit row through it would expire
         # everything it holds and make the row's fate part of the caller's
         # transaction. Here the two are independent in both directions.
-        with Session(bind=db.get_bind()) as log_db:
+        # Its connection comes from the side pool, never the request pool: the
+        # caller is still holding a request connection (`build` read on it),
+        # and a second one from the same pool was a convoy under a burst of
+        # starts (see `side_engine`).
+        with Session(bind=side_engine(db.get_bind())) as log_db:
             row = ActivityLog(
                 organization_id=actor.organization_id,
                 user_id=actor.id,

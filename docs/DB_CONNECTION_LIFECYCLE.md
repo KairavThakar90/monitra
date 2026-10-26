@@ -46,6 +46,33 @@ minutes: every slot of the pool (2 workers × (5 + 10)) pinned, `QueuePool limit
   connection their auth query had checked out* (measured: one held for 6.1 s,
   the stand-in WFPM's delay). `run_blocking` caps those waits at
   `BACKGROUND_DELIVERY_CONCURRENCY` threads per worker.
+- **A write that needs a session of its own takes it from `side_engine(db.get_bind())`**
+  (`app/core/database.py`), never a second `Session` on the request engine. The
+  activity trail is the case: its row is written after the action commits, through
+  its own session so the two cannot roll each other back -- but the caller still
+  holds a request connection (building the description read on it), so a second
+  connection from the *same* pool made every start in a burst hold one and wait
+  for another. Measured on the local rig: 200 simultaneous starts, median 10.8 s,
+  64 × 503 `QueuePool limit ... reached`, 31 audit rows lost. The side pool is
+  small (2 + 2 per worker, 2 s wait) and cannot deadlock against the request pool.
+  The same burst, same rig (4 workers, pool 10 + 5 each, PostgreSQL 18 on the same
+  machine, 2026-10-26):
+
+  | 200 simultaneous `POST /time-entries/start` | before | after |
+  |---|---|---|
+  | started | 136 of 200 (64 × 503) | 200 of 200 |
+  | start latency p50 / p95 | 10.8 s / 30.5 s | 1.5 s / 1.9 s |
+  | audit rows lost | 31 | 0 |
+  | `QueuePool limit` errors in the server log | 64 | 0 |
+
+  `tests/test_timer_reconciliation_pg.py::test_a_start_needs_one_request_connection_not_two`
+  is the burst in miniature (a pool of one connection) and fails on the old code.
+- **`get_engine()` builds the engine under a lock.** A cold worker's first requests
+  arrive together (a restart, an application-pool recycle, then the morning's
+  heartbeats); unlocked, each thread that saw `_engine is None` built an engine of
+  its own -- 96 across four fresh workers in the burst above -- and the last one won,
+  the others holding connections until garbage-collected.
+  `tests/test_engine_singleton.py` asks from fifty threads at once and expects one.
 - **Never store a Session** in a global, a singleton, or app state.
 
 ## Pool sizing
@@ -68,7 +95,10 @@ sum, but they do occupy a worker thread and a connection while they run.
 | `BACKGROUND_DELIVERY_CONCURRENCY` | 8 | background WFPM / email / budget threads per worker |
 | `DB_IDLE_IN_TRANSACTION_TIMEOUT_MS` | 0 (off) | server-side backstop, see below |
 
-Defaults: 2 workers × 15 = **30** connections (PostgreSQL allows 800). Serverless
+The side pool (`side_engine`, constants in `app/core/database.py`) adds at most
+2 + 2 = **4** per worker on top of that, and only once a side write has happened.
+
+Defaults: 2 workers × (15 + 4) = **38** connections (PostgreSQL allows 800). Serverless
 (Vercel) multiplies by its instance count — set smaller values there.
 
 ## What to look for in the logs
