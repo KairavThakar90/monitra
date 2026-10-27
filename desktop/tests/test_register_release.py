@@ -202,7 +202,10 @@ def test_registration_posts_a_draft_and_never_publishes(monkeypatch, tmp_path):
     assert "status" not in payload
 
 
-def test_a_failed_registration_is_reported_without_failing_the_build(monkeypatch, tmp_path, capsys):
+def test_a_failed_registration_fails_the_step(monkeypatch, tmp_path, capsys):
+    """Release 1.3.2 was filed on GitHub with a green tick while every
+    registration had answered 401: the production backend kept offering 1.1.1
+    and nothing said why. A refused registration is now a failed step."""
     monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
     monkeypatch.setenv("MONITRA_RELEASE_TOKEN", "token")
     monkeypatch.setattr(reg, "post_release", lambda *a: False)
@@ -214,10 +217,56 @@ def test_a_failed_registration_is_reported_without_failing_the_build(monkeypatch
         "--repo", "acme/monitra", "--artifacts", str(artifact),
     ])
 
-    # The build and the GitHub release are good either way, and the step can be
-    # re-run without rebuilding anything.
+    assert reg.main() == 1
+    assert "FAILED" in capsys.readouterr().err
+
+
+def test_the_download_url_is_the_website_copy_when_a_base_url_is_given():
+    url = reg.download_url_for(
+        "https://staff.peakworkos.com/download_app_files/", "acme/monitra", "v1.2.0",
+        "Monitra-Setup-1.2.0.exe",
+    )
+    assert url == "https://staff.peakworkos.com/download_app_files/Monitra-Setup-1.2.0.exe"
+    # The built filename is what the backend's filename rule requires, so the
+    # operator copies the artifact under its own name and nothing else.
+    assert reg.download_url_for("https://h.example/dir", "o/r", "v1", "f.exe") == "https://h.example/dir/f.exe"
+    assert reg.download_url_for("", "acme/monitra", "v1.2.0", "f.exe") == reg.asset_url("acme/monitra", "v1.2.0", "f.exe")
+    assert reg.download_url_for(None, "acme/monitra", "v1.2.0", "f.exe") == reg.asset_url("acme/monitra", "v1.2.0", "f.exe")
+
+
+@pytest.mark.parametrize("base", ["http://staff.peakworkos.com/d/", "https://h.example/d?x=1", "https://h.example/d#f", "ftp://h/d"])
+def test_a_download_base_url_that_is_not_a_plain_https_directory_is_refused(base, monkeypatch, tmp_path, capsys):
+    with pytest.raises(ValueError):
+        reg.download_url_for(base, "o/r", "v1", "f.exe")
+    monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
+    monkeypatch.setenv("MONITRA_RELEASE_TOKEN", "token")
+    monkeypatch.setattr(reg, "post_release", lambda *a: pytest.fail("nothing may be posted"))
+    artifact = tmp_path / f"Monitra-Setup-{version.VERSION}.exe"
+    artifact.write_bytes(b"x")
+    monkeypatch.setattr(sys, "argv", [
+        "register_release.py", "--tag", f"v{version.VERSION}", "--repo", "acme/monitra",
+        "--artifacts", str(artifact), "--download-base-url", base,
+    ])
+    assert reg.main() == 1
+    assert "download-base-url" in capsys.readouterr().err
+
+
+def test_the_base_url_can_come_from_the_environment(monkeypatch, tmp_path):
+    posted = []
+    monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
+    monkeypatch.setenv("MONITRA_RELEASE_TOKEN", "token")
+    monkeypatch.setenv("MONITRA_RELEASE_DOWNLOAD_BASE_URL", "https://staff.peakworkos.com/download_app_files")
+    monkeypatch.setattr(reg, "post_release", lambda base, token, payload: posted.append(payload) or True)
+    artifact = tmp_path / f"Monitra-Setup-{version.VERSION}.exe"
+    artifact.write_bytes(b"x")
+    monkeypatch.setattr(sys, "argv", [
+        "register_release.py", "--tag", f"v{version.VERSION}", "--repo", "acme/monitra",
+        "--artifacts", str(artifact),
+    ])
     assert reg.main() == 0
-    assert "incomplete" in capsys.readouterr().err
+    assert posted[0]["download_url"] == (
+        f"https://staff.peakworkos.com/download_app_files/Monitra-Setup-{version.VERSION}.exe"
+    )
 
 
 def test_a_mandatory_release_must_be_asked_for_explicitly(monkeypatch, tmp_path):
@@ -412,9 +461,8 @@ def test_a_refused_credential_never_publishes_anything(monkeypatch, tmp_path, ca
     monkeypatch.setattr(reg, "post_release", lambda *a, **k: False)
 
     _argv_for(monkeypatch, _artifact(tmp_path))
-    # Registration failing does not fail the build: the artifacts and the
-    # GitHub release are good either way, and the step can be re-run.
-    assert reg.main() == 0
+    # A refused credential fails the step -- and still publishes nothing.
+    assert reg.main() == 1
     assert "0 artifact(s) registered" in capsys.readouterr().out
 
 
@@ -475,18 +523,18 @@ def test_a_successful_registration_says_the_rows_are_still_drafts(monkeypatch, t
     assert "::warning::" not in out
 
 
-def test_a_failed_registration_warns_on_the_run_page(monkeypatch, tmp_path, capsys):
+def test_a_failed_registration_is_an_error_on_the_run_page_and_fails(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid/api/v1")
     monkeypatch.setenv("MONITRA_RELEASE_TOKEN", "token")
     monkeypatch.setattr(reg, "post_release", lambda base_url, token, payload: False)
 
-    assert _run(monkeypatch, tmp_path) == 0
+    assert _run(monkeypatch, tmp_path) == 1
 
     out = capsys.readouterr().out
-    assert "::warning::" in out
-    assert "INCOMPLETE" in out
+    assert "::error::" in out
+    assert "FAILED" in out
 
 
 def test_a_mismatched_tag_is_an_error_annotation(monkeypatch, tmp_path, capsys):

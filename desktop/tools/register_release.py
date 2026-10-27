@@ -40,9 +40,14 @@ both. It does not expire, so nothing is minted here and there is no sign-in
 step that can fail; the account behind it has no password at all, so the key is
 the only way in and revoking it closes the door completely.
 
-Failure here does not fail the build. The artifacts exist and the GitHub
-release exists either way; a backend that was unreachable for a minute should
-not turn a good build into a failed one, and the registration can be re-run.
+A refused registration FAILS the step (exit 1). It used to be reported and
+swallowed, on the theory that a backend unreachable for a minute should not
+turn a good build into a failed one -- and that is how release 1.3.2 was
+tagged, built and filed on GitHub with a green tick while every registration
+had answered 401 and the production backend went on offering 1.1.1. A failed
+registration is a release that does not exist for anyone; the run must say so.
+Re-running the release job re-registers idempotently (409 = already there).
+Only "not configured" (no base URL or credential: a fork) stays non-fatal.
 """
 from __future__ import annotations
 
@@ -123,8 +128,35 @@ def sha256_of(path: Path) -> str:
 
 
 def asset_url(repo: str, tag: str, filename: str) -> str:
-    """The public download URL a release asset will have once published."""
+    """The public download URL a GitHub release asset will have once published.
+
+    Only reachable by an installed client while the repository is PUBLIC. The
+    source repository is private, so the pipeline normally registers the
+    website's copy instead (`download_url_for` with a base URL).
+    """
     return f"https://github.com/{repo}/releases/download/{tag}/{filename}"
+
+
+def download_url_for(base_url: Optional[str], repo: str, tag: str, filename: str) -> str:
+    """Where an installed client will fetch this artifact from.
+
+    With a base URL -- the website folder the download page's buttons already
+    point at, `https://staff.peakworkos.com/download_app_files/` -- the artifact is
+    `<base>/<filename>`: the operator copies the CI artifact there under its
+    built name, which is the name the backend's filename rule requires. Without
+    one, the GitHub release asset URL, for a public releases repository.
+
+    The base must be https and must not carry a query or a fragment; a
+    filename is appended to a *directory*, never spliced into a query string.
+    """
+    base = (base_url or "").strip()
+    if not base:
+        return asset_url(repo, tag, filename)
+    if not base.lower().startswith("https://") or "?" in base or "#" in base:
+        raise ValueError(
+            f"the download base URL must be a plain https directory URL, got {base!r}"
+        )
+    return f"{base.rstrip('/')}/{filename}"
 
 
 def release_notes(version_string: str) -> Optional[str]:
@@ -234,7 +266,24 @@ def main() -> int:
         "--min-supported-version", default=None,
         help="Oldest version still allowed to keep working.",
     )
+    parser.add_argument(
+        "--download-base-url",
+        default=os.environ.get("MONITRA_RELEASE_DOWNLOAD_BASE_URL", ""),
+        help=(
+            "https directory the installers are served from (the website's "
+            "/download_app_files/). The artifact's built filename is appended. "
+            "Defaults to MONITRA_RELEASE_DOWNLOAD_BASE_URL; empty means the "
+            "GitHub release asset URL, which only works for a public repository."
+        ),
+    )
     args = parser.parse_args()
+
+    try:
+        download_url_for(args.download_base_url, args.repo, args.tag, "probe")
+    except ValueError as exc:
+        print(f"invalid --download-base-url: {exc}", file=sys.stderr)
+        annotate("error", f"Backend registration REFUSED: {exc}. No release row was created.")
+        return 1
 
     if version.is_prerelease():
         # An internal test build is handed to testers by hand, and it must
@@ -322,7 +371,9 @@ def main() -> int:
             "version": expected,
             "platform": platform,
             "architecture": architecture,
-            "download_url": asset_url(args.repo, args.tag, path.name),
+            "download_url": download_url_for(
+                args.download_base_url, args.repo, args.tag, path.name
+            ),
             "sha256": sha256_of(path),
             "file_size": path.stat().st_size,
             "release_notes": notes,
@@ -358,18 +409,23 @@ def main() -> int:
             "build.",
         )
     if failures:
-        # Reported, but not fatal: the build and the GitHub release are good,
-        # and registration can be re-run without rebuilding anything.
+        # Fatal. The build and the GitHub release are good, but a release the
+        # backend does not know about is not a release: nobody is offered it and
+        # the download page stays on the previous version. The job can be re-run
+        # without rebuilding anything; rows that did land answer 409 and count
+        # as registered.
         print(
-            "Registration is incomplete. Re-run this step, or register the "
-            "remaining artifacts by hand, before publishing the release.",
+            "Registration FAILED for at least one artifact. Fix the cause (see "
+            "above) and re-run this job; already-registered rows are kept.",
             file=sys.stderr,
         )
         annotate(
-            "warning",
-            f"Backend registration is INCOMPLETE: {failures} artifact(s) failed, "
-            f"{registered} succeeded. Re-run this step before publishing.",
+            "error",
+            f"Backend registration FAILED: {failures} artifact(s) were refused, "
+            f"{registered} succeeded. The release is not registered; re-run this "
+            "job once the cause is fixed.",
         )
+        return 1
     print(
         "\nNothing is live yet. Publish each release through "
         "POST /desktop/releases/{id}/publish once the build has been piloted."

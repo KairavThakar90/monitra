@@ -46,10 +46,19 @@ from core.logging_setup import get_logger
 
 log = get_logger("updates.policy")
 
-#: Exact hostnames an artifact URL may name. GitHub serves release downloads
-#: from github.com; a different CDN is a decision made here, in a release of the
-#: client, never by a value the backend sends.
-ALLOWED_DOWNLOAD_HOSTS: Tuple[str, ...] = ("github.com",)
+#: Exact hostnames an artifact URL may name. A different host is a decision made
+#: here, in a release of the client, never by a value the backend sends.
+#:
+#: `github.com`: release assets of a *public* repository. The source repository
+#: is private (October 2026), so its assets answer 404 to an installed client,
+#: which carries no GitHub credential and must never be given one.
+#: `staff.peakworkos.com`: the Monitra website, which already serves the three
+#: installers from `/download_app_files/` for the download page's buttons. The
+#: installers reach every user from there without a GitHub account, so the
+#: updater fetches from the same place the download page does -- one copy of
+#: each artifact, one checksum, one host to secure. Added in 1.3.3; a client
+#: older than that refuses this host whatever the backend says.
+ALLOWED_DOWNLOAD_HOSTS: Tuple[str, ...] = ("github.com", "staff.peakworkos.com")
 
 #: Host suffixes a *redirect* may land on. github.com answers a release download
 #: with a 302 to objects.githubusercontent.com / release-assets.githubusercontent.com.

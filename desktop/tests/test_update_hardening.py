@@ -105,6 +105,21 @@ class TestDownloadUrlPolicy:
     def test_an_https_release_url_on_an_approved_host_is_allowed(self, production):
         assert policy.check_url(GH_SETUP) is None
 
+    def test_the_website_that_serves_the_download_page_is_an_approved_host(self, production):
+        # The source repository is private, so GitHub assets answer 404 to an
+        # installed client. The website's /download_app_files/ folder is where
+        # the download page's buttons already fetch from, and the updater fetches
+        # from the same place -- in a production build, with no test hook.
+        assert policy.check_url(
+            "https://staff.peakworkos.com/download_app_files/Monitra-Setup-1.3.3.exe"
+        ) is None
+        assert "not an approved" in policy.check_url(
+            "https://staff.peakworkos.com.evil.example/Monitra-Setup-1.3.3.exe"
+        )
+        assert "not an approved" in policy.check_url(
+            "https://api.peakworkos.com/Monitra-Setup-1.3.3.exe"
+        )
+
     @pytest.mark.parametrize("url", [
         "http://github.com/o/r/releases/download/v1/Monitra-Setup-1.exe",
         "ftp://github.com/x.exe",

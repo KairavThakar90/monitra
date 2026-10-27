@@ -103,7 +103,10 @@ class Settings(BaseSettings):
     # e.g. https://github.com/<owner>/<releases-repo>/releases/download/ pins
     # downloads to one repository, which is what keeps a private source
     # repository private while installers live in a public installer-only one.
-    DESKTOP_DOWNLOAD_ALLOWED_HOSTS: str = "github.com"
+    # `staff.peakworkos.com` is the Monitra website, which serves the installers
+    # the download page's buttons point at (`/download_app_files/`); the desktop
+    # client (1.3.3 and later) trusts the same two hosts, compiled in.
+    DESKTOP_DOWNLOAD_ALLOWED_HOSTS: str = "github.com,staff.peakworkos.com"
     DESKTOP_DOWNLOAD_URL_PREFIXES: str = ""
 
     # The artifacts a version must have, registered and valid, before ANY of its

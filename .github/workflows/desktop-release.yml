@@ -604,14 +604,25 @@ jobs:
       # then the backend release, after the pilot ring has run it -- the same
       # gate that already exists for the GitHub draft.
       #
-      # The step never fails the workflow. The artifacts and the GitHub release
-      # are good either way, and a backend that was unreachable for a minute
-      # must not turn a good build into a failed one; the step can be re-run.
-      # With the two secrets unset -- a fork, say -- it skips entirely.
+      # A refused registration FAILS this job. It used to be `continue-on-error`,
+      # and that is how v1.3.2 was tagged, built and filed on GitHub with a green
+      # tick while all three registrations had answered 401: production went on
+      # offering 1.1.1 and nothing said why. The job can be re-run without
+      # rebuilding anything -- rows that did land answer 409 and count as
+      # registered. With the two secrets unset (a fork) the script skips and
+      # exits 0, so a fork's build is unaffected.
+      #
+      # RELEASE_DOWNLOAD_BASE_URL (a repository *variable*, not a secret) is the
+      # https folder the installers are served from -- the website's
+      # /download_app_files/, the same place the download page's buttons fetch
+      # from. The rows point there, under each artifact's built filename; the
+      # operator copies the artifacts there before publishing. Unset, the rows
+      # point at the GitHub release asset, which only works for a PUBLIC
+      # repository; the source repository is private.
       - name: Register the release with the backend
         working-directory: desktop
-        continue-on-error: true
         env:
+          MONITRA_RELEASE_DOWNLOAD_BASE_URL: ${{ vars.RELEASE_DOWNLOAD_BASE_URL }}
           MONITRA_API_BASE_URL: ${{ secrets.MONITRA_API_BASE_URL }}
           # A service credential: a long-lived API key belonging to a machine,
           # not a person. It authenticates an account holding the `release_bot`

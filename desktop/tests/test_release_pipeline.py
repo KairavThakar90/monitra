@@ -184,12 +184,25 @@ class TestReleaseJob:
         assert publish["with"]["draft"] is True
         register = job["steps"][_index(job, "Register the release with the backend")]
         assert "/publish" not in register["run"]
-        assert register["continue-on-error"] is True
+
+    def test_a_refused_registration_fails_the_release_job(self, workflow):
+        # v1.3.2: three 401s under `continue-on-error: true`, a green run, and a
+        # production backend still offering 1.1.1. The step must be allowed to fail.
+        job = workflow["jobs"]["release"]
+        register = job["steps"][_index(job, "Register the release with the backend")]
+        assert "continue-on-error" not in register
 
     def test_registration_uses_only_the_service_credential_secrets(self, workflow):
         job = workflow["jobs"]["release"]
         env = job["steps"][_index(job, "Register the release with the backend")]["env"]
-        assert set(env) == {"MONITRA_API_BASE_URL", "MONITRA_RELEASE_CREDENTIAL"}
+        assert set(env) == {
+            "MONITRA_API_BASE_URL", "MONITRA_RELEASE_CREDENTIAL",
+            "MONITRA_RELEASE_DOWNLOAD_BASE_URL",
+        }
+        # The download location is a variable, never a secret: it is public by
+        # definition and must be readable in the run log.
+        assert "vars.RELEASE_DOWNLOAD_BASE_URL" in env["MONITRA_RELEASE_DOWNLOAD_BASE_URL"]
+        assert "secrets." not in env["MONITRA_RELEASE_DOWNLOAD_BASE_URL"]
 
     def test_the_attestations_travel_with_the_artifacts(self, workflow):
         for job_name in ("windows", "macos"):
