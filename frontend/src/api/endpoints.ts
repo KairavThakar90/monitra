@@ -229,6 +229,11 @@ export const ENDPOINTS = {
   SCREENSHOT_SETTINGS: {
     BASE: `${API_BASE_URL}/screenshot-settings`,
   },
+  // Screenshot Management -> Multi-screen: the screens each member's computer
+  // reports, and which of them are captured. Administrators only.
+  SCREENSHOT_DISPLAYS: {
+    BASE: `${API_BASE_URL}/screenshot-displays`,
+  },
   // The activity trail: every recorded user action, read employee-wise by the
   // Logs page. Needs `view_employees`; a leader is answered with their team.
   ACTIVITY_LOGS: {

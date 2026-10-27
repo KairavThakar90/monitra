@@ -15,6 +15,7 @@ from app.schemas.screenshot_privacy import (
     ScreenshotExclusionCreate, ScreenshotExclusionUpdate, ScreenshotExclusionResponse,
     PrivacyConfigResponse
 )
+from app.services.member_display import MemberDisplayService
 from app.services.screenshot_privacy import ScreenshotPrivacyService
 
 router = APIRouter(prefix="/api/v1/screenshot", tags=["Screenshot Privacy"])
@@ -188,4 +189,8 @@ def get_privacy_config(db: Session = Depends(get_db, scope="function"), current_
         "urls": urls,
         "excluded_applications": excluded_apps,
         "excluded_urls": excluded_urls,
+        # Screens an administrator switched capture off for (Screenshot Management
+        # -> Screens). Here because this is the member-specific "what is not
+        # captured" answer the desktop has to hold before its first capture.
+        "excluded_displays": MemberDisplayService.excluded_numbers(db, current_user),
     }

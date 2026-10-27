@@ -34,6 +34,7 @@ const REASONS: Record<string, string> = {
   capture_unavailable: 'screen capture is not available on that computer',
   screen_recording_blocked: 'screen recording permission has not been granted',
   privacy_rule: 'a privacy rule excluded the application on screen',
+  displays_disabled: 'screenshots are switched off for every screen that computer has connected',
   privacy_config_unavailable: 'the privacy settings could not be loaded',
   network: 'the computer could not reach the server',
   unexpected: 'the upload failed unexpectedly',
@@ -81,7 +82,9 @@ export const describeCaptureState = (
       };
     case 'excluded':
       return {
-        label: 'Held back by privacy rule',
+        // Every screen the computer has was switched off by an administrator
+        // (Screenshot Management -> Multi-screen): a decision, not a privacy rule.
+        label: window.capture_reason === 'displays_disabled' ? 'Screens switched off' : 'Held back by privacy rule',
         detail: reason ? capitalise(reason) : null,
         tone: 'neutral',
       };

@@ -108,6 +108,8 @@ class ActivityLogAction:
     NOTIFICATIONS_ENABLED = "notifications_enabled"
     ACTIVITY_TRACKING_DISABLED = "activity_tracking_disabled"
     ACTIVITY_TRACKING_ENABLED = "activity_tracking_enabled"
+    #: An administrator switched screenshot capture on or off for individual screens of one member.
+    SCREENSHOT_DISPLAYS_UPDATED = "screenshot_displays_updated"
 
     FEEDBACK_STATUS_CHANGED = "feedback_status_changed"
     FEEDBACK_DELETED = "feedback_deleted"

@@ -7,7 +7,7 @@ explanation attached, and it never decides anything. The backend is
 authoritative for how often this user's screen is captured; this layer only
 carries the request and hands the answer back.
 """
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from app.api.client import ApiClient, TIMEOUT_FAST
 from app.api.exceptions import (
@@ -57,6 +57,26 @@ class ScreenshotApiService:
             raise ApiError("Could not load the screenshot configuration: network error.")
         except Exception as exc:  # noqa: BLE001
             raise ApiError(f"Could not load the screenshot configuration: {exc}")
+
+    def report_displays(self, displays: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Tell the backend which screens this computer has.
+
+        `PUT /screenshots/displays` -- idempotent state, not a queued operation:
+        reporting the same screens twice changes nothing, so a failure is simply
+        tried again by the next configuration refresh. It never carries pixels,
+        only each screen's number, size, position and whether it is the primary.
+        """
+        try:
+            response = self.api_client.put(
+                "/screenshots/displays", json_data={"displays": displays}, timeout=TIMEOUT_FAST,
+            )
+            return response.json()
+        except ApiHttpError as exc:
+            raise _explain("Reporting the connected screens", exc)
+        except ApiConnectionError:
+            raise ApiError("Could not report the connected screens: network error.")
+        except Exception as exc:  # noqa: BLE001
+            raise ApiError(f"Could not report the connected screens: {exc}")
 
     def get_privacy_config(self) -> Dict[str, Any]:
         """Fetch the screenshot privacy exclusions (apps and URLs).

@@ -22,6 +22,14 @@ re-grant a permission.
 
 ### Added
 
+- **Your administrator can now choose which of your screens are captured.** If you use more
+  than one screen, Monitra tells your administrator how many it can see (their number, size
+  and which is your main screen -- never what is on them), and your administrator can switch
+  capture off for individual screens. A screen that is switched off is never read; the
+  screenshot is made from the screens that remain. Until your administrator chooses
+  something, every screen is captured exactly as before. A change reaches a running Monitra
+  within a few minutes. If every screen you have is switched off, no screenshot is taken and
+  your administrator is told why.
 - **Your administrator can now control your screenshots from the web admin panel.**
   - **Turn them off for you:** if screenshots are switched off for your account, Monitra
     takes none. The line beside ACTIVITY says "Screenshots are turned off", and your time

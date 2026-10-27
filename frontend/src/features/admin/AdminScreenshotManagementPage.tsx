@@ -8,16 +8,20 @@ import { idleIsOn, isCapturableMember, useGetScreenshotSettingsQuery } from "../
 import { AdminScreenshotPrivacy } from "./AdminScreenshotPrivacy";
 import { SizeAndQuality } from "./AdminScreenshotManagement";
 import { IdleDetection } from "./AdminIdleDetection";
+import { ScreenManagement } from "./AdminScreenshotScreens";
+import { useGetScreenshotDisplaysQuery } from "../../store/api/screenshotDisplaysApi";
 import { PillTabs } from "../feedback/feedbackFilters";
 
 /**
  * Settings -> Screenshot Management: everything an administrator decides about
- * screenshots and idle detection, on one page, as three tabs.
+ * screenshots and idle detection, on one page, as four tabs.
  *
  * 1. **Resolution and quality** -- what every screenshot looks like (`SizeAndQuality`).
  * 2. **Idle management** -- per member, how often a screenshot is taken and whether,
  *    and after how long, the desktop treats the member as idle (`IdleDetection`).
- * 3. **Privacy rules** -- the applications and websites that are never captured
+ * 3. **Multi-screen** -- how many screens each member is using, and which of them
+ *    are captured (`ScreenManagement`).
+ * 4. **Privacy rules** -- the applications and websites that are never captured
  *    (`AdminScreenshotPrivacy`, formerly a page of its own).
  *
  * This page only arranges them. Every panel stays mounted while its tab is not
@@ -31,7 +35,7 @@ import { PillTabs } from "../feedback/feedbackFilters";
  * selects that tab on arrival.
  */
 
-type SectionId = "look" | "idle" | "privacy";
+type SectionId = "look" | "idle" | "screens" | "privacy";
 
 const TABS: ReadonlyArray<{ id: SectionId; title: string; description: string }> = [
   { id: "look", title: "Resolution and quality", description: "The size of every screenshot, and how sharp it is saved." },
@@ -40,6 +44,12 @@ const TABS: ReadonlyArray<{ id: SectionId; title: string; description: string }>
     title: "Idle management",
     description:
       "Per member: how often a screenshot is taken, whether the desktop watches for inactivity, and after how many minutes.",
+  },
+  {
+    id: "screens",
+    title: "Multi-screen",
+    description:
+      "Which members use more than one screen, and which of each member's screens are captured.",
   },
   { id: "privacy", title: "Privacy rules", description: "Applications and websites that are blanked out of a member's screenshots." },
 ];
@@ -63,6 +73,7 @@ export const AdminScreenshotManagementPage: React.FC = () => {
   const members = useGetAllMembersQuery(undefined, { skip: !ready });
   const applications = useGetScreenshotApplicationsQuery(undefined, { skip: !ready });
   const websites = useGetScreenshotUrlsQuery(undefined, { skip: !ready });
+  const screens = useGetScreenshotDisplaysQuery(undefined, { skip: !ready });
 
   const [active, setActive] = useState<SectionId>(() => initialTab(location.hash));
 
@@ -81,7 +92,16 @@ export const AdminScreenshotManagementPage: React.FC = () => {
   const privacySummary =
     ruleCount === null ? null : ruleCount === 0 ? "No rules yet" : `${ruleCount} ${ruleCount === 1 ? "rule" : "rules"}`;
 
-  const summaries: Record<SectionId, string | null> = { look: lookSummary, idle: idleSummary, privacy: privacySummary };
+  const multiScreen = screens.data ? screens.data.members.filter((m) => m.connected_count > 1).length : null;
+  const screensSummary =
+    multiScreen === null ? null : screens.data!.members.length === 0 ? "None reported" : `${multiScreen} multi-screen`;
+
+  const summaries: Record<SectionId, string | null> = {
+    look: lookSummary,
+    idle: idleSummary,
+    screens: screensSummary,
+    privacy: privacySummary,
+  };
 
   return (
     <V2Shell
@@ -132,6 +152,12 @@ export const AdminScreenshotManagementPage: React.FC = () => {
                     <IdleDetection />
                   ) : (
                     <Spinner label="Loading members…" />
+                  )
+                ) : tab.id === "screens" ? (
+                  ready ? (
+                    <ScreenManagement />
+                  ) : (
+                    <Spinner label="Loading screens…" />
                   )
                 ) : ready ? (
                   <AdminScreenshotPrivacy embedded />

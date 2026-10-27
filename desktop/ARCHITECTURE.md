@@ -1163,6 +1163,18 @@ poll of a narrow config endpoint, edge-triggered, a failed refresh keeps the las
   `ERROR` are still shown, since they say something is wrong. The decision is made before de-duplication.
 - **Idle detection** keeps `idle_enabled`/`idle_minutes` and its own poll, unchanged.
 
+**Which screens are captured** ([docs/SCREENSHOT_DISPLAYS.md](../docs/SCREENSHOT_DISPLAYS.md) is
+authoritative). The capture reads every attached display and merges them into one image;
+an administrator can switch individual screens off per member. The service does two things for that and
+opens no new channel, thread or timer: it **reports** the screens (`_report_displays`: `capture.list_displays()` on the
+`TaskRunner`, edge-triggered per member, at sign-in and on each configuration refresh, via
+`PUT /screenshots/displays`; state rather than a queued operation, so a failure is simply sent again by the next
+refresh) and it **honours the choice** (`excluded_displays` arrives on the privacy configuration capture already
+waits for, so the first capture of a session cannot precede it; `capture_all_displays(excluded=...)` drops those
+numbers *before any read*, so an excluded screen's pixels never exist here). With nothing excluded the call is
+the zero-argument one it always was. Every attached screen excluded raises `AllDisplaysExcluded` -- a decision,
+not a fault, so it is **not** retried: the window ends with an `excluded` / `displays_disabled` event.
+
 Two rules about the capture itself, each learned in production:
 
 - **Every expected capture ends in an image, a retry still inside its window,

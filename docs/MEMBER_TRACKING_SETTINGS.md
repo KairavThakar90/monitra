@@ -39,6 +39,10 @@ at the machine, which is why applications and websites follow the activity switc
 and mouse only -- it is a one-line change in each of `AppUsageService` / `UrlUsageService`: stop
 asking the activity service.
 
+A fifth thing is chosen per member and per *screen* rather than per feature: which of a member's screens are
+captured. It is not one of the four switches (it does nothing while *Screenshot capture* is off, and switching
+every screen off is that switch); see [SCREENSHOT_DISPLAYS.md](SCREENSHOT_DISPLAYS.md).
+
 ## How it is saved
 
 One write path for the first three: the ordinary member update, `PATCH /members/{id}`

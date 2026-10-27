@@ -32,6 +32,7 @@ from app.core.database import get_db
 from app.core.permissions import ROLE_PERMISSIONS
 from app.core.security import get_current_user
 from app.main import app
+from app.models.member_display import MemberDisplay
 from app.models.screenshot_application import ScreenshotApplication
 from app.models.screenshot_exclusion import ScreenshotExclusion
 from app.models.screenshot_url import ScreenshotUrl
@@ -73,7 +74,7 @@ class PrivacyCase(unittest.TestCase):
         self.engine = create_engine(
             "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
         )
-        _sqlite_schema(self.engine, User, ScreenshotApplication, ScreenshotUrl, ScreenshotExclusion)
+        _sqlite_schema(self.engine, User, ScreenshotApplication, ScreenshotUrl, ScreenshotExclusion, MemberDisplay)
         self.factory = sessionmaker(bind=self.engine, expire_on_commit=False)
         with self.factory() as db:
             db.add_all([
