@@ -50,12 +50,35 @@ def heading_body(text: str, version: str) -> str | None:
     return remainder[: next_heading.start()] if next_heading else remainder
 
 
-def main() -> int:
+def unreleased_body(text: str) -> str | None:
+    """The text under `## [Unreleased]`, or None if there is no such heading."""
+    return heading_body(text, "Unreleased")
+
+
+def main(argv: list[str] | None = None) -> int:
+    release_mode = "--release" in (argv if argv is not None else sys.argv[1:])
+
     if not CHANGELOG.exists():
         print(f"{CHANGELOG.name} is missing; every release needs a written note.")
         return 1
 
     text = CHANGELOG.read_text(encoding="utf-8")
+
+    if release_mode:
+        # A tag build is a release of the version in version.py, so nothing may
+        # still be filed under "Unreleased": that is how 78 commits shipped as a
+        # second build called 1.3.2. Move the notes under this version's heading
+        # (and bump VERSION) before tagging.
+        pending = unreleased_body(text)
+        if pending is not None and pending.strip():
+            print(
+                "CHANGELOG.md still has notes under `## [Unreleased]`, but this is a "
+                f"release build of {VERSION}.\n\n"
+                f"Move them under `## [{VERSION}]` (bumping VERSION in version.py "
+                "if this version has already shipped) and tag again."
+            )
+            return 1
+
     body = heading_body(text, VERSION)
 
     if body is None:

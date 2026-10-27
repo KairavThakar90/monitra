@@ -20,8 +20,25 @@ re-grant a permission.
 
 ## [Unreleased]
 
+## [1.3.3]
+
+The installer and the macOS bundles are still unsigned (see 1.3.2 below for
+what that means on first run). **This is the first version that can install an
+update by itself**: on 1.3.2 and earlier, Monitra only tells you a new version
+exists and opens the download page, so install 1.3.3 by hand once.
+
 ### Changed
 
+- **Updates are fetched from the Monitra website**, the same place the download
+  page's buttons get them, so an update works without a GitHub account. Older
+  versions of Monitra only accepted downloads from GitHub, where the files are
+  no longer reachable; they will show "Download manually" instead.
+- **The update prompt comes back on a schedule instead of only at the next
+  start.** "Later" now puts the prompt away for at least a day; it returns at
+  the first check after that, and after three postponements or a week it is
+  shown as a final reminder. The Updates entry in the account menu still opens
+  it at any time. Nothing about your timer or unsynced work is touched by any of
+  this.
 - **Notifications carry the Monitra logo in a circle** where Windows used to put its own
   blue "i". The header of the notification -- "Monitra — Staff Management" beside the
   Monitra logo -- stays exactly as it was: Monitra now describes itself to Windows when it
@@ -41,6 +58,17 @@ re-grant a permission.
 
 ### Fixed
 
+- **An in-app update no longer stops at an installer question nobody can see.** The
+  Windows installer, started by the updater, asked "Select Setup Install Mode" and
+  waited for an answer; the updater now tells it the answer (install for the current
+  user, which is how Monitra is installed). If Monitra was installed for all users of a
+  computer, the updater says so and asks you to run the new installer yourself
+  instead of failing halfway.
+- **On a Mac where you are not an administrator, an update asks for an
+  administrator's name and password** through the normal macOS dialog, instead of
+  failing because Applications cannot be written to. Monitra never sees the
+  password. Running Monitra straight from the downloaded disk image is refused with
+  an explanation: move it to Applications first.
 - **The idle-time prompt can no longer leave Monitra stuck behind a window you cannot
   see.** The prompt must be answered before Monitra takes another click. If it had been
   minimised with everything else by Show Desktop, left on a monitor that was then

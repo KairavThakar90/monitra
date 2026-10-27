@@ -916,7 +916,11 @@ class TestWindowsHelper:
 
     def test_the_installer_runs_with_the_expected_flags_then_the_app_relaunches(self, tmp_path, monkeypatch, fake_binaries):
         text, result, _victim_exit, artifact = _run_helper(monkeypatch, tmp_path, fake_binaries)
-        assert "/SILENT /SP- /NORESTART /CLOSEAPPLICATIONS" in text
+        # /CURRENTUSER answers Inno's "Select Setup Install Mode" dialog, which a
+        # real installer (PrivilegesRequiredOverridesAllowed=dialog) stopped on
+        # under /SILENT without it -- measured: nothing installed in 20 s without
+        # the switch, done in under a second with it.
+        assert "/SILENT /SP- /NORESTART /CLOSEAPPLICATIONS /CURRENTUSER" in text
         assert text.index("INSTALLER") < text.index("RELAUNCHED")
         assert result["target"] == "9.9.9" and result["exit_code"] == "0"
         assert not artifact.exists(), "the installer artifact is deleted afterwards"
@@ -1010,6 +1014,54 @@ class TestHelperLaunchErrors:
         assert "installed build" in installer.can_install()
 
 
+class TestWhereTheApplicationIsInstalled:
+    """A frozen build somewhere the helper cannot replace it is refused up
+    front, with a reason, rather than half-way through."""
+
+    def _frozen(self, monkeypatch, platform, executable):
+        monkeypatch.setattr(installer, "is_frozen", lambda: True)
+        monkeypatch.setattr(installer, "is_portable", lambda: False)
+        monkeypatch.setattr(installer.sys, "platform", platform)
+        monkeypatch.setattr(installer, "_executable_path", lambda: Path(executable))
+
+    def test_a_per_user_windows_install_may_update(self, monkeypatch):
+        monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+        monkeypatch.setenv("ProgramW6432", r"C:\Program Files")
+        monkeypatch.setenv("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        self._frozen(monkeypatch, "win32", r"C:\Users\jo\AppData\Local\Programs\Monitra\Monitra.exe")
+        assert installer.can_install() is None
+
+    @pytest.mark.parametrize("exe", [
+        r"C:\Program Files\Monitra\Monitra.exe",
+        r"C:\Program Files (x86)\Monitra\Monitra.exe",
+    ])
+    def test_a_machine_wide_windows_install_is_refused_with_the_manual_path(self, monkeypatch, exe):
+        monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+        monkeypatch.setenv("ProgramW6432", r"C:\Program Files")
+        monkeypatch.setenv("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        self._frozen(monkeypatch, "win32", exe)
+        reason = installer.can_install()
+        assert "all users" in reason and "administrator" in reason and "run the installer" in reason
+
+    def test_an_unset_program_files_variable_is_skipped_not_guessed(self, monkeypatch):
+        for name in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+            monkeypatch.delenv(name, raising=False)
+        self._frozen(monkeypatch, "win32", r"C:\Program Files\Monitra\Monitra.exe")
+        assert installer.can_install() is None
+
+    def test_a_bundle_in_applications_may_update(self, monkeypatch):
+        self._frozen(monkeypatch, "darwin", "/Applications/Monitra.app/Contents/MacOS/Monitra")
+        assert installer.can_install() is None
+
+    @pytest.mark.parametrize("exe", [
+        "/private/var/folders/x1/T/AppTranslocation/ABCD-1234/d/Monitra.app/Contents/MacOS/Monitra",
+        "/Volumes/Monitra 1.3.3/Monitra.app/Contents/MacOS/Monitra",
+    ])
+    def test_a_translocated_or_disk_image_bundle_is_refused(self, monkeypatch, exe):
+        self._frozen(monkeypatch, "darwin", exe)
+        assert "Applications folder" in installer.can_install()
+
+
 class TestMacOSHelperText:
     """Generated text only: this project has not run it on a real Mac."""
 
@@ -1021,9 +1073,13 @@ class TestMacOSHelperText:
 
     def test_it_verifies_the_signature_before_touching_the_old_bundle(self, scratch, production, monkeypatch):
         text = self._script(scratch, monkeypatch).read_text()
-        assert text.index("codesign --verify --deep --strict") < text.index('mv "$BUNDLE" "$BACKUP"')
-        assert text.index("spctl --assess --type execute") < text.index('mv "$BUNDLE" "$BACKUP"')
+        # The old bundle is only ever touched by the replace script, which the
+        # helper invokes after both signature checks.
+        invoked = text.index('/bin/bash "$REPLACE"')
+        assert text.index("codesign --verify --deep --strict") < invoked
+        assert text.index("spctl --assess --type execute") < invoked
         assert "REQUIRE_SIGNED=1" in text
+        assert 'mv "$BUNDLE" "$BACKUP"' not in text, "the helper itself never moves the bundle"
 
     def test_a_pinned_team_is_enforced(self, scratch, production, monkeypatch):
         text = self._script(scratch, monkeypatch, pins=("ABCDE12345",)).read_text()
@@ -1031,8 +1087,9 @@ class TestMacOSHelperText:
         assert "TeamIdentifier=" in text
 
     def test_a_failed_copy_restores_the_previous_bundle(self, scratch, production, monkeypatch):
-        text = self._script(scratch, monkeypatch).read_text()
-        assert 'mv "$BACKUP" "$BUNDLE"' in text
+        self._script(scratch, monkeypatch)
+        body = self._replace_script(scratch).read_text()
+        assert body.index('cp -R "$NEW" "$BUNDLE"') < body.index('mv "$BACKUP" "$BUNDLE"')
 
     def test_every_failure_reports_a_code_and_restarts_the_old_app(self, scratch, production, monkeypatch):
         text = self._script(scratch, monkeypatch).read_text()
@@ -1064,6 +1121,61 @@ class TestMacOSHelperText:
 
         text = self._script(scratch, monkeypatch).read_text()
         assert re.findall(r"@[A-Z_]+@", text) == []
+        replace = self._replace_script(scratch)
+        assert re.findall(r"@[A-Z_]+@", replace.read_text()) == []
+
+    # ── A standard user, and /Applications ─────────────────────────────────
+
+    def _replace_script(self, scratch):
+        found = list(updates_dir().glob("apply-update-*-replace.sh"))
+        assert len(found) == 1, found
+        return found[0]
+
+    def test_the_replacement_is_a_separate_script_the_helper_runs(self, scratch, production, monkeypatch):
+        text = self._script(scratch, monkeypatch).read_text()
+        replace = self._replace_script(scratch)
+        assert installer._sh_quote(str(replace)) in text
+        assert '/bin/bash "$REPLACE"' in text
+        body = replace.read_text()
+        # The same guarantee as before, now in the script that runs privileged
+        # or not: move aside, copy, restore on failure.
+        assert body.index('mv "$BUNDLE" "$BACKUP"') < body.index('cp -R "$NEW" "$BUNDLE"')
+        assert 'mv "$BACKUP" "$BUNDLE"' in body
+        assert str(installer.MAC_EXIT_MOVE) in body and str(installer.MAC_EXIT_COPY) in body
+
+    def test_an_unwritable_applications_folder_asks_for_administrator_authorization(self, scratch, production, monkeypatch):
+        text = self._script(scratch, monkeypatch).read_text()
+        # Decided from the file system at run time, not assumed: an administrator
+        # (who can write /Applications) is never prompted.
+        assert '[ ! -w "$PARENT" ]' in text
+        assert "with administrator privileges" in text
+        assert "/usr/bin/osascript -e" in text
+        # The privileged command names the replace script through AppleScript's
+        # own quoting, so a path with a quote or a space is one argument.
+        assert "quoted form of" in text
+        # Declined authorization is its own, reported outcome; the bundle is untouched.
+        assert str(installer.MAC_EXIT_AUTH) in text and "abort auth" in text
+
+    def test_the_signature_is_checked_before_any_privilege_is_asked_for(self, scratch, production, monkeypatch):
+        text = self._script(scratch, monkeypatch).read_text()
+        assert text.index("spctl --assess") < text.index("with administrator privileges")
+
+    def test_the_applescript_literal_escapes_quotes_and_backslashes(self):
+        assert installer._applescript_quote('a"b\\c') == '"a\\"b\\\\c"'
+
+    def test_the_mount_point_is_under_the_data_directory_not_tmp(self, scratch, production, monkeypatch):
+        text = self._script(scratch, monkeypatch).read_text()
+        assert "mktemp" not in text
+        assert installer._sh_quote(str(updates_dir() / "mount-9.9.9")) in text
+
+    def test_both_scripts_are_valid_shell(self, scratch, production, monkeypatch):
+        bash = shutil.which("bash")
+        if not bash:
+            pytest.skip("syntax check needs bash")
+        script = self._script(scratch, monkeypatch)
+        for path in (script, self._replace_script(scratch)):
+            # Git's bash on Windows parses POSIX sh syntax the same way.
+            assert subprocess.run([bash, "-n", str(path)], capture_output=True).returncode == 0, path
 
 
 # ════════════════════════════════════════════════════════════════════════════

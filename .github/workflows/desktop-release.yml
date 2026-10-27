@@ -78,7 +78,7 @@ jobs:
 
       # No release ships without a written release note for its version.
       - name: Changelog entry for this version
-        run: python tools/check_changelog.py
+        run: python tools/check_changelog.py ${{ startsWith(github.ref, 'refs/tags/v') && '--release' || '' }}
 
       - name: Regression suite
         env:
@@ -305,7 +305,7 @@ jobs:
         run: python tools/check_architecture.py
 
       - name: Changelog entry for this version
-        run: python tools/check_changelog.py
+        run: python tools/check_changelog.py ${{ startsWith(github.ref, 'refs/tags/v') && '--release' || '' }}
 
       # One interpreter per test module. Under the offscreen platform on these
       # runners the single-process run dies inside Qt (bus error on Apple

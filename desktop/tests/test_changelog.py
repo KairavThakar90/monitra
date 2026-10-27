@@ -55,6 +55,35 @@ def test_an_empty_entry_is_not_a_release_note():
     assert not body.strip()
 
 
+def test_a_release_build_refuses_notes_still_filed_as_unreleased(monkeypatch, tmp_path):
+    # 78 commits shipped as a second build called 1.3.2 because nothing asked
+    # whether "Unreleased" was empty when the tag was built.
+    changelog = tmp_path / "CHANGELOG.md"
+    monkeypatch.setattr(check_changelog, "CHANGELOG", changelog)
+    changelog.write_text(
+        f"## [Unreleased]\n\n- Something not yet released.\n\n## [{check_changelog.VERSION}]\n\nThis release.\n",
+        encoding="utf-8",
+    )
+    assert check_changelog.main([]) == 0, "an ordinary build may carry unreleased notes"
+    assert check_changelog.main(["--release"]) == 1
+
+
+def test_a_release_build_passes_with_an_empty_unreleased_section(monkeypatch, tmp_path):
+    changelog = tmp_path / "CHANGELOG.md"
+    monkeypatch.setattr(check_changelog, "CHANGELOG", changelog)
+    changelog.write_text(
+        f"## [Unreleased]\n\n## [{check_changelog.VERSION}]\n\nThis release.\n", encoding="utf-8",
+    )
+    assert check_changelog.main(["--release"]) == 0
+    changelog.write_text(f"## [{check_changelog.VERSION}]\n\nThis release.\n", encoding="utf-8")
+    assert check_changelog.main(["--release"]) == 0, "no Unreleased heading at all is fine"
+
+
+def test_the_repository_changelog_is_releasable_as_it_stands():
+    # The real file: the current version has notes and nothing is left unreleased.
+    assert check_changelog.main(["--release"]) == 0
+
+
 def test_an_entry_stops_at_the_next_version_heading():
     text = f"## [{VERSION}]\n\nThis release.\n\n## [1.0.0]\n\nThe previous one.\n"
     body = check_changelog.heading_body(text, VERSION)

@@ -87,6 +87,9 @@ MAC_EXIT_GATEKEEPER = 13
 MAC_EXIT_TEAM = 14
 MAC_EXIT_MOVE = 15
 MAC_EXIT_COPY = 16
+#: The bundle's folder was not writable and the administrator authorization the
+#: system asked for was declined (or the privileged step never ran).
+MAC_EXIT_AUTH = 17
 
 _EXPECTED_SUFFIX = {"win32": ".exe", "darwin": ".dmg"}
 
@@ -165,7 +168,56 @@ def can_install() -> Optional[str]:
         )
     if sys.platform not in ("win32", "darwin"):
         return "Automatic updates are not available on this platform."
+    if sys.platform == "win32" and _is_machine_wide_install():
+        # The installer offers "install for all users" (Program Files), which
+        # needs an administrator to upgrade. The helper runs as the user and
+        # passes /CURRENTUSER, so it would either stop on a UAC prompt or install
+        # a second, per-user copy beside the first. Say so instead.
+        return (
+            "Monitra was installed for all users of this computer, which needs "
+            "an administrator to update it. Download the new version and run "
+            "the installer yourself."
+        )
+    if sys.platform == "darwin" and _is_translocated_or_on_image():
+        # Gatekeeper runs an app opened straight from a downloaded disk image
+        # from a read-only, randomised path (App Translocation), and a bundle
+        # on the mounted image itself is read-only too. There is nothing there
+        # to replace.
+        return (
+            "Monitra is running from the downloaded disk image. Move Monitra to "
+            "your Applications folder and open it from there to update."
+        )
     return None
+
+
+def _executable_path() -> Path:
+    """Where the running executable is. A function so tests can stand one in."""
+    return Path(sys.executable).resolve()
+
+
+def _is_machine_wide_install() -> bool:
+    """Whether the running executable lives under a Program Files directory.
+
+    `%LOCALAPPDATA%\\Programs` (the per-user install) is never under any of
+    these. The three variables cover the native, 64-bit-from-32-bit and x86
+    spellings; an unset one is skipped rather than guessed.
+    """
+    executable = _executable_path()
+    for name in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+        root = os.environ.get(name, "").strip()
+        if not root:
+            continue
+        try:
+            executable.relative_to(Path(root).resolve())
+        except ValueError:
+            continue
+        return True
+    return False
+
+
+def _is_translocated_or_on_image() -> bool:
+    parts = _executable_path().parts
+    return "AppTranslocation" in parts or (len(parts) > 1 and parts[1] == "Volumes")
 
 
 def launch_installer(artifact: Path, version: str) -> None:
@@ -257,6 +309,8 @@ def _macos_launch(artifact: Path, version: str):
     script = _write_macos_helper(artifact, version)
     # A new session, so the helper is not in this process's process group and
     # survives it.
+    # `osascript` must be able to show the authorization dialog, so the helper
+    # keeps the user's session environment (no `env=`) -- only a new session id.
     return ["/bin/bash", str(script)], None, {"start_new_session": True}
 
 
@@ -330,8 +384,14 @@ rem call: the user asked for this and a visible progress bar is what
 rem distinguishes "updating" from "the app vanished". /SP- skips the "this will
 rem install..." prompt, /NORESTART stops the installer rebooting the machine,
 rem and /CLOSEAPPLICATIONS lets it deal with any straggler holding a file open
-rem rather than failing the install.
-start "" /wait "%MONITRA_UPDATE_ARTIFACT%" /SILENT /SP- /NORESTART /CLOSEAPPLICATIONS
+rem rather than failing the install. /CURRENTUSER answers the installer's
+rem "Select Setup Install Mode" question (PrivilegesRequiredOverridesAllowed=
+rem dialog in monitra.iss): without it, /SILENT still stopped on that dialog --
+rem measured with a real Inno Setup installer, which installed nothing in 20 s
+rem without the switch and finished in under a second with it. Monitra is a
+rem per-user install (%LOCALAPPDATA%\Programs); a machine-wide install is refused
+rem before this helper is written (installer.can_install).
+start "" /wait "%MONITRA_UPDATE_ARTIFACT%" /SILENT /SP- /NORESTART /CLOSEAPPLICATIONS /CURRENTUSER
 set RC=%ERRORLEVEL%
 >>"%MONITRA_UPDATE_RESULT%" echo exit_code=%RC%
 rem Relaunch whatever is installed, whether or not the installer succeeded.
@@ -375,6 +435,9 @@ BACKUP="$BUNDLE.previous"
 TRIES=@TRIES@
 REQUIRE_SIGNED=@REQUIRE_SIGNED@
 TEAM_PINS=@TEAM_PINS@
+MOUNT=@MOUNT@
+REPLACE=@REPLACE@
+CODEFILE=@CODEFILE@
 
 # Recorded without an exit code first: a helper that dies mid-way leaves
 # "started" and no code, which the next launch reports as an incomplete update.
@@ -390,11 +453,11 @@ while kill -0 "$PID" 2>/dev/null && [ "$TRIES" -gt 0 ]; do
   TRIES=$((TRIES - 1))
 done
 
-MOUNT=$(mktemp -d /tmp/monitra-update.XXXXXX)
+mkdir -p "$MOUNT"
 cleanup() {
   hdiutil detach "$MOUNT" -quiet 2>/dev/null || true
   rmdir "$MOUNT" 2>/dev/null || true
-  rm -f "$DMG"
+  rm -f "$DMG" "$REPLACE" "$CODEFILE"
   rm -f "$0"
 }
 # Nothing has been touched on any of these paths: the installed application is
@@ -434,27 +497,77 @@ if [ "$REQUIRE_SIGNED" = "1" ]; then
   fi
 fi
 
+# The replacement itself -- move the old bundle aside, copy the new one in, put
+# the old one back if the copy fails -- is a separate script (REPLACE, written
+# beside this one) so that it can run either as this user or, when the bundle's
+# folder is not writable (/Applications belongs to the administrators group; a
+# standard user cannot write there), under the administrator authorization the
+# system asks for through its own dialog. The same prompt Finder shows when a
+# standard user drags an app into Applications; no password passes through
+# here. The replace script reports its own exit code through CODEFILE, because
+# osascript does not pass one back.
+PARENT=$(dirname "$BUNDLE")
+AS_ADMIN=0
+if [ ! -w "$PARENT" ] || { [ -d "$BUNDLE" ] && [ ! -w "$BUNDLE" ]; }; then
+  AS_ADMIN=1
+fi
+rm -f "$CODEFILE"
+if [ "$AS_ADMIN" = "1" ]; then
+  /usr/bin/osascript -e @OSASCRIPT@ >/dev/null 2>&1 || true
+else
+  /bin/bash "$REPLACE" || true
+fi
+CODE=$(cat "$CODEFILE" 2>/dev/null || true)
+case "$CODE" in
+  0)
+    finish done 0
+    open "$BUNDLE" 2>/dev/null || true
+    cleanup
+    exit 0
+    ;;
+  @EXIT_MOVE@) abort move @EXIT_MOVE@ ;;
+  @EXIT_COPY@) abort copy @EXIT_COPY@ ;;
+  *)
+    # No code: the replacement never ran. With AS_ADMIN that is the
+    # authorization being declined or cancelled; the bundle is untouched.
+    abort auth @EXIT_AUTH@
+    ;;
+esac
+"""
+
+
+#: The bundle replacement, run as the user or under administrator authorization.
+#: Written by the application like the helper; paths are quoted into it.
+_MACOS_REPLACE = r"""#!/bin/bash
+# Monitra update: replace the installed bundle with the new one. Written by the
+# running application; run by the update helper (possibly with administrator
+# privileges). Reports its exit code to CODEFILE as well as exiting with it.
+set -u
+BUNDLE=@BUNDLE@
+NEW=@NEW@
+CODEFILE=@CODEFILE@
+BACKUP="$BUNDLE.previous"
+
+report() { printf '%s\n' "$1" > "$CODEFILE"; exit "$1"; }
+
 # Move the old bundle aside rather than deleting it, so there is something to
 # put back. This is the step that guarantees a failed update still leaves a
 # working application.
 rm -rf "$BACKUP"
 if [ -d "$BUNDLE" ] && ! mv "$BUNDLE" "$BACKUP"; then
-  abort move @EXIT_MOVE@
+  report @EXIT_MOVE@
 fi
 
 if cp -R "$NEW" "$BUNDLE"; then
   rm -rf "$BACKUP"
-  finish done 0
-  open "$BUNDLE" 2>/dev/null || true
-  cleanup
-  exit 0
+  report 0
 fi
 
-# Put the previous version back and start it. The user keeps a working
-# Monitra; only the update failed.
+# Put the previous version back. The user keeps a working Monitra; only the
+# update failed.
 rm -rf "$BUNDLE"
 mv "$BACKUP" "$BUNDLE" 2>/dev/null || true
-abort copy @EXIT_COPY@
+report @EXIT_COPY@
 """
 
 
@@ -473,11 +586,40 @@ def _write_macos_helper(artifact: Path, version: str) -> Path:
     behaviour is not yet verified on hardware.
     """
     bundle = _relaunch_target()
-    script = updates_dir() / f"apply-update-{_safe_token(version)}.sh"
+    token = _safe_token(version)
+    script = updates_dir() / f"apply-update-{token}.sh"
+    replace = updates_dir() / f"apply-update-{token}-replace.sh"
+    codefile = updates_dir() / f"apply-update-{token}.code"
+    # A mount point this application chose, under its own data directory, so
+    # the replace script can name the new bundle without being told at run time.
+    mount = updates_dir() / f"mount-{token}"
+    new_bundle = mount / "Monitra.app"
     pins = " ".join(policy.MACOS_TEAM_ID_PINS)
+
+    replace_text = (
+        _MACOS_REPLACE
+        .replace("@BUNDLE@", _sh_quote(str(bundle)))
+        .replace("@NEW@", _sh_quote(str(new_bundle)))
+        .replace("@CODEFILE@", _sh_quote(str(codefile)))
+        .replace("@EXIT_MOVE@", str(MAC_EXIT_MOVE))
+        .replace("@EXIT_COPY@", str(MAC_EXIT_COPY))
+    )
+    replace.write_text(replace_text, encoding="utf-8")
+    replace.chmod(0o700)
+
+    # The privileged invocation: `do shell script` with the replace script's
+    # path as an AppleScript string literal, passed through AppleScript's own
+    # `quoted form of` so the shell sees exactly one argument whatever the path
+    # contains. The whole `-e` argument is then single-quoted for bash.
+    osascript = (
+        'do shell script "/bin/bash " & quoted form of '
+        + _applescript_quote(str(replace))
+        + " with administrator privileges"
+    )
+
     filled = (
         _MACOS_HELPER
-        .replace("@VERSION@", _safe_token(version))
+        .replace("@VERSION@", token)
         .replace("@PID@", str(_current_pid()))
         .replace("@DMG@", _sh_quote(str(artifact)))
         .replace("@BUNDLE@", _sh_quote(str(bundle)))
@@ -486,6 +628,10 @@ def _write_macos_helper(artifact: Path, version: str) -> Path:
         .replace("@TRIES@", str(EXIT_WAIT_SECONDS))
         .replace("@REQUIRE_SIGNED@", "0" if policy.unsigned_allowed() else "1")
         .replace("@TEAM_PINS@", _sh_quote(pins))
+        .replace("@MOUNT@", _sh_quote(str(mount)))
+        .replace("@REPLACE@", _sh_quote(str(replace)))
+        .replace("@CODEFILE@", _sh_quote(str(codefile)))
+        .replace("@OSASCRIPT@", _sh_quote(osascript))
         .replace("@EXIT_MOUNT@", str(MAC_EXIT_MOUNT))
         .replace("@EXIT_NO_BUNDLE@", str(MAC_EXIT_NO_BUNDLE))
         .replace("@EXIT_CODESIGN@", str(MAC_EXIT_CODESIGN))
@@ -493,10 +639,16 @@ def _write_macos_helper(artifact: Path, version: str) -> Path:
         .replace("@EXIT_TEAM@", str(MAC_EXIT_TEAM))
         .replace("@EXIT_MOVE@", str(MAC_EXIT_MOVE))
         .replace("@EXIT_COPY@", str(MAC_EXIT_COPY))
+        .replace("@EXIT_AUTH@", str(MAC_EXIT_AUTH))
     )
     script.write_text(filled, encoding="utf-8")
     script.chmod(0o700)
     return script
+
+
+def _applescript_quote(value: str) -> str:
+    """An AppleScript string literal: double-quoted, with `\\` and `"` escaped."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def _safe_token(value: str) -> str:
