@@ -234,6 +234,10 @@ export const ENDPOINTS = {
   SCREENSHOT_DISPLAYS: {
     BASE: `${API_BASE_URL}/screenshot-displays`,
   },
+  // Email Management: who is copied on which email Monitra sends. Administrators only.
+  EMAIL_CC: {
+    BASE: `${API_BASE_URL}/email-cc`,
+  },
   // The activity trail: every recorded user action, read employee-wise by the
   // Logs page. Needs `view_employees`; a leader is answered with their team.
   ACTIVITY_LOGS: {

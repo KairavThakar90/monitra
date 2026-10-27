@@ -298,13 +298,16 @@ class Settings(BaseSettings):
     MONITRA_SUPPORT_EMAIL: str = ""
 
     # ── Standing CC ───────────────────────────────────────────────────────
-    #: Comma-separated addresses copied (visibly, in `Cc`) on every email
+    #: The STARTING list of addresses copied (visibly, in `Cc`) on every email
     #: Monitra sends, except the few that carry a bearer secret or are a
-    #: rehearsal -- see `OutgoingEmail.copy_exempt`. Applied once, where the
-    #: message is built (`provider.build_mime_message`), so a workflow cannot
-    #: forget it and a new one gets it for free. An address that is already a
-    #: recipient is not copied twice; an invalid one is skipped with a warning
-    #: rather than failing every email. Set to an empty value to switch off.
+    #: rehearsal -- see `OutgoingEmail.copy_exempt`. Who is copied on which email
+    #: is now an administrator's decision (Settings -> Email Management,
+    #: docs/EMAIL_MANAGEMENT.md): until one saves, this list is the policy, on every
+    #: email that may be copied; from the first save the saved policy is used and
+    #: this is no longer consulted for it. It is still the fallback for a message
+    #: built outside the outbox. An address that is already a recipient is not
+    #: copied twice; an invalid one is skipped with a warning rather than failing
+    #: every email. Set to an empty value for no starting list.
     EMAIL_CC_ADDRESSES: str = (
         "bharat@storetransform.com,projectmanager663@gmail.com,"
         "hr@storetransform.com,piyush@storetransform.com"

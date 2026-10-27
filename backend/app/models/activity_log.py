@@ -118,6 +118,8 @@ class ActivityLogAction:
     SCREENSHOT_DELETED = "screenshot_deleted"
     #: The deployment-wide size and quality every desktop captures at.
     SCREENSHOT_SETTINGS_UPDATED = "screenshot_settings_updated"
+    #: The deployment-wide list of who is copied on which email.
+    EMAIL_CC_UPDATED = "email_cc_updated"
 
     CLIENT_INVITED = "client_invited"
     CLIENT_INVITATION_RESENT = "client_invitation_resent"

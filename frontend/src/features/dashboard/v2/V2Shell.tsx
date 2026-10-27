@@ -27,6 +27,7 @@ export const SETTINGS_LINKS = [
   { id: "user-management", label: "User Management" },
   { id: "screenshot-management", label: "Screenshot Management" },
   { id: "desktop-notifications", label: "Desktop Notifications" },
+  { id: "email-management", label: "Email Management" },
 ];
 
 /** Brand mark from the Monitra logo: gradient ring + check. */

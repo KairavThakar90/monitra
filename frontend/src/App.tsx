@@ -18,6 +18,7 @@ import { AdminFeedback } from './features/admin/AdminFeedback';
 import { AdminActivityLogs } from './features/admin/AdminActivityLogs';
 import { AdminSettings } from './features/admin/AdminSettings';
 import { AdminDesktopNotifications } from './features/admin/AdminDesktopNotifications';
+import { AdminEmailManagement } from './features/admin/AdminEmailManagement';
 import { AdminUserManagement } from './features/admin/AdminUserManagement';
 import { AdminScreenshotManagementPage } from './features/admin/AdminScreenshotManagementPage';
 import { MaintenanceToast } from './components/MaintenanceToast'
@@ -397,6 +398,14 @@ const AppRoutes: React.FC = () => {
         element={
           <SystemAdminRoute>
             <AdminDesktopNotifications />
+          </SystemAdminRoute>
+        }
+      />
+      <Route
+        path="/admin/settings/email-management"
+        element={
+          <SystemAdminRoute>
+            <AdminEmailManagement />
           </SystemAdminRoute>
         }
       />

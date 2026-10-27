@@ -64,7 +64,13 @@ class SystemSettingKey:
     #: See ``app/services/screenshot_settings.py``.
     SCREENSHOT_SETTINGS = "screenshot_settings"
 
-    ALL = (MAINTENANCE_MODE, DESKTOP_NOTIFICATIONS, SCREENSHOT_SETTINGS)
+    #: Who is copied on which email: ``{"version": int, "addresses": [{"email": str,
+    #: "triggers": [email key]}]}``. Absent until an administrator first saves, in
+    #: which case the policy is the configured standing CC. See
+    #: ``app/services/email_cc.py``.
+    EMAIL_CC = "email_cc"
+
+    ALL = (MAINTENANCE_MODE, DESKTOP_NOTIFICATIONS, SCREENSHOT_SETTINGS, EMAIL_CC)
 
 
 class SystemSetting(Base):

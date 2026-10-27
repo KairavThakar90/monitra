@@ -22,6 +22,7 @@ the worker, which is what suits a backend deployed as serverless functions.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import random
@@ -180,6 +181,20 @@ class EmailOutboxService:
             f"key={row.dedupe_key} user={row.user_id} attempt={attempt}/{max_attempts}"
         )
 
+        # Who is copied is the administrator's current choice (Email Management), read
+        # now -- a single row -- so a change applies to every email not yet sent. A
+        # failed read is not a reason to send without the people they chose, nor to
+        # send to everyone the configuration lists: it is a delivery failure, retried
+        # with backoff like any other.
+        cc: Optional[list[str]] = None
+        cc_error: Optional[BaseException] = None
+        try:
+            from app.services.email_cc import EmailCcService
+
+            cc = EmailCcService.cc_for(db, notification_type)
+        except Exception as exc:  # noqa: BLE001
+            cc_error = exc
+
         # Everything above is a local, so the transaction the claim's re-read just
         # opened can end here. Building the message may download from Drive and
         # sending it waits on SMTP (timeout SMTP_TIMEOUT_SECONDS, per message, in a
@@ -194,7 +209,11 @@ class EmailOutboxService:
                 )
             recipients = json.loads(recipients_json)
             message = builder(json.loads(payload_json), recipients)
-            get_email_provider().send(message)
+            if cc_error is not None:
+                raise EmailDeliveryError(
+                    f"The CC policy could not be read ({type(cc_error).__name__})."
+                ) from cc_error
+            get_email_provider().send(dataclasses.replace(message, cc=tuple(cc or ())))
 
         except EmailNotConfiguredError as exc:
             # Became unsendable between the check above and the send. Give the

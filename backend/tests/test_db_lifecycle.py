@@ -338,15 +338,17 @@ class TestNothingWaitsOnTheNetworkInsideATransaction(unittest.TestCase):
 
     def test_email_is_sent_after_the_transaction_ends(self):
         from app.services.email import outbox
+        from app.services.email.provider import OutgoingEmail
 
         order = []
         provider = SimpleNamespace(send=lambda message: order.append("smtp"))
+        built = OutgoingEmail(to=["a@b.c"], subject="s", html="<p>h</p>", text="t")
         row = SimpleNamespace(
             id=1, attempt_count=1, notification_type="t", payload="{}", recipients='["a@b.c"]',
             max_attempts=3, dedupe_key="k", user_id=2,
         )
         with patch.object(outbox, "end_transaction", side_effect=lambda db: order.append("release")), \
-                patch.object(outbox, "BUILDERS", {"t": lambda payload, recipients: order.append("build") or "message"}), \
+                patch.object(outbox, "BUILDERS", {"t": lambda payload, recipients: order.append("build") or built}), \
                 patch.object(outbox, "get_email_provider", return_value=provider), \
                 patch.object(outbox, "EmailNotificationRepository"):
             self.assertEqual(outbox.EmailOutboxService._send_claimed(MagicMock(), row), "sent")
