@@ -541,6 +541,30 @@ class TimerService(BaseService):
         self.timer_error.emit(refusal)
         return True
 
+    #: What the user is told when a start is refused by the update policy.
+    UPDATE_BLOCKED_MESSAGE = (
+        "A required Monitra update must be installed before a timer can be started."
+    )
+
+    def _refuse_while_update_blocked(self, verb: str) -> bool:
+        """True when a *new* start was refused because a mandatory update is
+        past its deadline.
+
+        The rule lives here, at the layer that mutates tracked time, and not
+        only behind the update screen: a hidden button is not a guarantee, and
+        a start queued while blocked would be delivered after the update with
+        a start instant hours in the past. Only starting is refused. A running
+        timer keeps running, and stopping, heartbeating and uploading are never
+        touched by the update policy -- the backend keeps those routes open for
+        exactly this reason.
+        """
+        updates = getattr(self.runtime, "updates", None)
+        if updates is None or not bool(getattr(updates, "is_blocked", False)):
+            return False
+        self.log.info("refusing to %s tracking: a mandatory update is past its deadline", verb)
+        self.timer_error.emit(self.UPDATE_BLOCKED_MESSAGE)
+        return True
+
     # ── Status ────────────────────────────────────────────────────────────────
 
     def _set_status(self, status: str) -> None:
@@ -615,6 +639,8 @@ class TimerService(BaseService):
             by system-initiated callers, which are not scoped to a browsed day.
         """
         if self._refuse_for_date(for_date, "start"):
+            return
+        if self._refuse_while_update_blocked("start"):
             return
         if self.is_running():
             if self.task_id != task_id:
@@ -1084,6 +1110,10 @@ class TimerService(BaseService):
         """
         if self._refuse_for_date(for_date, "start"):
             return
+        # Checked before the stop for the same reason as the date: a refused
+        # switch must leave the running session running.
+        if self._refuse_while_update_blocked("switch"):
+            return
         if self.is_running():
             self.stop_tracking()
         self.start_tracking(project_id, task_id, task_name)
@@ -1444,6 +1474,10 @@ class TimerService(BaseService):
             self._leave_break("a task is already running")
             return False
         if self._refuse_for_date(for_date, "resume"):
+            return False
+        # Refused before the break is left, so the held task stays held and
+        # Break Out works again once the update is installed.
+        if self._refuse_while_update_blocked("resume"):
             return False
 
         task = dict(self._pre_break_task)

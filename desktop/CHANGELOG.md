@@ -20,6 +20,21 @@ re-grant a permission.
 
 ## [Unreleased]
 
+### Added
+- **Mandatory updates with a 24-hour grace period.** When your administrator
+  publishes a required update, the update prompt now says so, offers "Later"
+  with a countdown to the deadline, and comes back at every check. The
+  deadline is set by the server the first time your Monitra sees the update;
+  restarting, going offline or changing the computer's clock does not move it.
+  Once it passes, Monitra shows an "Update required" page instead of the
+  dashboard until the update is installed. A timer that is running keeps
+  running through all of this and through the update's restart; only starting
+  a new timer waits for the update.
+- Monitra reports how each update attempt ended (installed, failed, refused)
+  so support can see it without asking for a log.
+- "Check for Updates" shows a release you postponed again, instead of saying
+  nothing.
+
 ## [1.3.3]
 
 The installer and the macOS bundles are still unsigned (see 1.3.2 below for

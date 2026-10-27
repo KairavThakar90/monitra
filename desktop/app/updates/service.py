@@ -51,3 +51,32 @@ class UpdateApiService:
             raise ApiError("Could not check for updates: network error.")
         except Exception as exc:  # noqa: BLE001
             raise ApiError(f"Could not check for updates: {exc}")
+
+    def report_install_outcome(self, report: Dict[str, Any]) -> Dict[str, Any]:
+        """Tell the backend how an update attempt ended.
+
+        `report` is the payload `UpdateService` builds: the client event id
+        (what makes a retry one row on the server), the target and previous
+        versions, the outcome, the failure category, a short detail, and the
+        instant with the client's own clock beside it so the server places it
+        by age. The backend answers with the stored row; a repeat is answered
+        with the same row. This endpoint stays open to a client the backend
+        is otherwise refusing, so a failed update can always be reported.
+        """
+        try:
+            response = self.api_client.post(
+                "/desktop/update-reports", json_data=report, timeout=TIMEOUT_FAST,
+            )
+            return response.json()
+        except ApiHttpError as exc:
+            if exc.status_code == 401:
+                raise ApiError("Session expired. Please log in again.", status_code=401)
+            log.warning("update report refused: HTTP %s", exc.status_code)
+            raise ApiError(
+                f"Update report refused (HTTP {exc.status_code}).",
+                status_code=exc.status_code,
+            )
+        except ApiConnectionError:
+            raise ApiError("Could not report the update: network error.")
+        except Exception as exc:  # noqa: BLE001
+            raise ApiError(f"Could not report the update: {exc}")

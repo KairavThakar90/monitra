@@ -1624,6 +1624,333 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "Desktop Releases",
+      "description": "Release management (administrators: manage_desktop_releases). A version record carries the policy (targets, mandatory, grace hours, floor, effective time, lifecycle) over the artifact rows CI registers. docs/Desktop_Release_Runbook.md section 8.",
+      "item": [
+        {
+          "name": "List version records",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/desktop/releases/versions",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "desktop",
+                "releases",
+                "versions"
+              ]
+            },
+            "description": "Every version with its artifacts, readiness and derived status (superseded when a newer published version covers every platform it targets)."
+          },
+          "response": []
+        },
+        {
+          "name": "Create a version record (draft)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/desktop/releases/versions",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "desktop",
+                "releases",
+                "versions"
+              ]
+            },
+            "description": "Creates the record and, optionally, its artifacts through the same hosting validation CI's registrations pass. Draft: affects nobody.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"version\": \"1.4.0\",\n  \"title\": \"Autumn release\",\n  \"release_notes\": \"- Faster startup\",\n  \"target_platforms\": [\n    \"win32\",\n    \"darwin\"\n  ],\n  \"mandatory\": true,\n  \"grace_hours\": 24,\n  \"required_min_version\": null,\n  \"effective_at\": null,\n  \"artifacts\": []\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Version detail (stats + history)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/desktop/releases/versions/1.4.0",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "desktop",
+                "releases",
+                "versions",
+                "1.4.0"
+              ]
+            },
+            "description": "Artifacts, readiness, targeted users, grace periods (pending/expired/satisfied), install reports, adoption, the announcement's outbox counts, and the audit history."
+          },
+          "response": []
+        },
+        {
+          "name": "Amend a version record",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/desktop/releases/versions/1.4.0",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "desktop",
+                "releases",
+                "versions",
+                "1.4.0"
+              ]
+            },
+            "description": "Title, notes, policy. The platforms of a published version cannot change.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"grace_hours\": 48,\n  \"mandatory\": true\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Validate (readiness)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/desktop/releases/versions/1.4.0/validate",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "desktop",
+                "releases",
+                "versions",
+                "1.4.0",
+                "validate"
+              ]
+            },
+            "description": "Records a passing readiness check as `validated`; lists every problem otherwise."
+          },
+          "response": []
+        },
+        {
+          "name": "Publish the version",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/desktop/releases/versions/1.4.0/publish",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "desktop",
+                "releases",
+                "versions",
+                "1.4.0",
+                "publish"
+              ]
+            },
+            "description": "All required artifacts for the targets, the record and its audit row in one commit; the targeted announcement is queued. Signed-in administrator only (not the release credential)."
+          },
+          "response": []
+        },
+        {
+          "name": "Withdraw the version",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{auth_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/desktop/releases/versions/1.4.0/withdraw?reason=installer%20crashes%20on%20start",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "desktop",
+                "releases",
+                "versions",
+                "1.4.0",
+                "withdraw"
+              ],
+              "query": [
+                {
+                  "key": "reason",
+                  "value": "installer%20crashes%20on%20start"
+                }
+              ]
+            },
+            "description": "Artifacts stop being offered at once. Grace periods already running are kept; their enforcement is suspended until a corrective release with the same floor is published."
+          },
+          "response": []
+        },
+        {
+          "name": "Update policy (desktop client)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{employee_token}}",
+                "type": "text"
+              },
+              {
+                "key": "User-Agent",
+                "value": "Monitra/1.3.3",
+                "type": "text"
+              },
+              {
+                "key": "X-Monitra-Platform",
+                "value": "win32",
+                "type": "text"
+              },
+              {
+                "key": "X-Monitra-Arch",
+                "value": "AMD64",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/desktop/update-policy",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "desktop",
+                "update-policy"
+              ]
+            },
+            "description": "Where this desktop stands under the active mandatory-update policy: required version, grace deadline (server clock), blocked. Exempt from the 426 gate."
+          },
+          "response": []
+        },
+        {
+          "name": "Report an update outcome (desktop client)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{employee_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "User-Agent",
+                "value": "Monitra/1.3.3",
+                "type": "text"
+              },
+              {
+                "key": "X-Monitra-Platform",
+                "value": "win32",
+                "type": "text"
+              },
+              {
+                "key": "X-Monitra-Arch",
+                "value": "AMD64",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{backend_url}}/api/v1/desktop/update-reports",
+              "host": [
+                "{{backend_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "desktop",
+                "update-reports"
+              ]
+            },
+            "description": "Idempotent on client_event_id. Outcomes: success, failed, not-applied, interrupted, download-failed, verification-failed, install-unavailable, cancelled.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_event_id\": \"4b1f2c3d4e5f6a7b8c9d0e1f2a3b4c5d\",\n  \"target_version\": \"1.4.0\",\n  \"from_version\": \"1.3.3\",\n  \"outcome\": \"success\",\n  \"category\": null,\n  \"detail\": null,\n  \"occurred_at\": \"2026-11-02T10:00:00Z\",\n  \"client_time\": \"2026-11-02T10:00:00Z\"\n}"
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ],
   "variable": [

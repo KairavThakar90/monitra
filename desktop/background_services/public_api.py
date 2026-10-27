@@ -539,13 +539,38 @@ class BackgroundApi:
         """
         return self._runtime.updates.start_update()
 
-    def check_for_updates_now(self) -> None:
+    def check_for_updates_now(self, manual: bool = False) -> None:
         """Ask the backend immediately, without disturbing the schedule.
 
         Dropped silently if a check or a download is already running, so a
         repeatedly-clicked menu entry produces one request, not one per click.
+        `manual` is the user's own "Check for Updates": the answer is shown
+        even for a release they postponed, because they asked.
         """
-        self._runtime.updates.check_now()
+        self._runtime.updates.check_now(manual=manual)
+
+    def update_blocked(self) -> bool:
+        """True once a mandatory update's grace period has run out.
+
+        The backend has stopped answering this client's protected requests
+        (HTTP 426) and the desktop must not offer normal use until the
+        required version is installed and verified. Derived from the
+        backend's own deadline and clock -- never from this machine's wall
+        clock -- and re-evaluated on every check and at the deadline itself.
+        Safe to read from any thread.
+        """
+        return self._runtime.updates.is_blocked
+
+    def update_requirement(self):
+        """The backend's statement that this desktop must update (an
+        `UpdateRequirement`: required version, deadline on the server clock,
+        title), or None when nothing is required."""
+        return self._runtime.updates.requirement
+
+    def update_remaining_seconds(self) -> Optional[int]:
+        """Seconds of grace left, on the server's clock, or None when no
+        deadline applies. For the countdown; it never decides anything."""
+        return self._runtime.updates.requirement_remaining_seconds()
 
     def postpone_update(self) -> None:
         """The user chose "Later" for the release on offer.

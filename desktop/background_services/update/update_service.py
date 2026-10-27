@@ -54,6 +54,8 @@ from __future__ import annotations
 import random
 import sys
 import time
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
@@ -70,7 +72,40 @@ from core.service import LoopService, ServiceState
 from .downloader import DownloadError, clear_stale_downloads, download_and_verify
 from .installer import InstallError, can_install, launch_installer, read_and_clear_result
 from .signature import verify_installer
-from .state import ReleaseInfo, UpdateState, can_transition
+from .state import ReleaseInfo, UpdateRequirement, UpdateState, can_transition
+
+#: The backend's "you must update by <deadline>", persisted in `app_state` so
+#: a restart -- and an offline start -- keeps the deadline. Written only from
+#: a successful check (the server's own statement), read at start, dropped
+#: when the running version satisfies it or the backend withdraws it.
+REQUIREMENT_KEY = "updates.requirement"
+
+#: Install reports not yet delivered to the backend, oldest first. Bounded.
+PENDING_REPORTS_KEY = "updates.pending_reports"
+MAX_PENDING_REPORTS = 20
+
+#: What the installer was asked to do, written just before the application
+#: exits for it, so the next launch can report "from X to Y" rather than only
+#: "Y did not happen".
+INSTALL_ATTEMPT_KEY = "updates.install_attempt"
+
+#: De-duplication key for the report upload task.
+REPORT_TASK_KEY = "update-report"
+
+#: The outcome a failure category maps to, for the backend's report.
+_CATEGORY_OUTCOMES = {
+    "checksum-failed": "verification-failed",
+    "signature-refused": "verification-failed",
+    "download-incomplete": "download-failed",
+    "http-error": "download-failed",
+    "no-connection": "download-failed",
+    "timeout": "download-failed",
+    "url-refused": "download-failed",
+    "disk-space": "download-failed",
+    "download-failed": "download-failed",
+    "install-unavailable": "install-unavailable",
+    "cancelled": "cancelled",
+}
 
 #: Where the announced versions are persisted. One row in `app_state`, which
 #: `LocalCache` already owns -- no new table, no second store.
@@ -209,6 +244,15 @@ class UpdateService(LoopService):
     download_progress = Signal(int, int)
     update_failed = Signal(str)
     install_started = Signal(str)
+    #: The backend's requirement changed: an `UpdateRequirement`, or None
+    #: when nothing is required any more. Emitted on a change of the required
+    #: version, deadline or blocked flag -- never on every check.
+    requirement_changed = Signal(object)
+    #: The application must (True) or may again (False) be used normally.
+    #: Edge-triggered: once when the grace period runs out (by the backend's
+    #: word, or by its clock reaching the deadline while the app is open),
+    #: once when the requirement is satisfied or withdrawn.
+    blocked_changed = Signal(bool)
 
     #: Cadence once a check has succeeded. A release is a human-scale event;
     #: polling faster buys nothing and costs a request per client per interval.
@@ -264,6 +308,21 @@ class UpdateService(LoopService):
         #: installed or withdrawn.
         self._postponed: Optional[Dict[str, Any]] = None
         self._postponed_loaded = False
+        #: The backend's requirement (see REQUIREMENT_KEY), or None. Written
+        #: only through `_set_requirement`, which is what makes the two
+        #: signals above edge-triggered.
+        self._requirement: Optional[UpdateRequirement] = None
+        #: True when the requirement was read back from disk by this process
+        #: and no check has replaced it yet: its clock is then measured from
+        #: the wall clock at receipt, not from a monotonic clock this process
+        #: never had (see `UpdateRequirement.server_now`).
+        self._requirement_restarted = False
+        #: Whether normal use is blocked. A plain bool, read from the GUI
+        #: thread and the timer's thread; written only through `_set_blocked`.
+        self._blocked = False
+        #: The next check is the user's own "Check for Updates": its answer is
+        #: offered even for a postponed release. Consumed by the check.
+        self._manual_check = False
         #: What the previous process's installer helper reported, read once at
         #: start: ``("success"|"failed"|"interrupted"|"not-applied", target)``.
         #: None when no update was in flight. For diagnostics and tests; the
@@ -297,14 +356,38 @@ class UpdateService(LoopService):
     def force_update_pending(self) -> bool:
         """True when the user must update before carrying on.
 
-        Deliberately **not persisted**. A mandatory update is a live policy the
-        backend states on a successful check; remembering it across restarts
-        would mean a client that once saw a force flag could lock its user out
-        permanently while the backend was unreachable and unable to say
-        otherwise. A lockout must always be something the server is currently
-        asserting.
+        Two sources. A backend with release management states a *requirement*
+        with a deadline (`is_blocked`, persisted with the deadline it came
+        with, so a restart cannot reset it -- the deadline is the server's and
+        the server enforces it either way). A backend without one says
+        `force_update`, which is deliberately **not persisted**: a bare flag
+        remembered across restarts could lock a user out while the backend
+        was unreachable and unable to say otherwise.
         """
-        return self._force_pending
+        return self._blocked or self._force_pending
+
+    @property
+    def is_blocked(self) -> bool:
+        """True once a mandatory update's grace period has run out.
+
+        Safe to read from any thread (a bool, assigned whole). Written only by
+        `_set_blocked`, from the backend's own `blocked` or from its clock
+        reaching the deadline it gave -- never from this machine's wall clock.
+        """
+        return self._blocked
+
+    @property
+    def requirement(self) -> Optional[UpdateRequirement]:
+        """The backend's statement that this desktop must update, or None."""
+        return self._requirement
+
+    def requirement_remaining_seconds(self) -> Optional[int]:
+        """Seconds of grace left on the server's clock, or None without a
+        deadline. For the countdown; `is_blocked` is what decides."""
+        requirement = self._requirement
+        if requirement is None:
+            return None
+        return requirement.remaining_seconds(restarted=self._requirement_restarted)
 
     @property
     def pending_release(self) -> Optional[ReleaseInfo]:
@@ -347,14 +430,21 @@ class UpdateService(LoopService):
         """
         return self._latest
 
-    def check_now(self) -> None:
+    def check_now(self, manual: bool = False) -> None:
         """Request an immediate check (safe from any thread).
 
-        Used by login and by the manual "Check for updates" action. It does not
-        disturb the schedule: a successful check restamps `last_check_at`, so
-        the next automatic check is ten hours from *this* one, which is what a
-        user who just checked would expect.
+        Used by login, by the manual "Check for updates" action and by the
+        API client when the backend answers 426. It does not disturb the
+        schedule: a successful check restamps `last_check_at`, so the next
+        automatic check is ten hours from *this* one, which is what a user
+        who just checked would expect.
+
+        `manual` says the user asked: the answer is then offered even for a
+        release they postponed, because a silent "Check for Updates" reads as
+        a broken button.
         """
+        if manual:
+            self._manual_check = True
         if self.is_busy:
             # A second check on top of one already running would be a second
             # request for the same answer. Dropped rather than queued.
@@ -381,6 +471,12 @@ class UpdateService(LoopService):
         self._latest = None
         self._first_check_done = False
         self._force_pending = False
+        self._manual_check = False
+        # The requirement was the signed-out account's. Logout wipes
+        # `app_state` with it; the next account's own requirement comes with
+        # that account's first check. The blocked edge is released so the
+        # sign-in screen is reachable.
+        self._set_requirement(None, persist=False)
         if self._state in (UpdateState.UPDATE_AVAILABLE, UpdateState.FAILED):
             self._set_update_state(UpdateState.IDLE)
         self._publish_count(0)
@@ -421,10 +517,17 @@ class UpdateService(LoopService):
         `installer-launch`, `cancelled`.
         """
         self.log.error("update failed: %s%s", message, f" ({detail})" if detail else "")
-        self._event(
-            "failed", category=category,
-            version=self._release.version if self._release is not None else None,
-        )
+        target = self._release.version if self._release is not None else None
+        self._event("failed", category=category, version=target)
+        if target is not None:
+            # Told to the backend too, so the release history can show that
+            # this machine tried and why it did not get there. The report is
+            # durable and retried; it never blocks the user's own retry.
+            self._queue_report(
+                target_version=target, from_version=version.VERSION,
+                outcome=_CATEGORY_OUTCOMES.get(category, "failed"),
+                category=category, detail=message,
+            )
         self.health.last_error = message
         self._set_update_state(UpdateState.FAILED)
         self.update_failed.emit(message)
@@ -542,6 +645,11 @@ class UpdateService(LoopService):
         release = self._release
         if release is None:
             return
+        if self._blocked:
+            # The grace period is over. A "Later" that reached here came from
+            # a control that had not yet heard the edge; it changes nothing.
+            self.log.info("postpone refused: the update's grace period has run out")
+            return
         now = _now()
         previous = self._current_postponement()
         if previous is not None and previous.get("version") == release.version:
@@ -658,6 +766,11 @@ class UpdateService(LoopService):
             self._save_announced_versions()
         self._publish_count(len(pruned))
         self._current_postponement()
+        # The backend's requirement from the last run, if the running version
+        # does not already satisfy it. Its deadline is the server's; a restart
+        # neither resets nor extends it, and the application blocks at the
+        # deadline even before the first check of this session can run.
+        self._load_requirement()
         # A partial download from a process that was killed mid-transfer cannot
         # be resumed and has no value; leaving it would spend the user's disk
         # on nothing. Cheap, and it runs before any download of our own.
@@ -730,6 +843,14 @@ class UpdateService(LoopService):
         self.last_install_outcome = (outcome, target)
         self._event("install-result", version=target, outcome=outcome,
                     exit_code=code, helper_stage=result.get("stage"))
+        attempt = self._load_state(INSTALL_ATTEMPT_KEY)
+        from_version = attempt.get("from_version") if isinstance(attempt, dict) else None
+        self._save_state(INSTALL_ATTEMPT_KEY, None)
+        self._queue_report(
+            target_version=target, from_version=from_version if _version_tuple(from_version) else None,
+            outcome=outcome, category=None,
+            detail=f"exit_code={code} stage={result.get('stage')} running={running}",
+        )
         notifications = getattr(self.runtime, "notifications", None)
         if notifications is not None:
             notifications.notify(message, level, title=title, key="update-result")
@@ -762,17 +883,24 @@ class UpdateService(LoopService):
             self._first_check_done = True
             return self._startup_delay_ms()
 
+        # The deadline is kept on the server's clock. Whether it has passed is
+        # re-read on every tick -- including the ticks that cannot reach the
+        # backend -- so the application blocks at the deadline while offline
+        # or signed out just as it does online. `_next_interval` makes the
+        # loop wake for the deadline itself.
+        self._refresh_blocked_from_clock()
+
         hold_reason = self._should_hold()
         if hold_reason:
             self.log.debug("update check held: %s", hold_reason)
-            return self.HOLD_INTERVAL_MS
+            return self._next_interval(self.HOLD_INTERVAL_MS)
 
         # A download or install in progress owns the updater; a scheduled check
         # must not run underneath it and re-answer a question already acted on.
         if self._state in (UpdateState.DOWNLOADING, UpdateState.VERIFYING,
                            UpdateState.READY_TO_INSTALL, UpdateState.INSTALLING):
             self.log.debug("update check skipped: %s in progress", self._state)
-            return self.HOLD_INTERVAL_MS
+            return self._next_interval(self.HOLD_INTERVAL_MS)
 
         self._set_update_state(UpdateState.CHECKING)
         self.log.info("update check started")
@@ -787,7 +915,7 @@ class UpdateService(LoopService):
             self._event("check-unavailable", status=getattr(exc, "status_code", None))
             self.heartbeat(success=False)
             self._set_update_state(UpdateState.IDLE)
-            return self._jittered(self.HOLD_INTERVAL_MS)
+            return self._next_interval(self._jittered(self.HOLD_INTERVAL_MS))
 
         # The answer is a claim to be checked, not a value to be trusted: JSON
         # `null`, an array or a bare string is valid JSON and is not a release
@@ -801,7 +929,7 @@ class UpdateService(LoopService):
             )
             self.heartbeat(success=False)
             self._set_update_state(UpdateState.IDLE)
-            return self._jittered(self.HOLD_INTERVAL_MS)
+            return self._next_interval(self._jittered(self.HOLD_INTERVAL_MS))
         payload = checked
 
         self._latest = payload
@@ -822,14 +950,22 @@ class UpdateService(LoopService):
         # session. A user who dismissed the toast still has the menu entry.
         try:
             self._record(payload)
+            # The requirement before the announcement: the dialog the
+            # announcement raises reads the deadline the requirement carries.
+            self._apply_requirement(payload)
             self._announce(payload)
         finally:
             # Whatever the handlers above did, the check itself is over. Left in
             # CHECKING it would read as busy -- dropping the next manual check
             # and refusing Update Now -- until something else moved it.
+            self._manual_check = False
             if self._state == UpdateState.CHECKING:
                 self._set_update_state(UpdateState.IDLE)
-        return self._jittered(self.CHECK_INTERVAL_MS)
+        # A report the previous attempt could not deliver goes now, while the
+        # backend is known to answer; never on the GUI thread, never blocking
+        # the check.
+        self._send_pending_reports()
+        return self._next_interval(self._jittered(self.CHECK_INTERVAL_MS))
 
     def _checked_payload(self, payload: Any) -> Optional[Dict[str, Any]]:
         """The backend's answer, validated and normalised, or None if unusable.
@@ -944,16 +1080,20 @@ class UpdateService(LoopService):
         self._force_pending = bool(release is not None and release.force_update)
         self._set_update_state(UpdateState.UPDATE_AVAILABLE)
 
-        if release is not None and not self._force_pending:
+        if release is not None and not self._force_pending and not release.mandatory:
             # An optional, installable release follows the reminder policy. A
             # "Later" is remembered durably, so neither the next check nor the
             # next login brings the dialog straight back; it returns when due,
             # and as a final reminder once the user has put it off enough.
             stage = self.reminder_stage(announced)
+            if stage is None and self._manual_check:
+                # The user asked. A postponed release is still the answer to
+                # "is there an update?", so it is offered again, as a reminder.
+                stage = STAGE_REMINDER
             if stage is None:
                 self.log.debug("update %s was postponed recently; not re-offering yet", announced)
                 return
-            if stage == STAGE_INITIAL and announced == self._announced_version:
+            if stage == STAGE_INITIAL and announced == self._announced_version and not self._manual_check:
                 # Already told them this session and they have not answered
                 # (the dialog is still up, or was closed by a logout).
                 return
@@ -969,7 +1109,8 @@ class UpdateService(LoopService):
             # the user the same thing twice in the same moment.
             return
 
-        if announced == self._announced_version and not self._force_pending:
+        mandatory = self._force_pending or bool(release is not None and release.mandatory)
+        if announced == self._announced_version and not mandatory:
             # Already told them this session. A mandatory update is the one
             # exception -- it is re-offered because the user cannot carry on
             # until it is resolved, and a dialog they dismissed by restarting
@@ -977,20 +1118,26 @@ class UpdateService(LoopService):
             return
         self._announced_version = announced
 
+        # A mandatory release with a grace period is re-offered on every
+        # check; the words say whether this is the first time or a reminder
+        # after a "Later", and the dialog itself reads the deadline.
+        stage = STAGE_INITIAL
+        if mandatory and release is not None and self.reminder_stage(announced) != STAGE_INITIAL:
+            stage = STAGE_REMINDER
         download_url = payload.get("download_url") or ""
         self.log.info(
-            "update available: %s (installable=%s, mandatory=%s)",
-            announced, release is not None, self._force_pending,
+            "update available: %s (installable=%s, mandatory=%s, blocked=%s)",
+            announced, release is not None, mandatory, self._blocked,
         )
         self._event("offered", version=announced, installable=release is not None,
-                    mandatory=self._force_pending, stage_name=STAGE_INITIAL)
+                    mandatory=mandatory, stage_name=stage)
         self.update_available.emit(announced, download_url)
         if release is not None:
             # The mandatory dialog path. Emitted only for a release that can
             # actually be installed -- one with a verified-shape URL and a
             # digest -- so the UI never offers "Update Now" for something it
             # cannot verify.
-            self.update_offered.emit(release, self._force_pending, STAGE_INITIAL)
+            self.update_offered.emit(release, mandatory, stage)
             return
 
         notifications = getattr(self.runtime, "notifications", None)
@@ -1138,6 +1285,12 @@ class UpdateService(LoopService):
         self._set_update_state(UpdateState.INSTALLING)
         self.log.info("installer launched for version %s", release.version)
         self._event("install-started", version=release.version)
+        # What is being attempted, for the next launch's report: the helper
+        # records only the target and the exit code, not where it came from.
+        self._save_state(INSTALL_ATTEMPT_KEY, {
+            "from_version": version.VERSION, "target_version": release.version,
+            "started_at": time.time(),
+        })
         # The helper is already waiting for this process to exit. Quitting is
         # the caller's job, and it is an ordinary quit: the normal shutdown
         # path flushes the cache, drains what it can and closes the database,
@@ -1160,3 +1313,187 @@ class UpdateService(LoopService):
     def _jittered(interval_ms: int) -> int:
         """Spread a fleet's checks out so they do not arrive in lockstep."""
         return int(interval_ms * (0.85 + random.random() * 0.3))
+
+    # ── The backend's requirement, and the deadline ──────────────────────────
+
+    def _load_state(self, key: str) -> Any:
+        """One `app_state` row, or None. Never raises."""
+        if self._cache is None:
+            return None
+        try:
+            return self._cache.load_app_state(key)
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not read %s", key)
+            return None
+
+    def _save_state(self, key: str, value: Any) -> None:
+        if self._cache is None:
+            return
+        try:
+            self._cache.save_app_state(key, value)
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not write %s", key)
+
+    def _load_requirement(self) -> None:
+        """Read the persisted requirement at start, if the running version
+        does not already satisfy it.
+
+        A requirement satisfied by the version now running has served its
+        purpose: it is dropped here, which is the "cleared only after the
+        installed version is verified" rule -- nothing clears it earlier, and
+        nothing clears it on the installer's word alone.
+        """
+        requirement = UpdateRequirement.from_record(self._load_state(REQUIREMENT_KEY))
+        if requirement is None:
+            return
+        if not newer_than_installed([requirement.required_version], version.VERSION):
+            self.log.info(
+                "UPDATE_REQUIREMENT_SATISFIED required=%s running=%s",
+                requirement.required_version, version.VERSION,
+            )
+            self._save_state(REQUIREMENT_KEY, None)
+            return
+        self._requirement_restarted = True
+        self._set_requirement(requirement, persist=False)
+
+    def _apply_requirement(self, payload: Dict[str, Any]) -> None:
+        """Take the backend's statement from a successful check.
+
+        The backend's answer replaces whatever was persisted, including one
+        that said "blocked": the server is the authority, and a requirement
+        it no longer states (satisfied, withdrawn, or never this user's) is
+        gone. A requirement for a version this build already satisfies is
+        not kept either.
+        """
+        requirement = UpdateRequirement.from_payload(payload)
+        if requirement is not None and not newer_than_installed(
+            [requirement.required_version], version.VERSION,
+        ):
+            requirement = None
+        self._requirement_restarted = False
+        self._set_requirement(requirement, persist=True)
+
+    def _set_requirement(self, requirement: Optional[UpdateRequirement], *, persist: bool) -> None:
+        """The one place the requirement changes. Edge-triggered signals."""
+        previous = self._requirement
+        self._requirement = requirement
+        if persist:
+            self._save_state(REQUIREMENT_KEY, requirement.to_record() if requirement else None)
+        changed = (
+            (previous is None) != (requirement is None)
+            or (previous is not None and requirement is not None and (
+                previous.required_version != requirement.required_version
+                or previous.deadline_at != requirement.deadline_at
+                or previous.blocked_by_server != requirement.blocked_by_server
+            ))
+        )
+        if changed:
+            if requirement is None:
+                self._event("requirement-cleared")
+            else:
+                self._event(
+                    "requirement", required=requirement.required_version,
+                    deadline=requirement.deadline_at, blocked=requirement.blocked_by_server,
+                )
+            self.requirement_changed.emit(requirement)
+        self._refresh_blocked_from_clock()
+
+    def _refresh_blocked_from_clock(self) -> None:
+        """Re-read whether the deadline has passed, and publish the edge."""
+        requirement = self._requirement
+        blocked = requirement is not None and requirement.expired(restarted=self._requirement_restarted)
+        self._set_blocked(blocked)
+
+    def _set_blocked(self, blocked: bool) -> None:
+        if blocked == self._blocked:
+            return
+        self._blocked = blocked
+        requirement = self._requirement
+        self._event(
+            "blocked" if blocked else "unblocked",
+            required=requirement.required_version if requirement else None,
+        )
+        (self.log.warning if blocked else self.log.info)(
+            "UPDATE_%s required=%s", "BLOCKED" if blocked else "UNBLOCKED",
+            requirement.required_version if requirement else None,
+        )
+        self.blocked_changed.emit(blocked)
+
+    def _next_interval(self, interval_ms: int) -> int:
+        """`interval_ms`, or sooner if the deadline falls before it.
+
+        The loop then wakes at the deadline and `_refresh_blocked_from_clock`
+        publishes the edge within a second of it -- while the application
+        stays open, online or not. A deadline already past wakes the loop at
+        the hold cadence, so the backend's own verdict is fetched promptly.
+        """
+        remaining = self.requirement_remaining_seconds()
+        if remaining is None or self._blocked:
+            return interval_ms
+        return max(1000, min(interval_ms, remaining * 1000 + 1000))
+
+    # ── Install reports ──────────────────────────────────────────────────────
+
+    def _queue_report(
+        self, *, target_version: str, from_version: Optional[str], outcome: str,
+        category: Optional[str], detail: Optional[str],
+    ) -> None:
+        """Record what happened, durably, and try to deliver it.
+
+        The report carries the instant and this machine's clock so the backend
+        places it by age, and a client event id so a retried delivery is one
+        row there. Never a path, never a token: the version, the outcome, the
+        category and a short message.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        report = {
+            "client_event_id": uuid.uuid4().hex,
+            "target_version": target_version,
+            "from_version": from_version,
+            "outcome": outcome,
+            "category": category,
+            "detail": (detail or "")[:500] or None,
+            "occurred_at": now,
+            "client_time": now,
+        }
+        pending = self._load_pending_reports()
+        pending.append(report)
+        self._save_state(PENDING_REPORTS_KEY, pending[-MAX_PENDING_REPORTS:])
+        self._send_pending_reports()
+
+    def _load_pending_reports(self) -> List[Dict[str, Any]]:
+        stored = self._load_state(PENDING_REPORTS_KEY)
+        if not isinstance(stored, list):
+            return []
+        return [item for item in stored if isinstance(item, dict) and item.get("client_event_id")]
+
+    def _send_pending_reports(self) -> None:
+        """Deliver queued reports on the task pool. Safe to call from any
+        thread; de-duplicated by key so two callers produce one upload."""
+        pending = self._load_pending_reports()
+        if not pending:
+            return
+        tasks = getattr(self.runtime, "tasks", None)
+        api_client = getattr(self.runtime, "api_client", None)
+        if tasks is None or api_client is None or not getattr(api_client, "access_token", None):
+            return
+
+        def deliver() -> List[str]:
+            delivered: List[str] = []
+            for report in pending:
+                self._update_api.report_install_outcome(report)
+                delivered.append(report["client_event_id"])
+            return delivered
+
+        def on_success(delivered: List[str]) -> None:
+            remaining = [r for r in self._load_pending_reports() if r["client_event_id"] not in delivered]
+            self._save_state(PENDING_REPORTS_KEY, remaining)
+            self._event("reported", count=len(delivered))
+
+        def on_error(exc: BaseException) -> None:
+            # Kept for the next successful check; a report is never lost to
+            # a network blip and never retried in a loop of its own.
+            self.log.info("update report not delivered yet: %s", exc)
+
+        tasks.submit(deliver, on_success=on_success, on_error=on_error,
+                     key=REPORT_TASK_KEY, guard_generation=False)

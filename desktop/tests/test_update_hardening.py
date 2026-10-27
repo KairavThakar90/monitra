@@ -1450,11 +1450,48 @@ class TestUpdateDialog:
         assert dialog._later_button is not None
         assert dialog._update_button.text() == "Update Now"
 
-    def test_a_mandatory_update_has_no_later(self, qapp):
+    def test_a_mandatory_update_past_its_deadline_has_no_later(self, qapp):
         from ui.update_dialog import UpdateDialog
 
-        dialog = UpdateDialog(_release(), mandatory=True)
+        dialog = UpdateDialog(_release(mandatory=True, blocked=True), mandatory=True, blocked=True)
         assert dialog._later_button is None
+        assert "deadline for this update has passed" in dialog.findChild(
+            type(dialog._status), "UpdateBlurb"
+        ).text()
+
+    def test_a_mandatory_update_inside_its_grace_period_still_offers_later(self, qapp):
+        """The 24-hour rule: required, but postponable until the deadline the
+        backend set. The countdown reads the service; here it reads a stub."""
+        from ui.update_dialog import UpdateDialog
+
+        dialog = UpdateDialog(
+            _release(mandatory=True, deadline_at=1_800_000_000.0), mandatory=True,
+            remaining_seconds=lambda: 23 * 3600 + 59 * 60 + 5, blocked=False,
+        )
+        assert dialog._later_button is not None
+        assert dialog._deadline_value.text() == "23 h 59 min"
+        blurb = dialog.findChild(type(dialog._status), "UpdateBlurb").text()
+        assert "choose Later and keep working until" in blurb
+        assert "cannot be used until the update is installed" in blurb
+
+        # The grace period ends while the prompt is open: Later goes, the
+        # words change, the countdown reads "Passed".
+        dialog.set_blocked()
+        assert dialog._later_button is None
+        assert dialog._deadline_value.text() == "Passed"
+        assert "deadline for this update has passed" in dialog.findChild(
+            type(dialog._status), "UpdateBlurb"
+        ).text()
+
+    def test_the_countdown_words(self):
+        from ui.update_dialog import UpdateDialog
+
+        assert UpdateDialog.format_remaining(None) == "—"
+        assert UpdateDialog.format_remaining(0) == "Passed"
+        assert UpdateDialog.format_remaining(-5) == "Passed"
+        assert UpdateDialog.format_remaining(30) == "under a minute"
+        assert UpdateDialog.format_remaining(12 * 60) == "12 min"
+        assert UpdateDialog.format_remaining(24 * 3600) == "24 h 00 min"
 
     def test_later_closes_and_says_so(self, qapp):
         from ui.update_dialog import UpdateDialog

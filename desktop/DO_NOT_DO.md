@@ -2076,3 +2076,50 @@ Inno Setup copies `dist\Monitra\` into the installer as it compiles. Signing
 `Monitra.exe` afterwards signs a copy the installer was built without: the signed
 installer wraps an unsigned program. Sign the application, build the installer,
 sign the installer, verify, and only then hash.
+
+### ❌ Do not measure the update deadline with this machine's wall clock
+
+```python
+remaining = requirement.deadline_at - time.time()      # the user's clock decides
+```
+
+**What it would cause (by design review, before it shipped):** a user who sets
+the system clock back a day keeps "24 hours left" for ever, and one whose
+clock is an hour fast is blocked an hour early. The backend's deadline is on
+the backend's clock. `UpdateRequirement.remaining_seconds` adds the time
+elapsed on the *monotonic* clock since the answer arrived to the
+`server_time` the answer carried; after a restart it uses the wall clock
+elapsed since receipt, clamped at zero, until the next check replaces the
+record. The server enforces the same deadline on every request whatever the
+desktop computes.
+
+### ❌ Do not start a timer while the update policy blocks the client
+
+A hidden Start button is not a rule (see "Do not let a disabled control be the
+only thing enforcing a rule"). A start queued while blocked would be delivered
+through the durable queue once the update landed, with a start instant hours
+in the past. `TimerService._refuse_while_update_blocked` refuses a new start,
+a switch and a break-out at the layer that mutates tracked time; stop,
+heartbeat and every upload are never touched, because the backend keeps those
+routes open for exactly this client.
+
+### ❌ Do not stop a running timer because the deadline passed
+
+Enforcement is about *new* work. The session that was running keeps running,
+its uploads keep landing, and the update restart recovers it like any other
+interruption. Ending it would turn a policy into lost time.
+
+### ❌ Do not treat a 426 as a permanent refusal in the sync queue
+
+The screenshot uploader parks a row on 403/404/413/422 (a refusal the server
+will repeat). A 426 is not that: it is the client being too old, and it ends
+the moment the update is installed. The upload routes are exempt from the
+gate, so a 426 should never reach them; if one does, it is retried like a
+transient failure, never parked.
+
+### ❌ Do not clear the requirement on the installer's word
+
+`update-result.txt` says the installer exited 0. The requirement is dropped
+only when the version *running now* satisfies it (`_load_requirement`), or
+when a successful check no longer states it. A relaunch of the old version
+after a failed installer must still be blocked.

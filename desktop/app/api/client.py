@@ -140,6 +140,14 @@ class ApiClient:
         # produces one refresh rather than one per caller.
         self._refresh_hook: Optional[Callable[[], bool]] = None
         self._refresh_lock = threading.Lock()
+        # The backend refuses a desktop whose mandatory-update deadline has
+        # passed with HTTP 426 on every protected route. The hook, installed by
+        # the runtime, asks the update service to re-check at once so the
+        # application blocks on the server's verdict within seconds rather
+        # than at the next ten-hour check. Rate-limited here, because a burst
+        # of refused requests is one fact, not one check per request.
+        self._upgrade_required_hook: Optional[Callable[[], None]] = None
+        self._upgrade_required_noted_at: float = 0.0
         #: Why the backend last ended this session, when it said so: set to
         #: LOGIN_DISABLED_CODE when an administrator has excluded the member
         #: from signing in. Read (and cleared) by the window that takes the
@@ -282,6 +290,12 @@ class ApiClient:
         try:
             return self._execute(method, path, json_data, params, headers, timeout, retry)
         except ApiHttpError as e:
+            if e.status_code == 426:
+                # The backend requires a newer Monitra and has stopped
+                # answering this one. Noted for the update service; the
+                # error itself is raised exactly as any other refusal.
+                self._note_upgrade_required(path)
+                raise
             if e.status_code in (401, 403) and is_login_disabled(e.response_body):
                 # Excluded by an administrator. A refresh would be refused the
                 # same way, so the 401 goes straight to the handlers that end
@@ -398,6 +412,33 @@ class ApiClient:
                     int((time.monotonic() - started) * 1000), request_id,
                 )
             return response
+
+    def set_upgrade_required_hook(self, hook: Optional[Callable[[], None]]) -> None:
+        """Install what to call when the backend answers 426 (update required).
+
+        The runtime points this at the update service's `check_now`, which is
+        safe from any thread. The client itself decides nothing about updates:
+        it only notices the refusal.
+        """
+        self._upgrade_required_hook = hook
+
+    #: A 426 is reported to the hook at most this often.
+    UPGRADE_REQUIRED_NOTE_INTERVAL_SECONDS = 60.0
+
+    def _note_upgrade_required(self, path: str) -> None:
+        hook = self._upgrade_required_hook
+        if hook is None:
+            return
+        now = time.monotonic()
+        with self._lock:
+            if now - self._upgrade_required_noted_at < self.UPGRADE_REQUIRED_NOTE_INTERVAL_SECONDS:
+                return
+            self._upgrade_required_noted_at = now
+        log.warning("API_UPGRADE_REQUIRED %s: the backend requires a newer Monitra", urlsplit(path).path)
+        try:
+            hook()
+        except Exception:  # noqa: BLE001 - a notification must not fail the request's own handling
+            log.exception("the upgrade-required hook raised")
 
     def _retry_delay(self, exc: ApiError, attempt: int, waited: float) -> Optional[float]:
         """Seconds to wait before the next attempt, or None to give up."""

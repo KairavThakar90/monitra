@@ -201,6 +201,10 @@ class ApplicationRuntime(QObject):
         self.updates: UpdateService = self.services.register(
             UpdateService(self, self.update_api, self.cache)
         )
+        # A 426 from the backend (a mandatory update past its deadline) asks
+        # the update service to re-check at once; `check_now` is safe from any
+        # thread, and the service -- not the client -- decides what follows.
+        self.api_client.set_upgrade_required_hook(self.updates.check_now)
         # The maintenance notice. Reads the network service and notifies
         # through the notification service, and nothing depends on it -- not
         # the timer, not the trackers, not the sync consumer -- so, like the

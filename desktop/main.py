@@ -65,6 +65,7 @@ from core import single_instance
 from ui.dashboard_window import DashboardWindow
 from ui.login_window import LoginWindow
 from ui.maintenance_toast import MaintenanceToast
+from ui.mandatory_update_screen import MandatoryUpdateScreen
 from ui.styles import APP_QSS
 from version import APP_DISPLAY_NAME, APP_NAME, ORG_NAME, VERSION, display_version
 
@@ -277,8 +278,19 @@ class MainWindow(QMainWindow):
         # other interruption (docs/TIMING_MODEL.md §7).
         self._dashboard.quit_requested.connect(self.exit_for_restart)
 
+        # The page shown instead of the dashboard once a mandatory update's
+        # grace period has run out. A page in this stack, like the login
+        # page, so that nothing behind it is reachable while it is current:
+        # the dashboard, its shortcuts and its menus are simply not on screen.
+        # It renders what the update service decided and calls BackgroundApi;
+        # the download, verification and install stay the service's.
+        self._update_screen = MandatoryUpdateScreen(self)
+        self._update_screen.update_requested.connect(self.api.start_update)
+        self._update_screen.manual_download_requested.connect(self._open_manual_update_download)
+
         self._stack.addWidget(self._login)
         self._stack.addWidget(self._dashboard)
+        self._stack.addWidget(self._update_screen)
         self._stack.setCurrentWidget(self._login)
 
         # The maintenance notice. A child of the window rather than of the
@@ -296,6 +308,16 @@ class MainWindow(QMainWindow):
         # Edge-triggered inside the service (on/off only). Hidden on logout
         # through the same edge: `reset_session()` emits False if it was on.
         self.api.maintenance.maintenance_changed.connect(self._on_maintenance_changed)
+        # The update-required page. Edge-triggered inside the service: once
+        # when the grace period runs out, once when the requirement is
+        # satisfied or withdrawn. The progress, failure and install signals
+        # feed the page the same way they feed the dialog; all cross-thread,
+        # delivered queued onto this thread.
+        self.api.updates.blocked_changed.connect(self._on_update_blocked_changed)
+        self.api.updates.requirement_changed.connect(self._on_update_requirement_changed)
+        self.api.updates.download_progress.connect(self._update_screen.set_progress)
+        self.api.updates.update_failed.connect(self._on_update_failed_on_screen)
+        self.api.updates.install_started.connect(self._update_screen.set_installing)
 
     # ── Startup ───────────────────────────────────────────────────────────────
 
@@ -447,8 +469,15 @@ class MainWindow(QMainWindow):
     # ── Session transitions ───────────────────────────────────────────────────
 
     def _enter_dashboard(self, user_data: dict, announce: bool = True) -> None:
-        self._stack.setCurrentWidget(self._dashboard)
+        # The dashboard is always signed in -- it owns the timer's rendering,
+        # the idle popup and the session's data -- but it is only *shown*
+        # while the update policy allows normal use. A restart or a sign-in
+        # after the deadline lands on the update-required page instead.
         self._dashboard.on_login(user_data)
+        if self.api.update_blocked():
+            self._show_update_screen()
+        else:
+            self._stack.setCurrentWidget(self._dashboard)
         if announce:
             self.api.notify("Logged in successfully", NotificationLevel.SUCCESS, key="login")
 
@@ -512,6 +541,55 @@ class MainWindow(QMainWindow):
             self._maintenance_toast.show_notice()
         else:
             self._maintenance_toast.hide_notice()
+
+    # ── Mandatory update: the page instead of the dashboard ───────────────────
+
+    def _signed_in(self) -> bool:
+        return self._stack.currentWidget() is not self._login
+
+    def _show_update_screen(self) -> None:
+        """Put the update-required page in front of everything.
+
+        The release the page offers is the one the service validated
+        (`pending_update_release`); without one -- an answer the updater
+        cannot act on -- the page says so and offers the manual link.
+        """
+        self._update_screen.set_requirement(
+            self.api.update_requirement(),
+            self.api.pending_update_release(),
+            installable=self.api.pending_update_release() is not None,
+            manual_url=self.api.update_manual_download_url() is not None,
+        )
+        self._stack.setCurrentWidget(self._update_screen)
+        log.warning("UPDATE_SCREEN shown: the mandatory update's grace period has run out")
+
+    def _on_update_blocked_changed(self, blocked: bool) -> None:
+        """The grace period ran out (True) or the requirement is gone (False)."""
+        if blocked:
+            if self._signed_in():
+                self._show_update_screen()
+            return
+        if self._stack.currentWidget() is self._update_screen:
+            log.info("UPDATE_SCREEN released: normal use may resume")
+            self._stack.setCurrentWidget(self._dashboard)
+
+    def _on_update_requirement_changed(self, requirement) -> None:
+        """Keep the page's words current while it is showing."""
+        if self._stack.currentWidget() is self._update_screen and self.api.update_blocked():
+            self._show_update_screen()
+
+    def _on_update_failed_on_screen(self, message: str) -> None:
+        self._update_screen.show_error(
+            message, can_download_manually=self.api.update_manual_download_url() is not None,
+        )
+
+    def _open_manual_update_download(self) -> None:
+        url = self.api.update_manual_download_url()
+        if url:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+
+            QDesktopServices.openUrl(QUrl(url))
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         super().resizeEvent(event)

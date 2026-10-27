@@ -26,7 +26,9 @@ outside `IDLE` would be a way to lose it.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, FrozenSet, Optional
 
 from core.logging_setup import get_logger
@@ -35,6 +37,176 @@ from core.validation import validate_sha256, validate_url, validate_version
 from . import policy
 
 log = get_logger("updates.state")
+
+
+def parse_instant(value: Any) -> Optional[float]:
+    """An ISO-8601 instant from the backend as Unix seconds, or None.
+
+    The backend writes timezone-aware UTC timestamps; a naive one is read as
+    UTC rather than refused, because every instant the server sends is on its
+    own clock and it has only one. Anything that is not a string timestamp is
+    None: a deadline the client cannot read is no deadline, and the server
+    enforces the real one regardless.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+@dataclass(frozen=True)
+class UpdateRequirement:
+    """The backend's statement that this desktop must update, and by when.
+
+    Every instant here is the **server's**: `deadline_at` and `server_time`
+    are Unix seconds on the backend's clock, exactly as it sent them. The
+    desktop never compares them with its own wall clock. It measures how long
+    ago it received the answer on the monotonic clock (`received_monotonic`)
+    and adds that to `server_time`, so a system clock moved forwards or
+    backwards by the user changes nothing. After a restart the monotonic clock
+    is meaningless, so the wall clock at receipt (`received_wall`) stands in
+    -- clamped so that a clock set *backwards* cannot make the deadline look
+    further away -- until the next successful check replaces the record with a
+    fresh one. The backend enforces the deadline on every request in any case;
+    the local copy exists so the screen can count down and so the application
+    blocks at the deadline even while offline.
+    """
+
+    required_version: str
+    deadline_at: Optional[float]
+    server_time: float
+    received_monotonic: float
+    received_wall: float
+    #: The backend said the deadline has passed. Authoritative: the local
+    #: arithmetic can only ever agree with or anticipate it.
+    blocked_by_server: bool = False
+    platform: Optional[str] = None
+    latest_version: Optional[str] = None
+    title: Optional[str] = None
+    grace_hours: Optional[int] = None
+    first_seen_at: Optional[float] = None
+
+    @staticmethod
+    def from_payload(
+        payload: Optional[Dict[str, Any]], *,
+        received_monotonic: Optional[float] = None, received_wall: Optional[float] = None,
+    ) -> Optional["UpdateRequirement"]:
+        """The requirement an update-check answer carries, or None.
+
+        Only an answer that says `mandatory: true` with a readable required
+        version is a requirement. A deadline that cannot be read leaves the
+        requirement without one: the user is told the update is required, is
+        never blocked by local arithmetic, and the server's own gate decides.
+        """
+        if not isinstance(payload, dict) or payload.get("mandatory") is not True:
+            return None
+        required = validate_version(payload.get("required_version") or payload.get("latest_version"))
+        if not required.ok:
+            return None
+        server_time = parse_instant(payload.get("server_time"))
+        now_wall = time.time() if received_wall is None else received_wall
+        latest = validate_version(payload.get("latest_version"))
+        grace = payload.get("grace_hours")
+        return UpdateRequirement(
+            required_version=required.value,
+            deadline_at=parse_instant(payload.get("deadline_at")),
+            server_time=server_time if server_time is not None else now_wall,
+            received_monotonic=time.monotonic() if received_monotonic is None else received_monotonic,
+            received_wall=now_wall,
+            blocked_by_server=payload.get("blocked") is True,
+            platform=_as_text(payload.get("platform")),
+            latest_version=latest.value if latest.ok else None,
+            title=_as_text(payload.get("release_title")),
+            grace_hours=grace if isinstance(grace, int) and not isinstance(grace, bool) and grace >= 0 else None,
+            first_seen_at=parse_instant(payload.get("first_seen_at")),
+        )
+
+    # ── Time ──────────────────────────────────────────────────────────────
+
+    def server_now(self, *, monotonic_now: Optional[float] = None, wall_now: Optional[float] = None,
+                   restarted: bool = False) -> float:
+        """The server's clock, estimated from the moment this was received.
+
+        In the process that received it: `server_time` plus the monotonic
+        time elapsed since. After a restart (`restarted`): the wall clock
+        elapsed since, never negative, so a clock set backwards cannot push
+        the deadline out -- it can only make the estimate conservative.
+        """
+        if not restarted:
+            elapsed = (time.monotonic() if monotonic_now is None else monotonic_now) - self.received_monotonic
+            return self.server_time + max(0.0, elapsed)
+        elapsed = (time.time() if wall_now is None else wall_now) - self.received_wall
+        return self.server_time + max(0.0, elapsed)
+
+    def remaining_seconds(self, **when: Any) -> Optional[int]:
+        """Seconds until the deadline on the server's clock; None without one."""
+        if self.deadline_at is None:
+            return None
+        return max(0, int(self.deadline_at - self.server_now(**when)))
+
+    def expired(self, **when: Any) -> bool:
+        """Whether the grace period is over: said by the server, or reached
+        by the server's clock as estimated here."""
+        if self.blocked_by_server:
+            return True
+        remaining = self.remaining_seconds(**when)
+        return remaining is not None and remaining <= 0
+
+    # ── Persistence ───────────────────────────────────────────────────────
+
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "required_version": self.required_version,
+            "deadline_at": self.deadline_at,
+            "server_time": self.server_time,
+            "received_wall": self.received_wall,
+            "blocked_by_server": self.blocked_by_server,
+            "platform": self.platform,
+            "latest_version": self.latest_version,
+            "title": self.title,
+            "grace_hours": self.grace_hours,
+            "first_seen_at": self.first_seen_at,
+        }
+
+    @staticmethod
+    def from_record(record: Any) -> Optional["UpdateRequirement"]:
+        """A persisted requirement, read back after a restart. Never raises."""
+        if not isinstance(record, dict):
+            return None
+        required = validate_version(record.get("required_version"))
+        if not required.ok:
+            return None
+        try:
+            server_time = float(record.get("server_time"))
+            received_wall = float(record.get("received_wall"))
+        except (TypeError, ValueError):
+            return None
+        deadline = record.get("deadline_at")
+        grace = record.get("grace_hours")
+        first_seen = record.get("first_seen_at")
+        return UpdateRequirement(
+            required_version=required.value,
+            deadline_at=float(deadline) if isinstance(deadline, (int, float)) else None,
+            server_time=server_time,
+            # A restarted process has no monotonic history for this record;
+            # `server_now(restarted=True)` reads the wall clock instead.
+            received_monotonic=time.monotonic(),
+            received_wall=received_wall,
+            blocked_by_server=record.get("blocked_by_server") is True,
+            platform=_as_text(record.get("platform")),
+            latest_version=_as_text(record.get("latest_version")),
+            title=_as_text(record.get("title")),
+            grace_hours=grace if isinstance(grace, int) and not isinstance(grace, bool) else None,
+            first_seen_at=float(first_seen) if isinstance(first_seen, (int, float)) else None,
+        )
 
 
 class UpdateState:
@@ -147,6 +319,16 @@ class ReleaseInfo:
     force_update: bool = False
     platform: Optional[str] = None
     architecture: Optional[str] = None
+    #: The release-management policy, as the backend stated it. `mandatory`
+    #: is true from the first encounter (the user may still postpone until
+    #: `deadline_at`); `blocked` is true once the backend has stopped
+    #: answering this client's protected requests. `force_update` above is
+    #: what a backend without grace periods says and means "blocked".
+    mandatory: bool = False
+    required_version: Optional[str] = None
+    title: Optional[str] = None
+    deadline_at: Optional[float] = None
+    blocked: bool = False
 
     @property
     def installable(self) -> bool:
@@ -219,6 +401,14 @@ class ReleaseInfo:
             force_update=payload.get("force_update") is True,
             platform=_as_text(payload.get("platform")),
             architecture=_as_text(payload.get("architecture")),
+            mandatory=payload.get("mandatory") is True or payload.get("force_update") is True,
+            required_version=(
+                validate_version(payload.get("required_version")).value
+                if validate_version(payload.get("required_version")).ok else None
+            ),
+            title=_as_text(payload.get("release_title")),
+            deadline_at=parse_instant(payload.get("deadline_at")),
+            blocked=payload.get("blocked") is True or payload.get("force_update") is True,
         )
 
 

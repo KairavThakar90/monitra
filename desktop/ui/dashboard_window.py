@@ -477,6 +477,9 @@ class DashboardWindow(QWidget):
         self.api.updates.download_progress.connect(self._on_update_progress)
         self.api.updates.update_failed.connect(self._on_update_failed)
         self.api.updates.install_started.connect(self._on_install_started)
+        # The grace period ending while the prompt is open withdraws "Later"
+        # from it; the main window swaps the page behind it at the same edge.
+        self.api.updates.blocked_changed.connect(self._on_update_blocked_changed)
         h_layout.addWidget(self._sidebar)
 
         # Last-sync display: driven entirely by SyncService's own edge signal,
@@ -1040,7 +1043,7 @@ class DashboardWindow(QWidget):
         self.api.notify(
             "Checking for updates…", NotificationLevel.INFO, key="update-checking",
         )
-        self.api.check_for_updates_now()
+        self.api.check_for_updates_now(manual=True)
 
     def _on_update_state_changed(self, state: str) -> None:
         """Report the outcome of a *manual* check, and only a manual one.
@@ -1087,7 +1090,13 @@ class DashboardWindow(QWidget):
             self._update_dialog.activateWindow()
             return
 
-        dialog = UpdateDialog(release, mandatory, parent=self.window(), stage=stage)
+        dialog = UpdateDialog(
+            release, mandatory, parent=self.window(), stage=stage,
+            # The countdown reads the service on every tick: the server's
+            # deadline and clock, never this machine's wall clock.
+            remaining_seconds=self.api.update_remaining_seconds,
+            blocked=self.api.update_blocked(),
+        )
         self._update_dialog = dialog
         # The dialog asks; the service decides and does. It cannot start two
         # downloads by being clicked twice, because the refusal lives in the
@@ -1146,6 +1155,17 @@ class DashboardWindow(QWidget):
             NotificationLevel.INFO, key="update-installing",
         )
         self.quit_requested.emit()
+
+    def _on_update_blocked_changed(self, blocked: bool) -> None:
+        """The grace period ran out: the open prompt loses its "Later".
+
+        Nothing else happens here. The main window owns the page that
+        replaces the dashboard, and the timer service refuses a new start on
+        its own; this only keeps the prompt from offering a choice the policy
+        no longer allows.
+        """
+        if blocked and self._update_dialog is not None:
+            self._update_dialog.set_blocked()
 
     def _forget_update_dialog(self) -> None:
         dialog, self._update_dialog = self._update_dialog, None

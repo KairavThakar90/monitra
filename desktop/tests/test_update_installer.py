@@ -78,12 +78,17 @@ class FakeTasks:
     def __init__(self):
         self.in_flight = set()
         self.submitted = 0
+        #: Every key ever submitted, so a test can ask "was a download started?"
+        #: rather than "was anything submitted?" (a refused start reports
+        #: itself to the backend through the same runner).
+        self.keys = []
 
     def submit(self, fn, *, on_success=None, on_error=None, key=None,
                pass_handle=False, guard_generation=True):
         if key is not None and key in self.in_flight:
             return None
         self.submitted += 1
+        self.keys.append(key)
         handle = SimpleNamespace(cancelled=False, id="task", key=key)
         if key is not None:
             self.in_flight.add(key)
@@ -687,7 +692,7 @@ def test_nothing_is_started_without_an_installable_release(scratch, monkeypatch)
         scratch, monkeypatch, payload=dict(INSTALLABLE, sha256=None)
     )
     assert service.start_update() is False
-    assert tasks.submitted == 0
+    assert "update-download" not in tasks.keys, "a refused start must not download"
 
 
 def test_a_source_checkout_says_so_rather_than_half_installing(scratch, monkeypatch):
@@ -705,7 +710,7 @@ def test_a_source_checkout_says_so_rather_than_half_installing(scratch, monkeypa
     # `can_install()` is not patched here: the suite runs from source, which is
     # exactly the case it refuses.
     assert service.start_update() is False
-    assert tasks.submitted == 0
+    assert "update-download" not in tasks.keys, "a refused start must not download"
     assert failures and "installed build" in failures[0]
     assert service.update_state == UpdateState.IDLE
 

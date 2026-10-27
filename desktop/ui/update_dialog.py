@@ -30,9 +30,10 @@ is exactly the wrong owner for that guarantee.
 """
 from __future__ import annotations
 
-from typing import Optional
+from datetime import datetime
+from typing import Callable, Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QDialog, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
     QProgressBar, QPushButton, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
@@ -87,13 +88,29 @@ class UpdateDialog(QDialog):
     STAGE_REMINDER = "reminder"
     STAGE_FINAL = "final"
 
+    #: How often the grace countdown is redrawn. A display tick only: the
+    #: figure comes from the service each time (the server's deadline and
+    #: clock), never from a counter kept here.
+    COUNTDOWN_INTERVAL_MS = 1000
+
     def __init__(
         self, release, mandatory: bool, parent: Optional[QWidget] = None,
         stage: str = STAGE_INITIAL,
+        remaining_seconds: Optional[Callable[[], Optional[int]]] = None,
+        blocked: bool = False,
     ) -> None:
+        """
+        :param mandatory: the backend requires this update. With a grace
+            period still running (`blocked` False) the user may still choose
+            Later; once `blocked`, only Update Now is offered.
+        :param remaining_seconds: what is left of the grace period on the
+            server's clock, asked of the service on every countdown tick.
+        """
         super().__init__(parent)
         self._release = release
         self._mandatory = bool(mandatory)
+        self._blocked = bool(blocked) and self._mandatory
+        self._remaining_seconds = remaining_seconds
         self._stage = stage if stage in (self.STAGE_REMINDER, self.STAGE_FINAL) else self.STAGE_INITIAL
         #: Only an explicit choice may close this window. Every close path
         #: checks it, so there is no accidental dismissal.
@@ -101,6 +118,7 @@ class UpdateDialog(QDialog):
         #: True once the download has begun: the buttons are gone and the
         #: progress bar is live, and neither choice is offered again.
         self._working = False
+        self._countdown: Optional[QTimer] = None
 
         self.setWindowTitle(self._title())
         # Frameless: no system close button to dismiss the prompt with. This is
@@ -123,14 +141,29 @@ class UpdateDialog(QDialog):
 
     def _title(self) -> str:
         if self._mandatory:
-            return "Update required"
+            title = getattr(self._release, "title", None)
+            return f"Update required: {title}" if title else "Update required"
         if self._stage == self.STAGE_FINAL:
             return "Final reminder: update available"
         return "Update available"
 
     def _blurb(self) -> str:
+        if self._mandatory and self._blocked:
+            return (
+                "The deadline for this update has passed. You must install it "
+                "before you can continue using Monitra."
+            )
         if self._mandatory:
-            return "You must update Monitra to continue using it."
+            deadline = self._deadline_words()
+            opener = (
+                "This update is still required." if self._stage == self.STAGE_REMINDER
+                else "This update is required."
+            )
+            return (
+                f"{opener} You can install it now, or choose Later and keep "
+                f"working until {deadline}. After that, Monitra cannot be used "
+                "until the update is installed. Your timer keeps running while it installs."
+            )
         if self._stage == self.STAGE_FINAL:
             return (
                 "You have put this update off a few times. Please install it "
@@ -178,6 +211,13 @@ class UpdateDialog(QDialog):
             grid.addWidget(
                 self._version_row("Download size", _format_bytes(self._release.file_size))
             )
+        self._deadline_value: Optional[QLabel] = None
+        if self._mandatory:
+            # The grace period, on the server's clock: redrawn every second
+            # from what the service says is left, never counted down here.
+            row = self._version_row("Time left to update", "")
+            self._deadline_value = row.findChildren(QLabel)[-1]
+            grid.addWidget(row)
         card.addWidget(versions)
 
         notes = (self._release.release_notes or "").strip()
@@ -228,10 +268,12 @@ class UpdateDialog(QDialog):
         buttons.addWidget(self._manual_button)
 
         self._later_button: Optional[QPushButton] = None
-        if not self._mandatory:
-            # Absent entirely for a mandatory update, rather than present and
-            # disabled: a greyed-out "Later" reads as "this will work in a
-            # moment" and invites clicking at it.
+        if not self._mandatory or not self._blocked:
+            # Absent entirely once the deadline has passed, rather than present
+            # and disabled: a greyed-out "Later" reads as "this will work in a
+            # moment" and invites clicking at it. A mandatory update still
+            # inside its grace period offers it, and `set_blocked` withdraws
+            # it the moment the grace period ends.
             self._later_button = QPushButton("Later", self.card)
             self._later_button.setObjectName("UpdateLater")
             self._later_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -253,6 +295,10 @@ class UpdateDialog(QDialog):
         shadow.setOffset(0, 6)
         shadow.setColor(QColor(16, 24, 40, 45))
         self.card.setGraphicsEffect(shadow)
+        if self._mandatory:
+            self._tick_countdown()
+            if not self._blocked:
+                self._start_countdown()
 
     def _version_row(self, label: str, value: str) -> QWidget:
         row = QWidget(self)
@@ -352,6 +398,9 @@ class UpdateDialog(QDialog):
             # but the button should not look like it did something.
             return
         self._working = True
+        self._stop_countdown()
+        if self._deadline_value is not None:
+            self._deadline_value.setText("Updating now")
         self._update_button.setEnabled(False)
         self._update_button.setText("Updating…")
         if self._later_button is not None:
@@ -376,6 +425,7 @@ class UpdateDialog(QDialog):
         the account menu's Updates entry keeps a way back besides.
         """
         self._finished = True
+        self._stop_countdown()
         self.postponed.emit()
         self.accept()
 
@@ -425,7 +475,89 @@ class UpdateDialog(QDialog):
     def close_for_install(self) -> None:
         """The installer is running; let the window go so the app can quit."""
         self._finished = True
+        self._stop_countdown()
         self.accept()
+
+    # ── The grace period ──────────────────────────────────────────────────────
+
+    def _deadline_words(self) -> str:
+        """The deadline as the user reads it: their local time, from the
+        server's instant. Display only."""
+        deadline = getattr(self._release, "deadline_at", None)
+        if not isinstance(deadline, (int, float)):
+            return "the deadline"
+        try:
+            local = datetime.fromtimestamp(float(deadline)).astimezone()
+        except (OverflowError, OSError, ValueError):
+            return "the deadline"
+        return local.strftime("%A %d %B at %H:%M")
+
+    @staticmethod
+    def format_remaining(seconds: Optional[int]) -> str:
+        """"23 h 59 min", "12 min", "under a minute", or "Passed"."""
+        if seconds is None:
+            return "—"
+        if seconds <= 0:
+            return "Passed"
+        hours, rest = divmod(int(seconds), 3600)
+        minutes = rest // 60
+        if hours >= 1:
+            return f"{hours} h {minutes:02d} min"
+        if minutes >= 1:
+            return f"{minutes} min"
+        return "under a minute"
+
+    def _start_countdown(self) -> None:
+        if self._countdown is not None:
+            return
+        self._countdown = QTimer(self)
+        self._countdown.setInterval(self.COUNTDOWN_INTERVAL_MS)
+        self._countdown.timeout.connect(self._tick_countdown)
+        self._countdown.start()
+
+    def _stop_countdown(self) -> None:
+        if self._countdown is not None:
+            self._countdown.stop()
+            self._countdown.deleteLater()
+            self._countdown = None
+
+    def _tick_countdown(self) -> None:
+        """Redraw what is left. The figure is the service's, every time."""
+        if self._deadline_value is None:
+            return
+        remaining = None
+        if self._remaining_seconds is not None:
+            try:
+                remaining = self._remaining_seconds()
+            except Exception:  # noqa: BLE001 - a display must not raise into the event loop
+                remaining = None
+        if self._blocked:
+            remaining = 0
+        self._deadline_value.setText(self.format_remaining(remaining))
+
+    def set_blocked(self) -> None:
+        """The grace period ended while this prompt was open.
+
+        "Later" is withdrawn, the words change, and the countdown stops at
+        "Passed". The window itself stays: the user's next action is Update
+        Now either way, and the main window is meanwhile swapping the page
+        behind this prompt for the update-required screen.
+        """
+        if self._blocked:
+            return
+        self._blocked = True
+        self._stop_countdown()
+        if self._later_button is not None:
+            self._later_button.hide()
+            self._later_button.deleteLater()
+            self._later_button = None
+        if self._mandatory:
+            self.setWindowTitle(self._title())
+            for label in self.card.findChildren(QLabel):
+                if label.objectName() == "UpdateBlurb":
+                    label.setText(self._blurb())
+        self._tick_countdown()
+        self.adjustSize()
 
     # ── Dismissal guards ──────────────────────────────────────────────────────
 
@@ -469,6 +601,7 @@ class UpdateDialog(QDialog):
         a logout cannot be a way to escape a required update.
         """
         self._finished = True
+        self._stop_countdown()
         self.close()
         # `close()` is refused while a modal dialog is mid-exec on some
         # platforms; hiding directly guarantees the window is gone.

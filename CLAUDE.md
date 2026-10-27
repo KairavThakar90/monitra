@@ -285,6 +285,23 @@ These are **unimplemented features**, deliberately left out of the stability wor
    user's own Stop takes them), so do not reorder those locks. A start never begins inside time the
    user already has recorded, and a machine that sleeps through a weekend ends its session at the last
    awake instant + 15 minutes (`ROLLOVER_MAX_SLEPT_BOUNDARIES`, the owner's decision for one night).
+8. **Desktop release management — implemented (2026-10-27), nothing published.** A release is a
+   version record (`desktop_release_versions`: targets, mandatory, grace hours, floor, effective time,
+   lifecycle, audit) over the artifact rows; Admin → Settings → Desktop Releases manages it.
+   **The grace period is the server's** (`desktop_update_requirements`: one row per user, platform and
+   floor, filed by `get_current_user` on the first request below an active floor, never moved); past
+   the deadline every protected desktop route answers **426** except the recovery and upload paths
+   listed in `desktop_update_policy.EXEMPT_PATH_PATTERNS`. The desktop keeps the server's deadline
+   (`updates.requirement`), wakes at it, swaps the dashboard for `ui/mandatory_update_screen.py`, and
+   `TimerService` refuses a new start while blocked; a running timer is never stopped by enforcement.
+   **Withdrawing a release keeps the grace rows and suspends enforcement** (nothing installable);
+   a corrective release with the same floor resumes the original deadlines.
+   **[docs/Desktop_Release_Runbook.md](docs/Desktop_Release_Runbook.md) §8 is authoritative.** Never
+   compute a deadline from the client's wall clock, never let a client mark its own requirement
+   satisfied, never treat a 426 as a permanent refusal in the sync queue, and never publish a mandatory
+   release without the owner's say-so (the blockers in
+   `docs/reports/monitra-release-management-implementation-2026-10-27.md` still stand: unsigned
+   installers, the IIS `.dmg` MIME type, no real-device run).
 
 ---
 

@@ -935,6 +935,55 @@ who may publish, the announcement email) is in
 [docs/Desktop_Artifact_Hosting.md](../docs/Desktop_Artifact_Hosting.md) and
 [docs/Desktop_Release_Runbook.md](../docs/Desktop_Release_Runbook.md).
 
+### The mandatory-update requirement and the deadline
+
+Since 2026-10-27 the backend's answer may carry a *requirement*: `mandatory`,
+`required_version`, `deadline_at`, `server_time`, `blocked` (the full contract is
+`docs/Desktop_Release_Runbook.md` §8). `UpdateService` keeps it as an
+`UpdateRequirement` (`update/state.py`), persisted in `app_state`
+(`updates.requirement`), and publishes two more edge-triggered signals:
+`requirement_changed(object)` and `blocked_changed(bool)`.
+
+```
+check answers mandatory=true  ->  UpdateRequirement.from_payload (server instants only)
+        ->  persisted; update_offered(release, mandatory=True, stage) -- the dialog has
+            "Later" and a countdown while the grace period lasts
+every tick, online or not:  _refresh_blocked_from_clock()
+        ->  deadline reached (server_time + monotonic elapsed), or the backend said
+            `blocked`  ->  blocked_changed(True), once
+        ->  tick() returns the time to the deadline, so the loop wakes for it
+MainWindow: blocked_changed(True)  ->  the update-required page replaces the dashboard
+            (a page in the same stack as the login page; nothing behind it is reachable)
+TimerService: start_tracking / switch_tracking / break_out refuse while
+            `runtime.updates.is_blocked`; stop, heartbeat and every upload are untouched
+ApiClient: a 426 from the backend  ->  updates.check_now() (once a minute at most)
+next launch: the persisted requirement is dropped only if the RUNNING version
+            satisfies it; otherwise blocked is recomputed from the wall clock at
+            receipt, clamped so a clock set backwards cannot push the deadline out
+every attempt's outcome -> POST /desktop/update-reports (durable queue in app_state,
+            client event id, retried on the next successful check)
+```
+
+Rules, each one a way this could have gone wrong:
+
+- **The deadline is the server's and is never derived from this machine's wall
+  clock.** Remaining time is `deadline_at - (server_time + elapsed on the
+  monotonic clock since receipt)`. A changed system clock changes nothing
+  while the process lives; after a restart the wall clock stands in, never
+  negative, until the next check replaces the record.
+- **Blocking is an edge, and it does not wait for the backend.** The loop
+  wakes at the deadline whether or not it can reach the server, so an open
+  application blocks on time while offline or signed out too. The backend
+  enforces the same deadline on every request regardless.
+- **Nothing is cleared on the installer's word.** The requirement is dropped
+  only when the version actually running satisfies it, or when a successful
+  check no longer states it (satisfied, withdrawn, or not this user's).
+- **A running timer is never stopped by enforcement**, and only a *new* start
+  is refused, at the timer service and not merely behind a hidden button. The
+  update restart keeps the session exactly as before.
+- **Logout releases the block** (`reset_session`); the next account's own
+  requirement arrives with its first check.
+
 ### Maintenance notice
 
 `MaintenanceService`

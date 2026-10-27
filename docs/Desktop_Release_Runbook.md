@@ -393,3 +393,92 @@ key is refused on the member directory, the employee list, the fleet view and
 the web-session handoff, checks that ordinary admin and employee sign-in still
 work, and revokes the key. Run it against a deployment in production mode to
 confirm the whole arrangement, including that `/auth/dev-login` is gone.
+
+---
+
+## 8. Release management: targets, mandatory updates and the 24-hour grace period
+
+**Since 2026-10-27.** A release is a *version record* an administrator manages
+(Admin → Settings → Desktop Releases, or `/desktop/releases/versions`), on top of
+the artifact rows CI registers. The record carries what was decided about the
+version; the artifact rows carry what a client downloads. The version record is
+the single place a policy is written, so the three artifacts of one version
+cannot disagree.
+
+### 8.1 The record
+
+| Field | Meaning |
+|---|---|
+| `target_platforms` | `win32`, `darwin`, or both. A platform not named is never offered the version and never held to its policy. Readiness and publication require only the artifacts for the named platforms (Windows installer; both Mac builds). |
+| `mandatory` | Every targeted client below the floor must take it after the grace period. Optional (the default) blocks nobody. |
+| `grace_hours` | Default 24. Counted per user, per platform, from the first authenticated request the server sees from a desktop below the floor. |
+| `required_min_version` | The floor. Mandatory: this, or the version itself when empty. Optional: a set floor still requires only the clients below it. Never newer than the version. |
+| `effective_at` | The policy takes effect no earlier than this; empty means at publication. |
+| `status` | `draft` → `validated` → `published` → `withdrawn`; `superseded` is derived (a newer published version covers every platform this one targets). |
+
+A CI registration (`register_release.py`) creates the record as an optional draft
+for every configured platform; edit it before publishing.
+
+### 8.2 What publishing does
+
+`POST /desktop/releases/versions/<v>/publish` (a signed-in administrator; the CI
+credential is refused) moves the required artifact rows and the record to
+published in one commit with an audit row (`activity_logs`, module `system`,
+`release_published`), drops the policy cache, and queues the announcement to the
+users last seen on the targeted platforms (a user with no known platform is
+included only by a both-platform release). The email states whether the update
+is mandatory and the grace rule.
+
+### 8.3 The grace period, on the server's clock
+
+The first time the server sees a user's desktop below an active floor -- on
+*any* authenticated request, not only the update check -- it files one
+`desktop_update_requirements` row for that user, platform and floor:
+`first_seen_at`, `deadline_at = first_seen_at + grace_hours`. The row is unique;
+nothing extends it: another device, a restart, a cleared local cache, a changed
+system clock or a thousand repeated checks read the same row. `satisfied_at` is
+written by the server when it observes the client at or above the floor. A
+desktop that names no supported platform is held to every platform's policy
+under the key `unknown`, and an existing deadline for the same floor under any
+platform is the deadline, so changing the claim cannot buy time.
+
+Before the deadline the desktop shows the prompt with **Later** and a countdown
+read from the server's clock. After it, the backend refuses the client's
+protected routes with **HTTP 426** (`detail.code = desktop_update_required`,
+the required version, platform, deadline and `policy_url`), and the desktop
+shows the update-required page instead of the dashboard. The routes that stay
+open are the recovery and finishing paths only: `/auth/*`, the update
+endpoints, `/time-entries/active`, stop, heartbeat, the uploads of captured
+activity, app usage, URLs, screenshots and events, idle periods, the client
+event trail, maintenance status. A running timer keeps running; a new start is
+refused (by the backend, and by the desktop's timer service itself).
+
+### 8.4 Withdrawing, and a corrective release
+
+`POST /desktop/releases/versions/<v>/withdraw` moves every artifact row to
+`rolled_back` and the record to `withdrawn`: the version stops being offered at
+once and the previous published version is newest again. **Grace periods
+already running are kept, never erased.** The policy engine enforces a floor
+only while an installable published release at or above it exists for the
+platform, so with the release gone nothing is refused -- a lockout with nothing
+to install would be a dead end. Publish the corrective release **with the same
+floor** (`required_min_version = <the withdrawn version>`) and every deadline
+resumes exactly where it was; publish it with a new floor and each user gets a
+fresh grace period. The withdraw answer says how many grace periods are
+waiting.
+
+### 8.5 Legacy clients (1.3.2 and earlier)
+
+They read `force_update` only, as "lock out now". The update check answers
+`force_update: true` only once the grace period has expired, so they see their
+existing mandatory dialog at the deadline and an ordinary offer before it. The
+426 gate applies to them exactly as to a new client; what they render for it is
+a connection error, and the dialog's link is the way out.
+
+### 8.6 Watching a rollout
+
+`GET /desktop/releases/versions/<v>` (or the panel's detail): targeted users,
+grace periods pending/expired/satisfied, install reports by outcome
+(`POST /desktop/update-reports`, idempotent on the desktop's event id),
+adoption on or above vs below by last-seen version, the announcement's outbox
+counts (`sent` is provider acceptance, not delivery), and the audit history.
