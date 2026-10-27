@@ -304,5 +304,5 @@ def verify_installer(path: Path) -> None:
         "The update's digital signature could not be verified, so it was not "
         "installed. Your current version of Monitra is unaffected. You can "
         "download the new version manually instead.",
-        detail=problem,
+        detail=problem, category="signature-refused",
     )

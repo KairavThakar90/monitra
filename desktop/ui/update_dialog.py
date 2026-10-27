@@ -80,10 +80,21 @@ class UpdateDialog(QDialog):
 
     DIALOG_WIDTH = 460
 
-    def __init__(self, release, mandatory: bool, parent: Optional[QWidget] = None) -> None:
+    #: Reminder stages, as the update service names them. The dialog only
+    #: changes its words for them; what may dismiss it is decided by
+    #: `mandatory` alone, and a client never escalates a reminder into that.
+    STAGE_INITIAL = "initial"
+    STAGE_REMINDER = "reminder"
+    STAGE_FINAL = "final"
+
+    def __init__(
+        self, release, mandatory: bool, parent: Optional[QWidget] = None,
+        stage: str = STAGE_INITIAL,
+    ) -> None:
         super().__init__(parent)
         self._release = release
         self._mandatory = bool(mandatory)
+        self._stage = stage if stage in (self.STAGE_REMINDER, self.STAGE_FINAL) else self.STAGE_INITIAL
         #: Only an explicit choice may close this window. Every close path
         #: checks it, so there is no accidental dismissal.
         self._finished = False
@@ -91,9 +102,7 @@ class UpdateDialog(QDialog):
         #: progress bar is live, and neither choice is offered again.
         self._working = False
 
-        self.setWindowTitle(
-            "Update required" if self._mandatory else "Update available"
-        )
+        self.setWindowTitle(self._title())
         # Frameless: no system close button to dismiss the prompt with. This is
         # what removes the X in both modes.
         self.setWindowFlags(
@@ -112,6 +121,29 @@ class UpdateDialog(QDialog):
 
     # ── Construction ──────────────────────────────────────────────────────────
 
+    def _title(self) -> str:
+        if self._mandatory:
+            return "Update required"
+        if self._stage == self.STAGE_FINAL:
+            return "Final reminder: update available"
+        return "Update available"
+
+    def _blurb(self) -> str:
+        if self._mandatory:
+            return "You must update Monitra to continue using it."
+        if self._stage == self.STAGE_FINAL:
+            return (
+                "You have put this update off a few times. Please install it "
+                "now: it takes about a minute, your timer keeps running, and "
+                "Monitra restarts by itself."
+            )
+        if self._stage == self.STAGE_REMINDER:
+            return (
+                "A new version of Monitra is still waiting to be installed. "
+                "Your timer keeps running while it installs."
+            )
+        return "A new version of Monitra is available."
+
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(14, 14, 14, 14)
@@ -122,10 +154,7 @@ class UpdateDialog(QDialog):
         card.setContentsMargins(24, 22, 24, 20)
         card.setSpacing(14)
 
-        title = QLabel(
-            "Update required" if self._mandatory else "Update available",
-            self.card,
-        )
+        title = QLabel(self._title(), self.card)
         title.setObjectName("UpdateTitle")
         title_font = QFont()
         title_font.setPointSize(15)
@@ -133,12 +162,7 @@ class UpdateDialog(QDialog):
         title.setFont(title_font)
         card.addWidget(title)
 
-        blurb = QLabel(
-            "You must update Monitra to continue using it."
-            if self._mandatory
-            else "A new version of Monitra is available.",
-            self.card,
-        )
+        blurb = QLabel(self._blurb(), self.card)
         blurb.setObjectName("UpdateBlurb")
         blurb.setWordWrap(True)
         card.addWidget(blurb)
@@ -344,11 +368,12 @@ class UpdateDialog(QDialog):
         self.update_requested.emit()
 
     def _on_later(self) -> None:
-        """Dismiss an optional update. Nothing is remembered by doing so.
+        """Postpone an optional update.
 
-        The release stays on offer: a later check can raise this dialog again,
-        which is deliberate — "Later" is not "never", and the account menu's
-        Updates entry keeps a way back besides.
+        The dialog only says so (`postponed`); the service remembers it, which
+        is what keeps the prompt away for a day and decides when it becomes a
+        final reminder. The release stays on offer: "Later" is not "never", and
+        the account menu's Updates entry keeps a way back besides.
         """
         self._finished = True
         self.postponed.emit()

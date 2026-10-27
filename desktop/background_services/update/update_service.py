@@ -85,6 +85,34 @@ LAST_CHECK_KEY = "updates.last_check_at"
 #: the two guards against concurrent downloads (the state machine is the other).
 DOWNLOAD_TASK_KEY = "update-download"
 
+#: The user's last "Later", persisted in `app_state` so the reminder schedule
+#: survives a restart: ``{"version", "postponed_at", "first_offered_at", "count"}``.
+POSTPONED_KEY = "updates.postponed"
+
+#: The reminder policy, for an *optional* update the user has postponed.
+#: "Later" puts the prompt away for at least this long; it comes back at the
+#: first successful check after that (so, with the ten-hour cadence, within a
+#: working day and a half). Nothing here applies to a mandatory update, which
+#: is re-offered on every check, or to an announce-only release, which has no
+#: prompt to postpone.
+REMIND_AFTER_SECONDS = 24 * 60 * 60
+#: From this many postponements, or this long after the release was first
+#: offered, the prompt is shown as a *final reminder*. It still has "Later":
+#: only the backend's own policy (`force_update`, `min_supported_version`) can
+#: make an update mandatory, and a client must never escalate to that by itself.
+FINAL_REMINDER_AFTER_POSTPONEMENTS = 3
+FINAL_REMINDER_AFTER_SECONDS = 7 * 24 * 60 * 60
+
+#: Reminder stages, as carried on `update_offered`.
+STAGE_INITIAL = "initial"
+STAGE_REMINDER = "reminder"
+STAGE_FINAL = "final"
+
+
+def _now() -> float:
+    """Wall-clock time. A function so tests can move it."""
+    return time.time()
+
 
 def _version_tuple(value: Optional[str]) -> Optional[tuple]:
     """Parse `major.minor.patch` for comparison, or None if it is not that.
@@ -155,9 +183,11 @@ class UpdateService(LoopService):
         update_available(str, str) — version, download URL ("" if none was
             given). Emitted only on a change of announced version. Kept for the
             notification path that predates the installer.
-        update_offered(object, bool) — a `ReleaseInfo` the user can actually
-            install, and whether taking it is mandatory. Emitted on the same
-            edge as the announcement, and only when the release is installable.
+        update_offered(object, bool, str) — a `ReleaseInfo` the user can
+            actually install, whether taking it is mandatory, and the reminder
+            stage (`STAGE_INITIAL`, `STAGE_REMINDER`, `STAGE_FINAL`). Emitted on
+            the same edge as the announcement, and only when the release is
+            installable; after a "Later", again when the reminder is due.
         pending_count_changed(int) — badge count, on change only.
         state_changed(str) — the update state machine moved.
         download_progress(int, int) — bytes received, total (0 when unknown).
@@ -170,7 +200,7 @@ class UpdateService(LoopService):
     name = "updates"
 
     update_available = Signal(str, str)
-    update_offered = Signal(object, bool)
+    update_offered = Signal(object, bool, str)
     #: Number of announced versions newer than the installed one. Emitted only
     #: when the number actually changes, so the menu badge is repainted on a
     #: transition rather than on every poll.
@@ -229,6 +259,11 @@ class UpdateService(LoopService):
         #: True while a mandatory update is outstanding. The window reads it to
         #: decide whether the application may be used at all.
         self._force_pending = False
+        #: The persisted "Later" record (see POSTPONED_KEY), or None. Loaded at
+        #: start, written by `postpone`, dropped once the version it names is
+        #: installed or withdrawn.
+        self._postponed: Optional[Dict[str, Any]] = None
+        self._postponed_loaded = False
         #: What the previous process's installer helper reported, read once at
         #: start: ``("success"|"failed"|"interrupted"|"not-applied", target)``.
         #: None when no update was in flight. For diagnostics and tests; the
@@ -372,14 +407,24 @@ class UpdateService(LoopService):
         self.state_changed.emit(target)
         return True
 
-    def _fail(self, message: str, detail: str = "") -> None:
+    def _fail(self, message: str, detail: str = "", category: str = "failed") -> None:
         """Record a failure, tell the user, and return the updater to rest.
 
         Always ends at IDLE. A failed update must leave a usable application
         and a machine that can try again — a state it could get stuck outside
         IDLE in would be a way to lose exactly that.
+
+        `category` is the short, fixed token support can tell failures apart
+        by: `url-refused`, `disk-space`, `no-connection`, `timeout`,
+        `http-error`, `download-incomplete`, `checksum-failed`,
+        `signature-refused`, `permission`, `install-unavailable`,
+        `installer-launch`, `cancelled`.
         """
         self.log.error("update failed: %s%s", message, f" ({detail})" if detail else "")
+        self._event(
+            "failed", category=category,
+            version=self._release.version if self._release is not None else None,
+        )
         self.health.last_error = message
         self._set_update_state(UpdateState.FAILED)
         self.update_failed.emit(message)
@@ -433,6 +478,119 @@ class UpdateService(LoopService):
             self.log.warning("discarding an implausible last update-check time")
             return None
         return stamp
+
+    def _load_postponement(self) -> Optional[Dict[str, Any]]:
+        """The persisted "Later" record, or None. Never raises; a corrupt or
+        stale record (a version no longer ahead of us) is dropped."""
+        if self._cache is None:
+            return None
+        try:
+            stored = self._cache.load_app_state(POSTPONED_KEY)
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not read the update postponement record")
+            return None
+        if not isinstance(stored, dict):
+            return None
+        version_name = stored.get("version")
+        try:
+            record = {
+                "version": str(version_name),
+                "postponed_at": float(stored.get("postponed_at")),
+                "first_offered_at": float(stored.get("first_offered_at") or stored.get("postponed_at")),
+                "count": int(stored.get("count") or 0),
+            }
+        except (TypeError, ValueError):
+            return None
+        if _version_tuple(record["version"]) is None:
+            return None
+        if not newer_than_installed([record["version"]], version.VERSION):
+            # Installed since (or never ahead of us): the record has served
+            # its purpose and would otherwise outlive the update it was about.
+            self._save_postponement(None)
+            return None
+        return record
+
+    def _current_postponement(self) -> Optional[Dict[str, Any]]:
+        """The "Later" record, read from the cache once per process."""
+        if not self._postponed_loaded:
+            self._postponed = self._load_postponement()
+            self._postponed_loaded = True
+        return self._postponed
+
+    def _save_postponement(self, record: Optional[Dict[str, Any]]) -> None:
+        self._postponed = record
+        self._postponed_loaded = True
+        if self._cache is None:
+            return
+        try:
+            if record is None:
+                self._cache.save_app_state(POSTPONED_KEY, None)
+            else:
+                self._cache.save_app_state(POSTPONED_KEY, record)
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not record the update postponement")
+
+    def postpone(self) -> None:
+        """The user chose "Later" for the release on offer. Safe from the GUI thread.
+
+        Remembered durably, so the prompt stays away for `REMIND_AFTER_SECONDS`
+        across restarts instead of returning at the next login, and so the
+        number of postponements can decide when the reminder becomes final.
+        The release itself stays on offer: the badge is untouched and the
+        account menu's Updates entry opens the dialog at any time.
+        """
+        release = self._release
+        if release is None:
+            return
+        now = _now()
+        previous = self._current_postponement()
+        if previous is not None and previous.get("version") == release.version:
+            count = int(previous.get("count", 0)) + 1
+            first = float(previous.get("first_offered_at", now))
+        else:
+            count, first = 1, now
+        self._save_postponement({
+            "version": release.version, "postponed_at": now,
+            "first_offered_at": first, "count": count,
+        })
+        self._event("postponed", version=release.version, count=count)
+
+    def reminder_stage(self, release_version: str, now: Optional[float] = None) -> Optional[str]:
+        """What kind of prompt `release_version` is due, or None for "not yet".
+
+        * No postponement recorded for this version: `STAGE_INITIAL`.
+        * Postponed less than `REMIND_AFTER_SECONDS` ago: None -- the badge
+          stays, the dialog does not return.
+        * Otherwise `STAGE_REMINDER`, or `STAGE_FINAL` once the user has
+          postponed `FINAL_REMINDER_AFTER_POSTPONEMENTS` times or the release
+          has been on offer for `FINAL_REMINDER_AFTER_SECONDS`.
+        """
+        record = self._current_postponement()
+        if record is None or record.get("version") != release_version:
+            return STAGE_INITIAL
+        moment = _now() if now is None else now
+        if moment - float(record["postponed_at"]) < REMIND_AFTER_SECONDS:
+            return None
+        if (
+            int(record.get("count", 0)) >= FINAL_REMINDER_AFTER_POSTPONEMENTS
+            or moment - float(record["first_offered_at"]) >= FINAL_REMINDER_AFTER_SECONDS
+        ):
+            return STAGE_FINAL
+        return STAGE_REMINDER
+
+    def _event(self, stage: str, **fields: Any) -> None:
+        """One structured log line per update lifecycle event.
+
+        `UPDATE_EVENT stage=<stage> version=<v> platform=<p> key=value ...` --
+        what support greps for. Values are the version, the platform, a stage
+        and a short error category; never a token, a path with a username in
+        it, or anything else about the person.
+        """
+        extra = " ".join(f"{key}={value}" for key, value in fields.items() if value is not None)
+        self.log.info(
+            "UPDATE_EVENT stage=%s installed=%s platform=%s %s",
+            stage, version.VERSION, sys.platform, extra,
+        )
 
     def _record_check_time(self) -> None:
         """Stamp a successful check. Only ever called after a valid response.
@@ -499,6 +657,7 @@ class UpdateService(LoopService):
             self._announced_versions = pruned
             self._save_announced_versions()
         self._publish_count(len(pruned))
+        self._current_postponement()
         # A partial download from a process that was killed mid-transfer cannot
         # be resumed and has no value; leaving it would spend the user's disk
         # on nothing. Cheap, and it runs before any download of our own.
@@ -569,6 +728,8 @@ class UpdateService(LoopService):
             level, title = NotificationLevel.WARNING, "Update failed"
 
         self.last_install_outcome = (outcome, target)
+        self._event("install-result", version=target, outcome=outcome,
+                    exit_code=code, helper_stage=result.get("stage"))
         notifications = getattr(self.runtime, "notifications", None)
         if notifications is not None:
             notifications.notify(message, level, title=title, key="update-result")
@@ -623,6 +784,7 @@ class UpdateService(LoopService):
             # tracking time can act on. The timestamp is deliberately not moved,
             # so the next attempt is not postponed by the full interval.
             self.log.info("update check unavailable: %s", exc)
+            self._event("check-unavailable", status=getattr(exc, "status_code", None))
             self.heartbeat(success=False)
             self._set_update_state(UpdateState.IDLE)
             return self._jittered(self.HOLD_INTERVAL_MS)
@@ -652,6 +814,8 @@ class UpdateService(LoopService):
             payload.get("latest_version"),
             bool(payload.get("update_available")),
         )
+        self._event("checked", latest=payload.get("latest_version"),
+                    available=bool(payload.get("update_available")))
 
         # Recording and announcing are separate on purpose. The badge is
         # durable and survives a restart; the toast fires once per version per
@@ -754,6 +918,9 @@ class UpdateService(LoopService):
         # lets a force flag published in error be taken back.
         self._force_pending = False
         self._release = None
+        # And it has nothing left to be reminded about.
+        if self._current_postponement() is not None:
+            self._save_postponement(None)
         self._set_update_state(UpdateState.IDLE)
         self._publish_count(0)
 
@@ -777,6 +944,31 @@ class UpdateService(LoopService):
         self._force_pending = bool(release is not None and release.force_update)
         self._set_update_state(UpdateState.UPDATE_AVAILABLE)
 
+        if release is not None and not self._force_pending:
+            # An optional, installable release follows the reminder policy. A
+            # "Later" is remembered durably, so neither the next check nor the
+            # next login brings the dialog straight back; it returns when due,
+            # and as a final reminder once the user has put it off enough.
+            stage = self.reminder_stage(announced)
+            if stage is None:
+                self.log.debug("update %s was postponed recently; not re-offering yet", announced)
+                return
+            if stage == STAGE_INITIAL and announced == self._announced_version:
+                # Already told them this session and they have not answered
+                # (the dialog is still up, or was closed by a logout).
+                return
+            self._announced_version = announced
+            self.log.info(
+                "update available: %s (installable=True, mandatory=False, stage=%s)",
+                announced, stage,
+            )
+            self._event("offered", version=announced, stage_name=stage)
+            self.update_available.emit(announced, payload.get("download_url") or "")
+            self.update_offered.emit(release, False, stage)
+            # There is a dialog for this one; a toast as well would be telling
+            # the user the same thing twice in the same moment.
+            return
+
         if announced == self._announced_version and not self._force_pending:
             # Already told them this session. A mandatory update is the one
             # exception -- it is re-offered because the user cannot carry on
@@ -790,19 +982,19 @@ class UpdateService(LoopService):
             "update available: %s (installable=%s, mandatory=%s)",
             announced, release is not None, self._force_pending,
         )
+        self._event("offered", version=announced, installable=release is not None,
+                    mandatory=self._force_pending, stage_name=STAGE_INITIAL)
         self.update_available.emit(announced, download_url)
         if release is not None:
-            # The dialog path. Emitted only for a release that can actually be
-            # installed -- one with a verified-shape URL and a digest -- so the
-            # UI never offers "Update Now" for something it cannot verify.
-            self.update_offered.emit(release, self._force_pending)
+            # The mandatory dialog path. Emitted only for a release that can
+            # actually be installed -- one with a verified-shape URL and a
+            # digest -- so the UI never offers "Update Now" for something it
+            # cannot verify.
+            self.update_offered.emit(release, self._force_pending, STAGE_INITIAL)
+            return
 
         notifications = getattr(self.runtime, "notifications", None)
         if notifications is None:
-            return
-        if release is not None:
-            # There is a dialog for this one; a toast as well would be telling
-            # the user the same thing twice in the same moment.
             return
         # A platform toast renders plain text, so the URL in the body is not
         # a link. `link` is what makes the notification actionable: clicking
@@ -846,9 +1038,10 @@ class UpdateService(LoopService):
 
         blocked = can_install()
         if blocked:
-            # A source checkout or a portable build. Said plainly rather than
-            # attempted and failed halfway through.
-            self._fail(blocked, detail="install path unavailable")
+            # A source checkout, a portable build, a machine-wide install or a
+            # translocated bundle. Said plainly rather than attempted and
+            # failed halfway through.
+            self._fail(blocked, detail="install path unavailable", category="install-unavailable")
             return False
 
         if not self._set_update_state(UpdateState.DOWNLOADING):
@@ -857,9 +1050,11 @@ class UpdateService(LoopService):
         tasks = getattr(self.runtime, "tasks", None)
         if tasks is None:
             self._fail(
-                "The update could not be started.", detail="no task runner"
+                "The update could not be started.", detail="no task runner",
+                category="installer-launch",
             )
             return False
+        self._event("download-started", version=release.version, size=release.file_size)
 
         handle = tasks.submit(
             lambda task_handle: self._download(release, task_handle),
@@ -920,12 +1115,13 @@ class UpdateService(LoopService):
         if not self._set_update_state(UpdateState.READY_TO_INSTALL):
             return
 
+        self._event("verified", version=release.version, size=result.size_bytes)
         try:
             launch_installer(result.path, release.version)
         except InstallError as exc:
             # Nothing has been installed and nothing replaced; the running
             # application is exactly as it was.
-            self._fail(exc.message, detail=exc.detail)
+            self._fail(exc.message, detail=exc.detail, category="installer-launch")
             return
         except Exception as exc:  # noqa: BLE001
             # `launch_installer` classifies its own failures, so this is a bug --
@@ -935,12 +1131,13 @@ class UpdateService(LoopService):
             self._fail(
                 "The update could not be started. Your current version of "
                 "Monitra is unaffected.",
-                detail=repr(exc),
+                detail=repr(exc), category="installer-launch",
             )
             return
 
         self._set_update_state(UpdateState.INSTALLING)
         self.log.info("installer launched for version %s", release.version)
+        self._event("install-started", version=release.version)
         # The helper is already waiting for this process to exit. Quitting is
         # the caller's job, and it is an ordinary quit: the normal shutdown
         # path flushes the cache, drains what it can and closes the database,
@@ -951,12 +1148,12 @@ class UpdateService(LoopService):
     def _on_download_error(self, exc: BaseException) -> None:
         """A failed download. On the GUI thread."""
         if isinstance(exc, DownloadError):
-            self._fail(exc.message, detail=exc.detail)
+            self._fail(exc.message, detail=exc.detail, category=exc.category)
             return
         self._fail(
             "The update could not be downloaded. Your current version of "
             "Monitra is unaffected.",
-            detail=repr(exc),
+            detail=repr(exc), category="download-failed",
         )
 
     @staticmethod

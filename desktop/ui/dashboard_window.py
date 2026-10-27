@@ -1066,11 +1066,16 @@ class DashboardWindow(QWidget):
             )
             self.api.notify(message, level, key=key)
 
-    def _on_update_offered(self, release, mandatory: bool) -> None:
-        """A newer release the client can verify and install."""
-        self._open_update_dialog(release, bool(mandatory))
+    def _on_update_offered(self, release, mandatory: bool, stage: str = "initial") -> None:
+        """A newer release the client can verify and install.
 
-    def _open_update_dialog(self, release, mandatory: bool) -> None:
+        `stage` is the service's reminder stage: the first offer, a reminder
+        after a "Later", or the final reminder. It changes the dialog's words
+        only; what may dismiss the dialog is `mandatory` alone.
+        """
+        self._open_update_dialog(release, bool(mandatory), stage)
+
+    def _open_update_dialog(self, release, mandatory: bool, stage: str = "initial") -> None:
         """Show the update prompt, or raise the one already up.
 
         The dialog is owned here rather than by the sidebar for the same reason
@@ -1082,12 +1087,15 @@ class DashboardWindow(QWidget):
             self._update_dialog.activateWindow()
             return
 
-        dialog = UpdateDialog(release, mandatory, parent=self.window())
+        dialog = UpdateDialog(release, mandatory, parent=self.window(), stage=stage)
         self._update_dialog = dialog
         # The dialog asks; the service decides and does. It cannot start two
         # downloads by being clicked twice, because the refusal lives in the
         # service's state machine rather than in this transient window.
         dialog.update_requested.connect(self.api.start_update)
+        # "Later" is remembered by the service (durably), which is what keeps
+        # the prompt away for a day and decides when it becomes a final reminder.
+        dialog.postponed.connect(self.api.postpone_update)
         dialog.manual_download_requested.connect(self._open_manual_update_download)
         dialog.finished.connect(lambda _result: self._forget_update_dialog())
         dialog.show()

@@ -547,6 +547,16 @@ class BackgroundApi:
         """
         self._runtime.updates.check_now()
 
+    def postpone_update(self) -> None:
+        """The user chose "Later" for the release on offer.
+
+        Remembered durably by the service: the prompt stays away for a day
+        (across restarts), returns at the first check after that, and becomes
+        a final reminder after a few postponements or a week. The release stays
+        on offer in the account menu throughout. Nothing about tracking changes.
+        """
+        self._runtime.updates.postpone()
+
     # ── Maintenance notice ────────────────────────────────────────────────────
 
     @property

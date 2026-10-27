@@ -620,17 +620,192 @@ class TestUserChoicesAndRepetition:
         assert service.pending_count == 1
         assert service.update_state == UpdateState.UPDATE_AVAILABLE
 
-    def test_a_restart_after_later_offers_it_again_at_the_next_due_check(self):
+    def test_a_restart_without_a_later_offers_it_again_at_the_next_due_check(self):
         cache = FakeCache()
         first, _ = checked_service(offered(), cache=cache)
         first.tick()
-        # A new process (same persisted state): the toast gate is per session.
+        # A new process (same persisted state), and the user never answered: the
+        # dialog comes back.
         second, _ = checked_service(offered(), cache=cache)
         offers = []
         second.update_offered.connect(lambda r, m: offers.append(r.version))
         second.tick()
         assert offers == ["9.9.9"]
         assert second.pending_count == 1, "the badge came back from the persisted record"
+
+
+HOUR = 3600.0
+
+
+def _clock(monkeypatch, start=1_800_000_000.0):
+    """A movable wall clock for the update service's reminder policy."""
+    from background_services.update import update_service as module
+
+    state = {"now": start}
+    monkeypatch.setattr(module, "_now", lambda: state["now"])
+
+    def advance(seconds):
+        state["now"] += seconds
+
+    return advance
+
+
+def _restart(cache, **payload_overrides):
+    """A fresh process over the same persisted state, ticked past its startup
+    deferral and through one check. Returns (service, offers)."""
+    service, _api = checked_service(offered(**payload_overrides), cache=cache)
+    offers = []
+    service.update_offered.connect(lambda r, m, s: offers.append((r.version, m, s)))
+    service.tick()
+    return service, offers
+
+
+class TestReminderPolicy:
+    """`Later` is remembered durably; the prompt returns when due, and becomes a
+    final reminder after enough postponements or enough time. None of it ever
+    makes an update mandatory -- only the backend can."""
+
+    def test_later_is_remembered_across_a_restart_and_the_badge_stays(self, monkeypatch):
+        _clock(monkeypatch)
+        cache = FakeCache()
+        service, offers = _restart(cache)
+        assert [s for _, _, s in offers] == ["initial"]
+        service.postpone()
+        assert service.pending_count == 1
+        assert service.pending_release is not None
+
+        again, offers = _restart(cache)
+        assert offers == [], "a restart an hour after Later does not bring the dialog back"
+        assert again.pending_count == 1, "but the menu entry is still there"
+
+    def test_the_prompt_returns_as_a_reminder_once_a_day_has_passed(self, monkeypatch):
+        advance = _clock(monkeypatch)
+        cache = FakeCache()
+        service, offers = _restart(cache)
+        service.postpone()
+        offers.clear()
+        for _ in range(2):          # ten-hour checks inside the day: silence
+            advance(10 * HOUR)
+            service.tick()
+        assert offers == [], "20 h after Later: nothing yet"
+        advance(5 * HOUR)           # 25 h after Later
+        service.tick()
+        assert [s for _, _, s in offers][-1:] == ["reminder"]
+
+    def test_a_reminder_is_not_repeated_on_every_check_while_the_user_has_not_answered(self, monkeypatch):
+        advance = _clock(monkeypatch)
+        cache = FakeCache()
+        service, offers = _restart(cache)
+        service.postpone()
+        advance(25 * HOUR)
+        service.tick()
+        advance(10 * HOUR)
+        service.tick()
+        # Re-offered at every due check: the window raises the one dialog it
+        # already has, so this is one dialog, not two -- and a restart with the
+        # dialog unanswered brings it back, which is the point of "due".
+        assert [s for _, _, s in offers] == ["initial", "reminder", "reminder"]
+
+    def test_the_third_postponement_makes_the_next_prompt_final(self, monkeypatch):
+        advance = _clock(monkeypatch)
+        cache = FakeCache()
+        service, offers = _restart(cache)
+        service.postpone()                    # 1
+        advance(25 * HOUR); service.tick(); service.postpone()   # 2
+        advance(25 * HOUR); service.tick(); service.postpone()   # 3
+        advance(25 * HOUR); service.tick()
+        assert [s for _, _, s in offers] == ["initial", "reminder", "reminder", "final"]
+        # Final is still optional: the backend did not say mandatory.
+        assert offers[-1][1] is False
+        assert service.force_update_pending is False
+
+    def test_a_week_on_offer_makes_the_prompt_final_however_few_postponements(self, monkeypatch):
+        advance = _clock(monkeypatch)
+        cache = FakeCache()
+        service, offers = _restart(cache)
+        service.postpone()
+        advance(8 * 24 * HOUR)
+        service.tick()
+        assert [s for _, _, s in offers] == ["initial", "final"]
+
+    def test_the_count_survives_a_restart(self, monkeypatch):
+        advance = _clock(monkeypatch)
+        cache = FakeCache()
+        service, _ = _restart(cache)
+        service.postpone(); advance(25 * HOUR)
+        service, _ = _restart(cache)          # reminder, postponed again
+        service.postpone(); advance(25 * HOUR)
+        service, _ = _restart(cache)
+        service.postpone(); advance(25 * HOUR)
+        _service, offers = _restart(cache)
+        assert [s for _, _, s in offers] == ["final"]
+
+    def test_a_newer_release_starts_the_policy_afresh(self, monkeypatch):
+        advance = _clock(monkeypatch)
+        cache = FakeCache()
+        service, _ = _restart(cache)
+        service.postpone()
+        advance(1 * HOUR)
+        # 9.9.10 supersedes 9.9.9 within the hour: it is a new offer, not a
+        # postponed one, so the dialog shows at once.
+        _service, offers = _restart(cache, latest_version="9.9.10")
+        assert offers == [("9.9.10", False, "initial")]
+
+    def test_installing_the_update_forgets_the_postponement(self, monkeypatch):
+        _clock(monkeypatch)
+        cache = FakeCache()
+        service, _ = _restart(cache)
+        service.postpone()
+        # The next process is the new version: nothing is ahead of it.
+        monkeypatch.setattr(version, "VERSION", "9.9.9")
+        restarted, _api = checked_service(offered(update_available=False), cache=cache)
+        assert restarted.reminder_stage("9.9.9") == "initial", "the stale record was dropped"
+        assert cache.load_app_state("updates.postponed") is None
+
+    def test_a_withdrawn_release_forgets_the_postponement(self, monkeypatch):
+        _clock(monkeypatch)
+        cache = FakeCache()
+        service, _ = _restart(cache)
+        service.postpone()
+        service._update_api.payload = offered(update_available=False)
+        service.tick()
+        assert cache.load_app_state("updates.postponed") is None
+
+    def test_a_mandatory_update_ignores_later(self, monkeypatch):
+        _clock(monkeypatch)
+        cache = FakeCache()
+        service, offers = _restart(cache, force_update=True)
+        service.postpone()
+        service.tick()
+        assert [m for _, m, _ in offers] == [True, True]
+
+    def test_later_with_nothing_on_offer_records_nothing(self):
+        cache = FakeCache()
+        service, _api = checked_service(offered(update_available=False), cache=cache)
+        service.tick()
+        service.postpone()
+        assert cache.load_app_state("updates.postponed") is None
+
+    def test_a_corrupt_record_is_ignored_not_crashed_on(self, monkeypatch):
+        _clock(monkeypatch)
+        cache = FakeCache({"updates.postponed": {"version": "nonsense", "postponed_at": "soon"}})
+        _service, offers = _restart(cache)
+        assert [s for _, _, s in offers] == ["initial"]
+
+    def test_the_dialog_reports_later_to_the_service(self):
+        source = (Path(__file__).resolve().parent.parent / "ui" / "dashboard_window.py").read_text(encoding="utf-8")
+        assert "dialog.postponed.connect(self.api.postpone_update)" in source
+
+    def test_the_final_reminder_changes_the_words_not_the_rules(self, qapp):
+        from ui.update_dialog import UpdateDialog
+
+        final = UpdateDialog(_release(), mandatory=False, stage="final")
+        assert final.windowTitle().startswith("Final reminder")
+        assert final._later_button is not None, "only the backend can make an update mandatory"
+        reminder = UpdateDialog(_release(), mandatory=False, stage="reminder")
+        assert reminder.windowTitle() == "Update available"
+        nonsense = UpdateDialog(_release(), mandatory=False, stage="whatever")
+        assert nonsense._stage == "initial"
 
     def test_a_mandatory_update_is_re_offered_on_every_check(self):
         service, _api = checked_service(offered(force_update=True))

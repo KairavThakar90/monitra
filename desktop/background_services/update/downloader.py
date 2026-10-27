@@ -74,10 +74,13 @@ class DownloadError(Exception):
     what happened and what the user can do about it.
     """
 
-    def __init__(self, message: str, detail: str = "") -> None:
+    def __init__(self, message: str, detail: str = "", category: str = "download-failed") -> None:
         super().__init__(message)
         self.message = message
         self.detail = detail
+        #: A short fixed token for the log (`UPDATE_EVENT ... category=`), so
+        #: support can tell a dead link from a full disk from a tampered file.
+        self.category = category
 
 
 @dataclass(frozen=True)
@@ -185,13 +188,13 @@ def download_and_verify(
         # update channel is the one thing that must not be downgradeable.
         raise DownloadError(
             "The update could not be downloaded securely.",
-            detail=f"refusing the update URL: {problem}",
+            detail=f"refusing the update URL: {problem}", category="url-refused",
         )
 
     if not has_free_space(expected_size):
         raise DownloadError(
             "There is not enough free disk space to download the update.",
-            detail=f"needed {expected_size} bytes plus headroom",
+            detail=f"needed {expected_size} bytes plus headroom", category="disk-space",
         )
 
     target = updates_dir() / _artifact_name(url, version)
@@ -236,7 +239,7 @@ def download_and_verify(
                         if problem:
                             raise DownloadError(
                                 "The update could not be downloaded securely.",
-                                detail=f"refusing a redirect: {problem}",
+                                detail=f"refusing a redirect: {problem}", category="url-refused",
                             )
                         log.info("update download redirected (hop %d)", hop + 1)
                         current = next_url
@@ -248,7 +251,7 @@ def download_and_verify(
                         if should_stop is not None and should_stop():
                             raise DownloadError(
                                 "The update download was cancelled.",
-                                detail="stop requested during download",
+                                detail="stop requested during download", category="cancelled",
                             )
                         handle.write(chunk)
                         digest.update(chunk)
@@ -257,7 +260,7 @@ def download_and_verify(
                             raise DownloadError(
                                 "The update download was unexpectedly large and "
                                 "has been stopped.",
-                                detail=f"exceeded {MAX_ARTIFACT_BYTES} bytes",
+                                detail=f"exceeded {MAX_ARTIFACT_BYTES} bytes", category="download-incomplete",
                             )
                         if on_progress is not None:
                             on_progress(written, total)
@@ -265,7 +268,7 @@ def download_and_verify(
             else:
                 raise DownloadError(
                     "The update could not be downloaded securely.",
-                    detail=f"more than {policy.MAX_REDIRECTS} redirects",
+                    detail=f"more than {policy.MAX_REDIRECTS} redirects", category="url-refused",
                 )
         handle.close()
         handle = None
@@ -277,6 +280,7 @@ def download_and_verify(
             raise DownloadError(
                 "The update download was incomplete. Please try again.",
                 detail=f"expected {expected_size} bytes, received {written}",
+                category="download-incomplete",
             )
 
         actual = digest.hexdigest()
@@ -293,6 +297,7 @@ def download_and_verify(
                 "The update could not be verified and has been discarded. "
                 "Your current version of Monitra is unaffected.",
                 detail=f"sha256 mismatch: expected {expected_sha256}, got {actual}",
+                category="checksum-failed",
             )
 
         log.info(
@@ -306,25 +311,28 @@ def download_and_verify(
         raise
     except httpx.TimeoutException as exc:
         raise DownloadError(
-            "The update download timed out. Please try again.", detail=str(exc)
+            "The update download timed out. Please try again.", detail=str(exc),
+            category="timeout",
         )
     except httpx.HTTPStatusError as exc:
         raise DownloadError(
             "The update could not be downloaded.",
-            detail=f"HTTP {exc.response.status_code}",
+            detail=f"HTTP {exc.response.status_code}", category="http-error",
         )
     except httpx.HTTPError as exc:
         raise DownloadError(
-            "The update could not be downloaded: no connection.", detail=str(exc)
+            "The update could not be downloaded: no connection.", detail=str(exc),
+            category="no-connection",
         )
     except PermissionError as exc:
         raise DownloadError(
-            "Monitra does not have permission to save the update.", detail=str(exc)
+            "Monitra does not have permission to save the update.", detail=str(exc),
+            category="permission",
         )
     except OSError as exc:
         # ENOSPC lands here when the disk fills mid-transfer despite the check.
         raise DownloadError(
-            "The update could not be saved to disk.", detail=str(exc)
+            "The update could not be saved to disk.", detail=str(exc), category="disk-space",
         )
     finally:
         if handle is not None:
