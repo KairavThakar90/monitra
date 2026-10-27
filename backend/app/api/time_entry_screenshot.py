@@ -73,14 +73,19 @@ def record_capture_events(
 
 
 @router.get("/screenshots/config", response_model=ScreenshotConfigResponse)
-def get_screenshot_config(current_user: User = Depends(get_current_user)):
+def get_screenshot_config(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db, scope="function"),
+):
     """The authenticated user's screenshot capture configuration.
 
-    `GET /auth/me` already returns the same field as part of the profile;
-    this is the narrow projection the desktop's screenshot scheduler polls,
-    mirroring `GET /idle-periods/config`.
+    `GET /auth/me` already returns the capture interval and the member's
+    `screenshots_enabled` switch as part of the profile; this is the narrow
+    projection the desktop's screenshot scheduler polls, mirroring
+    `GET /idle-periods/config`. It also carries the image size and quality an
+    administrator set in Screenshot Management, which are not in the profile.
     """
-    return TimeEntryScreenshotService.get_screenshot_config(current_user)
+    return TimeEntryScreenshotService.get_screenshot_config(db, current_user)
 
 
 @router.post(

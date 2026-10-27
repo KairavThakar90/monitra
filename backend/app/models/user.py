@@ -62,6 +62,13 @@ class User(Base):
     can_own_projects: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('false'))
     idle_minutes: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('5'))
     capture_frequency: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: Whether the desktop captures screenshots for this member at all. An
+    #: administrator switches it per person from Screenshot Management; the
+    #: desktop reads it from `GET /auth/me` and `GET /screenshots/config` and
+    #: takes no screenshot while it is false. On by default, so every existing
+    #: member keeps capturing exactly as before. Existing screenshots are never
+    #: touched by switching it off. See `app/services/screenshot_settings.py`.
+    screenshots_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('true'))
     status: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'active'"))
     created_at: Mapped[func.now] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[func.now] = mapped_column(

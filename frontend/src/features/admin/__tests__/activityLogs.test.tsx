@@ -143,6 +143,12 @@ describe('activity log wording', () => {
     expect(moduleLabel('client')).toBe('Client');
   });
 
+  it('names the screenshot management actions', () => {
+    expect(actionLabel('screenshots_enabled')).toBe('Turned on screenshots');
+    expect(actionLabel('screenshots_disabled')).toBe('Turned off screenshots');
+    expect(actionLabel('screenshot_settings_updated')).toBe('Updated screenshot settings');
+  });
+
   it('says which client acted, and nothing when none was recorded', () => {
     expect(sourceLabel({ source: 'desktop', client_version: '1.3.0' })).toBe('Desktop 1.3.0');
     expect(sourceLabel({ source: 'desktop', client_version: null })).toBe('Desktop');

@@ -1113,6 +1113,31 @@ stored byte for byte as encoded. The qualities were
 raised about 10% on 2026-10-08 (from 72 / 45 / 20); the limit is what keeps the larger quality from
 becoming larger files.
 
+**What an administrator controls** ([docs/SCREENSHOT_SETTINGS.md](../docs/SCREENSHOT_SETTINGS.md) is
+authoritative). Three things arrive through `GET /screenshots/config` -- the endpoint
+`_refresh_config` already polls for the capture interval, every `CONFIG_REFRESH_SECONDS` (3 min) --
+and the first also rides on the sign-in profile (`apply_user_profile`): whether this member is
+captured at all (`screenshots_enabled`), and the image size and quality (`config.CaptureSettings`,
+parsed defensively by `config.parse_capture_settings`). There is no second channel and no new timer or
+thread.
+
+- **Only an explicit `false` turns capture off**, and a profile with no switch means *on* (so one
+  member's "off" is never inherited by the next to sign in). While off, `_run_due` plans nothing,
+  `_check_authorized` refuses a capture planned earlier *before the screen is read*, and no
+  unresolved-window event is sent -- no capture was expected. The schedule stays armed, and switching
+  back on plans the rest of the window at once (`_on_screenshots_switch_changed`, edge-triggered).
+  `health.DISABLED` tells the person why nothing is captured.
+- **Size** is a width x height canvas the screen is fitted into; on several displays it is the box the
+  primary display is fitted into (`compositor.output_size(box=...)`). At the default 1500x1500 every
+  number is the one it always was; at any other size the byte budgets scale with the canvas area
+  (`image_processor._scaled_budget`) so a bigger canvas is not compressed back to nothing.
+- **Quality** is Automatic (`None`: the adaptive search, fallback and hard limit above) or *fixed*:
+  `_encode_fixed` encodes at exactly that quality and runs none of the byte-budget passes, because
+  they would turn "90%" into "whatever fits in 135 KB". Its one ceiling is `FIXED_QUALITY_MAX_BYTES`,
+  under the server's upload limit, since an over-limit file is refused with a 413 and parked for ever.
+- The bounds in `config` are the backend's (`backend/app/core/screenshot_geometry.py`), compared by
+  `tests/test_screenshot_settings.py`: this client is never stricter than the server.
+
 Two rules about the capture itself, each learned in production:
 
 - **Every expected capture ends in an image, a retry still inside its window,

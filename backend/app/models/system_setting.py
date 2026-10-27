@@ -58,7 +58,13 @@ class SystemSettingKey:
     #: notifications. See ``app/services/desktop_notifications.py``.
     DESKTOP_NOTIFICATIONS = "desktop_notifications"
 
-    ALL = (MAINTENANCE_MODE, DESKTOP_NOTIFICATIONS)
+    #: What every desktop's screenshot looks like: ``{"version": int,
+    #: "image_width": int, "image_height": int, "image_quality": int}``, each
+    #: image key present only when an administrator moved it off the default.
+    #: See ``app/services/screenshot_settings.py``.
+    SCREENSHOT_SETTINGS = "screenshot_settings"
+
+    ALL = (MAINTENANCE_MODE, DESKTOP_NOTIFICATIONS, SCREENSHOT_SETTINGS)
 
 
 class SystemSetting(Base):

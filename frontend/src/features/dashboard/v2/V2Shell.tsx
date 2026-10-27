@@ -25,7 +25,7 @@ export const REPORT_LINKS = [
 export const SETTINGS_LINKS = [
   { id: "maintenance", label: "Maintenance" },
   { id: "user-management", label: "User Management" },
-  { id: "screenshot-privacy", label: "Screenshot Privacy" },
+  { id: "screenshot-management", label: "Screenshot Management" },
   { id: "desktop-notifications", label: "Desktop Notifications" },
 ];
 

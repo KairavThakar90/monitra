@@ -27,6 +27,8 @@ export interface Member {
   can_add_nonbillable_tasks?: boolean;
   /** The Members directory's Allow / Exclude switch for signing in. Absent on an older backend means allowed. */
   can_login?: boolean;
+  /** Screenshot Management's per-member switch. Absent on an older backend means on; only an explicit `false` is off. */
+  screenshots_enabled?: boolean;
   created_at?: string;
   updated_at?: string;
   organization?: { id: number; name: string };

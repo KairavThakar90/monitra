@@ -19,7 +19,7 @@ import { AdminActivityLogs } from './features/admin/AdminActivityLogs';
 import { AdminSettings } from './features/admin/AdminSettings';
 import { AdminDesktopNotifications } from './features/admin/AdminDesktopNotifications';
 import { AdminUserManagement } from './features/admin/AdminUserManagement';
-import { AdminScreenshotPrivacy } from './features/admin/AdminScreenshotPrivacy';
+import { AdminScreenshotManagementPage } from './features/admin/AdminScreenshotManagementPage';
 import { MaintenanceToast } from './components/MaintenanceToast'
 import { LoadFailureNotice } from './components/LoadFailureNotice'
 import { MemberFeedback } from './features/member/MemberFeedback'
@@ -379,11 +379,16 @@ const AppRoutes: React.FC = () => {
           </SystemAdminRoute>
         }
       />
+      {/* Screenshot Privacy is now a section of Screenshot Management; an old link or bookmark lands there. */}
       <Route
         path="/admin/settings/screenshot-privacy"
+        element={<Navigate to="/admin/settings/screenshot-management#privacy" replace />}
+      />
+      <Route
+        path="/admin/settings/screenshot-management"
         element={
           <SystemAdminRoute>
-            <AdminScreenshotPrivacy />
+            <AdminScreenshotManagementPage />
           </SystemAdminRoute>
         }
       />

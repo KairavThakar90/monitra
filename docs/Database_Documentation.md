@@ -77,6 +77,7 @@ Indexes: `name`, `status`.
 | idle_enabled | boolean | default true |
 | idle_minutes | integer | default 5 |
 | capture_frequency | integer | NOT NULL |
+| screenshots_enabled | boolean | NOT NULL, default true. Whether the desktop captures this member's screenshots; set from Screenshot Management ([SCREENSHOT_SETTINGS.md](SCREENSHOT_SETTINGS.md)). |
 | status | varchar | default `'active'` |
 | password_hash | varchar | nullable (external/SSO users may have none) |
 | wp_capabilities | jsonb | WordPress/Hubstaff capability mirror, external-auth related |

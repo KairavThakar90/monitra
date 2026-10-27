@@ -197,6 +197,7 @@ app.include_router(activity_rollup_router, prefix=api_prefix)
 # 3. Registrations for routers that contain their own /api/v1 internal prefix
 # These must only be registered once without prefix parameters to avoid double-prefixing.
 from app.api.screenshot_privacy import router as screenshot_privacy_router
+from app.api.screenshot_settings import router as screenshot_settings_router
 
 app.include_router(project_management_router)
 app.include_router(wfpm_router)
@@ -210,6 +211,7 @@ app.include_router(activity_logs_router)
 app.include_router(reports_page_router)
 app.include_router(dashboard_router)
 app.include_router(screenshot_privacy_router)
+app.include_router(screenshot_settings_router)
 app.include_router(clients_router)
 
 @app.get("/")

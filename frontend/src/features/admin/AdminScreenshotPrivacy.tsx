@@ -169,7 +169,14 @@ const scopeNote = (selectedCount: number, activeCount: number) => {
   );
 };
 
-export const AdminScreenshotPrivacy: React.FC = () => {
+/**
+ * `embedded` renders the page's content without the app shell, as one section
+ * of the Screenshot Management accordion (`AdminScreenshotManagementPage`).
+ * Everything it does is the same; only the shell around it, and where the
+ * "+ Add Privacy Rule" button sits (the shell's header, otherwise at the top of
+ * the section), differ.
+ */
+export const AdminScreenshotPrivacy: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const { showToast } = useFeedback();
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
 
@@ -344,20 +351,20 @@ export const AdminScreenshotPrivacy: React.FC = () => {
     </div>
   );
 
-  return (
-    <V2Shell
-      title="Screenshot Privacy"
-      subtitle="Choose which applications and websites are excluded from each member's screenshots."
-      actions={
-        <button
-          onClick={() => setDrawerOpen(true)}
-          className="cursor-pointer rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90"
-        >
-          + Add Privacy Rule
-        </button>
-      }
+  const addRuleButton = (
+    <button
+      onClick={() => setDrawerOpen(true)}
+      className="cursor-pointer rounded-lg bg-gradient-to-r from-[#3B82F6] to-[#8B5CF6] px-4 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90"
     >
-      <div className="w-full space-y-6 pb-20">
+      + Add Privacy Rule
+    </button>
+  );
+
+  const body = (
+    <>
+      <div className={embedded ? 'w-full space-y-6' : 'w-full space-y-6 pb-20'}>
+        {embedded && <div className="flex justify-end">{addRuleButton}</div>}
+
         {/* Member picker */}
         <div className="flex flex-col items-start justify-between gap-4 rounded-xl border border-[#E2E8F0] bg-white p-6 shadow-sm md:flex-row md:items-center">
           <div className="flex items-center gap-3">
@@ -602,6 +609,18 @@ export const AdminScreenshotPrivacy: React.FC = () => {
           </div>
         </div>
       </div>
+    </>
+  );
+
+  if (embedded) return body;
+
+  return (
+    <V2Shell
+      title="Screenshot Privacy"
+      subtitle="Choose which applications and websites are excluded from each member's screenshots."
+      actions={addRuleButton}
+    >
+      {body}
     </V2Shell>
   );
 };

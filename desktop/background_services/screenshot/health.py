@@ -40,6 +40,7 @@ WAITING = "waiting"          # tracking; no capture due or finished yet
 UPLOADING = "uploading"      # a capture is queued and uploading normally
 OK = "ok"                    # the last capture is confirmed in Drive
 EXCLUDED = "excluded"        # a privacy rule is holding the capture back
+DISABLED = "disabled"        # an administrator turned screenshots off for this account
 RETRYING = "retrying"        # an upload has been failing for a while
 BLOCKED = "blocked"          # the OS will not let the screen be read
 FAILED = "failed"            # a capture failed outright, or the server refused one
@@ -153,6 +154,7 @@ def derive_status(
     last_upload_at: Optional[str] = None,
     tz=None,
     now: Optional[datetime] = None,
+    disabled: bool = False,
 ) -> ScreenshotStatus:
     """
     The one place the screenshot state shown to the user is decided.
@@ -166,6 +168,11 @@ def derive_status(
         "privacy_config"), while it is.
     :param queue: `LocalCache.screenshot_queue_summary()`.
     :param last_upload_at: the last upload the backend confirmed, ISO 8601.
+    :param disabled: an administrator has turned screenshots off for this
+        account (Screenshot Management). Nothing is being captured and nothing is
+        wrong, so it is said plainly and as information -- never as a failure.
+        Screenshots taken before it was switched off are still uploading, and say
+        so first: only a quiet line is replaced.
     """
     queue = queue or {}
     uploading = int(queue.get("uploading", 0)) + int(queue.get("unattributed", 0))
@@ -177,7 +184,9 @@ def derive_status(
     if not tracking and pending == 0:
         return ScreenshotStatus(INACTIVE, SEVERITY_NONE, "", last_uploaded_at=last_upload_at)
 
-    if tracking and blocked_state:
+    # While screenshots are off nothing is attempted, so an earlier refusal by the
+    # OS or an earlier failed window is no longer a statement about now.
+    if tracking and blocked_state and not disabled:
         return ScreenshotStatus(
             BLOCKED, SEVERITY_ERROR,
             "Screenshots are not being captured",
@@ -185,7 +194,7 @@ def derive_status(
             pending, last_upload_at,
         )
 
-    if tracking and consecutive_failed_windows > 0:
+    if tracking and consecutive_failed_windows > 0 and not disabled:
         return ScreenshotStatus(
             FAILED, SEVERITY_ERROR,
             "Screenshot capture failed",
@@ -216,6 +225,15 @@ def derive_status(
             UPLOADING, SEVERITY_INFO,
             "Uploading screenshot",
             "", pending, last_upload_at,
+        )
+
+    if tracking and disabled:
+        return ScreenshotStatus(
+            DISABLED, SEVERITY_INFO,
+            "Screenshots are turned off",
+            "Your administrator has turned screenshots off for your account. "
+            "Your time is still being tracked.",
+            pending, last_upload_at,
         )
 
     if tracking and held == "excluded":

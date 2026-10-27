@@ -39,10 +39,14 @@ class UserBase(BaseModel):
     can_add_nonbillable_tasks: bool = False
     #: False while an administrator has excluded this member from signing in.
     can_login: bool = True
+    #: False while an administrator has switched screenshots off for this member
+    #: (Screenshot Management). The desktop reads it here, at sign-in, so a
+    #: member who is switched off never captures even the first window.
+    screenshots_enabled: bool = True
     status: str = "active"
     is_active: bool = True
 
-    @field_validator("can_add_tasks", "can_login", mode="before")
+    @field_validator("can_add_tasks", "can_login", "screenshots_enabled", mode="before")
     @classmethod
     def unset_means_allowed(cls, value):
         # Only an explicit False withdraws (see PER_MEMBER_PERMISSION_OVERRIDES).

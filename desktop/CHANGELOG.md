@@ -20,6 +20,22 @@ re-grant a permission.
 
 ## [Unreleased]
 
+### Added
+
+- **Your administrator can now control your screenshots from the web admin panel.**
+  - **Turn them off for you:** if screenshots are switched off for your account, Monitra
+    takes none. The line beside ACTIVITY says "Screenshots are turned off", and your time
+    is tracked exactly as before. Screenshots already taken are kept and still upload.
+    Switch them back on and capture resumes within a few minutes, without restarting.
+  - **Size and quality:** the administrator can choose the size (width and height) of
+    every screenshot and either leave the quality on Automatic -- as it has always been --
+    or fix it to a percentage such as 50%, 75% or 90%. A fixed quality is used as chosen;
+    only if a file would be too large for the server to accept is the quality lowered
+    to fit. Until the administrator changes anything, screenshots are captured exactly as
+    before.
+  - A change reaches a running Monitra within a few minutes (the same refresh that
+    delivers your capture interval); it does not need a new sign-in.
+
 ### Changed
 
 - **Notifications carry the Monitra logo in a circle** where Windows used to put its own

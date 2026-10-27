@@ -20,6 +20,8 @@ here.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from typing import Any, Mapping, Optional
 
 #: Length of one scheduling window. The timeline API groups by the same value.
 WINDOW_DURATION_MINUTES = 10
@@ -183,6 +185,109 @@ LAST_UPLOAD_STATE_KEY = "screenshot_last_upload"
 #: Cap on one upload's HTTP timeout. A screenshot is ~100 KB, but a queued
 #: backlog uploads over whatever link the user has.
 UPLOAD_TIMEOUT_SECONDS = 30.0
+
+
+# ── What an administrator can set (Screenshot Management) ────────────────────
+#
+# The web admin panel's Screenshot Management page decides the size and quality
+# of every screenshot. They reach this process through `GET /screenshots/config`
+# and are applied by `ScreenshotService`; nothing here reads the network.
+#
+# The bounds below are the backend's (`backend/app/core/screenshot_geometry.py`),
+# written twice and compared by `tests/test_screenshot_settings.py`. They are the
+# limits the *server* will accept, so this client is never stricter than it: a
+# value the server would store is a value this client will use.
+
+#: Shortest and longest edge an administrator may choose, in pixels.
+MIN_IMAGE_EDGE = 250
+MAX_IMAGE_EDGE = 4000
+
+#: The range of a fixed WebP quality, in percent.
+MIN_IMAGE_QUALITY = 10
+MAX_IMAGE_QUALITY = 100
+
+#: The largest file a *fixed*-quality screenshot may be. The backend refuses an
+#: upload over `SCREENSHOT_MAX_UPLOAD_BYTES` (5 MB) with a 413, which the
+#: uploader treats as a refusal and parks for ever -- so a fixed quality that
+#: produced a bigger file would silently turn every capture into a parked one.
+#: Under this limit the administrator's quality is used exactly; above it the
+#: quality is lowered (and logged) until the file fits, because a smaller picture
+#: that uploads beats the exact picture that never does.
+FIXED_QUALITY_MAX_BYTES = 4 * 1024 * 1024
+
+#: Most re-encodes a fixed quality may spend getting under that limit. Quality
+#: falls by `FIXED_QUALITY_STEP` each time, so this reaches the floor from 100.
+FIXED_QUALITY_MAX_STEPS = 9
+FIXED_QUALITY_STEP = 10
+
+
+@dataclass(frozen=True)
+class CaptureSettings:
+    """The size and quality of the screenshot taken from now on.
+
+    ``quality`` is ``None`` for **Automatic** -- the behaviour before Screenshot
+    Management existed (start at `WEBP_QUALITY_START`, step down to meet a byte
+    target, and hold every image under a hard limit) -- or a fixed WebP quality
+    in percent. The default is exactly that earlier behaviour, so a machine that
+    has not heard from the server, or an older backend that has no such
+    setting, captures as it always did.
+    """
+
+    width: int = IMAGE_SIZE
+    height: int = IMAGE_SIZE
+    quality: Optional[int] = None
+
+    @property
+    def area_factor(self) -> float:
+        """This canvas's area relative to the 1500x1500 the byte budgets were tuned at."""
+        return (self.width * self.height) / float(IMAGE_SIZE * IMAGE_SIZE)
+
+    @property
+    def is_default_geometry(self) -> bool:
+        return self.width == IMAGE_SIZE and self.height == IMAGE_SIZE
+
+
+DEFAULT_CAPTURE_SETTINGS = CaptureSettings()
+
+
+def _is_whole_number(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def parse_capture_settings(
+    payload: Mapping[str, Any], current: CaptureSettings = DEFAULT_CAPTURE_SETTINGS
+) -> CaptureSettings:
+    """
+    The settings a `GET /screenshots/config` answer describes, laid over `current`.
+
+    Defensive in the one direction that matters: **a value that is missing or not
+    usable leaves the matching setting where it was.** A backend that has never
+    heard of Screenshot Management sends none of the keys and changes nothing; a
+    damaged or out-of-range number is ignored rather than clamped, so it can
+    never make this machine capture at a size or quality nobody chose. Width and
+    height are read as a pair -- one without the other is not a size.
+
+    ``image_quality`` is the only key whose *null* means something: it is
+    Automatic. Absent is "not said" (kept); present and null is "Automatic".
+    """
+    width, height, quality = current.width, current.height, current.quality
+
+    new_width, new_height = payload.get("image_width"), payload.get("image_height")
+    if (
+        _is_whole_number(new_width) and _is_whole_number(new_height)
+        and MIN_IMAGE_EDGE <= new_width <= MAX_IMAGE_EDGE
+        and MIN_IMAGE_EDGE <= new_height <= MAX_IMAGE_EDGE
+    ):
+        width, height = new_width, new_height
+
+    if "image_quality" in payload:
+        new_quality = payload["image_quality"]
+        if new_quality is None:
+            quality = None
+        elif _is_whole_number(new_quality) and MIN_IMAGE_QUALITY <= new_quality <= MAX_IMAGE_QUALITY:
+            quality = new_quality
+
+    return CaptureSettings(width=width, height=height, quality=quality)
 
 
 def _int_env(name: str, default: int, *, minimum: int = 1) -> int:

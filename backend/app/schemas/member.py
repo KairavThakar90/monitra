@@ -181,6 +181,9 @@ class MemberResponse(BaseModel):
     can_add_nonbillable_tasks: bool = False
     can_login: bool = True
     can_own_projects: bool = False
+    #: Whether the desktop captures this member's screen. Set from Screenshot
+    #: Management, not from the member form (`MemberUpdate` does not carry it).
+    screenshots_enabled: bool = True
     created_at: datetime
     updated_at: datetime
 
@@ -193,7 +196,7 @@ class MemberResponse(BaseModel):
         # never assumed.
         return False if value is None else value
 
-    @field_validator("can_add_tasks", "can_login", mode="before")
+    @field_validator("can_add_tasks", "can_login", "screenshots_enabled", mode="before")
     @classmethod
     def unset_means_allowed(cls, value):
         # Only an explicit False withdraws; an unset value is the default.
