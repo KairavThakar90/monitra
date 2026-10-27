@@ -174,3 +174,17 @@ class TimeEntryActivityHourlyResponseData(BaseModel):
 class TimeEntryActivityHourlyResponse(BaseModel):
     success: bool = True
     data: TimeEntryActivityHourlyResponseData
+
+
+class ActivityConfigResponse(BaseModel):
+    """The authenticated user's own activity-tracking switch.
+
+    `GET /auth/me` already carries the same value as part of the profile; this is
+    the narrow projection the desktop polls (mirroring `GET /idle-periods/config`
+    and `GET /screenshots/config`), so a change an administrator makes in User
+    Management reaches a running desktop without re-fetching the whole profile.
+    """
+
+    activity_tracking_enabled: bool
+
+    model_config = ConfigDict(from_attributes=True)

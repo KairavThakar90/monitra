@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /**
- * Admin Settings -> Screenshot Management.
+ * Screenshot Management -> Size and quality.
  *
- * The real page is rendered against a real RTK Query store with only `fetch`
+ * The real section is rendered against a real RTK Query store with only `fetch`
  * replaced by a small stateful fake of the backend, so what is pinned is the
  * request a browser would make and what the administrator sees afterwards:
  *
@@ -11,11 +11,9 @@
  *   shows Fixed with that number;
  * - an out-of-range or non-integer value blocks Save and says why, in words;
  * - Save sends exactly {image_width, image_height, image_quality}, with `null`
- *   (never an omitted key) for Automatic;
- * - a member switch calls the member endpoint, shows at once, and is put back
- *   with a toast when refused;
- * - "all" and "selected" go through a confirmation first, and send the scope;
- * - clients are never listed, and a refused (403) page shows no controls.
+ *   (never an omitted key) for Automatic.
+ *
+ * The page around it (sections, order, hash, access) is screenshotManagementPage.test.tsx.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -24,29 +22,30 @@ import { configureStore } from '@reduxjs/toolkit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { baseApi } from '../../../store/api/baseApi';
+import { useGetScreenshotSettingsQuery } from '../../../store/api/screenshotSettingsApi';
 
 const showToast = vi.fn();
-const confirmAction = vi.fn(async (_title: string, _message: string) => true);
 
 vi.mock('../../dashboard/v2/V2Shell', () => ({
   V2Shell: ({ actions, children }: { actions?: React.ReactNode; children: React.ReactNode }) => <>{actions}{children}</>,
 }));
 vi.mock('../../../components/FeedbackProvider', () => ({
-  useFeedback: () => ({ showToast, confirmAction }),
+  useFeedback: () => ({ showToast, confirmAction: async () => true }),
 }));
 
-import { AdminScreenshotManagement } from '../AdminScreenshotManagement';
+import { SizeAndQuality } from '../AdminScreenshotManagement';
+
+/** What the page does around the section: read the settings, then hand them over. */
+const Section = () => {
+  const settings = useGetScreenshotSettingsQuery();
+  return settings.data ? <SizeAndQuality settings={settings.data} /> : null;
+};
 
 type Body = Record<string, unknown>;
 type Call = { method: string; path: string; body: Body | null };
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
-
-const member = (id: number, name: string, extra: Body = {}) => ({
-  id, name, email: `${name.split(' ')[0].toLowerCase()}@example.com`, role: 'employee', status: 'active',
-  date_of_joining: null, date_of_birth: null, designation: '', ...extra,
-});
 
 const baseSettings = () => ({
   image_width: 1500, image_height: 1500, image_quality: null as number | null,
@@ -55,13 +54,11 @@ const baseSettings = () => ({
   version: 0, updated_at: null as string | null, updated_by_username: null as string | null,
 });
 
-describe('AdminScreenshotManagement', () => {
+describe('SizeAndQuality', () => {
   let container: HTMLDivElement;
   let root: Root;
   let calls: Call[];
   let settings: ReturnType<typeof baseSettings>;
-  let members: ReturnType<typeof member>[];
-  let settingsStatus: number;
   let refuseNext: { status: number; detail: string } | null;
 
   const settle = async () => {
@@ -94,8 +91,6 @@ describe('AdminScreenshotManagement', () => {
   const radio = (label: string) =>
     Array.from(container.querySelectorAll('label')).find((l) => l.textContent?.includes(label))!
       .querySelector('input[type="radio"]') as HTMLInputElement;
-  const toggleFor = (name: string) =>
-    container.querySelector(`button[role="switch"][aria-label="Screenshots for ${name}"]`) as HTMLButtonElement | null;
   const writes = () => calls.filter((c) => c.method !== 'GET');
   const saveButton = () => button('Save changes')!;
 
@@ -104,28 +99,16 @@ describe('AdminScreenshotManagement', () => {
       reducer: { [baseApi.reducerPath]: baseApi.reducer },
       middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(baseApi.middleware),
     });
-    await act(async () => { root.render(<Provider store={store}><AdminScreenshotManagement /></Provider>); });
-    await until(() => !!container.querySelector('#screenshot-width') || container.textContent!.includes('Only administrators'));
-    await until(() => !!toggleFor('Alice Active') || container.textContent!.includes('Only administrators'));
+    await act(async () => { root.render(<Provider store={store}><Section /></Provider>); });
+    await until(() => !!container.querySelector('#screenshot-width'));
   };
 
   beforeEach(async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     showToast.mockClear();
-    confirmAction.mockClear();
-    confirmAction.mockImplementation(async () => true);
     calls = [];
     refuseNext = null;
-    settingsStatus = 200;
     settings = baseSettings();
-    members = [
-      member(1, 'Alice Active'),
-      member(2, 'Bob Builder', { screenshots_enabled: false }),
-      member(3, 'Carl Casual', { screenshots_enabled: true }),
-      member(4, 'Dora Dormant', { status: 'inactive' }),
-      member(5, 'Client Co', { role: 'client' }),
-      member(6, 'Release Bot', { role: 'release_bot' }),
-    ];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const request = input instanceof Request ? input : null;
       const url = new URL(request ? request.url : String(input), 'http://localhost');
@@ -135,31 +118,10 @@ describe('AdminScreenshotManagement', () => {
       calls.push({ method, path: url.pathname, body });
 
       if (url.pathname.endsWith('/screenshot-settings')) {
-        if (settingsStatus !== 200) return json({ detail: 'Forbidden' }, settingsStatus);
         if (method === 'GET') return json(settings);
         if (refuseNext) { const r = refuseNext; refuseNext = null; return json({ detail: r.detail }, r.status); }
         Object.assign(settings, body, { version: settings.version + 1, updated_by_username: 'grace', updated_at: '2026-10-01T09:00:00Z' });
         return json(settings);
-      }
-      const one = url.pathname.match(/\/screenshot-settings\/members\/(\d+)$/);
-      if (one && method === 'PUT') {
-        if (refuseNext) { const r = refuseNext; refuseNext = null; return json({ detail: r.detail }, r.status); }
-        const row = members.find((m) => m.id === Number(one[1]))!;
-        const was = (row as Body).screenshots_enabled !== false;
-        (row as Body).screenshots_enabled = (body as { enabled: boolean }).enabled;
-        return json({ id: row.id, name: row.name, screenshots_enabled: (body as { enabled: boolean }).enabled, changed: was !== (body as { enabled: boolean }).enabled });
-      }
-      if (url.pathname.endsWith('/screenshot-settings/members') && method === 'POST') {
-        if (refuseNext) { const r = refuseNext; refuseNext = null; return json({ detail: r.detail }, r.status); }
-        const { enabled, apply_to } = body as { enabled: boolean; apply_to: { scope: string; user_ids?: number[] } };
-        const hit = members.filter((m) =>
-          apply_to.scope === 'all' ? m.status === 'active' && m.role === 'employee' : apply_to.user_ids!.includes(m.id));
-        let changed = 0;
-        hit.forEach((m) => { if (((m as Body).screenshots_enabled !== false) !== enabled) changed += 1; (m as Body).screenshots_enabled = enabled; });
-        return json({ enabled, matched: hit.length, changed });
-      }
-      if (url.pathname.endsWith('/members') && method === 'GET') {
-        return json({ items: members, page: 1, limit: 100, total: members.length, pages: 1 });
       }
       return json({}, 404);
     }));
@@ -340,147 +302,5 @@ describe('AdminScreenshotManagement', () => {
       expect(input('screenshot-width').value).toBe('1200');
       expect(saveButton().disabled).toBe(false);
     });
-  });
-
-  describe('member-wise control', () => {
-    it('lists active members only -- never a client or the release account -- with an accessible switch each', async () => {
-      await mount();
-
-      expect(toggleFor('Alice Active')!.getAttribute('aria-checked')).toBe('true');
-      // Only an explicit false is off.
-      expect(toggleFor('Bob Builder')!.getAttribute('aria-checked')).toBe('false');
-      expect(toggleFor('Carl Casual')!.getAttribute('aria-checked')).toBe('true');
-      expect(toggleFor('Dora Dormant')).toBeNull();
-      expect(toggleFor('Client Co')).toBeNull();
-      expect(toggleFor('Release Bot')).toBeNull();
-      expect(container.textContent).not.toContain('Client Co');
-      expect(container.querySelector('[data-testid="on-count"]')!.textContent).toBe('2 of 3 active members on');
-      expect(container.textContent).toContain("A change reaches a member's desktop within a few minutes.");
-      expect(container.textContent).toContain('Screenshots already captured are kept.');
-    });
-
-    it('searches by name or email', async () => {
-      await mount();
-      await type(container.querySelector('input[aria-label="Search members"]') as HTMLInputElement, 'bob');
-      expect(toggleFor('Bob Builder')).toBeTruthy();
-      expect(toggleFor('Alice Active')).toBeNull();
-
-      await type(container.querySelector('input[aria-label="Search members"]') as HTMLInputElement, 'nobody');
-      expect(container.textContent).toContain('No members match your search.');
-    });
-
-    it('turns a member on at once, calls the member endpoint and keeps the server answer', async () => {
-      await mount();
-      await click(toggleFor('Bob Builder'));
-
-      expect(writes()).toEqual([
-        { method: 'PUT', path: expect.stringMatching(/\/screenshot-settings\/members\/2$/), body: { enabled: true } },
-      ]);
-      expect(toggleFor('Bob Builder')!.getAttribute('aria-checked')).toBe('true');
-      expect(container.querySelector('[data-testid="on-count"]')!.textContent).toBe('3 of 3 active members on');
-    });
-
-    it('turns a member off with exactly {enabled:false}', async () => {
-      await mount();
-      await click(toggleFor('Alice Active'));
-      expect(writes()[0].body).toEqual({ enabled: false });
-      expect(toggleFor('Alice Active')!.getAttribute('aria-checked')).toBe('false');
-    });
-
-    it('puts the switch back and says so when the server refuses', async () => {
-      await mount();
-      refuseNext = { status: 404, detail: 'Member not found.' };
-      await click(toggleFor('Alice Active'));
-
-      expect(toggleFor('Alice Active')!.getAttribute('aria-checked')).toBe('true');
-      expect(showToast).toHaveBeenCalledWith('Member not found.', 'error');
-      expect(toggleFor('Alice Active')!.disabled).toBe(false);
-    });
-
-    it('turning everyone off asks first, and sends nothing when declined', async () => {
-      await mount();
-      confirmAction.mockImplementationOnce(async () => false);
-      await click(button('Turn off for all'));
-
-      expect(confirmAction).toHaveBeenCalledTimes(1);
-      const [title, message] = confirmAction.mock.calls[0];
-      expect(title).toContain('Turn off screenshots for all members');
-      expect(message).toContain('all 3 active members');
-      expect(message).toContain('Screenshots already taken are not deleted');
-      expect(writes()).toEqual([]);
-    });
-
-    it('turning everyone off, once confirmed, sends the all scope and refreshes the rows', async () => {
-      await mount();
-      await click(button('Turn off for all'));
-
-      expect(writes()).toEqual([
-        { method: 'POST', path: expect.stringMatching(/\/screenshot-settings\/members$/), body: { enabled: false, apply_to: { scope: 'all' } } },
-      ]);
-      expect(showToast).toHaveBeenCalledWith('Screenshots turned off for 2 members (1 already off).', 'success');
-      expect(toggleFor('Alice Active')!.getAttribute('aria-checked')).toBe('false');
-      expect(container.querySelector('[data-testid="on-count"]')!.textContent).toBe('0 of 3 active members on');
-    });
-
-    it('turning on for selected members sends exactly their ids, after confirming', async () => {
-      await mount();
-      const pick = (name: string) => container.querySelector(`input[aria-label="Select ${name}"]`) as HTMLInputElement;
-      expect(button('Turn on for selected')).toBeUndefined();
-
-      await click(pick('Bob Builder'));
-      await click(pick('Carl Casual'));
-      expect(container.textContent).toContain('2 selected');
-      await click(button('Turn on for selected'));
-
-      expect(confirmAction).toHaveBeenCalledTimes(1);
-      expect(confirmAction.mock.calls[0][1]).toContain('2 selected members');
-      expect(writes()).toEqual([
-        { method: 'POST', path: expect.stringMatching(/\/screenshot-settings\/members$/), body: { enabled: true, apply_to: { scope: 'members', user_ids: [2, 3] } } },
-      ]);
-      // The selection is spent once it has been applied.
-      expect(container.textContent).not.toContain('2 selected');
-    });
-
-    it('keeps the selection and says why when the server refuses a bulk change', async () => {
-      await mount();
-      await click(container.querySelector('input[aria-label="Select Bob Builder"]'));
-      refuseNext = { status: 400, detail: 'Member 2 was not found.' };
-      await click(button('Turn on for selected'));
-
-      expect(showToast).toHaveBeenCalledWith('Member 2 was not found.', 'error');
-      expect(container.textContent).toContain('1 selected');
-    });
-  });
-
-  describe('access', () => {
-    it('shows no controls, and asks for no members, when the server refuses the page with 403', async () => {
-      settingsStatus = 403;
-      await mount();
-
-      expect(container.textContent).toContain('Only administrators can open this page.');
-      expect(container.querySelector('#screenshot-width')).toBeNull();
-      expect(container.querySelector('button[role="switch"]')).toBeNull();
-      expect(button('Turn off for all')).toBeUndefined();
-      expect(calls.filter((c) => c.path.endsWith('/members'))).toEqual([]);
-    });
-
-    it('says the settings could not be loaded on any other failure, and offers a retry', async () => {
-      settingsStatus = 500;
-      const store = configureStore({
-        reducer: { [baseApi.reducerPath]: baseApi.reducer },
-        middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(baseApi.middleware),
-      });
-      await act(async () => { root.render(<Provider store={store}><AdminScreenshotManagement /></Provider>); });
-      // A server error is retried with a back-off before the page gives up, so this waits longer.
-      for (let i = 0; i < 1500 && !container.textContent!.includes('Could not load the screenshot settings.'); i += 1) {
-        // eslint-disable-next-line no-await-in-loop
-        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
-      }
-
-      expect(container.textContent).toContain('Could not load the screenshot settings.');
-      expect(container.textContent).not.toContain('Only administrators');
-      expect(button('Retry')).toBeTruthy();
-      expect(container.querySelector('#screenshot-width')).toBeNull();
-    }, 20000);
   });
 });

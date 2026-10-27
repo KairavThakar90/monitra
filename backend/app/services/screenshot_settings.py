@@ -1,18 +1,19 @@
-"""Screenshot Management: who is captured, and how each screenshot looks.
+"""Screenshot Management: how each screenshot looks.
 
 What it is
 ----------
-Three controls an administrator has over the desktop's screenshots:
+Two controls an administrator has over every desktop's screenshots:
 
-* **Capture on / off, per member** -- ``users.screenshots_enabled``. While it is
-  false the desktop takes no screenshot for that person. Switching it off never
-  removes a screenshot that already exists, and switching it back on resumes
-  capture at the next window.
 * **Image size** -- the width and height, in pixels, a screenshot is made at.
 * **Image quality** -- either Automatic (the behaviour before this existed: start
   at WebP 79, step down on a busy screen, hold every image under a hard byte
   limit) or a *fixed* WebP quality in percent, which the desktop encodes at
   exactly, as long as the file stays inside the upload limit.
+
+Whether a particular member is captured at all is a third thing, but not set here:
+it is the per-member ``users.screenshots_enabled`` switch, edited from User
+Management with the other desktop switches through the ordinary member update
+(``MemberService.update``) -- one write path, one audit trail.
 
 How the desktop hears about it
 ------------------------------
@@ -66,18 +67,10 @@ from app.core.screenshot_geometry import (
 from app.models.activity_log import ActivityLogAction, ActivityLogModule
 from app.models.system_setting import SystemSetting, SystemSettingKey
 from app.models.user import User
-from app.repositories.member import MemberRepository
 from app.repositories.system_setting import SystemSettingRepository
-from app.schemas.screenshot_settings import (
-    MemberScreenshotBulkUpdate,
-    ScreenshotSettingsUpdate,
-)
+from app.schemas.screenshot_settings import ScreenshotSettingsUpdate
 from app.services.activity_log import ActivityLogService
-from app.services.screenshot_privacy import (
-    NOT_CAPTURED_ROLES,
-    PRIVACY_MANAGE_ROLES,
-    ScreenshotPrivacyService,
-)
+from app.services.screenshot_privacy import PRIVACY_MANAGE_ROLES
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -169,72 +162,6 @@ class ScreenshotSettingsService:
             stored["version"], description,
         )
         return ScreenshotSettingsService._admin_payload(setting)
-
-    # ── Per member ────────────────────────────────────────────────────────
-
-    @staticmethod
-    def set_member(db: Session, current_user: User, member_id: int, enabled: bool) -> Dict[str, Any]:
-        """Switch screenshots on or off for one member."""
-        organization_id = ScreenshotSettingsService._require_manage(current_user)
-        member = MemberRepository.get_by_id_and_organization(db, member_id, organization_id)
-        # One answer for "no such member", "another organization's member" and
-        # "not someone who captures", so it cannot be used to probe for ids.
-        if member is None or member.role_name in NOT_CAPTURED_ROLES:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Member not found.")
-        member_id, name = member.id, member.name
-
-        changed = MemberRepository.set_screenshots_enabled(db, [member_id], enabled) == 1
-        db.commit()
-        if changed:
-            description = f"{'Turned on' if enabled else 'Turned off'} screenshots for {name}"
-            ActivityLogService.capture(db, lambda: {
-                "actor": current_user,
-                "module": ActivityLogModule.MEMBER,
-                "action": (
-                    ActivityLogAction.SCREENSHOTS_ENABLED if enabled else ActivityLogAction.SCREENSHOTS_DISABLED
-                ),
-                "description": description,
-                "entity_id": member_id,
-            })
-            logger.info(
-                "SCREENSHOTS_SWITCHED: admin=%s member=%s enabled=%s",
-                current_user.id, member_id, enabled,
-            )
-        return {"id": member_id, "name": name, "screenshots_enabled": enabled, "changed": changed}
-
-    @staticmethod
-    def set_members(db: Session, current_user: User, payload: MemberScreenshotBulkUpdate) -> Dict[str, Any]:
-        """Switch screenshots on or off for all members, or for the chosen ones.
-
-        "All members" means the people who run the desktop app: the active
-        members of the caller's organization, never a client account or the
-        release pipeline's service account -- the same people a privacy rule is
-        applied to. Every refusal happens before the first write.
-        """
-        member_ids = ScreenshotPrivacyService.members_for(db, current_user, payload.apply_to)
-        changed = MemberRepository.set_screenshots_enabled(db, member_ids, payload.enabled)
-        db.commit()
-        if changed:
-            who = "all members" if payload.apply_to.scope == "all" else f"{len(member_ids)} selected member(s)"
-            description = (
-                f"{'Turned on' if payload.enabled else 'Turned off'} screenshots for {who} "
-                f"({changed} changed)"
-            )
-            ActivityLogService.capture(db, lambda: {
-                "actor": current_user,
-                "module": ActivityLogModule.MEMBER,
-                "action": (
-                    ActivityLogAction.SCREENSHOTS_ENABLED if payload.enabled
-                    else ActivityLogAction.SCREENSHOTS_DISABLED
-                ),
-                "description": description,
-                "entity_id": None,
-            })
-            logger.info(
-                "SCREENSHOTS_SWITCHED_BULK: admin=%s enabled=%s matched=%s changed=%s",
-                current_user.id, payload.enabled, len(member_ids), changed,
-            )
-        return {"enabled": payload.enabled, "matched": len(member_ids), "changed": changed}
 
     # ── Helpers ───────────────────────────────────────────────────────────
 

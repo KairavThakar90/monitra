@@ -1138,6 +1138,31 @@ thread.
 - The bounds in `config` are the backend's (`backend/app/core/screenshot_geometry.py`), compared by
   `tests/test_screenshot_settings.py`: this client is never stricter than the server.
 
+**The other per-member switches** ([docs/MEMBER_TRACKING_SETTINGS.md](../docs/MEMBER_TRACKING_SETTINGS.md)
+is authoritative). Four things an administrator can switch off for one member, each stopping *its own
+feature only* (`tests/test_member_desktop_switches.py` applies every combination of the four): screenshots
+(above), desktop notifications, activity tracking and idle detection. They all follow the one pattern
+`IdleService` set: seeded from the sign-in profile (`BackgroundApi.apply_*_profile`), corrected by a periodic
+poll of a narrow config endpoint, edge-triggered, a failed refresh keeps the last value, only an explicit
+`false` turns anything off, and a profile with no switch means *on* (so one member's "off" is not inherited).
+
+- **Activity tracking** is owned by `ActivityService` (`tracking_enabled()`, `tracking_enabled_changed`), which
+  polls `GET /activity/config`. "Activity" is the whole of `background_services/activity/`, so
+  `AppUsageService` and `UrlUsageService` *ask* that switch (they do not read the backend) and the runtime
+  connects the signal to their `on_activity_tracking_changed`. Each remembers that a session is open even when
+  it is not recording (`_session_open`), so turning the switch on mid-session resumes against the same entry and
+  turning it off writes out what was measured first. It is **not** idle detection: `IdleService` reads
+  `ActivityService.idle_seconds()`, a plain system call that does not depend on a session being tracked.
+- **Desktop notifications** are a value on `NotificationScheduleService` (`notifications_enabled`), not a field
+  of the schedule snapshot: the schedule is the deployment's and survives a sign-out, the switch is the signed-in
+  member's and is wiped with `app_state`. It is read from every schedule answer (whatever its `version`) and
+  held by `WellbeingService._gate_reason`, the existing gate, so the whole scheduler -- built-in, custom and
+  pushed -- is held and its cadence restarts on release. It is also what `NotificationService.notify`
+  consults (`_member_wants_notifications`): informational notifications (`INFO`, `SUCCESS`) are dropped for a
+  member who is off -- every toast in the application passes through that one method -- while `WARNING` and
+  `ERROR` are still shown, since they say something is wrong. The decision is made before de-duplication.
+- **Idle detection** keeps `idle_enabled`/`idle_minutes` and its own poll, unchanged.
+
 Two rules about the capture itself, each learned in production:
 
 - **Every expected capture ends in an image, a retry still inside its window,

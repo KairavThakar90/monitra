@@ -47,6 +47,7 @@ from app.activity_log import CLIENT_EVENT_CLOSED, CLIENT_EVENT_OPENED, ActivityL
 from app.api.client import ApiClient
 from app.auth.service import AuthService
 from app.auth.session import SessionManager
+from app.activity.service import ActivityApiService
 from app.idle.service import IdleApiService
 from app.screenshot.service import ScreenshotApiService
 from app.projects.service import ProjectService
@@ -170,6 +171,7 @@ class ApplicationRuntime(QObject):
         self.task_service = TaskService(self.api_client)
         self.time_entry_service = TimeEntryService(self.api_client)
         self.idle_api = IdleApiService(self.api_client)
+        self.activity_api = ActivityApiService(self.api_client)
         self.screenshot_api = ScreenshotApiService(self.api_client)
         self.update_api = UpdateApiService(self.api_client)
         self.maintenance_api = MaintenanceApiService(self.api_client)
@@ -234,7 +236,7 @@ class ApplicationRuntime(QObject):
             TimerService(self, self.time_entry_service, self.cache)
         )
         self.activity: ActivityService = self.services.register(
-            ActivityService(self, self.cache)
+            ActivityService(self, self.cache, self.activity_api)
         )
         self.app_usage: AppUsageService = self.services.register(
             AppUsageService(self, self.cache)
@@ -266,6 +268,10 @@ class ApplicationRuntime(QObject):
         self.timer.register_tracker(self.app_usage)
         self.timer.register_tracker(self.url_usage)
         self.timer.register_tracker(self.screenshot)
+        # The member's "activity tracking" switch is owned by ActivityService; the
+        # application and website trackers are part of "activity" and follow it.
+        self.activity.tracking_enabled_changed.connect(self.app_usage.on_activity_tracking_changed)
+        self.activity.tracking_enabled_changed.connect(self.url_usage.on_activity_tracking_changed)
 
         for service in self.services.services:
             service.state_changed.connect(

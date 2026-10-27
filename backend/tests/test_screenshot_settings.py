@@ -48,8 +48,7 @@ from app.models.activity_log import ActivityLog, ActivityLogAction, ActivityLogM
 from app.models.system_setting import SystemSetting, SystemSettingKey
 from app.models.user import User
 from app.schemas.member import MemberResponse
-from app.schemas.screenshot_privacy import ScreenshotRuleScope
-from app.schemas.screenshot_settings import MemberScreenshotBulkUpdate, ScreenshotSettingsUpdate
+from app.schemas.screenshot_settings import ScreenshotSettingsUpdate
 from app.schemas.user import UserRead
 from app.services.screenshot_settings import (
     SCREENSHOT_SETTINGS_MANAGE_ROLES,
@@ -325,11 +324,6 @@ class PermissionTests(unittest.TestCase):
             for name, call in (
                 ("view", lambda w: Service.get_admin(self.db, w)),
                 ("settings", lambda w: Service.update_settings(self.db, w, _update(1280, 720, 90))),
-                ("member", lambda w: Service.set_member(self.db, w, 40, False)),
-                ("bulk", lambda w: Service.set_members(
-                    self.db, w,
-                    MemberScreenshotBulkUpdate(enabled=False, apply_to=ScreenshotRuleScope(scope="all")),
-                )),
             ):
                 with self.subTest(role=who.role_name, call=name):
                     with self.assertRaises(HTTPException) as caught:
@@ -337,148 +331,13 @@ class PermissionTests(unittest.TestCase):
                     self.assertEqual(caught.exception.status_code, 403)
         # Nothing was written by any of the refusals.
         self.assertEqual(Service.get_admin(self.db, _admin())["version"], 0)
-        self.assertTrue(_enabled(self.db, 40))
         self.assertEqual(_audit(self.db), [])
 
     def test_every_administrator_spelling_may_change_it(self):
         for role in sorted(SCREENSHOT_SETTINGS_MANAGE_ROLES):
             with self.subTest(role=role):
-                Service.set_member(self.db, _admin(role), 40, False)
-                Service.set_member(self.db, _admin(role), 40, True)
-
-
-# ── Per member ──────────────────────────────────────────────────────────────
-
-
-class MemberSwitchTests(unittest.TestCase):
-
-    def setUp(self):
-        self.db = _sqlite_session()
-        self.admin = _admin(user_id=5, username="grace")
-        _add_member(self.db, 40, name="Ravi Kumar")
-
-    def test_switching_a_member_off_is_stored_and_audited_against_that_member(self):
-        result = Service.set_member(self.db, self.admin, 40, False)
-
-        self.assertEqual(
-            result, {"id": 40, "name": "Ravi Kumar", "screenshots_enabled": False, "changed": True},
-        )
-        self.assertFalse(_enabled(self.db, 40))
-        rows = _audit(self.db)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(
-            (rows[0].module, rows[0].action, rows[0].entity_id, rows[0].user_id),
-            (ActivityLogModule.MEMBER, ActivityLogAction.SCREENSHOTS_DISABLED, 40, 5),
-        )
-        self.assertIn("Ravi Kumar", rows[0].description)
-
-    def test_switching_back_on_resumes_capture_and_is_audited(self):
-        Service.set_member(self.db, self.admin, 40, False)
-
-        result = Service.set_member(self.db, self.admin, 40, True)
-
-        self.assertTrue(result["changed"])
-        self.assertTrue(_enabled(self.db, 40))
-        self.assertEqual(_audit(self.db)[-1].action, ActivityLogAction.SCREENSHOTS_ENABLED)
-
-    def test_a_position_already_held_is_not_a_change_and_is_not_audited(self):
-        again = Service.set_member(self.db, self.admin, 40, True)
-        self.assertFalse(again["changed"])
-
-        Service.set_member(self.db, self.admin, 40, False)
-        twice = Service.set_member(self.db, self.admin, 40, False)
-
-        self.assertFalse(twice["changed"])
-        self.assertEqual(len(_audit(self.db)), 1)
-
-    def test_a_member_of_another_organization_is_not_found(self):
-        _add_member(self.db, 41, organization_id=ORG + 1)
-
-        with self.assertRaises(HTTPException) as caught:
-            Service.set_member(self.db, self.admin, 41, False)
-
-        self.assertEqual(caught.exception.status_code, 404)
-        self.assertTrue(_enabled(self.db, 41))
-
-    def test_a_client_account_and_the_release_account_are_not_found(self):
-        _add_member(self.db, 42, role="client")
-        _add_member(self.db, 43, role="release_bot")
-
-        for member_id in (42, 43, 9999):
-            with self.subTest(member=member_id):
-                with self.assertRaises(HTTPException) as caught:
-                    Service.set_member(self.db, self.admin, member_id, False)
-                self.assertEqual(caught.exception.status_code, 404)
-        self.assertEqual(_audit(self.db), [])
-
-class BulkSwitchTests(unittest.TestCase):
-
-    def setUp(self):
-        self.db = _sqlite_session()
-        self.admin = _admin(user_id=5, username="grace")
-        for member_id in (40, 41, 42):
-            _add_member(self.db, member_id)
-        _add_member(self.db, 43, status="inactive")
-        _add_member(self.db, 44, role="client")
-        _add_member(self.db, 45, role="release_bot")
-        _add_member(self.db, 46, organization_id=ORG + 1)
-
-    def _bulk(self, enabled, scope, user_ids=None):
-        return Service.set_members(
-            self.db, self.admin,
-            MemberScreenshotBulkUpdate(enabled=enabled, apply_to=ScreenshotRuleScope(scope=scope, user_ids=user_ids)),
-        )
-
-    def test_all_means_the_active_people_who_run_the_desktop_in_this_organization(self):
-        result = self._bulk(False, "all")
-
-        self.assertEqual(result, {"enabled": False, "matched": 3, "changed": 3})
-        self.assertEqual([_enabled(self.db, i) for i in (40, 41, 42)], [False, False, False])
-        # Not an inactive member, a client, the release account, or another organization.
-        self.assertEqual([_enabled(self.db, i) for i in (43, 44, 45, 46)], [True, True, True, True])
-
-    def test_a_bulk_change_is_one_audit_row(self):
-        self._bulk(False, "all")
-
-        rows = _audit(self.db)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].action, ActivityLogAction.SCREENSHOTS_DISABLED)
-        self.assertIsNone(rows[0].entity_id)
-        self.assertIn("all members", rows[0].description)
-
-    def test_only_the_chosen_members_change_and_only_those_that_moved_are_counted(self):
-        Service.set_member(self.db, self.admin, 41, False)
-
-        result = self._bulk(False, "members", [40, 41])
-
-        self.assertEqual(result, {"enabled": False, "matched": 2, "changed": 1})
-        self.assertEqual([_enabled(self.db, i) for i in (40, 41, 42)], [False, False, True])
-
-    def test_a_listed_member_that_cannot_be_found_changes_nothing(self):
-        for bad in (9999, 44, 45, 46):
-            with self.subTest(member=bad):
-                with self.assertRaises(HTTPException) as caught:
-                    self._bulk(False, "members", [40, bad])
-                self.assertEqual(caught.exception.status_code, 400)
-                self.assertTrue(_enabled(self.db, 40))
-        self.assertEqual(_audit(self.db), [])
-
-    def test_switching_everyone_back_on(self):
-        self._bulk(False, "all")
-
-        result = self._bulk(True, "all")
-
-        self.assertEqual(result["changed"], 3)
-        self.assertEqual([_enabled(self.db, i) for i in (40, 41, 42)], [True, True, True])
-
-    def test_nothing_to_change_is_not_audited(self):
-        result = self._bulk(True, "all")
-
-        self.assertEqual(result, {"enabled": True, "matched": 3, "changed": 0})
-        self.assertEqual(_audit(self.db), [])
-
-
-# ── A damaged row cannot break the poll ─────────────────────────────────────
+                Service.update_settings(self.db, _admin(role), _update(1280, 720, 90))
+                Service.update_settings(self.db, _admin(role), _update())
 
 
 class DamagedRowTests(unittest.TestCase):
@@ -546,15 +405,15 @@ class RouteTests(unittest.TestCase):
             (1280, 720, 90),
         )
 
-        off = self.client.put("/api/v1/screenshot-settings/members/40", json={"enabled": False})
-        self.assertEqual(off.status_code, 200, off.text)
-        self.assertEqual(off.json(), {"id": 40, "name": "Member 40", "screenshots_enabled": False, "changed": True})
-
-        bulk = self.client.post(
-            "/api/v1/screenshot-settings/members", json={"enabled": False, "apply_to": {"scope": "all"}},
+    def test_who_is_captured_is_not_set_here_any_more(self):
+        # The per-member switch moved to User Management (the member update); these
+        # two routes are gone, so there is exactly one way to change it.
+        self.assertEqual(self.client.put("/api/v1/screenshot-settings/members/40", json={"enabled": False}).status_code, 404)
+        self.assertEqual(
+            self.client.post("/api/v1/screenshot-settings/members", json={"enabled": False, "apply_to": {"scope": "all"}}).status_code,
+            404,
         )
-        self.assertEqual(bulk.status_code, 200, bulk.text)
-        self.assertEqual(bulk.json(), {"enabled": False, "matched": 2, "changed": 1})
+        self.assertTrue(_enabled(self.db, 40))
 
     def test_the_desktop_reads_the_result_from_the_config_it_already_polls(self):
         # `user` is the signed-in member; here they are an administrator who is
@@ -588,12 +447,6 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(self.client.get("/screenshots/config").status_code, 200)
         self.assertEqual(self.client.get("/api/v1/screenshot-settings").status_code, 403)
         self.assertEqual(self.client.put("/api/v1/screenshot-settings", json=self._body()).status_code, 403)
-        self.assertEqual(self.client.put("/api/v1/screenshot-settings/members/40", json={"enabled": False}).status_code, 403)
-        self.assertEqual(
-            self.client.post("/api/v1/screenshot-settings/members", json={"enabled": False, "apply_to": {"scope": "all"}}).status_code,
-            403,
-        )
-        self.assertTrue(_enabled(self.db, 40))
 
     def test_the_settings_need_a_signed_in_client(self):
         app.dependency_overrides.pop(get_current_user)
@@ -623,38 +476,8 @@ class RouteTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(self.client.put("/api/v1/screenshot-settings", json=body).status_code, 422)
 
-        for name, body in {
-            "string instead of a boolean": {"enabled": "yes"},
-            "number instead of a boolean": {"enabled": 1},
-            "null": {"enabled": None},
-            "missing": {},
-        }.items():
-            with self.subTest(member=name):
-                self.assertEqual(self.client.put("/api/v1/screenshot-settings/members/40", json=body).status_code, 422)
-
-        for name, body in {
-            "no scope": {"enabled": False},
-            "members without ids": {"enabled": False, "apply_to": {"scope": "members"}},
-            "all with ids": {"enabled": False, "apply_to": {"scope": "all", "user_ids": [40]}},
-            "unknown scope": {"enabled": False, "apply_to": {"scope": "everyone"}},
-        }.items():
-            with self.subTest(bulk=name):
-                self.assertEqual(self.client.post("/api/v1/screenshot-settings/members", json=body).status_code, 422)
-
         self.assertEqual(Service.get_admin(self.db, _admin())["version"], 0)
         self.assertTrue(_enabled(self.db, 40))
-
-    def test_an_id_that_is_not_positive_is_a_422(self):
-        for member_id in (0, -1):
-            with self.subTest(member=member_id):
-                self.assertEqual(
-                    self.client.put(f"/api/v1/screenshot-settings/members/{member_id}", json={"enabled": False}).status_code,
-                    422,
-                )
-
-    def test_a_member_that_does_not_exist_is_a_404(self):
-        self.assertEqual(self.client.put("/api/v1/screenshot-settings/members/9999", json={"enabled": False}).status_code, 404)
-
 
 # ── The profile and the directory carry the switch ──────────────────────────
 

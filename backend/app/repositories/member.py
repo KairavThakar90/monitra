@@ -151,23 +151,6 @@ class MemberRepository:
         return member
 
     @staticmethod
-    def set_screenshots_enabled(db: Session, member_ids: list[int], enabled: bool) -> int:
-        """Switch screenshot capture on or off for these members. Does not commit.
-
-        Only rows that would actually change are written, so the count returned
-        is the number of members whose position moved -- re-sending a position a
-        member already holds is not a change, writes nothing and is not audited.
-        """
-        if not member_ids:
-            return 0
-        result = db.execute(
-            update(User)
-            .where(User.id.in_(member_ids), User.screenshots_enabled.is_not(enabled))
-            .values(screenshots_enabled=enabled)
-        )
-        return result.rowcount or 0
-
-    @staticmethod
     def blocking_references(db: Session, member_id: int, organization_id: int) -> dict:
         """What the member holds that deleting them would damage rather than clean up.
 

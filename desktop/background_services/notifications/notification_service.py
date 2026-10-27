@@ -418,6 +418,21 @@ class NotificationService(BaseService):
 
     # ── Delivery ──────────────────────────────────────────────────────────────
 
+    #: The levels an administrator's "notifications off" silences. The two that
+    #: say something is wrong (`WARNING`, `ERROR`) are deliberately not here.
+    SUPPRESSED_WHEN_OFF = frozenset({NotificationLevel.INFO, NotificationLevel.SUCCESS})
+
+    def _member_wants_notifications(self) -> bool:
+        """Whether the signed-in member is shown informational notifications.
+
+        The switch is owned by `NotificationScheduleService` (it arrives with the
+        sign-in profile and every schedule answer); this only asks. Only an explicit
+        `False` silences anything, so a runtime without the service, or an answer
+        that is not a boolean, can never make a notification disappear.
+        """
+        source = getattr(self.runtime, "notification_schedule", None)
+        return getattr(source, "notifications_enabled", True) is not False
+
     def _admit(self, key: str) -> bool:
         """Apply de-duplication and rate limiting. True if the message may show."""
         now = time.monotonic()
@@ -639,6 +654,15 @@ class NotificationService(BaseService):
         """
         Show a notification.
 
+        **A member an administrator has switched notifications off for** (User
+        Management) is shown none of the *informational* ones -- `INFO` and
+        `SUCCESS`: reminders, "Logged in", "Pending activity synced", "Back online",
+        "Screenshot captured", an update being available. `WARNING` and `ERROR` are
+        still shown, because they tell the person something is wrong or needs them
+        (the idle prompt, a missing permission, a refused action); silencing those
+        would hide a fault, not remove noise. Decided here, before de-duplication, so
+        a message that is not shown does not use up the rate limit.
+
         Safe to call from any thread. Admission control runs on the calling
         thread; the tray itself is only ever touched on the thread this
         service lives on, by hopping through a queued signal. Every caller
@@ -666,6 +690,9 @@ class NotificationService(BaseService):
             handed to the GUI thread to display. False if it was suppressed,
             or no display surface was available at all.
         """
+        if level in self.SUPPRESSED_WHEN_OFF and not self._member_wants_notifications():
+            self.log.debug("notification not shown: turned off for this account [%s] %s", level, message)
+            return False
         dedupe_key = key or f"{level}:{message}"
         if not self._admit(dedupe_key):
             return False

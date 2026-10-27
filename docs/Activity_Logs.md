@@ -33,7 +33,7 @@ caller's address when the request had a valid one.
 | `feedback` | `feedback_deleted` | An administrator permanently deletes a feedback and its attachments. Names whose feedback. | `FeedbackService.delete_feedback` |
 | `screenshot` | `screenshot_notice_sent` | A reviewer emails a notice about an employee's screenshot. | `TimeEntryScreenshotService.send_notice` |
 | `system` | `maintenance_enabled` / `_disabled` | The maintenance notice (predates this document). | `MaintenanceModeService` |
-| `member` | `screenshots_enabled` / `screenshots_disabled` | An administrator turns screenshot capture on or off for a member, or for all or chosen members in one go (that is one row, with no single member). Recorded only when a position actually moved. | `ScreenshotSettingsService.set_member` / `set_members` |
+| `member` | `screenshots_enabled` / `screenshots_disabled`, `notifications_enabled` / `notifications_disabled`, `activity_tracking_enabled` / `activity_tracking_disabled` | An administrator turns one of a member's desktop switches on or off in User Management (screenshot capture, the administrator's desktop notifications, activity tracking). Names the member; recorded only when the position actually moved; no email is sent. | `MemberService.update` |
 | `system` | `screenshot_settings_updated` | An administrator changes the size or quality every desktop captures screenshots at. Names the new size and quality; a save that changes nothing records nothing. | `ScreenshotSettingsService.update_settings` |
 
 The row belongs to the **actor**. "Grace excluded Alice from signing in" is

@@ -502,6 +502,14 @@ class WellbeingService(LoopService):
         if api_client is None or not getattr(api_client, "access_token", None):
             return "not signed in"
         source = self._schedule_source()
+        # An administrator turned notifications off for this member (User
+        # Management). Checked before the schedule is "ready": the answer does not
+        # depend on the schedule, and a member who is off must not be shown a
+        # reminder in the moments the schedule is still loading. The whole scheduler
+        # is held -- built-in, custom and pushed alike -- and the cadence restarts
+        # from the moment it is turned back on, exactly like a sign-in.
+        if source is not None and getattr(source, "notifications_enabled", True) is False:
+            return "desktop notifications are turned off for this account"
         if source is not None and not getattr(source, "ready", True):
             return "waiting for the notification schedule to load"
         return None

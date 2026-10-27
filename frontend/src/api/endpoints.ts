@@ -222,12 +222,10 @@ export const ENDPOINTS = {
     CUSTOM: `${API_BASE_URL}/desktop-notifications/custom`,
     CUSTOM_BY_ID: (id: string) => `${API_BASE_URL}/desktop-notifications/custom/${encodeURIComponent(id)}`,
   },
-  // Screenshot Management: the size and quality every desktop captures at, and
-  // who is captured at all. Administrators only.
+  // Screenshot Management: the size and quality every desktop captures at.
+  // Administrators only.
   SCREENSHOT_SETTINGS: {
     BASE: `${API_BASE_URL}/screenshot-settings`,
-    MEMBER: (id: number) => `${API_BASE_URL}/screenshot-settings/members/${id}`,
-    MEMBERS: `${API_BASE_URL}/screenshot-settings/members`,
   },
   // The activity trail: every recorded user action, read employee-wise by the
   // Logs page. Needs `view_employees`; a leader is answered with their team.

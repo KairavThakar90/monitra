@@ -35,6 +35,18 @@ re-grant a permission.
     before.
   - A change reaches a running Monitra within a few minutes (the same refresh that
     delivers your capture interval); it does not need a new sign-in.
+- **Your administrator can also switch off, one at a time and only for you, the reminders
+  and messages you are shown, and the measuring of your activity.** Each switch does only
+  what it says:
+  - **Desktop notifications off:** Monitra shows no informational notifications -- the
+    administrator's reminders and messages, and routine notices such as "Logged in",
+    "Pending activity synced" or "Back online". Warnings and errors that need your attention
+    -- a missing permission, the idle prompt, an action that was refused -- still appear.
+  - **Activity tracking off:** Monitra does not measure your keyboard and mouse activity or
+    the applications and websites you use, and the Activity card says "Turned off by your
+    administrator". Your time, screenshots and idle detection are unaffected.
+  - **Idle detection** keeps its own switch and idle time, as before.
+  Turning one back on takes effect within a few minutes, without restarting.
 
 ### Changed
 

@@ -11,12 +11,11 @@ import { FieldError, SEARCH_MAX_LENGTH, validateSearchTerm } from "../../validat
 /**
  * Admin Settings → User Management.
  *
- * Per-user tracking settings — screenshot capture frequency and idle-time
- * detection — already live on `users.capture_frequency` / `idle_enabled` /
- * `idle_minutes` and already round-trip through `GET/PATCH /members/{id}`
- * (see `MemberResponse` / `MemberUpdate` in backend/app/schemas/member.py).
- * This page is the first place an administrator can actually set them,
- * rather than only inheriting whatever the SSO provider sent.
+ * Per-user tracking settings — the screenshot capture frequency — already live
+ * on `users.capture_frequency` and already round-trip through
+ * `GET/PATCH /members/{id}` (see `MemberResponse` / `MemberUpdate` in
+ * backend/app/schemas/member.py). This page is the first place an administrator
+ * can actually set it, rather than only inheriting whatever the SSO provider sent.
  *
  * `capture_frequency` has no unit of its own, and production data is not
  * fully consistent: the SSO login-sync path once wrote a literal `300`
@@ -28,29 +27,68 @@ import { FieldError, SEARCH_MAX_LENGTH, validateSearchTerm } from "../../validat
  * stored value as-is: the admin has full control over the interval, with no
  * upper bound, so a value is never silently reinterpreted or clamped.
  *
+ * Three more per-member switches sit beside them -- screenshot capture, the
+ * administrator's desktop notifications, and activity tracking (keyboard/mouse
+ * activity plus application and website usage) -- stored as
+ * `screenshots_enabled` / `notifications_enabled` / `activity_tracking_enabled`
+ * and saved through the same member update. Absent means on; only an explicit
+ * `false` is off. Each switch is sent only when it was changed, so saving one
+ * never rewrites another. Idle detection is not set here: it has its own section
+ * in Screenshot Management, so there is one place to change it.
+ *
  * The drawer also supports assigning the same tracking settings to several
  * selected members at once, applied with one PATCH per member.
  */
 
 const GRADIENT_CYAN_PURPLE = "bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[#8b5cf6]";
 
-const MIN_IDLE_MINUTES = 1;
-const MAX_IDLE_MINUTES = 120;
 const MIN_CAPTURE_MINUTES = 1;
+
+/** `null` is "leave as it is": only used when several members are assigned at once. */
+type Switch = boolean | null;
 
 type FormState = {
   captureMinutes: string;
-  idleEnabled: boolean;
-  idleMinutes: string;
+  screenshots: Switch;
+  notifications: Switch;
+  activity: Switch;
 };
 
 const toFormState = (member: Member): FormState => ({
   captureMinutes: String(member.capture_frequency ?? 10),
-  idleEnabled: member.idle_enabled ?? true,
-  idleMinutes: String(member.idle_minutes ?? 5),
+  screenshots: member.screenshots_enabled !== false,
+  notifications: member.notifications_enabled !== false,
+  activity: member.activity_tracking_enabled !== false,
 });
 
-const DEFAULT_FORM_STATE: FormState = { captureMinutes: "10", idleEnabled: true, idleMinutes: "5" };
+const DEFAULT_FORM_STATE: FormState = {
+  captureMinutes: "10",
+  screenshots: null,
+  notifications: null,
+  activity: null,
+};
+
+/** The three desktop switches: which form field, which member field, and what the administrator reads. */
+const DESKTOP_SWITCHES = [
+  {
+    form: "screenshots",
+    field: "screenshots_enabled",
+    label: "Screenshot capture",
+    help: "Capture periodic screenshots while this member is tracking time. Screenshots already taken are kept.",
+  },
+  {
+    form: "notifications",
+    field: "notifications_enabled",
+    label: "Desktop notifications",
+    help: "Show this member reminders, messages from the administrator and routine status notices. Alerts that need attention are always shown.",
+  },
+  {
+    form: "activity",
+    field: "activity_tracking_enabled",
+    label: "Activity tracking",
+    help: "Measure keyboard and mouse activity, and the applications and websites used, while tracking time. Idle detection is managed in Screenshot Management.",
+  },
+] as const;
 
 const LoadingSpinner: React.FC = () => (
   <div className="flex min-h-28 items-center justify-center" role="status" aria-label="Loading">
@@ -99,28 +137,23 @@ const Pagination: React.FC<{
   );
 };
 
-/** A small pill showing minutes, tinted by how aggressive the cadence is. */
-const MinutesPill: React.FC<{ minutes: number; tone: "sky" | "violet" }> = ({ minutes, tone }) => {
-  const toneClasses = tone === "sky"
-    ? "bg-sky-50 text-sky-700 border-sky-200"
-    : "bg-violet-50 text-violet-700 border-violet-200";
-  return (
-    <span className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-bold ${toneClasses}`}>
-      {minutes} min
-    </span>
-  );
-};
+/** A small pill showing the screenshot interval in minutes. */
+const MinutesPill: React.FC<{ minutes: number }> = ({ minutes }) => (
+  <span className="inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-bold text-sky-700">
+    {minutes} min
+  </span>
+);
 
-const IdleBadge: React.FC<{ enabled: boolean }> = ({ enabled }) =>
-  enabled ? (
-    <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-emerald-600">
-      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Enabled
-    </span>
-  ) : (
-    <span className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-slate-500">
-      <span className="h-1.5 w-1.5 rounded-full bg-slate-400" /> Disabled
-    </span>
-  );
+/** A compact On/Off indicator for one of the desktop switches. */
+const OnOffPill: React.FC<{ label: string; on: boolean }> = ({ label, on }) => (
+  <span
+    className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-bold ${
+      on ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-500"
+    }`}
+  >
+    {label} {on ? "On" : "Off"}
+  </span>
+);
 
 export const AdminUserManagement: React.FC = () => {
   const { showToast } = useFeedback();
@@ -198,10 +231,7 @@ export const AdminUserManagement: React.FC = () => {
   };
 
   const captureMinutesNum = form ? Number(form.captureMinutes) : NaN;
-  const idleMinutesNum = form ? Number(form.idleMinutes) : NaN;
   const captureValid = Number.isInteger(captureMinutesNum) && captureMinutesNum >= MIN_CAPTURE_MINUTES;
-  const idleValid =
-    Number.isInteger(idleMinutesNum) && idleMinutesNum >= MIN_IDLE_MINUTES && idleMinutesNum <= MAX_IDLE_MINUTES;
 
   const isDirty = useMemo(() => {
     if (!form || !drawerTargets) return false;
@@ -210,20 +240,17 @@ export const AdminUserManagement: React.FC = () => {
   }, [drawerTargets, form, isBulk]);
 
   const handleSave = async () => {
-    // The minutes box is disabled while idle monitoring is off, so its value
-    // can only be invalid there if it was already; switching monitoring off
-    // must still save (this used to return silently, leaving the switch
-    // looking saved and the member's setting unchanged).
-    if (
-      !drawerTargets || drawerTargets.length === 0 || !form || !captureValid ||
-      (form.idleEnabled && !idleValid)
-    ) return;
+    if (!drawerTargets || drawerTargets.length === 0 || !form || !captureValid) return;
     setError(null);
     const body = {
       capture_frequency: captureMinutesNum,
-      idle_enabled: form.idleEnabled,
-      // Omitted (left as stored) when monitoring is off and the box is unusable.
-      ...(idleValid ? { idle_minutes: idleMinutesNum } : {}),
+      // Only a switch that was changed (or, for a group, explicitly set) is sent.
+      ...Object.fromEntries(
+        DESKTOP_SWITCHES.filter(({ form: key }) => {
+          const value = form[key];
+          return value !== null && (isBulk || value !== toFormState(drawerTargets[0])[key]);
+        }).map(({ form: key, field }) => [field, form[key]]),
+      ),
     };
     const results = await Promise.allSettled(
       drawerTargets.map((member) => updateMember({ id: member.id, body }).unwrap()),
@@ -291,7 +318,7 @@ export const AdminUserManagement: React.FC = () => {
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 bg-slate-50 px-6 py-4">
             <div>
               <h3 className="text-sm font-bold text-slate-800">Tracking Settings by Member</h3>
-              <p className="mt-0.5 text-xs text-slate-500">Screenshot cadence and idle-time detection, applied per person.</p>
+              <p className="mt-0.5 text-xs text-slate-500">Screenshot cadence and desktop switches, applied per person.</p>
             </div>
             {selectedOnPage.length > 0 && (
               <button
@@ -318,21 +345,20 @@ export const AdminUserManagement: React.FC = () => {
                   </th>
                   <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-wider">Employee</th>
                   <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-wider">Screenshot Frequency</th>
-                  <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-wider">Idle Monitoring</th>
-                  <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-wider">Idle Threshold</th>
+                  <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-wider">Desktop Switches</th>
                   <th className="px-6 py-4 text-right text-[11px] font-bold uppercase tracking-wider">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {showFirstLoad ? (
                   <tr>
-                    <td colSpan={6} className="px-6 py-8">
+                    <td colSpan={5} className="px-6 py-8">
                       <LoadingSpinner />
                     </td>
                   </tr>
                 ) : isError ? (
                   <tr>
-                    <td colSpan={6} className="px-6 py-12 text-center text-red-500">
+                    <td colSpan={5} className="px-6 py-12 text-center text-red-500">
                       Failed to fetch members. Please try again.
                     </td>
                   </tr>
@@ -360,13 +386,14 @@ export const AdminUserManagement: React.FC = () => {
                         </div>
                       </td>
                       <td className="px-6 py-4">
-                        <MinutesPill minutes={member.capture_frequency ?? 10} tone="sky" />
+                        <MinutesPill minutes={member.capture_frequency ?? 10} />
                       </td>
                       <td className="px-6 py-4">
-                        <IdleBadge enabled={member.idle_enabled ?? true} />
-                      </td>
-                      <td className="px-6 py-4">
-                        <MinutesPill minutes={member.idle_minutes ?? 5} tone="violet" />
+                        <div className="flex gap-1.5">
+                          <OnOffPill label="Screenshots" on={member.screenshots_enabled !== false} />
+                          <OnOffPill label="Notifications" on={member.notifications_enabled !== false} />
+                          <OnOffPill label="Activity" on={member.activity_tracking_enabled !== false} />
+                        </div>
                       </td>
                       <td className="px-6 py-4 text-right">
                         <button
@@ -383,7 +410,7 @@ export const AdminUserManagement: React.FC = () => {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={6} className="px-6 py-12 text-center text-slate-500">
+                    <td colSpan={5} className="px-6 py-12 text-center text-slate-500">
                       No members found matching your criteria.
                     </td>
                   </tr>
@@ -459,39 +486,66 @@ export const AdminUserManagement: React.FC = () => {
                       )}
                     </div>
 
-                    <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border-2 border-slate-200 bg-white p-3 transition hover:bg-slate-50 has-[:checked]:border-[#3B82F6] has-[:checked]:bg-blue-50">
-                      <span>
-                        <span className="block text-sm font-bold text-slate-700">Idle Time Monitoring</span>
-                        <span className="block text-xs font-medium text-slate-500">Enable Idle Time Detection</span>
-                      </span>
-                      <input
-                        type="checkbox"
-                        checked={form.idleEnabled}
-                        onChange={(event) => setForm({ ...form, idleEnabled: event.target.checked })}
-                        className="h-5 w-5 shrink-0 rounded border-slate-300 text-[#3B82F6] focus:ring-[#3B82F6]"
-                      />
-                    </label>
-
-                    <div>
-                      <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">
-                        Idle Time Threshold (Minutes)
-                      </label>
-                      <input
-                        type="number"
-                        min={MIN_IDLE_MINUTES}
-                        max={MAX_IDLE_MINUTES}
-                        value={form.idleMinutes}
-                        disabled={!form.idleEnabled}
-                        onChange={(event) => setForm({ ...form, idleMinutes: event.target.value })}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6] disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-                      />
-                      <p className="mt-1.5 text-[11px] font-semibold text-slate-500">e.g., 1, 3, 5, 10 minutes</p>
-                      {form.idleEnabled && !idleValid && (
-                        <p className="mt-1.5 text-xs font-semibold text-rose-600">
-                          Must be a whole number between {MIN_IDLE_MINUTES} and {MAX_IDLE_MINUTES} minutes.
-                        </p>
-                      )}
+                    <div className="pt-2">
+                      <h3 className="text-xs font-black uppercase tracking-widest text-[#3B82F6]">Desktop Switches</h3>
+                      <p className="mt-1 text-xs font-medium text-slate-500">
+                        Choose what the Monitra desktop app does for {isBulk ? "these members" : "this member"}.
+                      </p>
                     </div>
+                    <div className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                      {DESKTOP_SWITCHES.map(({ form: key, label, help }) => {
+                        const value = form[key];
+                        const helpId = `desktop-switch-${key}-help`;
+                        return (
+                          <div key={key} className="flex items-start justify-between gap-4 px-4 py-4">
+                            <div className="min-w-0">
+                              <span className="block text-sm font-bold text-slate-800">{label}</span>
+                              <p id={helpId} className="mt-1 text-xs leading-5 text-slate-500">{help}</p>
+                            </div>
+                            {isBulk ? (
+                              <select
+                                aria-label={label}
+                                aria-describedby={helpId}
+                                value={value === null ? "keep" : value ? "on" : "off"}
+                                onChange={(event) =>
+                                  setForm({ ...form, [key]: event.target.value === "keep" ? null : event.target.value === "on" })
+                                }
+                                className="shrink-0 rounded-lg border border-slate-200 bg-white py-1.5 pl-3 pr-8 text-sm font-semibold text-slate-700 shadow-sm focus:border-[#3B82F6] focus:outline-none focus:ring-2 focus:ring-[#3B82F6]/20"
+                              >
+                                <option value="keep">Leave unchanged</option>
+                                <option value="on">On</option>
+                                <option value="off">Off</option>
+                              </select>
+                            ) : (
+                              <label className="flex shrink-0 cursor-pointer items-center gap-2.5 pt-0.5">
+                                <span
+                                  aria-hidden="true"
+                                  className={`w-6 text-right text-xs font-bold ${value ? "text-[#3B82F6]" : "text-slate-400"}`}
+                                >
+                                  {value ? "On" : "Off"}
+                                </span>
+                                <span className="relative inline-flex h-6 w-11 items-center">
+                                  <input
+                                    type="checkbox"
+                                    role="switch"
+                                    aria-label={label}
+                                    aria-describedby={helpId}
+                                    checked={value === true}
+                                    onChange={(event) => setForm({ ...form, [key]: event.target.checked })}
+                                    className="peer sr-only"
+                                  />
+                                  <span className="absolute inset-0 rounded-full bg-slate-300 transition-colors peer-checked:bg-[#3B82F6] peer-focus-visible:ring-2 peer-focus-visible:ring-[#3B82F6]/40 peer-focus-visible:ring-offset-2" />
+                                  <span className="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform peer-checked:translate-x-5" />
+                                </span>
+                              </label>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[11px] font-medium text-slate-500">
+                      Changes take effect on a running desktop within a few minutes.
+                    </p>
 
                     {error && (
                       <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-600">
@@ -513,7 +567,7 @@ export const AdminUserManagement: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  disabled={!isDirty || isSaving || !captureValid || (form.idleEnabled && !idleValid)}
+                  disabled={!isDirty || isSaving || !captureValid}
                   onClick={handleSave}
                   className={`flex-1 rounded-lg py-3 text-sm font-bold text-white shadow-md transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${GRADIENT_CYAN_PURPLE}`}
                 >

@@ -4,10 +4,11 @@ activity_service — Captures, aggregates and persists user activity.
 from __future__ import annotations
 
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Slot
 
 from background_services.activity import input_access
 from background_services.activity.input_counter import InputEventCounter
@@ -124,6 +125,18 @@ class ActivityService(LoopService):
         unwanted_activity_alert(str)    — user-facing warning to display
         capture_status_changed(str)     — "" when counting resumed, else the
                                           blocked state; edges only
+        tracking_enabled_changed(bool)  — an administrator turned this member's
+                                          activity tracking on or off; edges only
+
+    **The member's switch.** An administrator can turn activity tracking off for a
+    member in User Management. "Activity" here is everything this package measures
+    of what the person does at the machine: keyboard and mouse activity (this
+    service), and the applications and websites they use (`AppUsageService`,
+    `UrlUsageService`, which follow this service's switch and do not read it
+    themselves). Off means nothing is measured, nothing is recorded and nothing is
+    uploaded for the session. It is deliberately *not* idle detection: that has its
+    own switch (`idle_enabled`) and reads `idle_seconds()` below, which is a plain
+    system call that works whether or not a session is being tracked here.
     """
 
     name = "activity"
@@ -132,6 +145,16 @@ class ActivityService(LoopService):
     activity_percent_changed = Signal(int)
     unwanted_activity_alert = Signal(str)
     capture_status_changed = Signal(str)
+    tracking_enabled_changed = Signal(bool)
+    #: Emitted from the loop thread when the periodic refresh is due; the slot
+    #: runs on the GUI thread, which is where the request is handed to the pool.
+    _config_refresh_due = Signal()
+
+    #: How often the member's switch is re-read from the backend. The same cadence
+    #: as the idle and screenshot settings, so an administrator's change reaches a
+    #: running desktop within the same few minutes for all of them. Seeded at
+    #: sign-in from the profile (`apply_user_profile`); this is the correction.
+    CONFIG_REFRESH_SECONDS = 3 * 60
 
     SAMPLE_INTERVAL_MS = 1000
     WINDOW_SECONDS = 60
@@ -146,9 +169,21 @@ class ActivityService(LoopService):
     #: is needed to tell which.
     SILENT_WINDOW_MIN_SECONDS = 30
 
-    def __init__(self, runtime, cache, parent=None) -> None:
+    def __init__(self, runtime, cache, activity_api=None, parent=None) -> None:
         super().__init__(runtime, parent)
         self._cache = cache
+        self._activity_api = activity_api
+        #: Whether an administrator has this member's activity tracking on. True
+        #: until the server says otherwise -- exactly what this service did before
+        #: the switch existed -- and only an explicit `False` turns it off, so a
+        #: missing or unreadable answer can never switch tracking off.
+        self._tracking_enabled = True
+        #: Whether a timer session is running, tracked or not. A session that
+        #: starts while the switch is off must be picked up if it is turned on
+        #: during it, so the session is remembered here even when nothing is measured.
+        self._session_open = False
+        self._config_read_at = time.monotonic()
+        self._config_refresh_due.connect(self._refresh_config)
         self._probe = InputProbe()
         self._monitor = UnwantedActivityMonitor(
             on_event=self._on_unwanted_event,
@@ -198,6 +233,10 @@ class ActivityService(LoopService):
             "blocked": self._capture_blocked,
             "detail": self._capture_detail,
             "tracking": self._tracking,
+            # An administrator has turned activity tracking off for this member:
+            # nothing is counted because nothing is meant to be, which is not the
+            # same as a permission being refused.
+            "disabled": not self._tracking_enabled,
         }
 
     def idle_seconds(self) -> Optional[float]:
@@ -371,9 +410,114 @@ class ActivityService(LoopService):
             "n/a" if idle is None else f"{idle:.0f}", diag,
         )
 
+    # ── The member's switch (User Management) ──────────────────────────────────
+
+    def tracking_enabled(self) -> bool:
+        """Whether this member's activity may be measured. Safe from any thread."""
+        return self._tracking_enabled
+
+    def apply_user_profile(self, user_data: Optional[Dict[str, Any]]) -> None:
+        """Seed the switch from a `/auth/me` payload (sign-in, session verification).
+
+        The profile is already in hand, so the member's own setting is in effect
+        before a session can start. A profile that does not carry the field (a
+        backend older than the switch) means *on* -- not whatever the last person
+        who signed in on this machine had.
+        """
+        if not isinstance(user_data, dict):
+            return
+        user = user_data.get("user") if isinstance(user_data.get("user"), dict) else user_data
+        self.set_tracking_enabled(user.get("activity_tracking_enabled", True))
+        self._config_read_at = time.monotonic()
+
+    def set_tracking_enabled(self, value: Any) -> None:
+        """Turn tracking on or off. Edge-triggered: only a change does anything.
+
+        Only a real boolean is believed; anything else is a damaged answer and
+        leaves the switch where it was. Turning it off mid-session writes out
+        what was measured so far and stops measuring; turning it on mid-session
+        starts measuring from that moment.
+        """
+        if not isinstance(value, bool) or value == self._tracking_enabled:
+            return
+        self._tracking_enabled = value
+        self.log.info(
+            "ACTIVITY_TRACKING_SWITCH enabled=%s; activity tracking is turned %s for this account",
+            value, "on" if value else "off",
+        )
+        if self._session_open:
+            if value:
+                self._begin_tracking()
+            else:
+                self._end_tracking()
+        self.tracking_enabled_changed.emit(value)
+
+    @Slot()
+    def _refresh_config(self) -> None:
+        """Re-read the switch from the backend (GUI thread; the request is on the pool)."""
+        if self._activity_api is None:
+            return
+        tasks = getattr(self.runtime, "tasks", None)
+        if tasks is None:
+            return
+
+        def on_success(config: Any) -> None:
+            # A key the answer does not carry (a backend older than the switch)
+            # says nothing and changes nothing.
+            if isinstance(config, dict) and "activity_tracking_enabled" in config:
+                self.set_tracking_enabled(config["activity_tracking_enabled"])
+
+        tasks.submit(
+            self._activity_api.get_config,
+            on_success=on_success,
+            # A failed refresh keeps the last known setting. Blanking a valid
+            # local value because the network blipped is a regression.
+            on_error=lambda exc: self.log.info("activity config refresh failed: %s", exc),
+            key="activity-config",
+            guard_generation=False,
+        )
+
+    def _maybe_refresh_config(self) -> None:
+        """Called from the loop's tick (its own thread): ask for a refresh when due."""
+        if self._activity_api is None:
+            return
+        now = time.monotonic()
+        if now - self._config_read_at < self.CONFIG_REFRESH_SECONDS:
+            return
+        # Not while signed out: there is no token to ask with, and a refused
+        # request is not an answer about this member.
+        api_client = getattr(self.runtime, "api_client", None)
+        if api_client is None or not getattr(api_client, "access_token", None):
+            return
+        self._config_read_at = now  # claim it before emitting
+        self._config_refresh_due.emit()
+
+    def on_start(self) -> None:
+        # The restored session already holds the last `/auth/me` profile, so the
+        # member's setting is known locally before any request answers -- a member
+        # who is switched off is not measured in the seconds before verification.
+        session_manager = getattr(self.runtime, "session_manager", None)
+        profile = getattr(session_manager, "user_info", None)
+        if isinstance(profile, dict):
+            self.apply_user_profile(profile)
+        super().on_start()
+
+    # ── Tracker contract (driven by TimerService) ──────────────────────────────
+
     def start_tracker(self, session: Dict[str, Any]) -> None:
         self._entry_id = session.get("entry_id")
         self._client_op = session.get("client_op")
+        self._session_open = True
+        if not self._tracking_enabled:
+            self.log.info(
+                "activity tracking is turned off for this account; nothing will be "
+                "measured for entry %s", self._entry_id,
+            )
+            return
+        self._begin_tracking()
+
+    def _begin_tracking(self) -> None:
+        """Start measuring: a fresh window, the counter and the rules engine."""
         self._tracking = True
         self._reset_window()
         self._held_events = []
@@ -492,6 +636,7 @@ class ActivityService(LoopService):
                 )
 
     def stop_tracker(self) -> None:
+        self._session_open = False
         self._flush_window()
         self._persist_held_events()
         self._counter.stop()
@@ -501,6 +646,28 @@ class ActivityService(LoopService):
         self._client_op = None
         self._window_start = None
         self._held_events = []
+
+    def _end_tracking(self) -> None:
+        """Stop measuring because the switch went off, with the session still running.
+
+        What was measured so far is written out, the counter and the rules engine
+        stop (so no listener is left hearing the keyboard), and the session's
+        identity is *kept*: if the switch comes back on during this session,
+        measuring resumes against the same entry. A stale "permission needed"
+        state is cleared too -- nothing is being counted, so nothing is blocked.
+        """
+        self._flush_window()
+        self._persist_held_events()
+        self._counter.stop()
+        self._monitor.stop_session()
+        self._tracking = False
+        self._window_start = None
+        self._held_events = []
+        self._capture_retry_in = 0
+        if self._capture_blocked is not None:
+            self._capture_blocked = None
+            self._capture_detail = ""
+            self.capture_status_changed.emit("")
 
     # ── Unwanted activity ─────────────────────────────────────────────────────
 
@@ -551,6 +718,7 @@ class ActivityService(LoopService):
             self.log.exception("could not persist unwanted-activity event")
 
     def tick(self) -> Optional[int]:
+        self._maybe_refresh_config()
         if not self._tracking:
             return self.SAMPLE_INTERVAL_MS
 

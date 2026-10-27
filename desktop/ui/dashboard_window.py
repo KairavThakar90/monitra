@@ -1219,6 +1219,7 @@ class DashboardWindow(QWidget):
         # sign-in path paying for another request.
         self.api.apply_idle_profile(user_data)
         self.api.apply_screenshot_profile(user_data)
+        self.api.apply_member_switches_profile(user_data)
 
         self._render_cached_projects()
 
@@ -1245,6 +1246,7 @@ class DashboardWindow(QWidget):
         """The restored token was confirmed by the backend."""
         self.api.apply_idle_profile(user_data)
         self.api.apply_screenshot_profile(user_data)
+        self.api.apply_member_switches_profile(user_data)
         self._apply_profile(user_data)
 
     def _on_add_task_blocked_clicked(self, reason: str) -> None:
@@ -1947,6 +1949,7 @@ class DashboardWindow(QWidget):
             has_measurement=totals.has_measurement,
             is_tracking=running,
             capture_blocked=capture.get("blocked"),
+            capture_disabled=bool(capture.get("disabled")),
         )
 
     def _project_name_for(self, project_id: Optional[int]) -> Optional[str]:

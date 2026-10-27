@@ -128,6 +128,9 @@ def test_a_refused_tap_is_named_told_once_and_records_nothing(blocked_service, m
     assert service.capture_status() == {
         "counting": False, "blocked": "denied",
         "detail": "CGPreflightListenEventAccess=False", "tracking": True,
+        # An administrator's "activity tracking off" is a different state from a refused
+        # permission: nothing is blocked here, so this stays False.
+        "disabled": False,
     }
     notify = service.runtime.notifications.notify
     assert notify.call_count == 1

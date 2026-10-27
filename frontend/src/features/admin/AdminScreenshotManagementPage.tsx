@@ -4,39 +4,39 @@ import { V2Shell } from "../dashboard/v2/V2Shell";
 import { ErrorNote, Spinner } from "../member/MemberUi";
 import { useGetAllMembersQuery } from "../../store/api/membersApi";
 import { useGetScreenshotApplicationsQuery, useGetScreenshotUrlsQuery } from "../../api/screenshotPrivacy";
-import {
-  isCapturableMember,
-  screenshotsAreOn,
-  useGetScreenshotSettingsQuery,
-} from "../../store/api/screenshotSettingsApi";
+import { idleIsOn, isCapturableMember, useGetScreenshotSettingsQuery } from "../../store/api/screenshotSettingsApi";
 import { AdminScreenshotPrivacy } from "./AdminScreenshotPrivacy";
-import { MemberControl, SizeAndQuality } from "./AdminScreenshotManagement";
+import { SizeAndQuality } from "./AdminScreenshotManagement";
+import { IdleDetection } from "./AdminIdleDetection";
 
 /**
  * Settings -> Screenshot Management: everything an administrator decides about
- * screenshots, on one page, as an accordion of three sections.
+ * screenshots and idle detection, on one page, as an accordion of three sections.
  *
- * 1. **Who is captured** -- a switch per member (`MemberControl`).
- * 2. **Size and quality** -- what every screenshot looks like (`SizeAndQuality`).
+ * 1. **Size and quality** -- what every screenshot looks like (`SizeAndQuality`).
+ * 2. **Idle detection** -- whether, and after how long, the desktop treats a
+ *    member as idle (`IdleDetection`).
  * 3. **Privacy rules** -- the applications and websites that are never captured
  *    (`AdminScreenshotPrivacy`, formerly a page of its own).
  *
- * The three are the same components the standalone pages are made of, unchanged;
- * this page only arranges them. Every section stays mounted while collapsed (it
+ * This page only arranges them. Every section stays mounted while collapsed (it
  * is hidden, not removed), so a picked member, a half-typed size or an open
  * search is still there when the section is opened again.
+ *
+ * Who is captured at all is not decided here: it is a per-member switch in
+ * User Management, beside the notification and activity-tracking switches.
  *
  * `/admin/settings/screenshot-privacy` now redirects here with `#privacy`, which
  * opens that section on arrival.
  */
 
-type SectionId = "capture" | "look" | "privacy";
-const SECTION_IDS: readonly SectionId[] = ["capture", "look", "privacy"];
+type SectionId = "look" | "idle" | "privacy";
+const SECTION_IDS: readonly SectionId[] = ["look", "idle", "privacy"];
 
-/** The first section is open by default; a `#section` in the address opens that one instead. */
+/** Size and quality is open by default; a `#section` in the address opens that one instead. */
 const initiallyOpen = (hash: string): Record<SectionId, boolean> => {
-  const target = SECTION_IDS.find((id) => `#${id}` === hash);
-  return { capture: !target || target === "capture", look: target === "look", privacy: target === "privacy" };
+  const target = SECTION_IDS.find((id) => `#${id}` === hash) ?? "look";
+  return { look: target === "look", idle: target === "idle", privacy: target === "privacy" };
 };
 
 const errorStatus = (error: unknown) => (error as { status?: unknown } | undefined)?.status;
@@ -48,12 +48,11 @@ const Icon: React.FC<{ path: string }> = ({ path }) => (
 );
 
 const ICONS: Record<SectionId, string> = {
-  // people
-  capture:
-    "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z",
   // picture
   look:
     "M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z",
+  // clock
+  idle: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z",
   // shield
   privacy:
     "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z",
@@ -142,14 +141,14 @@ export const AdminScreenshotManagementPage: React.FC = () => {
   const [open, setOpen] = useState<Record<SectionId, boolean>>(() => initiallyOpen(location.hash));
   const toggle = (id: SectionId) => setOpen((current) => ({ ...current, [id]: !current[id] }));
   const everyOpen = SECTION_IDS.every((id) => open[id]);
-  const setAll = (value: boolean) => setOpen({ capture: value, look: value, privacy: value });
+  const setAll = (value: boolean) => setOpen({ look: value, idle: value, privacy: value });
 
-  const capturable = (members.data ?? []).filter(isCapturableMember);
-  const captureSummary = !members.data
+  const people = (members.data ?? []).filter(isCapturableMember);
+  const idleSummary = !members.data
     ? null
-    : capturable.length === 0
+    : people.length === 0
       ? "No active members"
-      : `${capturable.filter(screenshotsAreOn).length} of ${capturable.length} on`;
+      : `${people.filter(idleIsOn).length} of ${people.length} on`;
 
   const lookSummary = data
     ? `${data.image_width} × ${data.image_height} · ${data.image_quality === null ? "Automatic" : `${data.image_quality}%`}`
@@ -162,7 +161,7 @@ export const AdminScreenshotManagementPage: React.FC = () => {
   return (
     <V2Shell
       title="Screenshot Management"
-      subtitle="Decide who is captured, what a screenshot looks like, and what is never captured."
+      subtitle="Decide what a screenshot looks like, when a member counts as idle, and what is never captured."
     >
       <div className="flex w-full flex-col gap-4 pb-12">
         {forbidden ? (
@@ -183,17 +182,6 @@ export const AdminScreenshotManagementPage: React.FC = () => {
             </div>
 
             <AccordionSection
-              id="capture"
-              title="Who is captured"
-              description="Switch screenshots on or off for each member, or for everyone at once."
-              summary={captureSummary}
-              open={open.capture}
-              onToggle={() => toggle("capture")}
-            >
-              {ready ? <MemberControl embedded /> : <Spinner label="Loading members…" />}
-            </AccordionSection>
-
-            <AccordionSection
               id="look"
               title="Size and quality"
               description="The size of every screenshot, and how sharp it is saved."
@@ -208,6 +196,17 @@ export const AdminScreenshotManagementPage: React.FC = () => {
               ) : (
                 <SizeAndQuality settings={data} />
               )}
+            </AccordionSection>
+
+            <AccordionSection
+              id="idle"
+              title="Idle detection"
+              description="Whether the desktop watches each member for inactivity, and after how many minutes."
+              summary={idleSummary}
+              open={open.idle}
+              onToggle={() => toggle("idle")}
+            >
+              {ready ? <IdleDetection /> : <Spinner label="Loading members…" />}
             </AccordionSection>
 
             <AccordionSection

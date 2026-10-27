@@ -147,6 +147,10 @@ describe('activity log wording', () => {
     expect(actionLabel('screenshots_enabled')).toBe('Turned on screenshots');
     expect(actionLabel('screenshots_disabled')).toBe('Turned off screenshots');
     expect(actionLabel('screenshot_settings_updated')).toBe('Updated screenshot settings');
+    expect(actionLabel('notifications_enabled')).toBe('Turned on desktop notifications');
+    expect(actionLabel('notifications_disabled')).toBe('Turned off desktop notifications');
+    expect(actionLabel('activity_tracking_enabled')).toBe('Turned on activity tracking');
+    expect(actionLabel('activity_tracking_disabled')).toBe('Turned off activity tracking');
   });
 
   it('says which client acted, and nothing when none was recorded', () => {

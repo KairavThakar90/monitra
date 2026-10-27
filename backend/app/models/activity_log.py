@@ -104,6 +104,10 @@ class ActivityLogAction:
     ADD_NONBILLABLE_TASKS_ALLOWED = "add_nonbillable_tasks_allowed"
     SCREENSHOTS_DISABLED = "screenshots_disabled"
     SCREENSHOTS_ENABLED = "screenshots_enabled"
+    NOTIFICATIONS_DISABLED = "notifications_disabled"
+    NOTIFICATIONS_ENABLED = "notifications_enabled"
+    ACTIVITY_TRACKING_DISABLED = "activity_tracking_disabled"
+    ACTIVITY_TRACKING_ENABLED = "activity_tracking_enabled"
 
     FEEDBACK_STATUS_CHANGED = "feedback_status_changed"
     FEEDBACK_DELETED = "feedback_deleted"

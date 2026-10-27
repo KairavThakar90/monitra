@@ -7,15 +7,19 @@ after it is taken) and [SCREENSHOT_PRIVACY.md](SCREENSHOT_PRIVACY.md) (which
 applications and sites are never captured).
 
 Web page: **Settings → Screenshot Management** (`/admin/settings/screenshot-management`,
-administrators only), one page with three accordion sections: **Who is captured**
-(the per-member switch), **Size and quality**, and **Privacy rules** (the application and
-website exclusions, which used to be their own page).
+administrators only), one page with three accordion sections: **Size and quality**,
+**Idle detection** (each member's idle switch and idle time) and **Privacy rules** (the
+application and website exclusions, which used to be their own page).
+
+**Who is captured is not on this page.** The per-member screenshot switch is set in
+**User Management**, beside the notifications and activity-tracking switches, through the
+ordinary member update -- see [MEMBER_TRACKING_SETTINGS.md](MEMBER_TRACKING_SETTINGS.md).
 
 ## What can be set
 
 | Control | Scope | Stored in | Default |
 |---|---|---|---|
-| **Capture on / off** | per member | `users.screenshots_enabled` | on |
+| **Capture on / off** | per member, set in User Management | `users.screenshots_enabled` | on |
 | **Image size** (width × height, px) | the whole deployment | `system_settings` key `screenshot_settings` | 1500 × 1500 |
 | **Image quality** | the whole deployment | the same row | Automatic |
 
@@ -100,18 +104,17 @@ GET /auth/me             ->  { ..., "screenshots_enabled": true }
 
 ## The admin API
 
-All four are administrators only (`administrator`, `org_admin`, `super_admin`), by
+Both are administrators only (`administrator`, `org_admin`, `super_admin`), by
 role name and never a service credential; every other caller is answered 403.
 
 | Request | Body | Notes |
 |---|---|---|
 | `GET /api/v1/screenshot-settings` | | Current values, the defaults, `automatic_image_quality` and the limits the page validates against. |
 | `PUT /api/v1/screenshot-settings` | `{image_width, image_height, image_quality}` | A **replacement**: all three keys are required; `image_quality: null` is Automatic, and leaving the key out is a 422 (it must not read as "Automatic" and undo a fixed quality). Idempotent: a request that changes nothing records nothing. |
-| `PUT /api/v1/screenshot-settings/members/{id}` | `{enabled: bool}` | `changed` is false, and nothing is audited, if the member already held that position. 404 for another organization's member, a client account or the release account. |
-| `POST /api/v1/screenshot-settings/members` | `{enabled: bool, apply_to: {scope: "all"} \| {scope: "members", user_ids: [...]}}` | `all` is every *active* member of the caller's organization today, never a client or the release account. A listed member that cannot be found is a 400 and nothing is changed. |
 
-`GET /members` also returns `screenshots_enabled` on every member, which is what
-the page's member table reads.
+The two routes that used to switch one member or many (`PUT/POST .../members`) are gone: the
+per-member switch has one write path, the member update (`PATCH /members/{id}`), which is
+also what audits it.
 
 Integers follow the shared `INTEGER` rule ([VALIDATION.md](VALIDATION.md)): a whole
 number, or a string holding one; text, decimals, booleans and `null` (where a number
@@ -121,11 +124,10 @@ is required) are 422.
 
 | Module | Action | When |
 |---|---|---|
-| `member` | `screenshots_enabled` / `screenshots_disabled` | A member's switch actually moved (one row for a bulk change, with no single member). |
+| `member` | `screenshots_enabled` / `screenshots_disabled` | A member's switch actually moved, from User Management. |
 | `system` | `screenshot_settings_updated` | The size or quality actually changed. |
 
-Log lines: `SCREENSHOT_SETTINGS_CHANGED`, `SCREENSHOTS_SWITCHED`,
-`SCREENSHOTS_SWITCHED_BULK` (backend); `SCREENSHOTS_SWITCH`, `SCREENSHOT_SETTINGS`,
+Log lines: `SCREENSHOT_SETTINGS_CHANGED` (backend); `SCREENSHOTS_SWITCH`, `SCREENSHOT_SETTINGS`,
 `SCREENSHOT_FIXED_QUALITY_LOWERED` (desktop).
 
 ## Rollout notes

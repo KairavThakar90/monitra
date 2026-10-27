@@ -1,12 +1,9 @@
 """Screenshot Management: what an administrator may set, and what is read back.
 
-Three things are set here and they are different in kind:
-
-* **A member's capture switch** (`MemberScreenshotUpdate`) -- per person.
-* **The size and quality of every screenshot** (`ScreenshotSettingsUpdate`) --
-  one setting for the deployment, like the desktop notification schedule.
-* **Which members a switch is applied to in one go** (`MemberScreenshotBulkUpdate`),
-  reusing the "all members / these members" scope the privacy rules already use.
+The size and quality of every screenshot (`ScreenshotSettingsUpdate`) are one
+setting for the deployment, like the desktop notification schedule. Whether a
+particular member is captured is not set here: it is a per-member switch edited from
+User Management through the ordinary member update.
 
 Every number is bounded by `app/core/screenshot_geometry.py`, the same limits the
 upload check applies, so an administrator can never choose a size the server
@@ -15,7 +12,7 @@ would then refuse to store.
 from datetime import datetime
 from typing import Annotated, Optional
 
-from pydantic import BaseModel, StrictBool
+from pydantic import BaseModel
 
 from app.core.screenshot_geometry import (
     MAX_IMAGE_EDGE,
@@ -24,7 +21,6 @@ from app.core.screenshot_geometry import (
     MIN_IMAGE_QUALITY,
 )
 from app.core.validation import integer_field, optional_integer_field
-from app.schemas.screenshot_privacy import ScreenshotRuleScope
 
 ImageWidth = Annotated[
     int, integer_field(label="Screenshot width", minimum=MIN_IMAGE_EDGE, maximum=MAX_IMAGE_EDGE)
@@ -79,33 +75,3 @@ class ScreenshotSettingsRead(BaseModel):
     version: int
     updated_at: Optional[datetime] = None
     updated_by_username: Optional[str] = None
-
-
-class MemberScreenshotUpdate(BaseModel):
-    """Switch screenshots on or off for one member."""
-
-    enabled: StrictBool
-
-
-class MemberScreenshotRead(BaseModel):
-    id: int
-    name: str
-    screenshots_enabled: bool
-    #: False when the request changed nothing because the member already held
-    #: that position. Nothing is audited in that case.
-    changed: bool
-
-
-class MemberScreenshotBulkUpdate(BaseModel):
-    """Switch screenshots on or off for all members, or for the chosen ones."""
-
-    enabled: StrictBool
-    apply_to: ScreenshotRuleScope
-
-
-class MemberScreenshotBulkRead(BaseModel):
-    enabled: bool
-    #: Members the request was addressed to.
-    matched: int
-    #: Members whose position actually moved.
-    changed: int
