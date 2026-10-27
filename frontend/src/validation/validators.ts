@@ -38,10 +38,14 @@ import {
   PLAIN_TEXT_MAX_LENGTH,
   SCRIPT_URI_PATTERN,
   SEARCH_MAX_LENGTH,
+  SHA256_LENGTH,
+  SHA256_PATTERN,
   TEMPLATE_EXPRESSION_PATTERN,
   TIME_OF_DAY_PATTERN,
   URL_MAX_LENGTH,
   UUID_PATTERN,
+  VERSION_MAX_LENGTH,
+  VERSION_PATTERN,
   XML_PROLOG_PATTERN,
 } from './rules';
 import { collapseWhitespace, normalizeEmail, normalizeText } from './sanitizer';
@@ -599,6 +603,61 @@ export function validateDomain(
     return fail(`${label} must be at most ${DOMAIN_MAX_LENGTH} characters.`);
   }
   if (!DOMAIN_PATTERN.test(candidate)) return fail(`${label} is not a valid domain.`);
+  return ok(candidate);
+}
+
+/**
+ * A release version, `major.minor.patch`.
+ *
+ * Rejected rather than repaired, as the backend does: a version is the
+ * identity of a build, and quietly turning `v1.2` into `1.2.0` would let two
+ * spellings name what the update system treats as one release.
+ */
+export function validateVersion(
+  value: unknown,
+  options?: { fieldLabel?: string; required?: boolean },
+): ValidationResult<string> {
+  const label = options?.fieldLabel ?? 'Version';
+  const required = options?.required !== false;
+  if (value === null || value === undefined || (isString(value) && value.trim().length === 0)) {
+    return required ? fail(`${label} is required.`) : ok('');
+  }
+  if (!isString(value)) return fail(`${label} must be text.`);
+  const control = rejectControlCharacters(value, label);
+  if (control !== null) return fail(control);
+  const candidate = normalizeText(value);
+  if (candidate.length > VERSION_MAX_LENGTH) {
+    return fail(`${label} must be at most ${VERSION_MAX_LENGTH} characters.`);
+  }
+  if (!VERSION_PATTERN.test(candidate)) {
+    return fail(`${label} must be three numbers separated by dots, such as 1.4.0.`);
+  }
+  return ok(candidate);
+}
+
+/**
+ * A SHA-256 digest: exactly 64 lower-case hexadecimal characters.
+ *
+ * Upper-case input is folded to lower case, because that is a spelling of
+ * the same digest; anything else is refused, because a digest the desktop
+ * cannot match is an installer it will not run.
+ */
+export function validateSha256(
+  value: unknown,
+  options?: { fieldLabel?: string; required?: boolean },
+): ValidationResult<string> {
+  const label = options?.fieldLabel ?? 'Checksum';
+  const required = options?.required !== false;
+  if (value === null || value === undefined || (isString(value) && value.trim().length === 0)) {
+    return required ? fail(`${label} is required.`) : ok('');
+  }
+  if (!isString(value)) return fail(`${label} must be text.`);
+  const control = rejectControlCharacters(value, label);
+  if (control !== null) return fail(control);
+  const candidate = normalizeText(value).toLowerCase();
+  if (candidate.length !== SHA256_LENGTH || !SHA256_PATTERN.test(candidate)) {
+    return fail(`${label} must be a SHA-256 digest: ${SHA256_LENGTH} hexadecimal characters.`);
+  }
   return ok(candidate);
 }
 

@@ -55,7 +55,9 @@ import {
   validatePassword,
   validatePlainText,
   validateSearchTerm,
+  validateSha256,
   validateUrl,
+  validateVersion,
 } from './validators';
 
 /** How one field is described to the hook. */
@@ -175,6 +177,10 @@ export function validateBySpec(value: unknown, spec: FieldSpec): ValidationResul
       return validateUrl(value, { fieldLabel: label, required });
     case 'domain':
       return validateDomain(value, { fieldLabel: label });
+    case 'version':
+      return validateVersion(value, { fieldLabel: label, required });
+    case 'sha256':
+      return validateSha256(value, { fieldLabel: label, required });
     case 'uuid':
     default:
       return validatePlainText(value, {

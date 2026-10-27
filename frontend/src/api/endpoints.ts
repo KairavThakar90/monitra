@@ -201,6 +201,18 @@ export const ENDPOINTS = {
     DOWNLOAD: (platform: string, arch?: string) =>
       `${API_BASE_URL}/desktop/releases/download?platform=${encodeURIComponent(platform)}` +
       (arch ? `&arch=${encodeURIComponent(arch)}` : ''),
+    // Release management (administrators only; docs/Desktop_Release_Runbook.md).
+    // A version record holds what was decided about one version -- targets,
+    // mandatory, grace, floor, lifecycle -- over the artifact rows CI registers.
+    VERSIONS: `${API_BASE_URL}/desktop/releases/versions`,
+    VERSION: (version: string) => `${API_BASE_URL}/desktop/releases/versions/${encodeURIComponent(version)}`,
+    VERSION_VALIDATE: (version: string) =>
+      `${API_BASE_URL}/desktop/releases/versions/${encodeURIComponent(version)}/validate`,
+    VERSION_PUBLISH: (version: string) =>
+      `${API_BASE_URL}/desktop/releases/versions/${encodeURIComponent(version)}/publish`,
+    VERSION_WITHDRAW: (version: string, reason?: string) =>
+      `${API_BASE_URL}/desktop/releases/versions/${encodeURIComponent(version)}/withdraw` +
+      (reason ? `?reason=${encodeURIComponent(reason)}` : ''),
   },
   // Deployment-wide state. Maintenance mode is a *notice*, not a lock: the
   // status is polled by every signed-in session so the toast can be shown and
