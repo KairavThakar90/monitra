@@ -20,6 +20,13 @@ re-grant a permission.
 
 ## [Unreleased]
 
+## [1.3.3]
+
+The installer and the macOS bundles are still unsigned (see 1.3.2 below for
+what that means on first run). **This is the first version that can install an
+update by itself**: on 1.3.2 and earlier, Monitra only tells you a new version
+exists and opens the download page, so install 1.3.3 by hand once.
+
 ### Added
 - **Mandatory updates with a 24-hour grace period.** When your administrator
   publishes a required update, the update prompt now says so, offers "Later"
@@ -35,12 +42,11 @@ re-grant a permission.
 - "Check for Updates" shows a release you postponed again, instead of saying
   nothing.
 
-## [1.3.3]
-
-The installer and the macOS bundles are still unsigned (see 1.3.2 below for
-what that means on first run). **This is the first version that can install an
-update by itself**: on 1.3.2 and earlier, Monitra only tells you a new version
-exists and opens the download page, so install 1.3.3 by hand once.
+### Fixed
+- An update whose installer is not on the download server any more is refused
+  with "The download server answered with a web page instead of the installer"
+  rather than "incomplete, try again" (a retry could not help). Nothing is
+  kept from such an answer.
 
 ### Changed
 

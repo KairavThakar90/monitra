@@ -246,6 +246,22 @@ def download_and_verify(
                         continue
 
                     response.raise_for_status()
+                    content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+                    if content_type.startswith("text/"):
+                        # A web page is never an installer. A server that
+                        # answers a missing file with 200 and its index page
+                        # (a single-page-application rewrite -- measured on the
+                        # website, 2026-10-27), a sign-in page, or a hosted
+                        # "virus scan" page would otherwise be read to the end
+                        # and refused for its size, with a message that says
+                        # "try again" when no retry can help.
+                        raise DownloadError(
+                            "The download server answered with a web page instead of "
+                            "the installer. The update cannot be installed from this "
+                            "location; please tell your administrator.",
+                            detail=f"content-type {content_type!r} (hop {hop + 1})",
+                            category="http-error",
+                        )
                     total = _declared_size(response, expected_size)
                     for chunk in response.iter_bytes(CHUNK_BYTES):
                         if should_stop is not None and should_stop():

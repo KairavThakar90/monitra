@@ -92,6 +92,13 @@ EXEMPT_PATH_PATTERNS: Tuple[re.Pattern, ...] = tuple(re.compile(p) for p in (
     r"^/time-entry-screenshots/capture-events$",
     r"^/idle-periods(/|$)",
     r"^/activity-logs/client-events$",
+    # The two reads a running session needs to keep capturing correctly: the
+    # organisation's screenshot exclusions (the capture gate holds and retries
+    # without them -- measured in the release E2E, a refused read here held
+    # every capture of a timer the policy had left running) and the capture
+    # cadence. Reads of the user's own data they are not.
+    r"^/screenshot/privacy-config$",
+    r"^/screenshots/config$",
 ))
 
 _API_PREFIX = "/api/v1"

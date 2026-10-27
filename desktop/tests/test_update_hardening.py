@@ -346,6 +346,25 @@ class TestDownloadIntegrity:
             _fetch()
         assert list(updates_dir().iterdir()) == []
 
+    def test_a_web_page_answered_for_a_missing_installer_is_named_not_called_incomplete(
+        self, scratch, production, monkeypatch,
+    ):
+        """Measured on the website on 2026-10-27: a missing installer URL is
+        answered 200 with the site's index page (a single-page-application
+        rewrite), not 404. Refused by its size before, with "try again" -- a
+        retry cannot help. Now refused for what it is, before any byte is
+        kept, with a message that says where the problem is."""
+        _network(monkeypatch, lambda r: httpx.Response(
+            200, content=b"<!doctype html><html><body>Monitra</body></html>",
+            headers={"content-type": "text/html; charset=utf-8"},
+        ))
+        with pytest.raises(DownloadError) as caught:
+            _fetch()
+        assert caught.value.category == "http-error"
+        assert "web page instead of the installer" in caught.value.message
+        assert "try again" not in caught.value.message.lower()
+        assert list(updates_dir().iterdir()) == []
+
     def test_an_interrupted_download_leaves_nothing_behind(self, scratch, production, monkeypatch):
         class Broken(httpx.SyncByteStream):
             def __iter__(self):

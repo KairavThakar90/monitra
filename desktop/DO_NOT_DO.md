@@ -2077,6 +2077,19 @@ Inno Setup copies `dist\Monitra\` into the installer as it compiles. Signing
 installer wraps an unsigned program. Sign the application, build the installer,
 sign the installer, verify, and only then hash.
 
+### ❌ Do not read a `text/html` answer as an installer, and do not call it "incomplete"
+
+Measured on the website on 2026-10-27 by the release E2E: a missing installer
+URL under `/download_app_files/` is answered `200 text/html` with the site's
+index page (a single-page-application rewrite), not `404`. The downloader read
+it to the end and refused it for its size with "The update download was
+incomplete. Please try again." -- true in bytes, wrong in meaning: no retry
+can turn a web page into an installer, and the user was told to keep trying.
+Any `text/*` content type is refused before a byte is kept, as
+`http-error`, with words that say where the problem is (the server), so the
+report on the admin page says `download-failed` and support reads
+`content-type 'text/html'` in the log.
+
 ### ❌ Do not measure the update deadline with this machine's wall clock
 
 ```python

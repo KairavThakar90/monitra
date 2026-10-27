@@ -343,6 +343,7 @@ def test_the_api_key_is_presented_as_it_is_with_no_sign_in(monkeypatch, tmp_path
     monkeypatch.delenv("MONITRA_RELEASE_TOKEN", raising=False)
     monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
     monkeypatch.setenv("MONITRA_RELEASE_CREDENTIAL", "msk_abc123_secret")
+    monkeypatch.setattr(reg, "preflight", lambda base_url, token: "accepted")
     posted = []
     monkeypatch.setattr(
         reg, "post_release",
@@ -387,6 +388,7 @@ def test_the_api_key_wins_over_a_stale_manual_token(monkeypatch, tmp_path):
     monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
     monkeypatch.setenv("MONITRA_RELEASE_TOKEN", "thirty-minutes-old")
     monkeypatch.setenv("MONITRA_RELEASE_CREDENTIAL", "msk_abc123_secret")
+    monkeypatch.setattr(reg, "preflight", lambda base_url, token: "accepted")
     posted = []
     monkeypatch.setattr(
         reg, "post_release",
@@ -587,3 +589,97 @@ def test_nothing_is_annotated_outside_actions(monkeypatch, tmp_path, capsys):
 
     assert _run(monkeypatch, tmp_path) == 0
     assert "::" not in capsys.readouterr().out
+
+# ── The credential is proven before any row is registered ────────────────────
+
+
+def test_the_public_key_id_is_read_off_a_service_key_and_nothing_else():
+    assert reg.key_id_of("msk_0a1b2c3d4e5f_verysecretpart") == "0a1b2c3d4e5f"
+    assert reg.key_id_of("msk_abc123_secret") == "abc123"
+    for other in ("thirty-minutes-old", "msk_nosecret", "msk__x", "", None):
+        assert reg.key_id_of(other) is None, other
+
+
+class _Answer:
+    def __init__(self, body):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        import json
+        return json.dumps(self._body).encode("utf-8")
+
+
+def _refusal(code):
+    import io
+    import urllib.error
+    return urllib.error.HTTPError("https://api.invalid/auth/me", code, "refused", {}, io.BytesIO(b"{}"))
+
+
+def test_an_accepted_credential_names_the_principal_never_the_secret(monkeypatch, capsys):
+    seen = {}
+
+    def fake_urlopen(request, timeout=None):
+        seen["auth"] = request.get_header("Authorization")
+        seen["url"] = request.full_url
+        return _Answer({"username": "release_bot", "role_name": "release_bot"})
+
+    monkeypatch.setattr(reg.urllib.request, "urlopen", fake_urlopen)
+    assert reg.preflight("https://api.invalid/api/v1", "msk_abc123_secret") == "accepted"
+    assert seen["url"] == "https://api.invalid/api/v1/auth/me"
+    assert seen["auth"] == "Bearer msk_abc123_secret"
+    out = capsys.readouterr().out
+    assert "service key id abc123" in out
+    assert "release_bot" in out
+    assert "secret" not in out.replace("msk_abc123_secret", "")  # the secret half is never printed
+    assert "msk_abc123_secret" not in out
+
+
+def test_a_refused_credential_stops_the_run_before_any_row_is_posted(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("MONITRA_RELEASE_TOKEN", raising=False)
+    monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
+    monkeypatch.setenv("MONITRA_RELEASE_CREDENTIAL", "msk_abc123_secret")
+    monkeypatch.setattr(reg.urllib.request, "urlopen", lambda request, timeout=None: (_ for _ in ()).throw(_refusal(401)))
+    posted = []
+    monkeypatch.setattr(reg, "post_release", lambda *a: (posted.append(a), True)[1])
+    _argv_for(monkeypatch, _artifact(tmp_path))
+
+    assert reg.main() == 1
+    assert posted == [], "nothing is registered under a credential the backend refuses"
+    captured = capsys.readouterr()
+    assert "REFUSED: HTTP 401" in captured.err
+    assert "key id abc123" in captured.err
+    assert "provision_release_credential.py show" in captured.err
+    assert "msk_abc123_secret" not in captured.err + captured.out
+
+
+def test_a_backend_that_cannot_be_asked_does_not_stop_the_run(monkeypatch, tmp_path, capsys):
+    import urllib.error
+    monkeypatch.delenv("MONITRA_RELEASE_TOKEN", raising=False)
+    monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
+    monkeypatch.setenv("MONITRA_RELEASE_CREDENTIAL", "msk_abc123_secret")
+    monkeypatch.setattr(reg.urllib.request, "urlopen",
+                        lambda request, timeout=None: (_ for _ in ()).throw(urllib.error.URLError("unreachable")))
+    posted = []
+    monkeypatch.setattr(reg, "post_release", lambda *a: (posted.append(a), True)[1])
+    _argv_for(monkeypatch, _artifact(tmp_path))
+
+    assert reg.main() == 0
+    assert len(posted) == 1, "the registrations report their own failure instead"
+    assert "could not verify the credential" in capsys.readouterr().err
+
+
+def test_a_manual_token_is_not_preflighted(monkeypatch, tmp_path):
+    monkeypatch.delenv("MONITRA_RELEASE_CREDENTIAL", raising=False)
+    monkeypatch.setenv("MONITRA_API_BASE_URL", "https://api.invalid")
+    monkeypatch.setenv("MONITRA_RELEASE_TOKEN", "already-have-one")
+    monkeypatch.setattr(reg, "preflight", lambda *a: (_ for _ in ()).throw(AssertionError("preflighted")))
+    monkeypatch.setattr(reg, "post_release", lambda *a: True)
+    _argv_for(monkeypatch, _artifact(tmp_path))
+    assert reg.main() == 0
+

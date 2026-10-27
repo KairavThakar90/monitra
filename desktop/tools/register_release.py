@@ -181,6 +181,73 @@ def release_notes(version_string: str) -> Optional[str]:
     return body or None
 
 
+#: A service credential is `msk_<key id>_<secret>`. The key id is public: the
+#: backend logs it on every refusal and `provision_release_credential.py show`
+#: lists it, so printing it is what lets an operator tell "the secret in GitHub
+#: is not the key the database holds" from "the key was revoked" without ever
+#: seeing the secret half.
+SERVICE_KEY_PREFIX = "msk_"
+
+
+def key_id_of(token: str) -> str | None:
+    """The public id of a service credential, or None for any other token."""
+    if not isinstance(token, str) or not token.startswith(SERVICE_KEY_PREFIX):
+        return None
+    body = token[len(SERVICE_KEY_PREFIX):]
+    key_id, sep, _secret = body.partition("_")
+    return key_id if sep and key_id else None
+
+
+def preflight(base_url: str, token: str) -> str:
+    """Prove the credential before any row is registered.
+
+    One `GET /auth/me` with the credential, which is how every later request
+    will be judged. Returns ``"accepted"`` (and prints who the backend took
+    the credential for), ``"refused"`` on a 401/403 (nothing further should
+    be attempted -- every registration would be refused the same way), or
+    ``"unverified"`` when the backend could not be asked at all, in which
+    case the registrations are still attempted and report their own failure.
+    The secret is never printed; its public key id is.
+    """
+    key_id = key_id_of(token)
+    print(f"credential: service key id {key_id}" if key_id else "credential: a manual token")
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}/auth/me",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "User-Agent": f"MonitraReleasePipeline/{version.VERSION}",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = json.loads(response.read().decode("utf-8", "replace") or "{}")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            print(
+                f"  REFUSED: HTTP {exc.code} -- the backend at this MONITRA_API_BASE_URL does "
+                f"not accept this credential{f' (key id {key_id})' if key_id else ''}. "
+                "On the server, `python scripts/provision_release_credential.py show` "
+                "lists the key ids that database holds; the backend log names the "
+                "reason (SERVICE_CREDENTIAL_REFUSED: unknown key_id / bad secret / "
+                "revoked / expired). A key issued against another database (the "
+                "development one, or the previous host) is 'unknown key_id' here: "
+                "issue the key on the database this backend uses and paste it into "
+                "the repository secret MONITRA_RELEASE_CREDENTIAL.",
+                file=sys.stderr,
+            )
+            return "refused"
+        print(f"  could not verify the credential: HTTP {exc.code}; registering anyway",
+              file=sys.stderr)
+        return "unverified"
+    except (urllib.error.URLError, ValueError, OSError) as exc:
+        print(f"  could not verify the credential: {exc}; registering anyway", file=sys.stderr)
+        return "unverified"
+    who = body.get("username") or body.get("email") or "?"
+    print(f"  accepted: the backend takes it for {who} (role {body.get('role_name', '?')})")
+    return "accepted"
+
+
 def post_release(base_url: str, token: str, payload: dict) -> bool:
     """Register one artifact. Returns whether it is now registered."""
     request = urllib.request.Request(
@@ -330,6 +397,22 @@ def main() -> int:
             "exists, so the download page will not offer this build.",
         )
         return 0
+
+    # A service key is proven once, before any row is created, so a refused
+    # credential is one clear line naming the public key id rather than three
+    # refusals -- and a run that registers nothing cannot be mistaken for one
+    # that registered half a set. A manual token is a person's session; it is
+    # presented as it is.
+    if key_id_of(token) is not None and preflight(base_url, token) == "refused":
+        annotate(
+            "error",
+            "Backend registration REFUSED: the release credential was not accepted "
+            f"(service key id {key_id_of(token)}). No release row was created. Issue "
+            "the key on the database this backend uses "
+            "(backend/scripts/provision_release_credential.py) and update the "
+            "repository secret MONITRA_RELEASE_CREDENTIAL.",
+        )
+        return 1
 
     expected = version.VERSION
     if args.tag.lstrip("v") != expected:

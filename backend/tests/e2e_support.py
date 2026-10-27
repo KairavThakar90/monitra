@@ -72,6 +72,9 @@ ADMINISTRATOR_PERMISSIONS = {
     "time_entries:view_all": True,
     "view_employees": True,
     "manage_employees": True,
+    # The release-management E2E publishes a test release through the real
+    # endpoints; this is the administrator role's own permission for that.
+    "manage_desktop_releases": True,
 }
 
 PROVISIONABLE_ROLES = {

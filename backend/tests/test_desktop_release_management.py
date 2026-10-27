@@ -869,6 +869,10 @@ class GateTests(_Base):
             "/idle-periods", "/idle-periods/active", "/idle-periods/3/resolve",
             "/api/v1/activity-logs/client-events", "/api/v1/time-entries/17/stop",
             "/api/v1/auth/me",
+            # The running session's capture reads (found by the release E2E:
+            # refused, the screenshot gate held every capture of a timer the
+            # policy had left running).
+            "/api/v1/screenshot/privacy-config", "/screenshots/config",
         ):
             with self.subTest(path=path):
                 self._enforce(path, now=later)

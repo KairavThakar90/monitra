@@ -482,3 +482,154 @@ grace periods pending/expired/satisfied, install reports by outcome
 (`POST /desktop/update-reports`, idempotent on the desktop's event id),
 adoption on or above vs below by last-seen version, the announcement's outbox
 counts (`sent` is provider acceptance, not delivery), and the audit history.
+
+### 8.7 The macOS downloads and IIS
+
+**Found 2026-10-27, measured on the live website:** `Monitra-Setup-1.3.2.exe`
+answers `200 application/octet-stream` (32,478,743 bytes, digest equal to the
+committed file); both `.dmg` files answer an IIS `404 text/html` page although
+the files are in the folder. IIS serves a static file only when its extension
+has a MIME type, and `.dmg` has none by default.
+
+**Repository fix (shipped with every frontend deploy):**
+`frontend/public/download_app_files/web.config` -- a directory-scoped IIS
+configuration that maps `.dmg` to `application/x-apple-diskimage` (and
+`.sha256` to `text/plain`) for that folder only. Vite copies `public/`
+verbatim, so the file is deployed at `/download_app_files/web.config`; it adds
+nothing to the site root, so the site's own configuration (URL rewrite rules
+and the like) is untouched. It `remove`s before it `mimeMap`s, so a mapping
+already present higher up cannot turn into a duplicate-key error.
+
+**Second finding:** a *missing* installer URL under that folder answers
+`200 text/html` with the site's index page (a single-page-application rewrite),
+not `404`. The desktop's downloader now refuses any `text/*` answer before
+reading it ("The download server answered with a web page instead of the
+installer", category `http-error`), and `verify_download_urls.py` already
+refuses an HTML body. A published row must still point at a file that exists:
+copy the installers **before** publishing, and prove them (below).
+
+**Administrator steps on the server, after the next frontend deploy** (or by
+hand before it):
+
+1. IIS Manager → Sites → the `staff.peakworkos.com` site → open the
+   `download_app_files` folder → **MIME Types**. If `.dmg` is not listed, add
+   `.dmg` = `application/x-apple-diskimage`. (The deployed `web.config` does this;
+   check that the deploy really copied it: the folder must contain `web.config`.)
+2. From any machine outside the server:
+   ```
+   curl -sI https://staff.peakworkos.com/download_app_files/Monitra-macOS-arm64-1.3.2.dmg
+   curl -sI https://staff.peakworkos.com/download_app_files/Monitra-macOS-x86_64-1.3.2.dmg
+   ```
+   Both must answer `HTTP/1.1 200 OK` with `Content-Type: application/x-apple-diskimage`
+   and the file's `Content-Length` (55,273,984 and 62,060,924 bytes for 1.3.2). A
+   `text/html` content type, whatever the status, means the server is still
+   answering with a page.
+3. From the repository, the authoritative check (it downloads the files the
+   way an installed client does and compares digests):
+   ```
+   python desktop/tools/verify_download_urls.py --base-url https://staff.peakworkos.com/download_app_files/ --version 1.3.2 --artifacts frontend/public/download_app_files
+   ```
+   must print three `OK` lines and exit 0. Keep the output with the release record.
+4. If the folder answers `500` after the deploy, the server already maps `.dmg`
+   at a higher level **and** the deployed `web.config` was edited to drop its
+   `<remove>` line; restore the file as committed.
+
+### 8.8 The release credential (`MONITRA_RELEASE_CREDENTIAL`)
+
+**What the code does (verified by `desktop/tests/test_register_release.py`,
+`backend/tests/test_service_credential.py`):** the pipeline presents the key as
+`Authorization: Bearer msk_<key id>_<secret>`, whitespace-stripped; the backend
+finds the row by the public key id, compares the SHA-256 of the whole key in
+constant time, refuses revoked and expired keys and any account that is not
+`release_bot`, and answers one 401 for every reason while logging the reason:
+`SERVICE_CREDENTIAL_REFUSED: unknown key_id=… | bad secret | revoked | expired |
+account unavailable`. Nothing in that path was found wrong.
+
+**Why the 1.3.2 run was refused:** the backend that `MONITRA_API_BASE_URL`
+named answered 401 to a key that is not in *its* database. Production moved to
+the company server in October 2026 and its database is not the one any
+repository `.env` names; a key issued against the development database (or
+the previous host) is `unknown key_id` on the current one. The exact reason is
+one line in the production backend log; the repository cannot read it, and
+neither `MONITRA_API_BASE_URL` nor the secret can be inspected from here.
+
+**What changed (2026-10-27):** `register_release.py` now proves the credential
+with one `GET /auth/me` **before** registering anything, prints the credential's
+public key id (never the secret) and, on a refusal, names the remedy and exits 1
+with no row created. A run can no longer register half a set under a refused
+key, and an operator can match the printed key id against
+`provision_release_credential.py show` on the production database.
+
+**Administrator steps (on the production server, never from a laptop):**
+1. `cd backend && python scripts/provision_release_credential.py show` --
+   prints the host and database it resolved and the key ids it holds. If the
+   key id the failed run printed is not there, the secret in GitHub was issued
+   elsewhere.
+2. `python scripts/provision_release_credential.py rotate --name github-actions-release --i-am-sure`
+   -- mints a new key (shown once) and revokes the old.
+3. Paste it into the repository secret `MONITRA_RELEASE_CREDENTIAL`; confirm the
+   secret `MONITRA_API_BASE_URL` is the production API's `https://…/api/v1`.
+4. Re-run the "Register the release with the backend" step of the last tag
+   build: the log must show `credential: service key id <id>` and
+   `accepted: the backend takes it for release_bot (role release_bot)`, then
+   `registered (201)` or `already registered` per artifact.
+
+### 8.9 The production database migration (owner, later)
+
+Exactly one revision: `f1a7c3e9d2b4` (adds `desktop_release_versions`,
+`desktop_update_requirements`, `desktop_update_reports`; touches no existing
+table). Verified locally: `upgrade head`, `downgrade e9f5a3b7c2d4`, `upgrade
+head` again on PostgreSQL 18, constraints enforced.
+
+1. Take a backup of the production database first.
+2. On the server, from `backend/`, with the production `DATABASE_URL` exported
+   for that shell only (never written into a repository file):
+   ```
+   python -m alembic current          # must print e9f5a3b7c2d4 (head)
+   python -m alembic upgrade head     # one revision, transactional DDL
+   python -m alembic current          # must print f1a7c3e9d2b4 (head)
+   ```
+3. Rollback, if ever needed: `python -m alembic downgrade e9f5a3b7c2d4`. It
+   drops the three tables; grace periods in progress are lost; the update
+   check falls back to the artifact rows' own flags.
+4. Deploy the backend built from this branch in the same window; until the
+   backend is deployed the tables are unused, and until the migration is
+   applied the new endpoints answer 500.
+
+### 8.10 Running everything locally
+
+```
+# a throwaway PostgreSQL (never the development or production database)
+#   initdb -D <dir> -U postgres --auth=trust ; pg_ctl -D <dir> -o "-p 58432" start
+#   psql -h 127.0.0.1 -p 58432 -U postgres -c "create database monitra_e2e"
+# schema from the models + stub organisation + status catalogues + alembic stamp:
+#   see backend/tests/pg_support.py (the same recipe), then
+export DATABASE_URL=postgresql+psycopg2://postgres@127.0.0.1:58432/monitra_e2e
+export DATABASE_URL_DEV=$DATABASE_URL ENV=development
+export EMAIL_PROVIDER=console RELEASE_EMAIL_ENABLED=true EMAIL_DISPATCH_TOKEN=local-token
+export GOOGLE_DRIVE_ROOT_FOLDER_ID= WFPM_TIMER_START_URL= WFPM_TIMER_STOP_URL=
+export DESKTOP_DOWNLOAD_ALLOWED_HOSTS=staff.peakworkos.com
+export DESKTOP_DOWNLOAD_URL_PREFIXES=https://staff.peakworkos.com/download_app_files/
+export DESKTOP_REQUIRE_SIGNED_RELEASES=false      # pilot setting, local only
+
+cd backend  && python -m uvicorn app.main:app --host 127.0.0.1 --port 58080   # backend
+cd frontend && VITE_API_BASE=http://127.0.0.1:58080/api/v1 npx vite --host 127.0.0.1 --port 5173 --strictPort
+cd desktop  && SMS_API_BASE_URL=http://127.0.0.1:58080 MONITRA_ENV=development python main.py   # desktop (from source)
+
+# an administrator and a member for the rig (printed as JSON with a 2 h token):
+cd backend && python tests/e2e_support.py provision administrator
+cd backend && python tests/e2e_support.py provision
+
+# the whole release journey, automated, against that rig:
+cd desktop && MONITRA_E2E=1 python -m pytest tests/e2e/test_release_management_e2e.py -q -s
+```
+
+To publish a local test release by hand: Admin → Settings → Desktop Releases →
+**+ New release** (version newer than `desktop/version.py`, both platforms,
+optional, "Enter the installers now" with URLs under the website folder and
+any 64-hex digest), **Validate**, **Publish**; then in the desktop, account menu
+→ Check for Updates. Update Now will end at the website's answer for a file that
+is not there -- the honest outcome, reported on the detail page as
+`download-failed`. To exercise the mandatory path, edit the version to
+mandatory with a short grace and move the grace row's `deadline_at` on the
+throwaway database; the backend answers 426 and the desktop shows the page.
