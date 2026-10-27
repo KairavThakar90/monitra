@@ -40,6 +40,12 @@ class RequestContext:
     #: Path only, never the query string. Read by the connection-pool log so a
     #: connection held too long can be traced to the route that held it.
     path: Optional[str] = None
+    #: The desktop's ``X-Monitra-Platform`` / ``X-Monitra-Arch`` headers, as
+    #: sent. Read by the update-policy gate (``desktop_update_policy``) so the
+    #: one dependency every protected route passes through can judge a desktop
+    #: client without each route being told about it. Null for a web client.
+    platform: Optional[str] = None
+    architecture: Optional[str] = None
 
 
 _context: ContextVar[Optional[RequestContext]] = ContextVar("monitra_request_context", default=None)
@@ -90,6 +96,8 @@ def context_for(request: Request) -> RequestContext:
     return RequestContext(
         client=client, client_version=version, ip_address=client_address(request),
         path=request.url.path,
+        platform=(request.headers.get("x-monitra-platform") or "").strip() or None,
+        architecture=(request.headers.get("x-monitra-arch") or "").strip() or None,
     )
 
 

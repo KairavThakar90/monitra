@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func, select
-from typing import Optional
+from typing import Optional, Sequence
 from app.models.user import User
 from app.schemas.user import UserCreate, UserUpdate
 
@@ -43,18 +43,50 @@ class UserRepository:
     NON_DESKTOP_ROLES = ("release_bot", "client")
 
     @staticmethod
-    def list_release_recipients(db: Session) -> list[User]:
+    def list_release_recipients(
+        db: Session, platforms: Optional[Sequence[str]] = None,
+    ) -> list[User]:
         """Who is told that a new desktop version exists.
 
         `list_announcement_recipients` minus the accounts that never run the
         desktop (`NON_DESKTOP_ROLES`). A separate method rather than a change to
         that one, because the weekly and monthly reports share it and this is
         not the place to alter who receives those.
+
+        `platforms` narrows the audience to the users whose desktop was last
+        seen on one of them (`desktop_client_versions`), so a Windows-only
+        release is never announced to a Mac. A user the desktop has never
+        reported a platform for is included only when the release targets
+        every platform there is -- the only case in which the announcement is
+        certainly about something they can install.
         """
-        return [
+        users = [
             user for user in UserRepository.list_announcement_recipients(db)
             if user.role_name not in UserRepository.NON_DESKTOP_ROLES
         ]
+        if platforms is None:
+            return users
+        wanted = {str(p).strip().lower() for p in platforms if p and str(p).strip()}
+        if not wanted:
+            return []
+        from app.models.desktop_client_version import DesktopClientVersion
+        from app.models.desktop_release_version import TARGETABLE_PLATFORMS
+
+        every_platform = wanted >= set(TARGETABLE_PLATFORMS)
+        seen = {
+            row.user_id: (row.platform or "").strip().lower()
+            for row in db.scalars(select(DesktopClientVersion))
+        }
+        chosen: list[User] = []
+        for user in users:
+            platform = seen.get(user.id)
+            if platform is None or platform == "":
+                if every_platform:
+                    chosen.append(user)
+                continue
+            if platform in wanted:
+                chosen.append(user)
+        return chosen
 
     @staticmethod
     def get_by_email(db: Session, email: str) -> Optional[User]:

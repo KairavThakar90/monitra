@@ -28,7 +28,10 @@ from app.schemas.desktop_release import (
     DesktopReleaseCreate, DesktopReleaseListResponse, DesktopReleaseRead,
     DesktopReleaseUpdate, FleetVersionsResponse, LatestVersionResponse,
     PublicReleaseIndexResponse, PublicReleaseResponse, PublishVersionResponse,
-    ReleaseProblemRead, ReleaseReadinessResponse,
+    ReleaseProblemRead, ReleaseReadinessResponse, ReleaseVersionCreate,
+    ReleaseVersionDetail, ReleaseVersionListResponse, ReleaseVersionRead,
+    ReleaseVersionUpdate, UpdatePolicyResponse, UpdateReportCreate,
+    UpdateReportRead, WithdrawVersionResponse,
 )
 from app.services.desktop_release import (
     DesktopReleaseService, ReleaseConflict, ReleasePolicyViolation,
@@ -126,6 +129,56 @@ def get_latest_version(
     return DesktopReleaseService.latest_version(
         db, current_user, client_version, platform, architecture
     )
+
+
+@router.get("/update-policy", response_model=UpdatePolicyResponse)
+def get_update_policy(
+    user_agent: Optional[str] = Header(default=None, alias="User-Agent"),
+    platform: Optional[str] = Header(default=None, alias="X-Monitra-Platform"),
+    architecture: Optional[str] = Header(default=None, alias="X-Monitra-Arch"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db, scope="function"),
+):
+    """Where this desktop stands under the active mandatory-update policy.
+
+    The update check's answer plus the authoritative grace status: whether an
+    update is required, the required version, when this user's desktop first
+    met the policy, the deadline, whether it has passed, and the release to
+    install. Every timestamp is the server's. Exempt from the update gate, so
+    a blocked client can always read it and recover.
+    """
+    return DesktopReleaseService.update_policy_view(
+        db, current_user, parse_client_version(user_agent), platform, architecture,
+    )
+
+
+@router.post(
+    "/update-reports",
+    response_model=UpdateReportRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def report_update_outcome(
+    payload: UpdateReportCreate,
+    platform: Optional[str] = Header(default=None, alias="X-Monitra-Platform"),
+    architecture: Optional[str] = Header(default=None, alias="X-Monitra-Arch"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db, scope="function"),
+):
+    """The desktop reports how an update attempt ended.
+
+    Idempotent on the client's own event id: a retried report answers with
+    the row already stored (200 rather than 201 would be more precise, but
+    the client treats either as delivered). This is evidence for the release
+    history; it never marks a requirement satisfied -- the server does that
+    only on observing the client's version itself.
+    """
+    try:
+        row, _created = DesktopReleaseService.record_update_report(
+            db, current_user, payload, platform, architecture,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    return UpdateReportRead.model_validate(row)
 
 
 @router.get(
@@ -250,6 +303,7 @@ def list_releases(
 )
 def create_release(
     payload: DesktopReleaseCreate,
+    current_user: User = Depends(require_release_manager),
     db: Session = Depends(get_db, scope="function"),
 ):
     """Register a built artifact. Created as a draft, never published here.
@@ -259,12 +313,143 @@ def create_release(
     build is good, so it does not get to publish one.
     """
     try:
-        release = DesktopReleaseService.create_release(db, payload)
+        release = DesktopReleaseService.create_release(db, payload, actor=current_user)
     except ReleasePolicyViolation as exc:
         raise _violation(exc)
     except ReleaseConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     return DesktopReleaseRead.model_validate(release)
+
+
+# ── Version records: what an administrator manages ─────────────────────────
+
+
+@router.get(
+    "/releases/versions",
+    response_model=ReleaseVersionListResponse,
+    dependencies=[Depends(require_release_manager)],
+)
+def list_release_versions(
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db, scope="function"),
+):
+    """Every version record, newest first, with its artifacts and readiness.
+
+    The release history the admin panel lists. `status` is `superseded` for a
+    published version that a newer published version covers on every platform
+    it targets.
+    """
+    return ReleaseVersionListResponse(
+        versions=DesktopReleaseService.list_versions(db, limit=limit, offset=offset)
+    )
+
+
+@router.post(
+    "/releases/versions",
+    response_model=ReleaseVersionDetail,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_release_version(
+    payload: ReleaseVersionCreate,
+    current_user: User = Depends(require_release_manager),
+    db: Session = Depends(get_db, scope="function"),
+):
+    """Create a version record (a draft), optionally with its artifacts.
+
+    An administrator's "New release". The artifacts, if given, pass through
+    exactly the validation the pipeline's registrations do (hosting policy,
+    file name, digest shape); the policy fields (mandatory, grace, floor,
+    targets) are the version's and apply to every artifact of it.
+    """
+    try:
+        DesktopReleaseService.create_version(db, payload, actor=current_user)
+    except ReleasePolicyViolation as exc:
+        raise _violation(exc)
+    except ReleaseConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    return DesktopReleaseService.version_detail(db, payload.version)
+
+
+@router.get(
+    "/releases/versions/{version}",
+    response_model=ReleaseVersionDetail,
+    dependencies=[Depends(require_release_manager)],
+)
+def get_release_version(version: str = _VERSION_PATH, db: Session = Depends(get_db, scope="function")):
+    """One version record with its artifacts, readiness, statistics and audit
+    history: targeted users, grace periods (pending / expired / satisfied),
+    install reports, adoption, and the announcement's outbox status."""
+    detail = DesktopReleaseService.version_detail(db, version)
+    if detail is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Release not found.")
+    return detail
+
+
+@router.patch(
+    "/releases/versions/{version}",
+    response_model=ReleaseVersionDetail,
+)
+def update_release_version(
+    payload: ReleaseVersionUpdate,
+    version: str = _VERSION_PATH,
+    current_user: User = Depends(require_release_manager),
+    db: Session = Depends(get_db, scope="function"),
+):
+    """Amend a version's title, notes, targets or update policy. Audited."""
+    try:
+        record = DesktopReleaseService.update_version(db, version, payload, actor=current_user)
+    except ReleasePolicyViolation as exc:
+        raise _violation(exc)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Release not found.")
+    return DesktopReleaseService.version_detail(db, version)
+
+
+@router.post(
+    "/releases/versions/{version}/validate",
+    response_model=ReleaseVersionDetail,
+)
+def validate_release_version(
+    version: str = _VERSION_PATH,
+    current_user: User = Depends(require_release_manager),
+    db: Session = Depends(get_db, scope="function"),
+):
+    """Run the readiness check and record that it passed (`validated`).
+
+    Affects nobody: it is the administrator's note that the artifact set was
+    checked. The answer lists every problem when it did not pass.
+    """
+    record, _report = DesktopReleaseService.validate_version(db, version, actor=current_user)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Release not found.")
+    return DesktopReleaseService.version_detail(db, version)
+
+
+@router.post(
+    "/releases/versions/{version}/withdraw",
+    response_model=WithdrawVersionResponse,
+)
+def withdraw_release_version(
+    version: str = _VERSION_PATH,
+    reason: Optional[str] = Query(default=None, max_length=200),
+    current_user: User = Depends(require_release_publisher),
+    db: Session = Depends(get_db, scope="function"),
+):
+    """Withdraw a version: its artifacts stop being offered at once.
+
+    A grace period already running against this version's floor is kept, not
+    erased: its enforcement is suspended while nothing installable exists for
+    the floor, and a corrective release published with the same floor resumes
+    it with the original deadline. The answer says how many are waiting.
+    """
+    record, waiting = DesktopReleaseService.withdraw_version(
+        db, version, actor=current_user, reason=reason,
+    )
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Release not found.")
+    detail = DesktopReleaseService.version_detail(db, version)
+    return WithdrawVersionResponse(version=detail, suspended_requirements=waiting)
 
 
 @router.patch(
@@ -324,15 +509,20 @@ def get_version_readiness(version: str = _VERSION_PATH, db: Session = Depends(ge
     response_model=PublishVersionResponse,
     dependencies=[Depends(require_release_publisher)],
 )
-def publish_version(version: str = _VERSION_PATH, db: Session = Depends(get_db, scope="function")):
+def publish_version(
+    version: str = _VERSION_PATH,
+    current_user: User = Depends(require_release_publisher),
+    db: Session = Depends(get_db, scope="function"),
+):
     """Publish every required artifact of a version together, or none of them.
 
     The release announcement is queued by this call once the set is complete
     (and only if `RELEASE_EMAIL_ENABLED`). Prefer this to publishing rows one at
-    a time: Windows and both Macs go live together.
+    a time: Windows and both Macs go live together. The version record moves
+    to `published` in the same commit, with an audit row naming the publisher.
     """
     try:
-        published, queued = DesktopReleaseService.publish_version(db, version)
+        published, queued = DesktopReleaseService.publish_version(db, version, actor=current_user)
     except ReleasePolicyViolation as exc:
         raise _violation(exc)
     return PublishVersionResponse(

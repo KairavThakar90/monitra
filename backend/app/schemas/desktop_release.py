@@ -79,6 +79,98 @@ class LatestVersionResponse(BaseModel):
     platform: Optional[str] = None
     architecture: Optional[str] = None
 
+    # ── Added for release management (grace periods) ──────────────────────
+    #: True when an active mandatory policy requires this client to update.
+    #: Unlike `force_update` (kept for clients that predate grace periods and
+    #: read it as "lock out now"), this is true from the first encounter: the
+    #: client may still postpone until `deadline_at`.
+    mandatory: bool = False
+    #: The oldest version allowed to keep working under that policy.
+    required_version: Optional[str] = None
+    #: The administrator's title for the release, for the dialog.
+    release_title: Optional[str] = None
+    #: The grace period the policy grants, in hours.
+    grace_hours: Optional[int] = None
+    #: Server clock: when this user's desktop first met the policy, and when
+    #: its grace period ends. Never moved once written.
+    first_seen_at: Optional[datetime] = None
+    deadline_at: Optional[datetime] = None
+    #: Whether the user may still postpone (`deadline_at` not yet reached).
+    grace_active: bool = False
+    #: True once the deadline has passed: the backend is refusing this
+    #: client's protected requests and the desktop must block normal use.
+    blocked: bool = False
+    #: The server's clock at the time of the answer. The desktop measures the
+    #: remaining grace from this and its own monotonic clock, never from its
+    #: wall clock, so a changed system clock cannot move the deadline.
+    server_time: Optional[datetime] = None
+
+
+class GraceStatus(BaseModel):
+    """One user's grace period under the active policy, on the server clock."""
+
+    first_seen_at: Optional[datetime] = None
+    deadline_at: Optional[datetime] = None
+    hours: Optional[int] = None
+    active: bool = False
+    expired: bool = False
+    remaining_seconds: Optional[int] = None
+
+
+class UpdatePolicyResponse(BaseModel):
+    """`GET /desktop/update-policy`: where this client stands, in full.
+
+    Everything the mandatory-update screen needs in one answer, including the
+    release it should install (`release`, the same shape as the update check).
+    Exempt from the gate, so a blocked client can always read it.
+    """
+
+    server_time: datetime
+    installed_version: Optional[str] = None
+    platform: Optional[str] = None
+    update_required: bool = False
+    mandatory: bool = False
+    required_version: Optional[str] = None
+    latest_version: Optional[str] = None
+    release_title: Optional[str] = None
+    blocked: bool = False
+    grace: GraceStatus = Field(default_factory=GraceStatus)
+    release: LatestVersionResponse = Field(default_factory=LatestVersionResponse)
+
+
+class UpdateReportCreate(BaseModel):
+    """`POST /desktop/update-reports`: what the desktop saw an update do."""
+
+    #: The desktop's own id for the attempt; a retried report is one row.
+    client_event_id: Annotated[str, plain_text_field(label="Event id", max_length=64, required=True)]
+    target_version: Version
+    from_version: OptionalVersion = None
+    #: One of `UpdateReportOutcome.ALL`.
+    outcome: Annotated[str, plain_text_field(label="Outcome", max_length=32, required=True)]
+    category: Annotated[Optional[str], plain_text_field(label="Category", max_length=40)] = None
+    detail: Annotated[Optional[str], plain_text_field(label="Detail", max_length=500)] = None
+    #: When it happened and the client's clock at send time, so the server
+    #: places the event by age (docs/TIMING_MODEL.md).
+    occurred_at: datetime
+    client_time: Optional[datetime] = None
+
+
+class UpdateReportRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    platform: Optional[str] = None
+    architecture: Optional[str] = None
+    from_version: Optional[str] = None
+    target_version: str
+    outcome: str
+    category: Optional[str] = None
+    detail: Optional[str] = None
+    occurred_at: datetime
+    reported_at: datetime
+    client_event_id: str
+
 
 class DesktopClientVersionRead(BaseModel):
     """One user's last-seen desktop version."""
@@ -231,3 +323,138 @@ class PublicReleaseIndexResponse(BaseModel):
     downloads: Dict[str, PublicReleaseResponse] = Field(default_factory=dict)
     #: The newest published version across all platforms, for display.
     latest_version: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Version records (what an administrator manages)
+# ---------------------------------------------------------------------------
+
+OptionalTitle = Annotated[Optional[str], plain_text_field(label="Title", max_length=120)]
+
+
+class ReleaseArtifactInput(BaseModel):
+    """One artifact given when a version is created by hand in the admin panel.
+
+    The pipeline registers artifacts through `POST /desktop/releases`; this is
+    the same information in the same shape, so one validation path judges both.
+    """
+
+    platform: PlatformToken
+    architecture: OptionalArchToken = None
+    download_url: Annotated[str, url_field(label="Download URL", required=True)]
+    sha256: Sha256
+    file_size: Optional[int] = Field(default=None, gt=0)
+    signed: bool = False
+    signer: OptionalSigner = None
+
+
+class ReleaseVersionCreate(BaseModel):
+    """Create a version record (a draft), optionally with its artifacts."""
+
+    version: Version
+    title: OptionalTitle = None
+    release_notes: OptionalDescription = None
+    release_notes_url: OptionalUrl = None
+    #: Subset of ["win32", "darwin"]; both by default.
+    target_platforms: List[str] = Field(default_factory=lambda: ["win32", "darwin"])
+    mandatory: bool = False
+    grace_hours: int = Field(default=24, ge=0, le=720)
+    required_min_version: OptionalVersion = None
+    effective_at: Optional[datetime] = None
+    artifacts: List[ReleaseArtifactInput] = Field(default_factory=list)
+
+
+class ReleaseVersionUpdate(BaseModel):
+    """Amend a version record. The version itself is its identity."""
+
+    title: OptionalTitle = None
+    release_notes: OptionalDescription = None
+    release_notes_url: OptionalUrl = None
+    target_platforms: Optional[List[str]] = None
+    mandatory: Optional[bool] = None
+    grace_hours: Optional[int] = Field(default=None, ge=0, le=720)
+    required_min_version: OptionalVersion = None
+    #: Explicitly clear the floor (a null body field cannot be told from an
+    #: absent one).
+    clear_required_min_version: bool = False
+    effective_at: Optional[datetime] = None
+    clear_effective_at: bool = False
+
+
+class ReleaseVersionRead(BaseModel):
+    """A version record as the management API returns it."""
+
+    id: int
+    version: str
+    title: Optional[str] = None
+    release_notes: Optional[str] = None
+    target_platforms: List[str] = Field(default_factory=list)
+    mandatory: bool = False
+    grace_hours: int = 24
+    required_min_version: Optional[str] = None
+    #: The floor actually enforced (`required_min_version`, or the version
+    #: itself for a mandatory release), or null for none.
+    enforced_floor: Optional[str] = None
+    effective_at: Optional[datetime] = None
+    #: `draft`, `validated`, `published`, `withdrawn` -- or `superseded`,
+    #: derived: published, and a newer published version covers every
+    #: platform this one targets.
+    status: str
+    created_by_user_id: Optional[int] = None
+    published_by_user_id: Optional[int] = None
+    withdrawn_by_user_id: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+    validated_at: Optional[datetime] = None
+    published_at: Optional[datetime] = None
+    withdrawn_at: Optional[datetime] = None
+    #: The artifacts registered for this version, any status.
+    artifacts: List[DesktopReleaseRead] = Field(default_factory=list)
+    #: Whether the version could be published right now, and why not.
+    ready: bool = False
+    problems: List[ReleaseProblemRead] = Field(default_factory=list)
+
+
+class ReleaseVersionStats(BaseModel):
+    """What happened after publication, for the history view."""
+
+    #: Active desktop users the release targets (by their last-seen platform;
+    #: users with no known platform count only for a both-platform release).
+    targeted_users: int = 0
+    #: Grace periods: still inside, past the deadline, and satisfied.
+    requirements: Dict[str, int] = Field(default_factory=lambda: {"pending": 0, "expired": 0, "satisfied": 0})
+    #: Install reports by outcome (`success`, `failed`, ...).
+    installs: Dict[str, int] = Field(default_factory=dict)
+    #: Users last seen at or above this version, and below it, on its platforms.
+    adoption: Dict[str, int] = Field(default_factory=lambda: {"on_or_above": 0, "below": 0})
+    #: Release announcements by outbox status (`pending`, `sent`, `failed`,
+    #: `cancelled`). "sent" is provider acceptance, not confirmed delivery.
+    email: Dict[str, int] = Field(default_factory=dict)
+
+
+class ReleaseAuditEntry(BaseModel):
+    """One release action, as recorded in `activity_logs`."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    action: str
+    user_id: int
+    description: Optional[str] = None
+    created_at: datetime
+
+
+class ReleaseVersionDetail(ReleaseVersionRead):
+    stats: ReleaseVersionStats = Field(default_factory=ReleaseVersionStats)
+    history: List[ReleaseAuditEntry] = Field(default_factory=list)
+
+
+class ReleaseVersionListResponse(BaseModel):
+    versions: List[ReleaseVersionRead] = Field(default_factory=list)
+
+
+class WithdrawVersionResponse(BaseModel):
+    version: ReleaseVersionRead
+    #: Grace periods that were running against this version's floor and now
+    #: wait for a corrective release (they are kept, never erased).
+    suspended_requirements: int = 0

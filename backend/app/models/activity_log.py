@@ -119,6 +119,18 @@ class ActivityLogAction:
     DESKTOP_NOTIFICATION_DELETED = "desktop_notification_deleted"
     DESKTOP_NOTIFICATION_PUSHED = "desktop_notification_pushed"
 
+    #: Desktop release management (module SYSTEM; entity_id = the version
+    #: record). The history an administrator reads beside each release.
+    RELEASE_CREATED = "release_created"
+    RELEASE_UPDATED = "release_updated"
+    RELEASE_VALIDATED = "release_validated"
+    RELEASE_PUBLISHED = "release_published"
+    RELEASE_WITHDRAWN = "release_withdrawn"
+    RELEASE_ACTIONS = (
+        RELEASE_CREATED, RELEASE_UPDATED, RELEASE_VALIDATED,
+        RELEASE_PUBLISHED, RELEASE_WITHDRAWN,
+    )
+
     APP_OPENED = "app_opened"
     APP_CLOSED = "app_closed"
 

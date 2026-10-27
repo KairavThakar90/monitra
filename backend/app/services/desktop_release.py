@@ -41,16 +41,28 @@ from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.models.activity_log import ActivityLog, ActivityLogAction, ActivityLogModule
 from app.models.desktop_release import DesktopRelease, Platform, ReleaseStatus
+from app.models.desktop_release_version import (
+    TARGETABLE_PLATFORMS, DesktopReleaseVersion, DesktopUpdateReport,
+    ReleaseVersionStatus, UpdateReportOutcome,
+)
 from app.models.user import User
+from app.repositories.activity_log import ActivityLogRepository
 from app.repositories.desktop_client_version import DesktopClientVersionRepository
 from app.repositories.desktop_release import DesktopReleaseRepository
+from app.repositories.desktop_release_version import DesktopReleaseVersionRepository
+from app.repositories.user import UserRepository
 from app.schemas.desktop_release import (
-    DesktopClientVersionRead, DesktopReleaseCreate, DesktopReleaseUpdate,
-    FleetVersionsResponse, LatestVersionResponse, PublicReleaseIndexResponse,
-    PublicReleaseResponse,
+    DesktopClientVersionRead, DesktopReleaseCreate, DesktopReleaseRead,
+    DesktopReleaseUpdate, FleetVersionsResponse, GraceStatus, LatestVersionResponse,
+    PublicReleaseIndexResponse, PublicReleaseResponse, ReleaseArtifactInput,
+    ReleaseAuditEntry, ReleaseProblemRead, ReleaseVersionCreate,
+    ReleaseVersionDetail, ReleaseVersionRead, ReleaseVersionStats,
+    ReleaseVersionUpdate, UpdatePolicyResponse, UpdateReportCreate,
 )
 from app.services import desktop_release_policy as policy
+from app.services import desktop_update_policy as update_policy
 
 logger = logging.getLogger(__name__)
 
@@ -286,16 +298,43 @@ class DesktopReleaseService:
 
         latest = release.version
         available = DesktopReleaseService.is_update_available(client_version, latest)
+        record = DesktopReleaseService._version_record(db, release.version)
 
         # Mandatory only when a *newer* build exists to take. A release marked
         # mandatory does not make a client already running it — or running
         # something newer — mandatory to update; there would be nothing to
         # update to, and the user would be locked out of a current install.
-        forced = bool(available) and (
+        #
+        # The version record's policy is the authority (with its grace
+        # period); the artifact row's own flags are the fallback for a row
+        # registered before version records existed.
+        legacy_forced = bool(available) and (
             bool(release.force_update)
             or DesktopReleaseService.is_below_minimum(
                 client_version, release.min_supported_version
             )
+        )
+        try:
+            verdict = update_policy.evaluate(
+                db, current_user, client_version, platform_token, settle=True,
+            )
+        except Exception:  # noqa: BLE001
+            # The update check must never fail -- and never lock anyone out --
+            # because the policy could not be read. Answered as "not required",
+            # loudly in the log; the gate makes the same choice.
+            logger.exception("DESKTOP_UPDATE_POLICY_ERROR user=%s", current_user.id)
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            verdict = update_policy.UpdateVerdict(server_time=update_policy.now_utc())
+        mandatory = bool(available) and (verdict.required or (record is None and legacy_forced))
+        # What a client that predates grace periods reads. It understands
+        # `force_update` as "lock out now", so it is told that only once the
+        # deadline has passed -- before that it gets an ordinary offer, which
+        # is the closest it can render to "you may postpone until then".
+        forced = bool(available) and (
+            verdict.blocked if verdict.required else (record is None and legacy_forced)
         )
 
         sha256, file_size = release.sha256, release.file_size
@@ -303,11 +342,15 @@ class DesktopReleaseService:
             # This client's own updater is not one to send an install through
             # (see DESKTOP_AUTO_UPDATE_MIN_CLIENT_VERSION). It is still told an
             # update exists and where to get it; without a checksum its updater
-            # announces and stops, and the user installs by hand. It is also not
-            # *forced*: a mandatory update a client cannot take would lock the
-            # user out of the application with no way forward.
-            sha256, file_size, forced = None, None, False
+            # announces and stops, and the user installs by hand. The policy
+            # itself is unchanged: the gate still enforces the deadline, and the
+            # screen then says to install by hand from the link.
+            sha256, file_size = None, None
+            if record is None:
+                forced = False
 
+        notes = (record.release_notes if record is not None and record.release_notes else None) \
+            or release.release_notes
         return LatestVersionResponse(
             latest_version=latest,
             download_url=release.download_url,
@@ -316,11 +359,24 @@ class DesktopReleaseService:
             client_version=client_version,
             sha256=sha256,
             file_size=file_size,
-            release_notes=release.release_notes,
+            release_notes=notes,
             force_update=forced,
-            min_supported_version=release.min_supported_version,
+            min_supported_version=(
+                verdict.required_version if verdict.required else release.min_supported_version
+            ),
             platform=release.platform,
             architecture=release.architecture,
+            mandatory=mandatory,
+            required_version=verdict.required_version if verdict.required else None,
+            release_title=(record.title if record is not None else None),
+            grace_hours=verdict.grace_hours if verdict.required else (
+                int(record.grace_hours) if record is not None and record.mandatory else None
+            ),
+            first_seen_at=verdict.first_seen_at if verdict.required else None,
+            deadline_at=verdict.deadline_at if verdict.required else None,
+            grace_active=verdict.grace_active,
+            blocked=verdict.blocked,
+            server_time=verdict.server_time,
         )
 
     @staticmethod
@@ -448,7 +504,9 @@ class DesktopReleaseService:
     # ── Release management ────────────────────────────────────────────────
 
     @staticmethod
-    def create_release(db: Session, payload: DesktopReleaseCreate) -> DesktopRelease:
+    def create_release(
+        db: Session, payload: DesktopReleaseCreate, actor: Optional[User] = None,
+    ) -> DesktopRelease:
         """Register a build. Always as a draft — publishing is a second act.
 
         Registering the same artifact twice is refused rather than silently
@@ -505,6 +563,18 @@ class DesktopReleaseService:
             signer=payload.signer,
         )
         DesktopReleaseRepository.add(db, release)
+        # Every version has exactly one record of what was decided about it.
+        # The pipeline registers artifacts and knows nothing of policy, so a
+        # record created here is a plain draft for every configured platform
+        # (optional unless the row said otherwise); an administrator edits it
+        # in the panel before publishing.
+        DesktopReleaseService.ensure_version_record(
+            db, release.version, actor=actor,
+            mandatory=bool(payload.force_update),
+            required_min_version=payload.min_supported_version,
+            release_notes=payload.release_notes,
+            release_notes_url=payload.release_notes_url,
+        )
         db.commit()
         db.refresh(release)
         logger.info(
@@ -558,6 +628,7 @@ class DesktopReleaseService:
         DesktopReleaseService._apply_status(release, status)
         db.commit()
         db.refresh(release)
+        update_policy.invalidate_policy_cache()
         DesktopReleaseService._announce_if_newly_published(db, release, was_published)
         return release
 
@@ -572,7 +643,21 @@ class DesktopReleaseService:
         refusal.
         """
         rows = DesktopReleaseRepository.list_for_version(db, version)
-        return policy.readiness(version, rows)
+        return policy.readiness(version, rows, targets=DesktopReleaseService._targets_for(db, version))
+
+    @staticmethod
+    def _version_record(db: Session, version: str) -> Optional[DesktopReleaseVersion]:
+        """The version's record, or None when it has none (a row registered
+        before version records existed). Anything that is not a record is
+        treated as none: the fallback below is the artifact row's own flags."""
+        record = DesktopReleaseVersionRepository.get_by_version(db, version)
+        return record if isinstance(record, DesktopReleaseVersion) else None
+
+    @staticmethod
+    def _targets_for(db: Session, version: str) -> Optional[List[str]]:
+        """The platforms a version is for, or None (every configured one)."""
+        record = DesktopReleaseService._version_record(db, version)
+        return record.targets if record is not None else None
 
     @staticmethod
     def _gate_publication(db: Session, release: DesktopRelease) -> None:
@@ -593,7 +678,9 @@ class DesktopReleaseService:
             )
             for r in rows
         ]
-        report = policy.readiness(release.version, view)
+        report = policy.readiness(
+            release.version, view, targets=DesktopReleaseService._targets_for(db, release.version),
+        )
         problems = list(report.problems)
         seen = {(p.code, p.artifact) for p in problems}
         own = next(
@@ -616,25 +703,38 @@ class DesktopReleaseService:
             )
 
     @staticmethod
-    def publish_version(db: Session, version: str) -> Tuple[List[DesktopRelease], bool]:
+    def publish_version(
+        db: Session, version: str, actor: Optional[User] = None,
+    ) -> Tuple[List[DesktopRelease], bool]:
         """Publish every required artifact of ``version`` in one step.
 
         All or nothing: the version is judged first, and only if the whole set
-        is publishable is any row moved. One commit, then at most one
-        announcement -- so Windows and both Macs go live together and the
-        announcement is queued once the set is complete. Returns the rows now
-        published and whether an announcement was queued.
+        (for the platforms the version targets) is publishable is any row
+        moved. One commit -- the rows, the version record and its audit row
+        together -- then at most one announcement, so Windows and both Macs go
+        live together and the announcement is queued once the set is complete.
+        Returns the rows now published and whether an announcement was queued.
+
+        Publishing twice is safe: a version already published has no draft
+        rows to move, records nothing and announces nothing new.
         """
         rows = DesktopReleaseRepository.list_for_version(db, version)
-        report = policy.readiness(version, rows)
+        record = DesktopReleaseService._version_record(db, version)
+        targets = record.targets if record is not None else None
+        report = policy.readiness(version, rows, targets=targets)
         if not report.ready:
             raise ReleasePolicyViolation(
                 report.problems,
                 f"Version {version} cannot be published yet: "
                 + "; ".join(p.message for p in report.problems),
             )
+        if record is not None and record.status == ReleaseVersionStatus.WITHDRAWN:
+            raise ReleasePolicyViolation(
+                [policy.Problem("withdrawn", f"Version {version} was withdrawn; register a new version.")],
+                f"Version {version} was withdrawn and cannot be published again.",
+            )
 
-        required = set(policy.required_artifacts())
+        required = set(policy.required_artifacts(targets))
         changed: List[DesktopRelease] = []
         for row in rows:
             if (row.platform, row.architecture) not in required:
@@ -642,12 +742,29 @@ class DesktopReleaseService:
             if row.status == ReleaseStatus.DRAFT:
                 DesktopReleaseService._apply_status(row, ReleaseStatus.PUBLISHED)
                 changed.append(row)
+
+        newly_published = bool(changed) or (
+            record is not None and record.status != ReleaseVersionStatus.PUBLISHED
+        )
+        if record is not None and record.status != ReleaseVersionStatus.PUBLISHED:
+            now = update_policy.now_utc()
+            record.status = ReleaseVersionStatus.PUBLISHED
+            record.updated_at = now
+            if record.published_at is None:
+                record.published_at = now
+            record.published_by_user_id = actor.id if actor is not None else record.published_by_user_id
+            DesktopReleaseService._audit(
+                db, actor, ActivityLogAction.RELEASE_PUBLISHED, record,
+                f"Published Monitra {version} for {DesktopReleaseService._platform_words(record.targets)}"
+                + DesktopReleaseService._policy_words(record),
+            )
         db.commit()
         for row in changed:
             db.refresh(row)
+        update_policy.invalidate_policy_cache()
 
         queued = False
-        if changed:
+        if changed and newly_published:
             queued = DesktopReleaseService._announce_if_newly_published(
                 db, changed[-1], was_published=False
             )
@@ -686,7 +803,9 @@ class DesktopReleaseService:
         # completes the set is the one that sends it, and the per-version
         # dedupe key makes any later publish a no-op.
         rows = DesktopReleaseRepository.list_for_version(db, release.version)
-        if not policy.is_complete_and_published(release.version, rows):
+        record = DesktopReleaseService._version_record(db, release.version)
+        targets = record.targets if record is not None else None
+        if not policy.is_complete_and_published(release.version, rows, targets=targets):
             logger.info(
                 "RELEASE_EMAIL_DEFERRED: %s is not fully published yet; the "
                 "announcement waits for the remaining artifacts", release.version,
@@ -698,7 +817,21 @@ class DesktopReleaseService:
         # import order to it for something only this one path needs.
         from app.services.email import queue_release_announcements
 
-        return bool(queue_release_announcements(db, release))
+        if record is None:
+            return bool(queue_release_announcements(db, release))
+        announced = SimpleNamespace(
+            version=release.version,
+            release_notes=record.release_notes or release.release_notes,
+            release_notes_url=release.release_notes_url,
+        )
+        return bool(queue_release_announcements(
+            db, announced,
+            platforms=list(record.targets),
+            mandatory=bool(record.mandatory),
+            grace_hours=int(record.grace_hours),
+            required_version=update_policy.floor_for(record),
+            title=record.title,
+        ))
 
     @staticmethod
     def _validate_status(status: str) -> None:
@@ -746,3 +879,522 @@ class DesktopReleaseService:
             limit=limit,
             offset=offset,
         )
+
+    # ── Version records: what an administrator manages ────────────────────
+
+    @staticmethod
+    def _platform_words(targets: List[str]) -> str:
+        names = {"win32": "Windows", "darwin": "macOS"}
+        return ", ".join(names.get(t, t) for t in targets) or "no platform"
+
+    @staticmethod
+    def _policy_words(record: DesktopReleaseVersion) -> str:
+        floor = update_policy.floor_for(record)
+        if record.mandatory:
+            return f" (mandatory, {int(record.grace_hours)} h grace, floor {floor})"
+        if floor:
+            return f" (optional; required below {floor})"
+        return " (optional)"
+
+    @staticmethod
+    def _audit(
+        db: Session, actor: Optional[User], action: str,
+        record: DesktopReleaseVersion, description: str,
+    ) -> None:
+        """One audit row, staged in the caller's transaction.
+
+        Nothing to record without an actor (a test calling the service
+        directly): the trail names a person or a credential, never nobody.
+        """
+        if actor is None or getattr(actor, "id", None) is None:
+            return
+        if record.id is None:
+            db.flush()
+        ActivityLogRepository.add(db, ActivityLog(
+            organization_id=actor.organization_id,
+            user_id=actor.id,
+            module=ActivityLogModule.SYSTEM,
+            action=action,
+            entity_id=record.id,
+            description=f"{description} [{getattr(actor, 'username', None) or actor.id}]",
+            created_at=update_policy.now_utc(),
+        ))
+        logger.info("DESKTOP_RELEASE_AUDIT action=%s version=%s by=%s", action, record.version, actor.id)
+
+    @staticmethod
+    def _validate_targets(targets: Optional[List[str]]) -> List[str]:
+        if targets is None:
+            return list(TARGETABLE_PLATFORMS)
+        chosen: List[str] = []
+        for raw in targets:
+            token = normalize_platform(raw)
+            if token not in TARGETABLE_PLATFORMS:
+                raise ReleasePolicyViolation(
+                    [policy.Problem("platform", f"'{raw}' is not a platform a release can target.")],
+                )
+            if token not in chosen:
+                chosen.append(token)
+        if not chosen:
+            raise ReleasePolicyViolation(
+                [policy.Problem("platform", "A release must target at least one platform.")],
+            )
+        return chosen
+
+    @staticmethod
+    def _validate_floor(version: str, floor: Optional[str]) -> Optional[str]:
+        if floor is None:
+            return None
+        floor = floor.strip()
+        if not floor:
+            return None
+        if version_tuple(floor) is None:
+            raise ReleasePolicyViolation(
+                [policy.Problem("required_min_version", "The required minimum version must be major.minor.patch.")],
+            )
+        if version_tuple(floor) > version_tuple(version):  # type: ignore[operator]
+            raise ReleasePolicyViolation(
+                [policy.Problem(
+                    "required_min_version",
+                    f"The required minimum version ({floor}) cannot be newer than the release ({version}).",
+                )],
+            )
+        return floor
+
+    @staticmethod
+    def ensure_version_record(
+        db: Session, version: str, *, actor: Optional[User] = None,
+        mandatory: bool = False, required_min_version: Optional[str] = None,
+        release_notes: Optional[str] = None, release_notes_url: Optional[str] = None,
+        title: Optional[str] = None, targets: Optional[List[str]] = None,
+        grace_hours: int = 24, effective_at: Optional[datetime] = None,
+    ) -> DesktopReleaseVersion:
+        """The version's record, created as a draft if it has none. Staged;
+        the caller commits."""
+        record = DesktopReleaseVersionRepository.get_by_version(db, version)
+        if record is not None:
+            return record
+        major, minor, patch = version_tuple(version)  # type: ignore[misc]
+        record = DesktopReleaseVersion(
+            version=version, version_major=major, version_minor=minor, version_patch=patch,
+            title=title, release_notes=release_notes,
+            target_platforms=",".join(DesktopReleaseService._validate_targets(targets)),
+            mandatory=bool(mandatory), grace_hours=int(grace_hours),
+            required_min_version=DesktopReleaseService._validate_floor(version, required_min_version),
+            effective_at=effective_at,
+            status=ReleaseVersionStatus.DRAFT,
+            created_by_user_id=getattr(actor, "id", None),
+            created_at=update_policy.now_utc(), updated_at=update_policy.now_utc(),
+        )
+        DesktopReleaseVersionRepository.add(db, record)
+        DesktopReleaseService._audit(
+            db, actor, ActivityLogAction.RELEASE_CREATED, record,
+            f"Created Monitra {version} for {DesktopReleaseService._platform_words(record.targets)}"
+            + DesktopReleaseService._policy_words(record),
+        )
+        return record
+
+    @staticmethod
+    def create_version(
+        db: Session, payload: ReleaseVersionCreate, actor: Optional[User] = None,
+    ) -> DesktopReleaseVersion:
+        """Create a version record, and register any artifacts given with it.
+
+        Refused when the version already has a record. Artifacts go through the
+        same registration as the pipeline's, so a hand-entered URL or digest is
+        judged by exactly the rules a CI-registered one is.
+        """
+        if DesktopReleaseVersionRepository.get_by_version(db, payload.version) is not None:
+            raise ReleaseConflict(f"Version {payload.version} already has a release record.")
+        targets = DesktopReleaseService._validate_targets(payload.target_platforms)
+        for artifact in payload.artifacts:
+            if normalize_platform(artifact.platform) not in targets:
+                raise ReleasePolicyViolation([policy.Problem(
+                    "platform",
+                    f"An artifact for {artifact.platform} was given, but the release does not target it.",
+                    policy.artifact_label(normalize_platform(artifact.platform) or artifact.platform,
+                                          normalize_architecture(artifact.architecture)),
+                )])
+        record = DesktopReleaseService.ensure_version_record(
+            db, payload.version, actor=actor,
+            mandatory=payload.mandatory, required_min_version=payload.required_min_version,
+            release_notes=payload.release_notes, release_notes_url=payload.release_notes_url,
+            title=payload.title, targets=targets, grace_hours=payload.grace_hours,
+            effective_at=payload.effective_at,
+        )
+        for artifact in payload.artifacts:
+            DesktopReleaseService._register_artifact(db, payload, artifact)
+        db.commit()
+        db.refresh(record)
+        return record
+
+    @staticmethod
+    def _register_artifact(db: Session, version_payload: ReleaseVersionCreate, artifact: ReleaseArtifactInput) -> DesktopRelease:
+        """One artifact through `create_release`'s validation, without its commit."""
+        payload = DesktopReleaseCreate(
+            version=version_payload.version, platform=artifact.platform,
+            architecture=artifact.architecture, download_url=artifact.download_url,
+            sha256=artifact.sha256, file_size=artifact.file_size,
+            release_notes=version_payload.release_notes,
+            release_notes_url=version_payload.release_notes_url,
+            force_update=False, min_supported_version=None,
+            signed=artifact.signed, signer=artifact.signer,
+        )
+        platform_token = normalize_platform(payload.platform)
+        arch_token = normalize_architecture(payload.architecture)
+        if DesktopReleaseRepository.get_artifact(
+            db, version=payload.version, platform=platform_token, architecture=arch_token,
+        ) is not None:
+            raise ReleaseConflict(
+                f"{payload.version} for {platform_token}/{arch_token or 'any'} is already registered."
+            )
+        candidate = SimpleNamespace(
+            version=payload.version, platform=platform_token, architecture=arch_token,
+            download_url=payload.download_url, sha256=payload.sha256,
+            file_size=payload.file_size or 1, signed=True, status="draft",
+        )
+        problems = [
+            p for p in policy.check_row(candidate, require_signed=False)
+            if p.code in ("url", "filename", "sha256")
+        ]
+        if problems:
+            raise ReleasePolicyViolation(problems)
+        major, minor, patch = version_tuple(payload.version)  # type: ignore[misc]
+        row = DesktopRelease(
+            version=payload.version, version_major=major, version_minor=minor, version_patch=patch,
+            platform=platform_token, architecture=arch_token,
+            download_url=payload.download_url, file_size=payload.file_size, sha256=payload.sha256,
+            release_notes=payload.release_notes, release_notes_url=payload.release_notes_url,
+            status=ReleaseStatus.DRAFT, force_update=False, min_supported_version=None,
+            signed=bool(payload.signed), signer=payload.signer,
+        )
+        return DesktopReleaseRepository.add(db, row)
+
+    @staticmethod
+    def update_version(
+        db: Session, version: str, payload: ReleaseVersionUpdate, actor: Optional[User] = None,
+    ) -> Optional[DesktopReleaseVersion]:
+        """Amend a version record's title, notes, targets or policy.
+
+        The targets of a published version are fixed: widening them would
+        offer a platform an artifact set that was never judged, and narrowing
+        them would withdraw a platform's release without the withdrawal path's
+        bookkeeping. Policy fields may change while published; a change is
+        audited and takes effect at once (the policy cache is dropped).
+        """
+        record = DesktopReleaseVersionRepository.get_by_version(db, version)
+        if record is None:
+            return None
+        changes: List[str] = []
+        if payload.title is not None:
+            record.title = payload.title.strip() or None
+            changes.append("title")
+        if payload.release_notes is not None:
+            record.release_notes = payload.release_notes
+            changes.append("notes")
+        if payload.release_notes_url is not None:
+            for row in DesktopReleaseRepository.list_for_version(db, version):
+                row.release_notes_url = payload.release_notes_url or None
+            changes.append("notes link")
+        if payload.target_platforms is not None:
+            targets = DesktopReleaseService._validate_targets(payload.target_platforms)
+            if record.status == ReleaseVersionStatus.PUBLISHED and targets != record.targets:
+                raise ReleasePolicyViolation([policy.Problem(
+                    "platform", "The platforms of a published release cannot be changed; withdraw it first.",
+                )])
+            record.target_platforms = ",".join(targets)
+            changes.append(f"platforms={DesktopReleaseService._platform_words(targets)}")
+        if payload.mandatory is not None:
+            record.mandatory = bool(payload.mandatory)
+            changes.append(f"mandatory={'yes' if record.mandatory else 'no'}")
+        if payload.grace_hours is not None:
+            record.grace_hours = int(payload.grace_hours)
+            changes.append(f"grace={record.grace_hours}h")
+        if payload.clear_required_min_version:
+            record.required_min_version = None
+            changes.append("floor cleared")
+        elif payload.required_min_version is not None:
+            record.required_min_version = DesktopReleaseService._validate_floor(
+                version, payload.required_min_version,
+            )
+            changes.append(f"floor={record.required_min_version}")
+        if payload.clear_effective_at:
+            record.effective_at = None
+            changes.append("effective at publish")
+        elif payload.effective_at is not None:
+            record.effective_at = payload.effective_at
+            changes.append(f"effective={payload.effective_at.isoformat()}")
+        if not changes:
+            return record
+        record.updated_at = update_policy.now_utc()
+        if record.status == ReleaseVersionStatus.VALIDATED and any(
+            c.startswith("platforms=") for c in changes
+        ):
+            # The readiness that was recorded judged a different artifact set.
+            record.status = ReleaseVersionStatus.DRAFT
+            record.validated_at = None
+        DesktopReleaseService._audit(
+            db, actor, ActivityLogAction.RELEASE_UPDATED, record,
+            f"Updated Monitra {version}: " + ", ".join(changes),
+        )
+        db.commit()
+        db.refresh(record)
+        update_policy.invalidate_policy_cache()
+        return record
+
+    @staticmethod
+    def validate_version(
+        db: Session, version: str, actor: Optional[User] = None,
+    ) -> Tuple[Optional[DesktopReleaseVersion], policy.Readiness]:
+        """Run the readiness check and record that it passed.
+
+        `validated` affects nobody; it is the administrator's note that the
+        artifact set was checked. A version that fails stays (or returns to)
+        draft, with every problem listed.
+        """
+        record = DesktopReleaseVersionRepository.get_by_version(db, version)
+        if record is None:
+            return None, policy.Readiness(version=version)
+        report = DesktopReleaseService.readiness(db, version)
+        if record.status in (ReleaseVersionStatus.DRAFT, ReleaseVersionStatus.VALIDATED):
+            now = update_policy.now_utc()
+            if report.ready and record.status != ReleaseVersionStatus.VALIDATED:
+                record.status = ReleaseVersionStatus.VALIDATED
+                record.validated_at = now
+                record.updated_at = now
+                DesktopReleaseService._audit(
+                    db, actor, ActivityLogAction.RELEASE_VALIDATED, record,
+                    f"Validated Monitra {version}: {', '.join(report.present)}",
+                )
+                db.commit()
+            elif not report.ready and record.status == ReleaseVersionStatus.VALIDATED:
+                record.status = ReleaseVersionStatus.DRAFT
+                record.validated_at = None
+                record.updated_at = now
+                db.commit()
+            db.refresh(record)
+        return record, report
+
+    @staticmethod
+    def withdraw_version(
+        db: Session, version: str, actor: Optional[User] = None, *, reason: Optional[str] = None,
+    ) -> Tuple[Optional[DesktopReleaseVersion], int]:
+        """Take a published version out of circulation.
+
+        Every artifact row moves to `rolled_back`, so the update check stops
+        offering the version at once and the previous published version is
+        newest again. **A grace period already running is kept, not erased.**
+        Enforcement of its floor is suspended by construction -- the policy
+        engine enforces only a floor that has an installable published release
+        -- and a corrective release published later with the same floor picks
+        the deadlines up exactly where they were. Returns the record and how
+        many open grace rows now wait.
+        """
+        record = DesktopReleaseVersionRepository.get_by_version(db, version)
+        if record is None:
+            return None, 0
+        rows = DesktopReleaseRepository.list_for_version(db, version)
+        for row in rows:
+            if row.status in (ReleaseStatus.PUBLISHED, ReleaseStatus.DRAFT):
+                DesktopReleaseService._apply_status(row, ReleaseStatus.ROLLED_BACK)
+        now = update_policy.now_utc()
+        record.status = ReleaseVersionStatus.WITHDRAWN
+        record.withdrawn_at = now
+        record.updated_at = now
+        record.withdrawn_by_user_id = getattr(actor, "id", None)
+        waiting = [
+            r for r in DesktopReleaseVersionRepository.list_requirements_for_release(
+                db, release_version_id=record.id,
+            ) if r.satisfied_at is None
+        ]
+        DesktopReleaseService._audit(
+            db, actor, ActivityLogAction.RELEASE_WITHDRAWN, record,
+            f"Withdrew Monitra {version}"
+            + (f": {reason.strip()}" if reason and reason.strip() else "")
+            + (f"; {len(waiting)} grace period(s) kept, waiting for a corrective release"
+               if waiting else ""),
+        )
+        db.commit()
+        db.refresh(record)
+        update_policy.invalidate_policy_cache()
+        logger.warning(
+            "DESKTOP_RELEASE_WITHDRAWN version=%s rows=%d open_requirements=%d",
+            version, len(rows), len(waiting),
+        )
+        return record, len(waiting)
+
+    @staticmethod
+    def derived_status(record: DesktopReleaseVersion, published: List[DesktopReleaseVersion]) -> str:
+        """`superseded` when a newer published version covers every platform
+        this one targets; otherwise the stored status."""
+        if record.status != ReleaseVersionStatus.PUBLISHED:
+            return record.status
+        own = version_tuple(record.version) or (0, 0, 0)
+        covered = set()
+        for other in published:
+            if other.id == record.id:
+                continue
+            if (version_tuple(other.version) or (0, 0, 0)) <= own:
+                continue
+            covered.update(other.targets)
+        if record.targets and all(t in covered for t in record.targets):
+            return "superseded"
+        return record.status
+
+    @staticmethod
+    def _as_version_read(
+        db: Session, record: DesktopReleaseVersion, published: List[DesktopReleaseVersion],
+        *, model=ReleaseVersionRead,
+    ):
+        rows = DesktopReleaseRepository.list_for_version(db, record.version)
+        report = policy.readiness(record.version, rows, targets=record.targets)
+        return model(
+            id=record.id, version=record.version, title=record.title,
+            release_notes=record.release_notes, target_platforms=list(record.targets),
+            mandatory=bool(record.mandatory), grace_hours=int(record.grace_hours),
+            required_min_version=record.required_min_version,
+            enforced_floor=update_policy.floor_for(record),
+            effective_at=record.effective_at,
+            status=DesktopReleaseService.derived_status(record, published),
+            created_by_user_id=record.created_by_user_id,
+            published_by_user_id=record.published_by_user_id,
+            withdrawn_by_user_id=record.withdrawn_by_user_id,
+            created_at=record.created_at, updated_at=record.updated_at,
+            validated_at=record.validated_at, published_at=record.published_at,
+            withdrawn_at=record.withdrawn_at,
+            artifacts=[DesktopReleaseRead.model_validate(r) for r in rows],
+            ready=report.ready,
+            problems=[ReleaseProblemRead(**p.as_dict()) for p in report.problems],
+        )
+
+    @staticmethod
+    def list_versions(db: Session, *, limit: int = 100, offset: int = 0) -> List[ReleaseVersionRead]:
+        records = DesktopReleaseVersionRepository.list_all(db, limit=limit, offset=offset)
+        published = DesktopReleaseVersionRepository.list_published(db)
+        return [DesktopReleaseService._as_version_read(db, r, published) for r in records]
+
+    @staticmethod
+    def version_detail(db: Session, version: str) -> Optional[ReleaseVersionDetail]:
+        record = DesktopReleaseVersionRepository.get_by_version(db, version)
+        if record is None:
+            return None
+        published = DesktopReleaseVersionRepository.list_published(db)
+        detail = DesktopReleaseService._as_version_read(db, record, published, model=ReleaseVersionDetail)
+        detail.stats = DesktopReleaseService._version_stats(db, record)
+        detail.history = [
+            ReleaseAuditEntry.model_validate(row)
+            for row in DesktopReleaseVersionRepository.list_history(db, release_version_id=record.id)
+        ]
+        return detail
+
+    @staticmethod
+    def _version_stats(db: Session, record: DesktopReleaseVersion) -> ReleaseVersionStats:
+        targets = list(record.targets)
+        targeted = UserRepository.list_release_recipients(db, platforms=targets)
+        own = version_tuple(record.version) or (0, 0, 0)
+        adoption = {"on_or_above": 0, "below": 0}
+        for platform, app_version, count in DesktopReleaseVersionRepository.client_versions_by_platform(db):
+            if normalize_platform(platform) not in targets:
+                continue
+            seen = version_tuple(app_version)
+            if seen is None:
+                continue
+            adoption["on_or_above" if seen >= own else "below"] += count
+        requirements = update_policy.requirement_summary(
+            DesktopReleaseVersionRepository.list_requirements_for_release(db, release_version_id=record.id)
+        )
+        return ReleaseVersionStats(
+            targeted_users=len(targeted),
+            requirements=requirements,
+            installs=DesktopReleaseVersionRepository.report_counts(db, target_version=record.version),
+            adoption=adoption,
+            email=DesktopReleaseVersionRepository.email_counts(db, version=record.version),
+        )
+
+    # ── The desktop's policy view and install reports ─────────────────────
+
+    @staticmethod
+    def update_policy_view(
+        db: Session, current_user: User, client_version: Optional[str],
+        platform: Optional[str], architecture: Optional[str],
+    ) -> UpdatePolicyResponse:
+        """`GET /desktop/update-policy`: the update check plus the grace status."""
+        release = DesktopReleaseService.latest_version(
+            db, current_user, client_version, platform, architecture,
+        )
+        verdict = update_policy.evaluate(db, current_user, client_version, platform)
+        grace = GraceStatus(
+            first_seen_at=verdict.first_seen_at, deadline_at=verdict.deadline_at,
+            hours=verdict.grace_hours, active=verdict.grace_active, expired=verdict.blocked,
+            remaining_seconds=verdict.remaining_seconds,
+        )
+        return UpdatePolicyResponse(
+            server_time=verdict.server_time or update_policy.now_utc(),
+            installed_version=client_version,
+            platform=verdict.platform,
+            update_required=verdict.required,
+            mandatory=verdict.required,
+            required_version=verdict.required_version,
+            latest_version=release.latest_version,
+            release_title=release.release_title or verdict.release_title,
+            blocked=verdict.blocked,
+            grace=grace,
+            release=release,
+        )
+
+    @staticmethod
+    def record_update_report(
+        db: Session, current_user: User, payload: UpdateReportCreate,
+        platform: Optional[str], architecture: Optional[str],
+    ) -> Tuple[DesktopUpdateReport, bool]:
+        """Store what the desktop said about an update. Idempotent on the
+        client event id. Returns `(row, created)`."""
+        if payload.outcome not in UpdateReportOutcome.ALL:
+            raise ValueError(
+                f"Unknown update outcome {payload.outcome!r}. "
+                f"Expected one of: {', '.join(UpdateReportOutcome.ALL)}."
+            )
+        existing = DesktopReleaseVersionRepository.get_report_by_event(
+            db, user_id=current_user.id, client_event_id=payload.client_event_id,
+        )
+        if existing is not None:
+            return existing, False
+        now = update_policy.now_utc()
+        occurred = update_policy.aware(payload.occurred_at) or now
+        client_time = update_policy.aware(payload.client_time)
+        if client_time is not None:
+            # Place the event by its age on the client's clock (TIMING_MODEL).
+            age = client_time - occurred
+            occurred = now - age if age.total_seconds() >= 0 else now
+        if occurred > now:
+            occurred = now
+        row = DesktopUpdateReport(
+            user_id=current_user.id,
+            organization_id=getattr(current_user, "organization_id", None),
+            platform=normalize_platform(platform),
+            architecture=normalize_architecture(architecture),
+            from_version=payload.from_version,
+            target_version=payload.target_version,
+            outcome=payload.outcome,
+            category=payload.category,
+            detail=payload.detail,
+            occurred_at=occurred,
+            reported_at=now,
+            client_event_id=payload.client_event_id,
+        )
+        try:
+            DesktopReleaseVersionRepository.add_report(db, row)
+            db.commit()
+        except Exception:
+            db.rollback()
+            existing = DesktopReleaseVersionRepository.get_report_by_event(
+                db, user_id=current_user.id, client_event_id=payload.client_event_id,
+            )
+            if existing is not None:
+                return existing, False
+            raise
+        logger.info(
+            "DESKTOP_UPDATE_REPORT user=%s from=%s to=%s outcome=%s category=%s",
+            current_user.id, payload.from_version, payload.target_version,
+            payload.outcome, payload.category,
+        )
+        return row, True

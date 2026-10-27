@@ -21,6 +21,9 @@ from app.models.time_entry_idle_period import TimeEntryIdlePeriod
 from app.models.time_entry_reconciliation import TimeEntryReconciliation
 from app.models.desktop_client_version import DesktopClientVersion
 from app.models.desktop_release import DesktopRelease
+from app.models.desktop_release_version import (
+    DesktopReleaseVersion, DesktopUpdateReport, DesktopUpdateRequirement,
+)
 from app.models.feedback_request import FeedbackRequest
 from app.models.feedback_attachment import FeedbackAttachment
 from app.models.sso_handoff_token import SsoHandoffToken
@@ -62,6 +65,10 @@ __all__ = [
     "TimeEntryIdlePeriod",
     "TimeEntryReconciliation",
     "DesktopClientVersion",
+    "DesktopRelease",
+    "DesktopReleaseVersion",
+    "DesktopUpdateRequirement",
+    "DesktopUpdateReport",
     "FeedbackRequest",
     "FeedbackAttachment",
     "SsoHandoffToken",

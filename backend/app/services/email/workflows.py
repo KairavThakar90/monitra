@@ -122,8 +122,47 @@ def _test_recipient_addresses() -> list[str]:
     return usable
 
 
-def queue_release_announcements(db: Session, release) -> list[int]:
+def release_policy_payload(
+    *,
+    platforms: Optional[list[str]] = None,
+    mandatory: bool = False,
+    grace_hours: Optional[int] = None,
+    required_version: Optional[str] = None,
+    title: Optional[str] = None,
+) -> dict[str, Any]:
+    """The policy facts an announcement carries, in one shape.
+
+    Stored in the queued row's payload (never rendered HTML), so a retry
+    renders the same facts and the template can say whether the update is
+    mandatory and what the grace rule is.
+    """
+    return {
+        "platforms": [str(p) for p in (platforms or [])],
+        "mandatory": bool(mandatory),
+        "grace_hours": int(grace_hours) if grace_hours is not None else None,
+        "required_version": required_version or None,
+        "title": (title or "").strip() or None,
+    }
+
+
+def queue_release_announcements(
+    db: Session,
+    release,
+    *,
+    platforms: Optional[list[str]] = None,
+    mandatory: bool = False,
+    grace_hours: Optional[int] = None,
+    required_version: Optional[str] = None,
+    title: Optional[str] = None,
+) -> list[int]:
     """Tell every active user that a new desktop version is available.
+
+    `platforms` narrows the audience to the users last seen on one of them
+    (see `UserRepository.list_release_recipients`): a Windows-only release is
+    never announced to a Mac, and the other way round. `mandatory`,
+    `grace_hours` and `required_version` are what the email says about the
+    update rule; they are facts in the payload, so the message a retry
+    renders says the same thing the first attempt would have.
 
     One notification per user rather than one message addressed to everybody:
     a single failure then affects one recipient instead of all of them, each
@@ -154,6 +193,10 @@ def queue_release_announcements(db: Session, release) -> list[int]:
             "version": version,
             "release_notes": getattr(release, "release_notes", None),
             "release_notes_url": getattr(release, "release_notes_url", None),
+            **release_policy_payload(
+                platforms=platforms, mandatory=mandatory, grace_hours=grace_hours,
+                required_version=required_version, title=title,
+            ),
         }
         subject = messages.release_subject(payload)
 
@@ -190,9 +233,16 @@ def queue_release_announcements(db: Session, release) -> list[int]:
             )
             return queued
 
-        recipients = UserRepository.list_release_recipients(db)
+        recipients = (
+            UserRepository.list_release_recipients(db, platforms=list(platforms))
+            if platforms is not None
+            else UserRepository.list_release_recipients(db)
+        )
         if not recipients:
-            logger.warning("RELEASE_EMAIL_SKIPPED: no active users with an address")
+            logger.warning(
+                "RELEASE_EMAIL_SKIPPED: no active users with an address%s",
+                f" on {','.join(platforms)}" if platforms else "",
+            )
             return queued
 
         for user in recipients:

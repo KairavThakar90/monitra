@@ -58,12 +58,22 @@ def allowed_prefixes() -> List[str]:
     return _csv(settings.DESKTOP_DOWNLOAD_URL_PREFIXES)
 
 
-def required_artifacts() -> List[ArtifactKey]:
-    """The artifacts a version must have, from ``DESKTOP_REQUIRED_ARTIFACTS``."""
+def required_artifacts(targets: Optional[Iterable[str]] = None) -> List[ArtifactKey]:
+    """The artifacts a version must have, from ``DESKTOP_REQUIRED_ARTIFACTS``.
+
+    ``targets`` narrows the set to the platforms a version is *for*: a
+    Windows-only release needs the Windows installer and nothing else, and a
+    macOS-only release needs both Mac builds and no Windows one. Left None,
+    every configured artifact is required, which is what a version with no
+    record of its own (registered by an older pipeline) gets.
+    """
+    wanted = None if targets is None else {t.strip().lower() for t in targets if t and t.strip()}
     required: List[ArtifactKey] = []
     for token in _csv(settings.DESKTOP_REQUIRED_ARTIFACTS):
         platform, _, arch = token.partition(":")
         key = (platform.strip().lower(), (arch.strip().lower() or None))
+        if wanted is not None and key[0] not in wanted:
+            continue
         if key not in required:
             required.append(key)
     return required
@@ -204,13 +214,17 @@ def check_row(row, *, require_signed: Optional[bool] = None) -> List[Problem]:
     return problems
 
 
-def readiness(version: str, rows: Iterable, *, require_signed: Optional[bool] = None) -> Readiness:
+def readiness(
+    version: str, rows: Iterable, *, require_signed: Optional[bool] = None,
+    targets: Optional[Iterable[str]] = None,
+) -> Readiness:
     """Whether ``version`` has a complete, valid set of artifacts.
 
     ``rows`` are the registered rows for that one version, in any status. A
     required artifact with no live row is a problem; so is any live row that
-    fails :func:`check_row`. Rows outside the required set (a Linux build, say)
-    are ignored rather than failed -- they are not what this gate guards.
+    fails :func:`check_row`. Rows outside the required set (a Linux build, say,
+    or a platform the version does not target) are ignored rather than failed
+    -- they are not what this gate guards.
     """
     report = Readiness(version=version)
     by_key = {}
@@ -219,7 +233,7 @@ def readiness(version: str, rows: Iterable, *, require_signed: Optional[bool] = 
             continue
         by_key.setdefault((row.platform, row.architecture), []).append(row)
 
-    for key in required_artifacts():
+    for key in required_artifacts(targets):
         label = artifact_label(*key)
         candidates = by_key.get(key, [])
         live = [r for r in candidates if r.status in _LIVE_STATES]
@@ -241,9 +255,11 @@ def readiness(version: str, rows: Iterable, *, require_signed: Optional[bool] = 
     return report
 
 
-def is_complete_and_published(version: str, rows: Sequence) -> bool:
+def is_complete_and_published(
+    version: str, rows: Sequence, *, targets: Optional[Iterable[str]] = None,
+) -> bool:
     """True when every required artifact of ``version`` is published and valid."""
-    report = readiness(version, rows)
+    report = readiness(version, rows, targets=targets)
     if not report.ready:
         return False
     published = {
@@ -251,4 +267,4 @@ def is_complete_and_published(version: str, rows: Sequence) -> bool:
         for r in rows
         if r.version == version and r.status == "published"
     }
-    return all(key in published for key in required_artifacts())
+    return all(key in published for key in required_artifacts(targets))

@@ -766,10 +766,16 @@ def build_feedback_status_email(
 
 def release_subject(payload: dict[str, Any]) -> str:
     version = str(payload.get("version") or "").strip()
-    subject = (
-        f"Monitra {version} is available — what's new" if version
-        else "A new version of Monitra is available"
-    )
+    if payload.get("mandatory") is True:
+        subject = (
+            f"Required update: Monitra {version}" if version
+            else "Required update: a new version of Monitra"
+        )
+    else:
+        subject = (
+            f"Monitra {version} is available — what's new" if version
+            else "A new version of Monitra is available"
+        )
     # A rehearsal (RELEASE_EMAIL_TEST_RECIPIENTS) says so in the subject. The
     # subject is rebuilt from the payload at delivery, so the marker has to
     # live here and not only on the queued row.
@@ -851,6 +857,78 @@ def render_release_notes(notes: str) -> Markup:
     return Markup("").join(blocks)
 
 
+#: How a platform token reads in prose.
+RELEASE_PLATFORM_LABELS = {"win32": "Windows", "darwin": "macOS"}
+
+
+def release_platform_label(platforms: Any) -> str:
+    """"Windows", "macOS" or "Windows and macOS" from the payload's tokens."""
+    tokens = [str(p) for p in (platforms or []) if str(p).strip()]
+    names = [RELEASE_PLATFORM_LABELS.get(t, t) for t in tokens]
+    if not names:
+        return "Windows and macOS"
+    if len(names) == 1:
+        return names[0]
+    return " and ".join(names)
+
+
+def release_policy_blocks(payload: dict[str, Any]) -> tuple[Markup, list[str]]:
+    """The mandatory / optional statement, as HTML and as plain-text lines.
+
+    A mandatory release states the rule the desktop will apply, in the user's
+    terms: install now, or postpone for up to the grace period counted from
+    the first time their desktop sees the update; after that the desktop
+    cannot be used until the update is installed. An optional release says
+    it blocks nothing. Both name the platform(s) the release is for.
+    """
+    platform_label = release_platform_label(payload.get("platforms"))
+    mandatory = payload.get("mandatory") is True
+    grace = payload.get("grace_hours")
+    required = str(payload.get("required_version") or "").strip()
+    version = str(payload.get("version") or "").strip()
+
+    if mandatory:
+        hours = int(grace) if isinstance(grace, int) and grace >= 0 else 24
+        if hours == 0:
+            rule = "This update is required and must be installed before Monitra can be used again."
+        else:
+            period = f"{hours} hour{'s' if hours != 1 else ''}"
+            rule = (
+                f"This update is required. You can postpone it for up to {period} after "
+                f"your Monitra desktop first sees it; after that deadline Monitra cannot be "
+                f"used until the update is installed."
+            )
+        floor = (
+            f" It applies to Monitra {required} and older." if required and required != version
+            else ""
+        )
+        badge, badge_bg, badge_fg, badge_border = "Required update", "#FEF2F2", "#B91C1C", "#FECACA"
+        body = f"{rule}{floor} Your tracked time is kept; the update does not sign you out."
+    else:
+        badge, badge_bg, badge_fg, badge_border = "Optional update", "#ECFDF5", "#047857", "#A7F3D0"
+        body = (
+            "This update is optional. Monitra keeps working whether or not you install it; "
+            "you can install it from the update prompt whenever it suits you."
+        )
+
+    html = Markup(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" '
+        'style="margin:0 0 22px 0;"><tr><td style="padding:14px 16px;background-color:{bg};'
+        'border:1px solid {border};border-radius:10px;">'
+        '<p style="margin:0 0 6px 0;font-family:Helvetica,Arial,sans-serif;font-size:11px;'
+        'font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:{fg};">'
+        '{badge} &middot; {platform}</p>'
+        '<p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:14px;'
+        'line-height:22px;color:#374151;">{body}</p>'
+        '</td></tr></table>'
+    ).format(
+        bg=badge_bg, border=badge_border, fg=badge_fg, badge=badge,
+        platform=platform_label, body=body,
+    )
+    text = [f"{badge.upper()} - {platform_label}", body, ""]
+    return html, text
+
+
 def build_release_email(payload: dict[str, Any], recipients: list[str]) -> OutgoingEmail:
     """The "a new version is available" announcement, for one user."""
     version = str(payload.get("version") or "").strip()
@@ -892,6 +970,8 @@ def build_release_email(payload: dict[str, Any], recipients: list[str]) -> Outgo
             'Read the full release notes</a></p>'
         ).format(url=notes_url)
 
+    policy_block, policy_text = release_policy_blocks(payload)
+
     # No notes is an honest empty state, not an invented changelog. The email
     # still tells the user a new version exists and where to get it.
     notes_html = render_release_notes(notes) if notes else Markup(
@@ -908,12 +988,14 @@ def build_release_email(payload: dict[str, Any], recipients: list[str]) -> Outgo
             "notes_html": notes_html,
             "notes_link": notes_link,
             "cta_block": cta_block,
+            "policy_block": policy_block,
         },
     )
 
     text_lines = [
         f"MONITRA {version} IS AVAILABLE" if version else "A NEW VERSION OF MONITRA IS AVAILABLE",
         "",
+        *policy_text,
         "What's changed",
         "-" * 48,
         notes or "Release notes for this version have not been published yet.",
