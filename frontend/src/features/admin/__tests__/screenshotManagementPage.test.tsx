@@ -3,11 +3,11 @@
  * Settings -> Screenshot Management, the page that arranges the sections.
  *
  * Pinned here: "Who is captured" is gone (it is a per-member switch in User
- * Management now), the sections are Size and quality, Idle detection and Privacy
- * rules in that order, Size and quality is open by default, `#look` / `#idle` /
- * `#privacy` open the matching section, the idle summary counts members whose
- * idle detection is on, and a non-administrator sees no controls and causes no
- * member request.
+ * Management now), the tabs are Resolution and quality, Idle management and
+ * Privacy rules in that order, Resolution and quality is selected by default,
+ * `#look` / `#idle` / `#privacy` select the matching tab, the arrow keys move
+ * between tabs, the idle summary counts members whose idle detection is on, and
+ * a non-administrator sees no controls and causes no member request.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -64,8 +64,9 @@ describe('AdminScreenshotManagementPage', () => {
     }
     await settle();
   };
-  const header = (id: string) => container.querySelector(`#screenshot-${id}-header`) as HTMLButtonElement | null;
-  const expanded = (id: string) => header(id)!.getAttribute('aria-expanded') === 'true';
+  const header = (id: string) => container.querySelector(`#screenshot-${id}-tab`) as HTMLButtonElement | null;
+  const expanded = (id: string) => header(id)!.getAttribute('aria-selected') === 'true';
+  const panelShown = (id: string) => !(container.querySelector(`#screenshot-${id}-panel`) as HTMLElement).hidden;
 
   const mount = async (hash = '') => {
     const store = configureStore({
@@ -132,17 +133,19 @@ describe('AdminScreenshotManagementPage', () => {
     expect(container.textContent).not.toContain('Decide who is captured');
   });
 
-  it('lists Size and quality, Idle detection and Privacy rules, in that order', async () => {
+  it('lists Resolution and quality, Idle management and Privacy rules, in that order', async () => {
     await mount();
-    const headers = Array.from(container.querySelectorAll('h2 > button[id^="screenshot-"]')).map((b) => b.id);
-    expect(headers).toEqual(['screenshot-look-header', 'screenshot-idle-header', 'screenshot-privacy-header']);
-    const titles = Array.from(container.querySelectorAll('h2 > button')).map((b) => b.querySelector('span span')?.textContent);
-    expect(titles).toEqual(['Size and quality', 'Idle detection', 'Privacy rules']);
+    const tabs = Array.from(container.querySelectorAll('[role="tablist"] > [role="tab"]'));
+    expect(tabs.map((b) => b.id)).toEqual(['screenshot-look-tab', 'screenshot-idle-tab', 'screenshot-privacy-tab']);
+    expect(tabs.map((b) => b.firstChild?.textContent)).toEqual([
+      'Resolution and quality', 'Idle management', 'Privacy rules',
+    ]);
   });
 
-  it('opens Size and quality by default and leaves the others closed', async () => {
+  it('selects Resolution and quality by default and shows only its panel', async () => {
     await mount();
     expect([expanded('look'), expanded('idle'), expanded('privacy')]).toEqual([true, false, false]);
+    expect([panelShown('look'), panelShown('idle'), panelShown('privacy')]).toEqual([true, false, false]);
   });
 
   it.each([
@@ -151,7 +154,7 @@ describe('AdminScreenshotManagementPage', () => {
     ['#privacy', [false, false, true]],
     ['#capture', [true, false, false]],
     ['#nonsense', [true, false, false]],
-  ])('opens the right section for %s', async (hash, want) => {
+  ])('selects the right tab for %s', async (hash, want) => {
     await mount(hash);
     expect([expanded('look'), expanded('idle'), expanded('privacy')]).toEqual(want);
   });
@@ -163,13 +166,36 @@ describe('AdminScreenshotManagementPage', () => {
     expect(header('idle')!.textContent).toContain('2 of 3 on');
   });
 
-  it('keeps every section mounted when collapsed, and Expand all opens them all', async () => {
+  it('keeps every panel mounted when its tab is not selected, and switches panel on click', async () => {
     await mount();
     expect(container.querySelector('#screenshot-idle-panel')).toBeTruthy();
-    expect((container.querySelector('#screenshot-idle-panel') as HTMLElement).hidden).toBe(true);
-    const expandAll = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Expand all')!;
-    await act(async () => { expandAll.click(); });
-    expect([expanded('look'), expanded('idle'), expanded('privacy')]).toEqual([true, true, true]);
+    expect(panelShown('idle')).toBe(false);
+    await act(async () => { header('idle')!.click(); });
+    expect([expanded('look'), expanded('idle'), expanded('privacy')]).toEqual([false, true, false]);
+    expect([panelShown('look'), panelShown('idle'), panelShown('privacy')]).toEqual([false, true, false]);
+    // The width box is still mounted while its tab is away.
+    expect(container.querySelector('#screenshot-width')).toBeTruthy();
+  });
+
+  it('moves between tabs with the arrow keys, Home and End', async () => {
+    await mount();
+    const press = async (key: string) => {
+      const current = container.querySelector('[role="tab"][aria-selected="true"]') as HTMLElement;
+      await act(async () => { current.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })); });
+    };
+    await press('ArrowRight');
+    expect(expanded('idle')).toBe(true);
+    await press('End');
+    expect(expanded('privacy')).toBe(true);
+    await press('ArrowRight');
+    expect(expanded('look')).toBe(true);
+    await press('ArrowLeft');
+    expect(expanded('privacy')).toBe(true);
+    await press('Home');
+    expect(expanded('look')).toBe(true);
+    // Only the selected tab is in the tab order.
+    expect(header('idle')!.tabIndex).toBe(-1);
+    expect(header('look')!.tabIndex).toBe(0);
   });
 
   it('shows no controls, and asks for no members, when the server refuses the page with 403', async () => {

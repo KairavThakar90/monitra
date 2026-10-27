@@ -1,18 +1,21 @@
 // @vitest-environment jsdom
 /**
- * Screenshot Management -> Idle detection.
+ * Screenshot Management -> Idle management (screenshot frequency + idle detection).
  *
  * The real section is rendered against a real RTK Query store with only `fetch`
  * replaced by a small stateful fake of the member endpoints, so what is pinned is
  * the request a browser would make:
  *
- * - each active member's switch and minutes come from the member (absent = on, 5);
+ * - each active member's switch, idle minutes and screenshot frequency come from the member
+ *   (absent = on, 5, 10);
  * - clients, the release account and inactive members are never listed;
  * - minutes outside 1-120, text and decimals are refused in words and block Save;
  * - Save is enabled only for a valid change and sends ONLY the field(s) changed,
  *   through the ordinary `PATCH /members/{id}`;
  * - a refused save puts the row back and toasts the server's message;
- * - the minutes box stays editable while the switch is off.
+ * - the minutes box stays editable while the switch is off;
+ * - the screenshot frequency is a whole number of minutes from 1 with no ceiling, and a
+ *   frequency-only save sends `capture_frequency` alone.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -74,6 +77,8 @@ describe('IdleDetection', () => {
     container.querySelector(`button[role="switch"][aria-label="Idle detection for ${name}"]`) as HTMLButtonElement | null;
   const minutesFor = (name: string) =>
     container.querySelector(`input[aria-label="Idle time in minutes for ${name}"]`) as HTMLInputElement | null;
+  const frequencyFor = (name: string) =>
+    container.querySelector(`input[aria-label="Screenshot frequency in minutes for ${name}"]`) as HTMLInputElement | null;
   const saveFor = (name: string) =>
     container.querySelector(`button[aria-label="Save idle settings for ${name}"]`) as HTMLButtonElement | null;
   const writes = () => calls.filter((c) => c.method !== 'GET');
@@ -94,7 +99,7 @@ describe('IdleDetection', () => {
     refuseNext = null;
     members = [
       member(1, 'Alice Active'),
-      member(2, 'Bob Builder', { idle_enabled: false, idle_minutes: 15 }),
+      member(2, 'Bob Builder', { idle_enabled: false, idle_minutes: 15, capture_frequency: 3 }),
       member(3, 'Carl Casual', { idle_enabled: true, idle_minutes: 30 }),
       member(4, 'Dora Dormant', { status: 'inactive' }),
       member(5, 'Client Co', { role: 'client' }),
@@ -142,6 +147,57 @@ describe('IdleDetection', () => {
     expect(minutesFor('Carl Casual')!.value).toBe('30');
     expect(container.textContent).toContain('When idle detection is off, the desktop does not watch this member for inactivity.');
     expect(container.textContent).toContain('A change reaches a running desktop within a few minutes.');
+  });
+
+  it('shows each member\'s screenshot frequency, defaulting an absent value to 10', async () => {
+    await mount();
+    expect(frequencyFor('Alice Active')!.value).toBe('10');
+    expect(frequencyFor('Bob Builder')!.value).toBe('3');
+    expect(container.textContent).toContain('Screenshot frequency (min)');
+  });
+
+  it.each([
+    ['zero', '0', 'Screenshot frequency must be at least 1.'],
+    ['text', 'abc', 'Screenshot frequency must be a whole number.'],
+    ['a decimal', '2.5', 'Screenshot frequency must be a whole number.'],
+    ['empty', '', 'Screenshot frequency must be a whole number.'],
+  ])('refuses %s as a screenshot frequency in words and blocks Save', async (_name, value, message) => {
+    await mount();
+    await type(frequencyFor('Alice Active')!, value);
+
+    expect(saveFor('Alice Active')!.disabled).toBe(true);
+    const field = frequencyFor('Alice Active')!;
+    expect(field.getAttribute('aria-invalid')).toBe('true');
+    expect(container.querySelector(`#${field.getAttribute('aria-describedby')}`)!.textContent).toBe(message);
+    await click(saveFor('Alice Active'));
+    expect(writes()).toEqual([]);
+  });
+
+  it('sends only capture_frequency when only the frequency changed, and accepts a large one', async () => {
+    await mount();
+    await type(frequencyFor('Alice Active')!, '240');
+    expect(saveFor('Alice Active')!.disabled).toBe(false);
+    await click(saveFor('Alice Active'));
+
+    expect(writes()).toEqual([
+      { method: 'PATCH', path: expect.stringMatching(/\/members\/1$/), body: { capture_frequency: 240 } },
+    ]);
+    expect(frequencyFor('Alice Active')!.value).toBe('240');
+    expect(saveFor('Alice Active')!.disabled).toBe(true);
+  });
+
+  it('sends the frequency together with an idle change, and puts it back when the save is refused', async () => {
+    await mount();
+    await type(frequencyFor('Carl Casual')!, '5');
+    await type(minutesFor('Carl Casual')!, '45');
+    await click(saveFor('Carl Casual'));
+    expect(writes()[0].body).toEqual({ idle_minutes: 45, capture_frequency: 5 });
+
+    await type(frequencyFor('Alice Active')!, '7');
+    refuseNext = { status: 422, detail: 'Frequency is not acceptable.' };
+    await click(saveFor('Alice Active'));
+    expect(showToast).toHaveBeenCalledWith('Frequency is not acceptable.', 'error');
+    expect(frequencyFor('Alice Active')!.value).toBe('10');
   });
 
   it('never lists a client, the release account or an inactive member', async () => {
@@ -224,7 +280,7 @@ describe('IdleDetection', () => {
     expect(writes()).toEqual([
       { method: 'PATCH', path: expect.stringMatching(/\/members\/3$/), body: { idle_minutes: 45 } },
     ]);
-    expect(showToast).toHaveBeenCalledWith('Idle detection saved for Carl Casual.', 'success');
+    expect(showToast).toHaveBeenCalledWith('Idle management saved for Carl Casual.', 'success');
     expect(minutesFor('Carl Casual')!.value).toBe('45');
     expect(saveFor('Carl Casual')!.disabled).toBe(true);
   });

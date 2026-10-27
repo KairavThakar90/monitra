@@ -219,6 +219,8 @@ export const ENDPOINTS = {
     BUILTIN: (key: string) => `${API_BASE_URL}/desktop-notifications/builtin/${encodeURIComponent(key)}`,
     // How many notifications a desktop may show in a rolling hour.
     LIMIT: `${API_BASE_URL}/desktop-notifications/limit`,
+    // An announcement: a message shown on every signed-in desktop as soon as it arrives.
+    PUSH: `${API_BASE_URL}/desktop-notifications/push`,
     CUSTOM: `${API_BASE_URL}/desktop-notifications/custom`,
     CUSTOM_BY_ID: (id: string) => `${API_BASE_URL}/desktop-notifications/custom/${encodeURIComponent(id)}`,
   },

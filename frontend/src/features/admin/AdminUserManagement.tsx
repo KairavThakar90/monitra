@@ -3,70 +3,47 @@ import { V2Shell } from "../dashboard/v2/V2Shell";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
 import { useFeedback } from "../../components/FeedbackProvider";
 import { formatApiError } from "../../api/utils";
-import { useGetMembersQuery, useUpdateMemberMutation, type Member } from "../../store/api/membersApi";
+import { useGetMembersQuery, useLazyGetMembersQuery, useUpdateMemberMutation, type Member } from "../../store/api/membersApi";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
-import { PaginationArrow } from "../../components/PaginationArrow";
+import { Pagination } from "../../components/Pagination";
 import { FieldError, SEARCH_MAX_LENGTH, validateSearchTerm } from "../../validation";
 
 /**
  * Admin Settings → User Management.
  *
- * Per-user tracking settings — the screenshot capture frequency — already live
- * on `users.capture_frequency` and already round-trip through
- * `GET/PATCH /members/{id}` (see `MemberResponse` / `MemberUpdate` in
- * backend/app/schemas/member.py). This page is the first place an administrator
- * can actually set it, rather than only inheriting whatever the SSO provider sent.
+ * Three per-member desktop switches -- screenshot capture, the administrator's
+ * desktop notifications, and activity tracking (keyboard/mouse activity plus
+ * application and website usage) -- stored as `screenshots_enabled` /
+ * `notifications_enabled` / `activity_tracking_enabled` and saved through the
+ * member update (`PATCH /members/{id}`). Absent means on; only an explicit
+ * `false` is off. Each switch is sent on its own, so changing one never
+ * rewrites another.
  *
- * `capture_frequency` has no unit of its own, and production data is not
- * fully consistent: the SSO login-sync path once wrote a literal `300`
- * meaning "seconds", but every other write path — 61 of 63 real accounts on
- * the live database — stores a plain minute count (`10`, matching the
- * desktop's actual 10-minute screenshot window). This page follows the
- * convention the data actually uses (minutes, matching
- * `backend/app/schemas/member.py`'s `CaptureFrequencyMinutes`) and shows the
- * stored value as-is: the admin has full control over the interval, with no
- * upper bound, so a value is never silently reinterpreted or clamped.
+ * Each switch has its own column, drawn like the Members page's Add Task /
+ * Login switches. The switch in a column heading turns that one on or off for
+ * every active member the search matches, not only the rows on this page.
  *
- * Three more per-member switches sit beside them -- screenshot capture, the
- * administrator's desktop notifications, and activity tracking (keyboard/mouse
- * activity plus application and website usage) -- stored as
- * `screenshots_enabled` / `notifications_enabled` / `activity_tracking_enabled`
- * and saved through the same member update. Absent means on; only an explicit
- * `false` is off. Each switch is sent only when it was changed, so saving one
- * never rewrites another. Idle detection is not set here: it has its own section
- * in Screenshot Management, so there is one place to change it.
+ * The screenshot frequency and idle detection are not set here: both live in
+ * Screenshot Management, so there is one place to change each.
  *
- * The drawer also supports assigning the same tracking settings to several
- * selected members at once, applied with one PATCH per member.
+ * Ticking rows opens a toolbar, like the Members page's, that turns one switch
+ * on or off for the ticked members with one PATCH per member. The Configure
+ * drawer edits one member's three switches together.
  */
 
 const GRADIENT_CYAN_PURPLE = "bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[#8b5cf6]";
 
-const MIN_CAPTURE_MINUTES = 1;
-
-/** `null` is "leave as it is": only used when several members are assigned at once. */
-type Switch = boolean | null;
-
 type FormState = {
-  captureMinutes: string;
-  screenshots: Switch;
-  notifications: Switch;
-  activity: Switch;
+  screenshots: boolean;
+  notifications: boolean;
+  activity: boolean;
 };
 
 const toFormState = (member: Member): FormState => ({
-  captureMinutes: String(member.capture_frequency ?? 10),
   screenshots: member.screenshots_enabled !== false,
   notifications: member.notifications_enabled !== false,
   activity: member.activity_tracking_enabled !== false,
 });
-
-const DEFAULT_FORM_STATE: FormState = {
-  captureMinutes: "10",
-  screenshots: null,
-  notifications: null,
-  activity: null,
-};
 
 /** The three desktop switches: which form field, which member field, and what the administrator reads. */
 const DESKTOP_SWITCHES = [
@@ -74,21 +51,29 @@ const DESKTOP_SWITCHES = [
     form: "screenshots",
     field: "screenshots_enabled",
     label: "Screenshot capture",
+    column: "Screenshots",
     help: "Capture periodic screenshots while this member is tracking time. Screenshots already taken are kept.",
   },
   {
     form: "notifications",
     field: "notifications_enabled",
     label: "Desktop notifications",
+    column: "Notifications",
     help: "Show this member reminders, messages from the administrator and routine status notices. Alerts that need attention are always shown.",
   },
   {
     form: "activity",
     field: "activity_tracking_enabled",
     label: "Activity tracking",
+    column: "Activity",
     help: "Measure keyboard and mouse activity, and the applications and websites used, while tracking time. Idle detection is managed in Screenshot Management.",
   },
 ] as const;
+
+/** Checkbox, Employee, the three switches, Action. */
+const COLUMN_COUNT = 6;
+
+type SwitchField = (typeof DESKTOP_SWITCHES)[number]["field"];
 
 const LoadingSpinner: React.FC = () => (
   <div className="flex min-h-28 items-center justify-center" role="status" aria-label="Loading">
@@ -96,72 +81,52 @@ const LoadingSpinner: React.FC = () => (
   </div>
 );
 
-const Pagination: React.FC<{
-  page: number;
-  totalPages: number;
-  totalItems: number;
-  limit: number;
-  setPage: (page: number) => void;
-  setLimit: (limit: number) => void;
-}> = ({ page, totalPages, totalItems, limit, setPage, setLimit }) => {
-  const startItem = totalItems === 0 ? 0 : (page - 1) * limit + 1;
-  const endItem = Math.min(page * limit, totalItems);
-  const pages = totalPages <= 7
-    ? Array.from({ length: totalPages }, (_, index) => index + 1)
-    : page <= 4
-      ? [1, 2, 3, 4, 5, "...", totalPages]
-      : page >= totalPages - 3
-        ? [1, "...", totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages]
-        : [1, "...", page - 1, page, page + 1, "...", totalPages];
-
-  return (
-    <div className="mt-6 flex flex-col items-center justify-between gap-4 border-t border-slate-200 pt-5 text-sm text-slate-500 sm:flex-row">
-      <div>Showing {startItem} to {endItem} of {totalItems} members</div>
-      <div className="flex items-center gap-3">
-        <select value={limit} onChange={(e) => { setLimit(Number(e.target.value)); setPage(1); }} className="rounded-md border border-slate-300 py-1.5 pl-3 pr-8 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500">
-          <option value={10}>10</option>
-          <option value={20}>20</option>
-          <option value={50}>50</option>
-        </select>
-        <div className="flex items-center gap-1">
-          <PaginationArrow direction="prev" disabled={page === 1} onClick={() => setPage(page - 1)} />
-          {pages.map((visiblePage, index) => visiblePage === "..." ? (
-            <span key={`ellipsis-${index}`} className="flex h-8 w-8 items-center justify-center text-slate-400">...</span>
-          ) : (
-            <button key={visiblePage} onClick={() => setPage(visiblePage as number)} className={`flex h-8 w-8 items-center justify-center rounded text-sm font-semibold transition ${visiblePage === page ? "bg-blue-500 text-white shadow-sm" : "text-slate-600 hover:bg-slate-100"}`}>{visiblePage}</button>
-          ))}
-          <PaginationArrow direction="next" disabled={page === totalPages} onClick={() => setPage(page + 1)} />
-        </div>
-      </div>
-    </div>
-  );
-};
-
-/** A small pill showing the screenshot interval in minutes. */
-const MinutesPill: React.FC<{ minutes: number }> = ({ minutes }) => (
-  <span className="inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-bold text-sky-700">
-    {minutes} min
-  </span>
-);
-
-/** A compact On/Off indicator for one of the desktop switches. */
-const OnOffPill: React.FC<{ label: string; on: boolean }> = ({ label, on }) => (
-  <span
-    className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-bold ${
-      on ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-500"
-    }`}
-  >
-    {label} {on ? "On" : "Off"}
-  </span>
+/**
+ * One On/Off switch, drawn like the Members page's Add Task / Login switch: a
+ * status pill beside a sliding switch.
+ */
+const OnOffSwitch: React.FC<{
+  on: boolean;
+  busy?: boolean;
+  /** Accessible name; it also names what the switch does. */
+  label: string;
+  title?: string;
+  onChange: (on: boolean) => void;
+}> = ({ on, busy = false, label, title, onChange }) => (
+  <div className="flex items-center gap-2">
+    {on ? (
+      <span className="inline-flex items-center rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold tracking-wider text-emerald-600">On</span>
+    ) : (
+      <span className="inline-flex items-center rounded-md border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-bold tracking-wider text-rose-500">Off</span>
+    )}
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      title={title ?? label}
+      disabled={busy}
+      onClick={() => onChange(!on)}
+      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/40 disabled:cursor-not-allowed disabled:opacity-60 ${
+        on ? "bg-blue-600" : "bg-slate-300"
+      }`}
+    >
+      <span
+        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+          on ? "translate-x-5" : "translate-x-0.5"
+        }`}
+      />
+    </button>
+  </div>
 );
 
 export const AdminUserManagement: React.FC = () => {
-  const { showToast } = useFeedback();
+  const { showToast, confirmAction } = useFeedback();
 
   const [search, setSearch] = useState("");
   const [searchError, setSearchError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  const [pageSize, setPageSize] = useState(20);
 
   const debouncedSearch = useDebouncedValue(search);
   const searchCheck = validateSearchTerm(debouncedSearch, { fieldLabel: "Search" });
@@ -175,13 +140,14 @@ export const AdminUserManagement: React.FC = () => {
   });
 
   const [updateMember, { isLoading: isSaving }] = useUpdateMemberMutation();
+  const [fetchMembersPage] = useLazyGetMembersQuery();
 
   const items = data?.items ?? [];
   const totalPages = data?.pages || 1;
   const showFirstLoad = isLoading && !data;
 
-  // Rows the admin has ticked, so the same tracking settings can be assigned
-  // to several people in one drawer session instead of one row at a time.
+  // Rows the admin has ticked, so one switch can be changed for several people
+  // from the toolbar instead of one row at a time.
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const selectedOnPage = items.filter((member) => selectedIds.has(member.id));
   const allOnPageSelected = items.length > 0 && selectedOnPage.length === items.length;
@@ -204,78 +170,143 @@ export const AdminUserManagement: React.FC = () => {
     });
   };
 
-  const [drawerTargets, setDrawerTargets] = useState<Member[] | null>(null);
+  const [drawerMember, setDrawerMember] = useState<Member | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const isBulk = (drawerTargets?.length ?? 0) > 1;
 
   const openDrawer = (member: Member) => {
-    setDrawerTargets([member]);
+    setDrawerMember(member);
     setForm(toFormState(member));
     setError(null);
   };
 
-  const openBulkDrawer = () => {
-    if (selectedOnPage.length === 0) return;
-    setDrawerTargets(selectedOnPage);
-    // Selected members likely carry different settings today, so the form
-    // opens with sensible defaults rather than implying they already match.
-    setForm(DEFAULT_FORM_STATE);
-    setError(null);
-  };
-
   const closeDrawer = () => {
-    setDrawerTargets(null);
+    setDrawerMember(null);
     setForm(null);
     setError(null);
   };
 
-  const captureMinutesNum = form ? Number(form.captureMinutes) : NaN;
-  const captureValid = Number.isInteger(captureMinutesNum) && captureMinutesNum >= MIN_CAPTURE_MINUTES;
+  // Only a switch that was changed is sent.
+  const changedSwitches = useMemo(() => {
+    if (!form || !drawerMember) return [];
+    return DESKTOP_SWITCHES.filter(({ form: key }) => form[key] !== toFormState(drawerMember)[key]);
+  }, [drawerMember, form]);
+  const isDirty = changedSwitches.length > 0;
 
-  const isDirty = useMemo(() => {
-    if (!form || !drawerTargets) return false;
-    if (isBulk) return true; // Assigning to a group is always an explicit action, not a diff.
-    return JSON.stringify(form) !== JSON.stringify(toFormState(drawerTargets[0]));
-  }, [drawerTargets, form, isBulk]);
+  // A row's switch is saved at once, on its own, and put back if the server refuses.
+  const [pendingSwitches, setPendingSwitches] = useState<Set<string>>(new Set());
+  const [bulkSwitch, setBulkSwitch] = useState<SwitchField | null>(null);
 
-  const handleSave = async () => {
-    if (!drawerTargets || drawerTargets.length === 0 || !form || !captureValid) return;
-    setError(null);
-    const body = {
-      capture_frequency: captureMinutesNum,
-      // Only a switch that was changed (or, for a group, explicitly set) is sent.
-      ...Object.fromEntries(
-        DESKTOP_SWITCHES.filter(({ form: key }) => {
-          const value = form[key];
-          return value !== null && (isBulk || value !== toFormState(drawerTargets[0])[key]);
-        }).map(({ form: key, field }) => [field, form[key]]),
-      ),
-    };
+  const handleRowSwitch = async (member: Member, field: SwitchField, label: string, on: boolean) => {
+    const key = `${member.id}:${field}`;
+    setPendingSwitches((prev) => new Set(prev).add(key));
+    try {
+      await updateMember({ id: member.id, body: { [field]: on } as Partial<Member> }).unwrap();
+    } catch (err) {
+      showToast(
+        formatApiError((err as { data?: unknown })?.data, `Could not change ${label.toLowerCase()} for ${member.name}.`),
+        "error",
+      );
+    } finally {
+      setPendingSwitches((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
+
+  // One switch for a group of members, one PATCH each, only for the members it
+  // would change. Reports the outcome; resolves true when nothing failed.
+  const applySwitch = async (members: Member[], field: SwitchField, label: string, on: boolean, scope: string) => {
+    const word = on ? "on" : "off";
+    const targets = members.filter((member) => (member[field] !== false) !== on);
+    if (targets.length === 0) {
+      showToast(`${label} is already ${word} for ${scope}.`, "info");
+      return true;
+    }
     const results = await Promise.allSettled(
-      drawerTargets.map((member) => updateMember({ id: member.id, body }).unwrap()),
+      targets.map((member) => updateMember({ id: member.id, body: { [field]: on } as Partial<Member> }).unwrap()),
     );
     const failures = results.filter((result) => result.status === "rejected");
     if (failures.length === 0) {
-      showToast(
-        drawerTargets.length === 1
-          ? `Tracking settings saved for ${drawerTargets[0].name}.`
-          : `Tracking settings applied to ${drawerTargets.length} members.`,
-        "success",
-      );
-      setSelectedIds(new Set());
-      closeDrawer();
-      return;
+      showToast(`${label} turned ${word} for ${targets.length} member${targets.length === 1 ? "" : "s"}.`, "success");
+      return true;
     }
     const firstFailure = failures[0] as PromiseRejectedResult;
-    const message = formatApiError(
-      (firstFailure.reason as { data?: unknown })?.data,
-      failures.length === drawerTargets.length
-        ? "Could not save tracking settings."
-        : `Saved for ${drawerTargets.length - failures.length} of ${drawerTargets.length} members; ${failures.length} failed.`,
+    showToast(
+      formatApiError(
+        (firstFailure.reason as { data?: unknown })?.data,
+        `${label} changed for ${targets.length - failures.length} of ${targets.length} members; ${failures.length} failed.`,
+      ),
+      failures.length === targets.length ? "error" : "info",
     );
-    setError(message);
-    showToast(message, "error");
+    return false;
+  };
+
+  // The toolbar over the ticked rows: On / Off for one switch, like the Members
+  // page's Allow / Exclude. The ticks are cleared once everything was saved.
+  const handleSelectedSwitch = async (field: SwitchField, label: string, on: boolean) => {
+    setBulkSwitch(field);
+    try {
+      if (await applySwitch(selectedOnPage, field, label, on, "the selected members")) setSelectedIds(new Set());
+    } finally {
+      setBulkSwitch(null);
+    }
+  };
+
+  // The column-heading switch: every active member the search matches, read page
+  // by page (the API caps a page at 100) so members on other pages are included.
+  const handleAllSwitch = async (field: SwitchField, label: string, on: boolean) => {
+    const word = on ? "on" : "off";
+    if (
+      !(await confirmAction(
+        `Turn ${label.toLowerCase()} ${word} for every member?`,
+        searchTerm
+          ? `This changes every active member matching "${searchTerm}", on every page.`
+          : "This changes every active member, on every page.",
+      ))
+    ) {
+      return;
+    }
+    setBulkSwitch(field);
+    try {
+      const everyone: Member[] = [];
+      let pageNumber = 1;
+      let pages = 1;
+      do {
+        // eslint-disable-next-line no-await-in-loop
+        const result = await fetchMembersPage({ page: pageNumber, limit: 100, status: "active", search: searchTerm }).unwrap();
+        everyone.push(...result.items);
+        pages = result.pages || 1;
+        pageNumber += 1;
+      } while (pageNumber <= pages);
+
+      await applySwitch(everyone, field, label, on, "every member");
+    } catch (err) {
+      showToast(
+        formatApiError((err as { data?: unknown })?.data, `Could not turn ${label.toLowerCase()} ${word} for every member.`),
+        "error",
+      );
+    } finally {
+      setBulkSwitch(null);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!drawerMember || !form || !isDirty) return;
+    setError(null);
+    const body = Object.fromEntries(changedSwitches.map(({ form: key, field }) => [field, form[key]]));
+    try {
+      await updateMember({ id: drawerMember.id, body }).unwrap();
+    } catch (err) {
+      const message = formatApiError((err as { data?: unknown })?.data, "Could not save tracking settings.");
+      setError(message);
+      showToast(message, "error");
+      return;
+    }
+    showToast(`Tracking settings saved for ${drawerMember.name}.`, "success");
+    closeDrawer();
   };
 
   return (
@@ -284,10 +315,11 @@ export const AdminUserManagement: React.FC = () => {
       subtitle="User Management"
       actions={<InlineRefreshIndicator active={isFetching && !showFirstLoad} label="Refreshing" />}
     >
-      <div className="w-full space-y-6 pb-20">
-        <div className="flex flex-col gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-1 items-center gap-2 px-2">
-            <svg className="h-5 w-5 shrink-0 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      {/* No side padding of its own on a phone: the shell's <main> already gives 16px. */}
+      <div className="w-full px-0 sm:px-6 lg:px-8 pt-2 sm:pt-6 space-y-6 pb-20">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 lg:border-0 lg:bg-transparent lg:p-0 lg:px-2">
+            <svg className="h-5 w-5 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
             <input
@@ -304,7 +336,7 @@ export const AdminUserManagement: React.FC = () => {
                 setSearchError(result.ok ? null : result.error);
                 setPage(1);
               }}
-              className="flex-1 bg-transparent text-sm text-slate-700 outline-none placeholder:text-slate-400"
+              className="flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400 text-slate-700"
             />
           </div>
           {searchError && (
@@ -314,103 +346,166 @@ export const AdminUserManagement: React.FC = () => {
           )}
         </div>
 
-        <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 bg-slate-50 px-6 py-4">
-            <div>
-              <h3 className="text-sm font-bold text-slate-800">Tracking Settings by Member</h3>
-              <p className="mt-0.5 text-xs text-slate-500">Screenshot cadence and desktop switches, applied per person.</p>
+        {selectedOnPage.length > 0 && (
+          <div
+            role="toolbar"
+            aria-label="Bulk desktop switches"
+            className="sticky top-3 z-20 flex flex-wrap items-center gap-x-6 gap-y-3 rounded-2xl border border-blue-200 bg-white/95 px-5 py-3 shadow-lg shadow-blue-900/5 backdrop-blur"
+          >
+            <div className="flex items-center gap-3">
+              <span className="flex h-9 min-w-9 items-center justify-center rounded-full bg-blue-600 px-2.5 text-sm font-bold text-white">
+                {selectedOnPage.length}
+              </span>
+              <div className="leading-tight">
+                <div className="text-sm font-bold text-slate-800">{selectedOnPage.length} selected</div>
+                <div className="text-[11px] font-medium text-slate-500">of {data?.total ?? items.length} members</div>
+              </div>
             </div>
-            {selectedOnPage.length > 0 && (
-              <button
-                onClick={openBulkDrawer}
-                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:opacity-90 ${GRADIENT_CYAN_PURPLE}`}
-              >
-                Assign to {selectedOnPage.length} selected
-              </button>
-            )}
-          </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm whitespace-nowrap">
-              <thead className="border-b border-slate-200 bg-slate-50 text-slate-500">
+            <div className="hidden h-8 w-px bg-slate-200 md:block" />
+
+            {DESKTOP_SWITCHES.map(({ field, label, column }) => {
+              const canTurnOn = selectedOnPage.some((member) => member[field] === false);
+              const canTurnOff = selectedOnPage.some((member) => member[field] !== false);
+              return (
+                <div key={field} className="flex items-center gap-2.5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">{column}:</span>
+                  <div className="inline-flex overflow-hidden rounded-lg border border-slate-200 shadow-sm">
+                    <button
+                      type="button"
+                      aria-label={`Turn ${label.toLowerCase()} on for the selected members`}
+                      disabled={bulkSwitch !== null || !canTurnOn}
+                      title={canTurnOn ? undefined : `${label} is already on for every selected member`}
+                      onClick={() => handleSelectedSwitch(field, label, true)}
+                      className="px-4 py-2 text-[11px] font-bold uppercase tracking-wider text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-slate-50"
+                    >
+                      On
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Turn ${label.toLowerCase()} off for the selected members`}
+                      disabled={bulkSwitch !== null || !canTurnOff}
+                      title={canTurnOff ? undefined : `${label} is already off for every selected member`}
+                      onClick={() => handleSelectedSwitch(field, label, false)}
+                      className="border-l border-slate-200 px-4 py-2 text-[11px] font-bold uppercase tracking-wider text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-slate-50"
+                    >
+                      Off
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
+            >
+              <span aria-hidden="true">&times;</span> Clear selection
+            </button>
+          </div>
+        )}
+
+        <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="overflow-x-auto pb-4">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
                 <tr>
-                  <th className="w-10 px-6 py-4">
+                  <th className="w-10 pl-4 py-4">
                     <input
                       type="checkbox"
-                      checked={allOnPageSelected}
-                      onChange={toggleSelectAllOnPage}
                       aria-label="Select all members on this page"
-                      className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                      title={allOnPageSelected ? "Clear the selection" : "Select all members on this page"}
+                      ref={(el) => { if (el) el.indeterminate = selectedOnPage.length > 0 && !allOnPageSelected; }}
+                      checked={allOnPageSelected}
+                      disabled={items.length === 0}
+                      onChange={toggleSelectAllOnPage}
+                      className="h-4 w-4 cursor-pointer rounded border-slate-300 text-blue-600 focus:ring-blue-500/40"
                     />
                   </th>
-                  <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-wider">Employee</th>
-                  <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-wider">Screenshot Frequency</th>
-                  <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-wider">Desktop Switches</th>
-                  <th className="px-6 py-4 text-right text-[11px] font-bold uppercase tracking-wider">Action</th>
+                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Employee</th>
+                  {DESKTOP_SWITCHES.map(({ field, label, column }) => (
+                    <th key={field} className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">
+                      <div className="flex items-center gap-3">
+                        <span>{column}</span>
+                        <OnOffSwitch
+                          on={items.length > 0 && items.every((member) => member[field] !== false)}
+                          busy={bulkSwitch !== null || items.length === 0}
+                          label={`${label} for all members`}
+                          title={`Turn ${label.toLowerCase()} on or off for every member`}
+                          onChange={(on) => handleAllSwitch(field, label, on)}
+                        />
+                      </div>
+                    </th>
+                  ))}
+                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px] text-right">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {showFirstLoad ? (
                   <tr>
-                    <td colSpan={5} className="px-6 py-8">
+                    <td colSpan={COLUMN_COUNT} className="px-6 py-8">
                       <LoadingSpinner />
                     </td>
                   </tr>
                 ) : isError ? (
                   <tr>
-                    <td colSpan={5} className="px-6 py-12 text-center text-red-500">
+                    <td colSpan={COLUMN_COUNT} className="px-6 py-12 text-center text-red-500">
                       Failed to fetch members. Please try again.
                     </td>
                   </tr>
                 ) : items.length > 0 ? (
                   items.map((member) => (
                     <tr key={member.id} className={`transition hover:bg-slate-50/50 ${selectedIds.has(member.id) ? "bg-blue-50/40" : ""}`}>
-                      <td className="px-6 py-4">
+                      <td className="w-10 pl-4 py-4">
                         <input
                           type="checkbox"
                           checked={selectedIds.has(member.id)}
                           onChange={() => toggleSelected(member.id)}
                           aria-label={`Select ${member.name}`}
-                          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                          className="h-4 w-4 cursor-pointer rounded border-slate-300 text-blue-600 focus:ring-blue-500/40"
                         />
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-4">
                         <div className="flex items-center gap-3">
                           <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white shadow-sm ${GRADIENT_CYAN_PURPLE}`}>
                             {(member.name || "U").substring(0, 2).toUpperCase()}
                           </div>
                           <div className="min-w-0">
-                            <div className="truncate font-bold text-slate-800">{member.name || "-"}</div>
-                            <div className="mt-0.5 truncate text-xs text-slate-500">{member.email || "-"}</div>
+                            <div className="font-bold text-slate-800 truncate">{member.name || "-"}</div>
+                            <div className="text-xs text-slate-500 truncate mt-0.5">{member.email || "-"}</div>
                           </div>
                         </div>
                       </td>
-                      <td className="px-6 py-4">
-                        <MinutesPill minutes={member.capture_frequency ?? 10} />
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex gap-1.5">
-                          <OnOffPill label="Screenshots" on={member.screenshots_enabled !== false} />
-                          <OnOffPill label="Notifications" on={member.notifications_enabled !== false} />
-                          <OnOffPill label="Activity" on={member.activity_tracking_enabled !== false} />
+                      {DESKTOP_SWITCHES.map(({ field, label }) => {
+                        const on = member[field] !== false;
+                        return (
+                          <td key={field} className="px-4 py-4">
+                            <OnOffSwitch
+                              on={on}
+                              busy={pendingSwitches.has(`${member.id}:${field}`) || bulkSwitch === field}
+                              label={`${label} for ${member.name}`}
+                              title={`Click to turn ${label.toLowerCase()} ${on ? "off" : "on"} for ${member.name}`}
+                              onChange={(next) => handleRowSwitch(member, field, label, next)}
+                            />
+                          </td>
+                        );
+                      })}
+                      <td className="px-4 py-4 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => openDrawer(member)}
+                            className="rounded px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-[#14B8A6] border border-[#14B8A6]/30 transition hover:bg-[#14B8A6]/10"
+                          >
+                            Configure
+                          </button>
                         </div>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button
-                          onClick={() => openDrawer(member)}
-                          className="inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-[#14B8A6] border border-[#14B8A6]/30 transition hover:bg-[#14B8A6]/10"
-                        >
-                          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                          </svg>
-                          Configure
-                        </button>
                       </td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={5} className="px-6 py-12 text-center text-slate-500">
+                    <td colSpan={COLUMN_COUNT} className="px-6 py-12 text-center text-slate-500">
                       No members found matching your criteria.
                     </td>
                   </tr>
@@ -421,142 +516,62 @@ export const AdminUserManagement: React.FC = () => {
         </div>
 
         {totalPages > 1 && (
-          <Pagination page={page} totalPages={totalPages} totalItems={data?.total || 0} limit={pageSize} setPage={setPage} setLimit={setPageSize} />
+          <Pagination page={page} totalPages={totalPages} totalItems={data?.total || 0} limit={pageSize} setPage={setPage} setLimit={setPageSize} noun="members" />
         )}
       </div>
 
-      {/* Right slide-over: Tracking Settings for one or several members */}
-      <div className={`fixed inset-0 z-50 overflow-hidden ${drawerTargets ? "pointer-events-auto" : "pointer-events-none"}`}>
+      {/* Right slide-over: one member's desktop switches */}
+      <div className={`fixed inset-0 z-50 overflow-hidden ${drawerMember ? "pointer-events-auto" : "pointer-events-none"}`}>
         <div
-          className={`absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity duration-300 ${drawerTargets ? "opacity-100" : "opacity-0"}`}
+          className={`absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity duration-300 ${drawerMember ? "opacity-100" : "opacity-0"}`}
           onClick={closeDrawer}
         />
-        <div className={`absolute inset-y-0 right-0 w-full max-w-md bg-white shadow-2xl transition-transform duration-300 ease-in-out ${drawerTargets ? "translate-x-0" : "translate-x-full"}`}>
-          {drawerTargets && drawerTargets.length > 0 && form && (
+        <div className={`absolute inset-y-0 right-0 w-full max-w-md bg-white shadow-2xl transition-transform duration-300 ease-in-out ${drawerMember ? "translate-x-0" : "translate-x-full"}`}>
+          {drawerMember && form && (
             <div className="flex h-full flex-col">
-              {/* Drawer Header — matches the Create/Edit Project drawer */}
               <div className="flex items-center justify-between border-b border-slate-100 px-6 py-5">
                 <div className="min-w-0">
-                  <h2 className="truncate text-xl font-black text-slate-800">
-                    {isBulk ? `${drawerTargets.length} members selected` : drawerTargets[0].name}
-                  </h2>
-                  <p className="mt-1 truncate text-sm font-semibold text-slate-500">
-                    {isBulk
-                      ? "Tracking settings will be applied to every selected member"
-                      : `${drawerTargets[0].designation || drawerTargets[0].role} · Tracking settings`}
+                  <h3 className="truncate text-lg font-bold text-slate-800">{drawerMember.name}</h3>
+                  <p className="mt-0.5 truncate text-xs font-medium text-slate-500">
+                    {drawerMember.designation || drawerMember.role} · Desktop switches
                   </p>
                 </div>
-                <button onClick={closeDrawer} className="rounded-full p-2 text-slate-400 transition hover:bg-slate-50 hover:text-slate-600">
-                  <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                <button type="button" onClick={closeDrawer} className="text-slate-400 hover:text-slate-600">
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>
               </div>
 
-              {/* Drawer Content */}
-              <div className="flex-1 overflow-y-auto p-6">
-                {isBulk && (
-                  <div className="mb-5 flex flex-wrap gap-1.5">
-                    {drawerTargets.map((member) => (
-                      <span key={member.id} className="rounded-md bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-600">
-                        {member.name}
-                      </span>
-                    ))}
+              <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                <p className="text-xs font-medium text-slate-500">
+                  Choose what the Monitra desktop app does for this member.
+                </p>
+                <div className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                  {DESKTOP_SWITCHES.map(({ form: key, label, help }) => {
+                    const helpId = `desktop-switch-${key}-help`;
+                    return (
+                      <div key={key} className="flex items-start justify-between gap-4 px-4 py-4">
+                        <div className="min-w-0">
+                          <span className="block text-sm font-bold text-slate-800">{label}</span>
+                          <p id={helpId} className="mt-1 text-xs leading-5 text-slate-500">{help}</p>
+                        </div>
+                        <OnOffSwitch on={form[key]} label={label} onChange={(on) => setForm({ ...form, [key]: on })} />
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] font-medium text-slate-500">
+                  Changes take effect on a running desktop within a few minutes.
+                </p>
+
+                {error && (
+                  <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-600">
+                    {error}
                   </div>
                 )}
-                <div>
-                  <h3 className="mb-4 text-xs font-black uppercase tracking-widest text-[#3B82F6]">Tracking Settings</h3>
-                  <div className="space-y-4">
-                    <div>
-                      <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">
-                        Screenshot Capture Frequency
-                      </label>
-                      <input
-                        type="number"
-                        min={MIN_CAPTURE_MINUTES}
-                        value={form.captureMinutes}
-                        onChange={(event) => setForm({ ...form, captureMinutes: event.target.value })}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
-                      />
-                      <p className="mt-1.5 text-[11px] font-semibold text-slate-500">Interval in minutes — any value the role requires (e.g., 1, 5, 10, 30)</p>
-                      {!captureValid && (
-                        <p className="mt-1.5 text-xs font-semibold text-rose-600">
-                          Must be a whole number of at least {MIN_CAPTURE_MINUTES} minute.
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="pt-2">
-                      <h3 className="text-xs font-black uppercase tracking-widest text-[#3B82F6]">Desktop Switches</h3>
-                      <p className="mt-1 text-xs font-medium text-slate-500">
-                        Choose what the Monitra desktop app does for {isBulk ? "these members" : "this member"}.
-                      </p>
-                    </div>
-                    <div className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                      {DESKTOP_SWITCHES.map(({ form: key, label, help }) => {
-                        const value = form[key];
-                        const helpId = `desktop-switch-${key}-help`;
-                        return (
-                          <div key={key} className="flex items-start justify-between gap-4 px-4 py-4">
-                            <div className="min-w-0">
-                              <span className="block text-sm font-bold text-slate-800">{label}</span>
-                              <p id={helpId} className="mt-1 text-xs leading-5 text-slate-500">{help}</p>
-                            </div>
-                            {isBulk ? (
-                              <select
-                                aria-label={label}
-                                aria-describedby={helpId}
-                                value={value === null ? "keep" : value ? "on" : "off"}
-                                onChange={(event) =>
-                                  setForm({ ...form, [key]: event.target.value === "keep" ? null : event.target.value === "on" })
-                                }
-                                className="shrink-0 rounded-lg border border-slate-200 bg-white py-1.5 pl-3 pr-8 text-sm font-semibold text-slate-700 shadow-sm focus:border-[#3B82F6] focus:outline-none focus:ring-2 focus:ring-[#3B82F6]/20"
-                              >
-                                <option value="keep">Leave unchanged</option>
-                                <option value="on">On</option>
-                                <option value="off">Off</option>
-                              </select>
-                            ) : (
-                              <label className="flex shrink-0 cursor-pointer items-center gap-2.5 pt-0.5">
-                                <span
-                                  aria-hidden="true"
-                                  className={`w-6 text-right text-xs font-bold ${value ? "text-[#3B82F6]" : "text-slate-400"}`}
-                                >
-                                  {value ? "On" : "Off"}
-                                </span>
-                                <span className="relative inline-flex h-6 w-11 items-center">
-                                  <input
-                                    type="checkbox"
-                                    role="switch"
-                                    aria-label={label}
-                                    aria-describedby={helpId}
-                                    checked={value === true}
-                                    onChange={(event) => setForm({ ...form, [key]: event.target.checked })}
-                                    className="peer sr-only"
-                                  />
-                                  <span className="absolute inset-0 rounded-full bg-slate-300 transition-colors peer-checked:bg-[#3B82F6] peer-focus-visible:ring-2 peer-focus-visible:ring-[#3B82F6]/40 peer-focus-visible:ring-offset-2" />
-                                  <span className="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform peer-checked:translate-x-5" />
-                                </span>
-                              </label>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <p className="text-[11px] font-medium text-slate-500">
-                      Changes take effect on a running desktop within a few minutes.
-                    </p>
-
-                    {error && (
-                      <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-600">
-                        {error}
-                      </div>
-                    )}
-                  </div>
-                </div>
               </div>
 
-              {/* Drawer Footer */}
               <div className="flex gap-3 border-t border-slate-100 bg-slate-50 p-6">
                 <button
                   type="button"
@@ -567,7 +582,7 @@ export const AdminUserManagement: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  disabled={!isDirty || isSaving || !captureValid}
+                  disabled={!isDirty || isSaving}
                   onClick={handleSave}
                   className={`flex-1 rounded-lg py-3 text-sm font-bold text-white shadow-md transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 ${GRADIENT_CYAN_PURPLE}`}
                 >

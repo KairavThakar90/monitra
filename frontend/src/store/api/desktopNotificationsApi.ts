@@ -72,6 +72,12 @@ export interface CustomNotificationDraft {
   enabled: boolean;
 }
 
+/** An announcement: shown once on every signed-in desktop, with no time or days. */
+export interface AnnouncementDraft {
+  title: string;
+  message: string;
+}
+
 export const ALL_WEEKDAYS = [0, 1, 2, 3, 4, 5, 6];
 export const WEEKDAY_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -143,6 +149,20 @@ export const desktopNotificationsApi = baseApi.injectEndpoints({
         },
       }),
 
+      // Not optimistic: an announcement is sent to every user, so the page only says
+      // "sent" once the server has accepted it.
+      sendDesktopAnnouncement: builder.mutation<DesktopNotifications, AnnouncementDraft>({
+        query: (body) => ({ url: ENDPOINTS.DESKTOP_NOTIFICATIONS.PUSH, method: 'POST', body }),
+        async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+          try {
+            const { data } = await queryFulfilled;
+            replaceCache(dispatch as never, data);
+          } catch {
+            /* nothing was applied optimistically */
+          }
+        },
+      }),
+
       createCustomNotification: builder.mutation<DesktopNotifications, CustomNotificationDraft>({
         query: (body) => ({ url: ENDPOINTS.DESKTOP_NOTIFICATIONS.CUSTOM, method: 'POST', body }),
         async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
@@ -200,6 +220,7 @@ export const {
   useGetDesktopNotificationsQuery,
   useUpdateBuiltinNotificationMutation,
   useUpdateDesktopNotificationLimitMutation,
+  useSendDesktopAnnouncementMutation,
   useCreateCustomNotificationMutation,
   useUpdateCustomNotificationMutation,
   useDeleteCustomNotificationMutation,

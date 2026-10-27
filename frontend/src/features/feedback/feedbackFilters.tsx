@@ -289,40 +289,71 @@ export const CategorySelect: React.FC<{
  * Screenshot Privacy rule list uses it).
  */
 export function PillTabs<T extends string>({
-  options, value, onChange, counts, label,
+  options, value, onChange, counts, label, idPrefix,
 }: {
   options: { id: T; label: string }[];
   value: T;
   onChange: (value: T) => void;
-  counts: Record<T, number>;
+  /**
+   * The badge beside each label: a count, a short text, or `null` for none.
+   * Leave it out for tabs that have nothing to count.
+   */
+  counts?: Record<T, number | string | null>;
   /** The accessible name of the tab list. */
   label: string;
+  /**
+   * When the tabs switch panels that stay in the page, the prefix that links
+   * them: each tab is `{idPrefix}-{id}-tab` and controls `{idPrefix}-{id}-panel`.
+   */
+  idPrefix?: string;
 }) {
+  // Arrow keys, Home and End move between tabs, as the tabs pattern expects.
+  const onKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const last = options.length - 1;
+    const next =
+      event.key === "ArrowRight" ? (index === last ? 0 : index + 1)
+      : event.key === "ArrowLeft" ? (index === 0 ? last : index - 1)
+      : event.key === "Home" ? 0
+      : event.key === "End" ? last
+      : null;
+    if (next === null) return;
+    event.preventDefault();
+    onChange(options[next].id);
+    (event.currentTarget.parentElement?.children[next] as HTMLElement | undefined)?.focus();
+  };
+
   return (
     <div className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-[#F1F5F9] p-1" role="tablist" aria-label={label}>
-      {options.map((item) => {
+      {options.map((item, index) => {
         const active = value === item.id;
+        const badge = counts ? counts[item.id] : null;
         return (
           <button
             key={item.id}
             type="button"
             role="tab"
+            id={idPrefix ? `${idPrefix}-${item.id}-tab` : undefined}
             aria-selected={active}
+            aria-controls={idPrefix ? `${idPrefix}-${item.id}-panel` : undefined}
+            tabIndex={active ? 0 : -1}
             onClick={() => onChange(item.id)}
+            onKeyDown={(event) => onKeyDown(event, index)}
             className={
               "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-bold transition " +
               (active ? "bg-white text-[#0F172A] shadow-sm" : "text-[#64748B] hover:text-[#334155]")
             }
           >
             {item.label}
-            <span
-              className={
-                "rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums " +
-                (active ? "bg-[#EFF6FF] text-[#2563EB]" : "bg-[#E2E8F0] text-[#64748B]")
-              }
-            >
-              {counts[item.id]}
-            </span>
+            {badge !== null && badge !== undefined && (
+              <span
+                className={
+                  "rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums " +
+                  (active ? "bg-[#EFF6FF] text-[#2563EB]" : "bg-[#E2E8F0] text-[#64748B]")
+                }
+              >
+                {badge}
+              </span>
+            )}
           </button>
         );
       })}

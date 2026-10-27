@@ -9,23 +9,28 @@ import { useGetAllMembersQuery, useUpdateMemberMutation, type Member } from "../
 import { isCapturableMember, idleIsOn } from "../../store/api/screenshotSettingsApi";
 
 /**
- * Screenshot Management -> Idle detection.
+ * Screenshot Management -> Idle management.
  *
- * One row per active member: whether the desktop watches that member for
+ * One row per active member: how often a screenshot is taken for that member
+ * (`capture_frequency`, minutes), whether the desktop watches them for
  * inactivity (`idle_enabled`) and after how many minutes of it (`idle_minutes`).
- * Both already live on the member and are saved through the ordinary member
- * update (`PATCH /members/{id}`). This is the one place they are set -- User
- * Management no longer edits them -- so there is a single table to change idle
- * detection, and a save sends only the field(s) that changed.
+ * All three already live on the member and are saved through the ordinary member
+ * update (`PATCH /members/{id}`). Idle detection is set only here -- User
+ * Management no longer edits it. The screenshot frequency is the same field User
+ * Management's edit drawer writes, so either place may change it. A save sends
+ * only the field(s) that changed.
  *
- * The 1-120 minute range is the server's (`IdleMinutes`); the page refuses only
- * what the server would refuse. Clients and the release service account are never
+ * The 1-120 minute idle range is the server's (`IdleMinutes`), and the capture
+ * frequency is any whole number of minutes from 1 (`CaptureFrequencyMinutes`, no
+ * ceiling); the page refuses only what the server would refuse. Clients and the release service account are never
  * listed. Absent `idle_enabled` / `idle_minutes` mean the defaults (on, 5).
  */
 
 const MIN_IDLE_MINUTES = 1;
 const MAX_IDLE_MINUTES = 120;
 const DEFAULT_IDLE_MINUTES = 5;
+const MIN_CAPTURE_MINUTES = 1;
+const DEFAULT_CAPTURE_MINUTES = 10;
 
 const inputClass =
   "w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15";
@@ -33,6 +38,7 @@ const inputClass =
 
 const errorData = (error: unknown) => (error as { data?: unknown } | undefined)?.data;
 const serverMinutes = (member: Member) => member.idle_minutes ?? DEFAULT_IDLE_MINUTES;
+const serverCapture = (member: Member) => member.capture_frequency ?? DEFAULT_CAPTURE_MINUTES;
 
 const IdleSwitch: React.FC<{ name: string; on: boolean; busy: boolean; onChange: (next: boolean) => void }> = ({
   name,
@@ -68,54 +74,66 @@ const IdleRow: React.FC<{ member: Member }> = ({ member }) => {
 
   const savedEnabled = idleIsOn(member);
   const savedMinutes = serverMinutes(member);
+  const savedCapture = serverCapture(member);
 
   const [enabled, setEnabled] = useState(savedEnabled);
   const [minutes, setMinutes] = useState(String(savedMinutes));
+  const [capture, setCapture] = useState(String(savedCapture));
   const [busy, setBusy] = useState(false);
 
   // What the server holds is the truth: after a save, a rollback, or another
   // administrator's change the row shows that. Keyed on the values, so a
   // refetch that returns the same thing never overwrites typing.
-  const serverKey = `${savedEnabled}|${savedMinutes}`;
+  const serverKey = `${savedEnabled}|${savedMinutes}|${savedCapture}`;
   const syncedKey = useRef(serverKey);
   useEffect(() => {
     if (syncedKey.current === serverKey) return;
     syncedKey.current = serverKey;
     setEnabled(savedEnabled);
     setMinutes(String(savedMinutes));
-  }, [serverKey, savedEnabled, savedMinutes]);
+    setCapture(String(savedCapture));
+  }, [serverKey, savedEnabled, savedMinutes, savedCapture]);
 
   const check = validateInteger(minutes, {
     fieldLabel: "Idle time",
     minimum: MIN_IDLE_MINUTES,
     maximum: MAX_IDLE_MINUTES,
   });
+  const captureCheck = validateInteger(capture, { fieldLabel: "Screenshot frequency", minimum: MIN_CAPTURE_MINUTES });
   const enabledChanged = enabled !== savedEnabled;
   // Compared as text so a stored value outside the range is "unchanged" until it is edited.
   const minutesChanged = minutes.trim() !== String(savedMinutes);
+  const captureChanged = capture.trim() !== String(savedCapture);
   const minutesError = minutesChanged && !check.ok ? check.error : null;
-  const dirty = (enabledChanged || minutesChanged) && (!minutesChanged || check.ok);
+  const captureError = captureChanged && !captureCheck.ok ? captureCheck.error : null;
+  const dirty =
+    (enabledChanged || minutesChanged || captureChanged) &&
+    (!minutesChanged || check.ok) &&
+    (!captureChanged || captureCheck.ok);
 
   const save = async () => {
     if (!dirty || busy) return;
     const body: Partial<Member> = {};
     if (enabledChanged) body.idle_enabled = enabled;
     if (minutesChanged && check.ok) body.idle_minutes = check.value;
+    if (captureChanged && captureCheck.ok) body.capture_frequency = captureCheck.value;
     setBusy(true);
     try {
       await updateMember({ id: member.id, body }).unwrap();
-      showToast(`Idle detection saved for ${member.name}.`, "success");
+      showToast(`Idle management saved for ${member.name}.`, "success");
     } catch (exc) {
       // The cached row has already been put back; put the row's fields back too.
       setEnabled(savedEnabled);
       setMinutes(String(savedMinutes));
-      showToast(formatApiError(errorData(exc), `Could not save idle detection for ${member.name}.`), "error");
+      setCapture(String(savedCapture));
+      showToast(formatApiError(errorData(exc), `Could not save idle management for ${member.name}.`), "error");
     } finally {
       setBusy(false);
     }
   };
 
   const errorId = `idle-minutes-${member.id}-error`;
+  const captureErrorId = `capture-minutes-${member.id}-error`;
 
   return (
     <tr>
@@ -124,6 +142,23 @@ const IdleRow: React.FC<{ member: Member }> = ({ member }) => {
         <div className="text-xs text-slate-500">{member.email}</div>
       </td>
       <td className="px-4 py-3 capitalize text-slate-600">{(member.role || "").replace(/_/g, " ")}</td>
+      <td className="px-4 py-3">
+        <div className="w-28">
+          <input
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            aria-label={`Screenshot frequency in minutes for ${member.name}`}
+            value={capture}
+            disabled={busy}
+            onChange={(event) => setCapture(event.target.value)}
+            aria-invalid={captureError ? true : undefined}
+            aria-describedby={captureError ? captureErrorId : undefined}
+            className={inputClass + (captureError ? " border-rose-300" : " border-slate-200")}
+          />
+          <FieldError id={captureErrorId} message={captureError} />
+        </div>
+      </td>
       <td className="px-4 py-3">
         <IdleSwitch name={member.name} on={enabled} busy={busy} onChange={setEnabled} />
       </td>
@@ -237,6 +272,7 @@ export const IdleDetection: React.FC = () => {
                   <tr>
                     <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-wider">Member</th>
                     <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-wider">Role</th>
+                    <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-wider">Screenshot frequency (min)</th>
                     <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-wider">Idle detection</th>
                     <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-wider">Idle time (min)</th>
                     <th className="px-4 py-3 text-right text-[11px] font-bold uppercase tracking-wider">
@@ -247,7 +283,7 @@ export const IdleDetection: React.FC = () => {
                 <tbody className="divide-y divide-slate-100">
                   {rows.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="px-6 py-10 text-center text-sm font-semibold text-slate-500">
+                      <td colSpan={6} className="px-6 py-10 text-center text-sm font-semibold text-slate-500">
                         No members match your search.
                       </td>
                     </tr>
@@ -258,7 +294,9 @@ export const IdleDetection: React.FC = () => {
               </table>
             </div>
             <p className="mt-2 text-xs text-slate-500">
-              Idle time is a whole number of minutes, from {MIN_IDLE_MINUTES} to {MAX_IDLE_MINUTES}.
+              Screenshot frequency is a whole number of minutes, at least {MIN_CAPTURE_MINUTES}: one screenshot is taken at
+              a random moment in every interval while the member is tracking time. Idle time is a whole number of minutes,
+              from {MIN_IDLE_MINUTES} to {MAX_IDLE_MINUTES}.
             </p>
             <Pagination
               page={currentPage}
