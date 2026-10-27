@@ -21,12 +21,16 @@ here:
 ## 1. Cutting a release
 
 1. **Decide the version bump.** `major.minor.patch`, semver as `version.py`
-   describes. Edit `VERSION` in `desktop/version.py`. Work on a branch.
-2. **Write the changelog entry.** Add a `## [<version>]` section to
-   `desktop/CHANGELOG.md` describing what changed *for the person installing
-   it*. This is enforced: `tools/check_changelog.py` runs in CI and fails the
-   build if the version in `version.py` has no entry. Auto-generated commit
-   titles are not a substitute — they answer a different question.
+   describes. Edit `VERSION` in `desktop/version.py`. Work on a branch. **A
+   version that has been built is spent**: 1.3.2 was built twice from different
+   commits, so the next change after a build is always a new number.
+2. **Write the changelog entry.** Move everything under `## [Unreleased]` in
+   `desktop/CHANGELOG.md` to a `## [<version>]` section describing what changed
+   *for the person installing it*, leaving `[Unreleased]` empty. This is
+   enforced twice: `tools/check_changelog.py` fails the build if the version in
+   `version.py` has no entry, and on a tag build (`--release`) it also fails if
+   anything is still filed under `[Unreleased]`. Auto-generated commit titles are
+   not a substitute — they answer a different question.
 3. **Run the full local gate**, from `desktop/`:
 
    ```bash
@@ -107,19 +111,48 @@ present once and named for this version, each matching its checksum, the tag
 agreeing with `version.py`, and — when the repository variable
 `REQUIRE_SIGNED_RELEASE` is `true` — every one validly signed.
 
-1. **Publish the draft GitHub release.** Until this happens the asset URLs in
-   the draft rows are not reachable, so do this first.
+1. **Put the installers where clients download them: the website.** The
+   source repository is **private** (since October 2026), so a GitHub release's
+   assets answer `404` to every installed client, which carries no GitHub
+   credential and must never be given one. The clients (1.3.3+) and the backend
+   fetch from `https://staff.peakworkos.com/download_app_files/<built filename>`,
+   the same folder the download page's three buttons use, and that is what the
+   registered rows point at when the repository variable
+   `RELEASE_DOWNLOAD_BASE_URL` names it ([Desktop_Artifact_Hosting.md](Desktop_Artifact_Hosting.md) §1, §4).
 
-   > **Release assets are public only if their repository is.** GitHub has no
-   > per-asset public switch: a private repository's release assets answer `404`
-   > to everyone without access, and the installed client carries no GitHub
-   > credential (and must never be given one). The source repository is
-   > **currently public**, which is why downloads work today. To keep the source
-   > private, publish installers to a separate public, source-free repository
-   > through `RELEASES_REPO` / `RELEASES_REPO_TOKEN`. The full plan, order of
-   > operations and rollback are in
-   > [Desktop_Artifact_Hosting.md](Desktop_Artifact_Hosting.md) §5 — **do not
-   > change the source repository's visibility before it is done.**
+   *Operator steps, in this order — none of them is automated yet:*
+
+   1. Download the three installers from the run's artifacts (or the draft
+      GitHub release) and check each against its `.sha256` sidecar.
+   2. Copy them, **under their built names**, into
+      `frontend/public/download_app_files/`, bump `DOWNLOAD_VERSION` in
+      `frontend/src/api/desktopRelease.ts` to this version (and the pinned
+      paths in `frontend/src/api/__tests__/desktopRelease.test.ts`), run
+      `npm run build && npm run lint`, commit, and deploy the frontend.
+      Remove the previous version's files only after the new rows are
+      published and `GET /desktop/releases/downloads` names this version.
+   3. **Prove the downloads** before touching the backend:
+
+      ```
+      python desktop/tools/verify_download_urls.py \
+          --base-url https://staff.peakworkos.com/download_app_files/ \
+          --version <version> --artifacts <folder with the CI outputs>
+      ```
+
+      All three must print `OK` with matching digests. On 2026-10-27 the
+      website served the `.exe` and an HTML `404` for both `.dmg` files: IIS
+      had no MIME type for `.dmg`. That is a one-time server fix
+      ([Desktop_Artifact_Hosting.md](Desktop_Artifact_Hosting.md) §7.7) and
+      the reason this check exists.
+   4. Publishing the draft GitHub release is now optional (archive and
+      rollback inventory for people with repository access); the clients never
+      read it. Google Drive, if used to hand installers to someone, is not a
+      release host and is never registered.
+
+   If the release job's **Register the release with the backend** step failed
+   (it fails the job on a refused credential since 1.3.3), fix the cause —
+   usually `MONITRA_RELEASE_CREDENTIAL`, see §8 — and re-run the job: rows
+   already registered answer `409` and count as done.
 2. **Ask whether the version is ready**, as a signed-in administrator:
 
    ```
@@ -277,15 +310,34 @@ Honest list, so nobody assumes otherwise:
   against a real signed Inno Setup upgrade of a real installation.
 - **macOS on real hardware.** Every macOS build so far has been produced and
   smoke-tested in CI only, which also covers the macOS *update* path.
-- **Keeping the source repository private** — the plan exists
-  ([Desktop_Artifact_Hosting.md](Desktop_Artifact_Hosting.md) §5); none of it has
-  been applied.
+- **The source repository is private and the website is the release host**
+  (2026-10-27). Still to do, all owner-side: set the repository variable
+  `RELEASE_DOWNLOAD_BASE_URL=https://staff.peakworkos.com/download_app_files/`;
+  set `DESKTOP_DOWNLOAD_URL_PREFIXES` to the same value in production; give
+  IIS a MIME type for `.dmg` (the Mac buttons answer 404 today). Copying the
+  artifacts to the website is a manual step (§3.1).
+- **The production release table is stale.** On 2026-10-27 it offered 1.1.1
+  on every platform, with GitHub URLs that answer 404. Nothing newer was ever
+  registered: the 1.3.2 run's registration answered 401 and the step was
+  non-fatal. The 1.1.1 rows should be rolled back once 1.3.3 is published, so
+  no client is pointed at a dead link.
 - **CI secrets for release registration.** `MONITRA_API_BASE_URL` plus
   `MONITRA_RELEASE_CREDENTIAL`. Without these the release job skips
-  registration and says so; the artifacts and the GitHub release are
-  unaffected, and the rows can be registered by re-running that step later.
+  registration and says so; **with them set and refused, the job now fails**
+  (1.3.3), and is re-run once the credential is fixed. Rotate it against
+  production with `provision_release_credential.py` (§8) — the key stored today
+  was refused by production on the 1.3.2 run.
   `MONITRA_RELEASE_TOKEN` is still honoured for registering a build by hand
   from an existing session, and is unset in CI.
+- **Clients older than 1.3.3 cannot self-update at all**: the backend floor
+  (`DESKTOP_AUTO_UPDATE_MIN_CLIENT_VERSION`) makes them announce-only, and they
+  trust only `github.com` for downloads. The 1.3.3 announcement must say
+  "install this one by hand". Adoption is visible in `GET /desktop/client-versions`.
+- **The reminder policy** (1.3.3): "Later" hides the prompt for 24 h, it returns
+  at the first check after that, and after three postponements or seven days it
+  is a *final reminder* — still optional. Only `force_update` /
+  `min_supported_version` on the row make an update mandatory, and neither has
+  been used for real yet.
 - **The release account still has to be provisioned.** Nothing creates it
   automatically. See §8.
 - **Rollback cannot downgrade a client already on the bad build** (§5.3).

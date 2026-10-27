@@ -1982,6 +1982,36 @@ list through `for /f` rather than a pipe, and use absolute `System32` paths.
 `tests/test_update_hardening.py::TestWindowsHelper` runs the real `cmd.exe`
 helper and fails on both.
 
+### ❌ Do not run the Inno Setup installer silently without `/CURRENTUSER`
+
+```bat
+start "" /wait "%MONITRA_UPDATE_ARTIFACT%" /SILENT /SP- /NORESTART /CLOSEAPPLICATIONS
+```
+
+**What it caused:** `monitra.iss` has `PrivilegesRequiredOverridesAllowed=dialog`,
+and with that Inno asks "Select Setup Install Mode" even under `/SILENT`. The
+hidden-desktop E2E had seen (and answered) the dialog; measured on 2026-10-27
+with a real installer carrying the same directives, the run without
+`/CURRENTUSER` installed nothing in 20 s and had to be killed, the run with it
+finished in under a second. On a user's machine the helper would have sat
+behind a question nobody expected, and the next launch would have said "did not
+finish". **Instead:** pass `/CURRENTUSER` (Monitra is a per-user install), and
+refuse a machine-wide install in `installer.can_install` rather than attempt it.
+
+### ❌ Do not let the backend registration step fail quietly
+
+```yaml
+- name: Register the release with the backend
+  continue-on-error: true
+```
+
+**What it caused:** v1.3.2 was tagged, built and filed on GitHub with a green
+tick while all three registrations answered 401. The production backend went on
+offering 1.1.1 — with GitHub URLs that had meanwhile become 404 — and nothing
+said why. **Instead:** `register_release.py` exits 1 on a refused registration and
+the step is allowed to fail the job; only "not configured" (a fork) stays
+non-fatal. Re-running is idempotent (409 = already registered).
+
 ### ❌ Do not write a path into a generated script
 
 ```python

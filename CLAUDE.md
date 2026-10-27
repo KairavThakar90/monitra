@@ -256,6 +256,14 @@ These are **unimplemented features**, deliberately left out of the stability wor
    artifacts are unsigned.** Registering releases as drafts and piloting them is fine;
    publishing one to real users is not, until Windows code signing and macOS
    notarization are in place. The macOS update path has also never run on real hardware.
+   **Since 2026-10-27 (1.3.3):** the source repository is private, so GitHub release
+   assets are unreachable by clients; the updater fetches from the website folder that
+   already serves the download page (`staff.peakworkos.com/download_app_files/`, the
+   only host besides `github.com` in `policy.ALLOWED_DOWNLOAD_HOSTS`). A refused
+   backend registration fails the release job. "Later" follows a persisted reminder
+   policy (24 h, final after 3 postponements or 7 days) and never escalates to
+   mandatory by itself. `docs/reports/monitra-auto-update-audit.md` and
+   `docs/reports/monitra-auto-update-implementation-2026-10-27.md` record the state.
 7. **Abandoned-timer reconciliation — implemented (2026-10-12), report-only until the
    owner switches it on.** A running entry is only as live as its desktop:
    `time_entries.last_seen_at` (heartbeat and uploads) lets the server measure a silent

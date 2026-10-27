@@ -837,6 +837,10 @@ tick()  ->  first tick: wait 30 s (or the rest of the 10 h since the last
         ->  VALIDATE: a dict? `update_available` a bool? strictly newer than the
             running version? this platform and architecture?   (else: not an update)
         ->  announce once per version per session; dialog when installable
+        ->  after "Later" (persisted `updates.postponed`): no dialog for 24 h, then
+            again at the first due check; from 3 postponements or 7 days on offer it
+            is the FINAL reminder -- same dialog, different words, still "Later".
+            Only the backend's force_update / min_supported_version make it mandatory.
 
 Update Now ->  state machine: IDLE ▸ CHECKING ▸ UPDATE_AVAILABLE ▸ DOWNLOADING
                ▸ VERIFYING ▸ READY_TO_INSTALL ▸ INSTALLING   (illegal moves refused)
@@ -866,10 +870,27 @@ Properties, each a rule this project has already paid for:
   successful one.
 - **The client decides where it fetches from, not the backend**
   ([policy.py](background_services/update/policy.py)). https only, no
-  credentials, default port, host on `ALLOWED_DOWNLOAD_HOSTS`; redirects are
-  followed by hand and every hop must stay https on an approved host or the
-  GitHub CDN. A URL outside that makes a release announce-only, never
-  installable. The download carries no `Authorization` header.
+  credentials, default port, host on `ALLOWED_DOWNLOAD_HOSTS` — `github.com`
+  (only useful for a *public* repository's assets; the source repository is
+  private) and, from 1.3.3, `staff.peakworkos.com`, the website folder that
+  already serves the download page's buttons; redirects are followed by hand
+  and every hop must stay https on an approved host or the GitHub CDN. A URL
+  outside that makes a release announce-only, never installable. The download
+  carries no `Authorization` header.
+- **Every step logs one `UPDATE_EVENT stage=… category=…` line** (checked,
+  offered, postponed, download-started, verified, install-started,
+  install-result, failed), with a fixed failure category (`url-refused`,
+  `disk-space`, `no-connection`, `timeout`, `http-error`,
+  `download-incomplete`, `checksum-failed`, `signature-refused`, `permission`,
+  `install-unavailable`, `installer-launch`, `cancelled`) — version, platform
+  and stage, never a token or a path with a username in it.
+- **The helper can only replace what it can reach.** Windows: a machine-wide
+  (Program Files) install is refused up front with the manual path, and the
+  installer is run with `/CURRENTUSER` because Inno's install-mode dialog
+  otherwise stops a `/SILENT` run (measured). macOS: the bundle replacement is a
+  separate script run directly when the bundle's folder is writable, or through
+  `osascript … with administrator privileges` (the system dialog) when it is
+  not; a translocated bundle or one on the mounted image is refused.
 - **Nothing unverified runs.** SHA-256 is computed while streaming and compared,
   as is the size; a mismatch, a truncated body, an HTML error page served as
   200, or a full disk deletes the partial file. After the digest, the

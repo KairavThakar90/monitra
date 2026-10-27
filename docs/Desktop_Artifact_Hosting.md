@@ -17,7 +17,42 @@ Read with [Desktop_Release_Runbook.md](Desktop_Release_Runbook.md) (the process)
 > Can an ordinary installed user download an update without any GitHub
 > credential — and can the source repository stay private?
 
-**Today: yes to the first, and only because the source repository is public.**
+**Update, 2026-10-27 — the source repository is now PRIVATE, and the answer
+changed.** Checked with unauthenticated requests on 2026-10-27:
+
+| Request | Result |
+|---|---|
+| `GET https://api.github.com/repos/KairavThakar90/monitra` | `404` (private) |
+| `GET …/releases/download/v1.3.2/Monitra-Setup-1.3.2.exe` (and v1.3.1, v1.1.1) | `404` |
+| `GET https://github.com/KairavThakar90/monitra-releases` (the §5 plan) | `404` (never created) |
+| `GET https://staff.peakworkos.com/download_app_files/Monitra-Setup-1.3.2.exe` | `200`, 32,478,743 bytes, SHA-256 equal to the CI build |
+| …`/Monitra-macOS-arm64-1.3.2.dmg` and `…x86_64-1.3.2.dmg` | **`404` (IIS has no MIME type for `.dmg` — see §7)** |
+| The updater's own downloader, production policy, against the website `.exe` | downloaded and verified; a wrong digest and a missing file were refused cleanly |
+
+So every GitHub URL the backend held became unreachable, while the website —
+which already serves the download page's three buttons from
+`frontend/public/download_app_files/` — is the one public place the installers
+live. **From 1.3.3 the client and the backend trust `staff.peakworkos.com` as a
+release host** (`policy.ALLOWED_DOWNLOAD_HOSTS`, `DESKTOP_DOWNLOAD_ALLOWED_HOSTS`),
+and `register_release.py` derives the rows' URLs from that folder when the
+repository variable `RELEASE_DOWNLOAD_BASE_URL` is set. One copy of each
+artifact, one checksum, one host to secure; no GitHub account anywhere. The §5
+installer-only repository remains a valid alternative, not a prerequisite.
+
+A client older than 1.3.3 trusts only `github.com` and therefore cannot install
+anything from the website: it is announce-only and must be upgraded by hand once
+(which the backend's `DESKTOP_AUTO_UPDATE_MIN_CLIENT_VERSION` already enforces
+for other reasons).
+
+Google Drive, which the operator has used to hand installers around, is **not** a
+release host for the updater and must not become one: a share link returns an
+HTML page (preview, virus-scan confirmation or sign-in) rather than the file, the
+URL does not carry the artifact's filename (which both the backend's filename rule
+and the client's installer-type check require), and download quotas make the
+same link fail under load. There is no Drive URL anywhere in the repository to
+test; manual Drive distribution is unaffected by any of this.
+
+The paragraphs below record the 2026-10-02 state for the history.
 
 Checked on 2026-10-02 with unauthenticated requests:
 
@@ -81,24 +116,31 @@ store, so it holds even if the release channel is compromised end to end.
 
 ## 4. Where artifacts may live
 
-The **client** fetches only from `github.com` (and, for redirects, from
-`*.githubusercontent.com`). This is deliberate and has one consequence worth
-stating plainly: **moving to a different host (object storage, a CDN, another
-domain) needs a new client first.** An installed client will refuse an address
-outside its list whatever the backend says, so the order is always: ship a
-client that allows the new host → wait for the fleet to take it → then start
-publishing there. Doing it in the other order strands every installed client.
+The **client** fetches only from `github.com` and, from 1.3.3,
+`staff.peakworkos.com` (and, for redirects, from `*.githubusercontent.com`).
+This is deliberate and has one consequence worth stating plainly: **moving to a
+different host (object storage, a CDN, another domain) needs a new client
+first.** An installed client will refuse an address outside its list whatever
+the backend says, so the order is always: ship a client that allows the new host
+→ wait for the fleet to take it → then start publishing there. Doing it in the
+other order strands every installed client — which is exactly what happened when
+the repository went private with every client trusting `github.com` alone.
 
 The **backend** adds a second, configurable layer:
 
 ```
-DESKTOP_DOWNLOAD_ALLOWED_HOSTS=github.com
-DESKTOP_DOWNLOAD_URL_PREFIXES=https://github.com/<owner>/<releases-repo>/releases/download/
+DESKTOP_DOWNLOAD_ALLOWED_HOSTS=github.com,staff.peakworkos.com
+DESKTOP_DOWNLOAD_URL_PREFIXES=https://staff.peakworkos.com/download_app_files/
 ```
 
-The prefix is what pins downloads to *one repository*. Without it any
+The prefix is what pins downloads to *one folder*. Without it any
 `github.com/<anyone>/<anything>/releases/download/…` URL is accepted by the host
 check, which is why production should set it.
+
+The website folder is `frontend/public/download_app_files/` in this repository:
+the three installers are committed there (the owner's decision, 2026-10-09, so
+every frontend deploy ships them) and served by IIS on the company server. The
+same folder is what `RELEASE_DOWNLOAD_BASE_URL` names for registration.
 
 ## 5. Keeping the source repository private
 
@@ -192,8 +234,23 @@ inventory.
 5. Keep the backend defaults: `DESKTOP_REQUIRE_SIGNED_RELEASES=true`,
    `RELEASE_EMAIL_ENABLED=false`. Turn the email on only after a verified release
    (§ the runbook), and rehearse it first with `RELEASE_EMAIL_TEST_RECIPIENTS`.
-6. Complete §5 if the source repository is to become private.
-7. Run the first real update on a **signed** build, from a pilot account, on a
+6. ~~Complete §5 if the source repository is to become private.~~ The repository
+   *is* private; the website host (§1, 2026-10-27) replaces §5 as the download
+   location. Set the repository variable **`RELEASE_DOWNLOAD_BASE_URL`** to
+   `https://staff.peakworkos.com/download_app_files/` and the backend's
+   `DESKTOP_DOWNLOAD_URL_PREFIXES` to the same value.
+7. **Give IIS a MIME type for `.dmg`.** On 2026-10-27 the website served the
+   `.exe` and answered an HTML `404` for both `.dmg` files, so the Mac download
+   buttons were broken and a registered macOS row would have failed every
+   client. On the server, for the site: IIS Manager → MIME Types → Add
+   `.dmg` = `application/x-apple-diskimage` (or in the site's `web.config`:
+   `<system.webServer><staticContent><mimeMap fileExtension=".dmg"
+   mimeType="application/x-apple-diskimage" /></staticContent></system.webServer>`).
+   *Owner, on the server* — the repository holds no `web.config` for the site and
+   this audit did not add one blind. Then prove it:
+   `python desktop/tools/verify_download_urls.py --base-url https://staff.peakworkos.com/download_app_files/ --version <v> --artifacts <ci outputs>`
+   must print three `OK` lines.
+8. Run the first real update on a **signed** build, from a pilot account, on a
    real Windows machine and a real Mac of each architecture.
 
 ## 8. Environment and configuration reference
