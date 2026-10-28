@@ -179,6 +179,11 @@ class InputProbe:
         the clock is trusted; otherwise None, with the reason in
         `diagnostics()`. Presence sampling does not go through here.
         """
+        if not self._supported:
+            # An unsupported probe says so before any platform gate: on a Mac
+            # the idle-detection switch is not the reason there is no reading.
+            self._failure_reason = f"unsupported_platform:{sys.platform}"
+            return None
         if _is_macos():
             if not mac_idle_detection_enabled():
                 self._failure_reason = (

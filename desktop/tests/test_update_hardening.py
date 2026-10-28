@@ -1225,6 +1225,8 @@ class TestWhereTheApplicationIsInstalled:
         self._frozen(monkeypatch, "win32", r"C:\Users\jo\AppData\Local\Programs\Monitra\Monitra.exe")
         assert installer.can_install() is None
 
+    @pytest.mark.skipif(os.name != "nt", reason="`C:\\...` is only a Windows path on Windows: "
+                        "`Path.relative_to` cannot place it under Program Files on a POSIX runner")
     @pytest.mark.parametrize("exe", [
         r"C:\Program Files\Monitra\Monitra.exe",
         r"C:\Program Files (x86)\Monitra\Monitra.exe",

@@ -83,7 +83,9 @@ def test_the_probe_starts_no_thread_and_installs_no_hook():
 def test_stop_is_a_safe_repeatable_no_op(probe):
     probe.stop()
     probe.stop()
-    assert probe.supported is (sys.platform == "win32")
+    # Windows reads GetLastInputInfo; macOS reads the Quartz event clock
+    # (presence probe since 1.3.3). Nothing else is supported.
+    assert probe.supported is (sys.platform in ("win32", "darwin"))
 
 
 def test_idle_seconds_is_still_measured_where_supported(probe):
@@ -92,6 +94,13 @@ def test_idle_seconds_is_still_measured_where_supported(probe):
     idle = probe.idle_seconds()
     if not probe.supported:
         assert idle is None
+        return
+    if sys.platform == "darwin":
+        # Idle detection on a Mac is behind MONITRA_MAC_IDLE_DETECTION and the
+        # clock must prove itself live first; without the switch the answer is
+        # None and the reason says so. The raw reading is `last_input_age()`.
+        assert idle is None
+        assert probe.diagnostics()["failure_reason"].startswith("macos_idle_detection_disabled")
         return
     assert idle is not None and idle >= 0
 

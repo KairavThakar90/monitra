@@ -411,7 +411,15 @@ def test_a_play_starts_the_selected_task_and_pause_stops_it(qapp, dashboard, run
     _click_circle(qapp, dashboard)  # Play
 
     assert runtime.timer.is_running() and runtime.timer.task_id == 10
-    assert _pump(qapp, lambda: runtime.timer.entry_id == 42), "the start never reached the backend"
+    # The first start goes to the backend on the pool and its answer binds the
+    # entry on the GUI thread. Driven and budgeted like `_wait_started` below:
+    # on the Windows package runner, 18 minutes into the single-process suite,
+    # the default 5 s budget was outrun with nothing wrong in the code under
+    # test (run 40684726808) -- the same loaded-runner case that helper names.
+    def bound() -> bool:
+        runtime.sync.wake()
+        return runtime.timer.entry_id == 42
+    assert _pump(qapp, bound, timeout=45.0), "the start never reached the backend"
     _wait_started(qapp, runtime, [10])
     assert runtime.backend.started[0]["project_id"] == 1
     assert _row(dashboard, 10)._is_running is True
