@@ -437,6 +437,24 @@ class SyncService(LoopService):
         except Exception:  # noqa: BLE001 -- a heartbeat must never stall the queue
             self.log.exception("heartbeat failed unexpectedly")
 
+    def _heartbeat_backoff(self, now: float, entry_id: Any) -> None:
+        """Schedule the next beat after a failed one.
+
+        Bounded exponential backoff with jitter: a backend that is reachable but
+        failing (5xx, timeouts) is not asked every 30 s by every desktop for as
+        long as it fails. 30 s, 60 s, then the heartbeat interval -- the ceiling,
+        since a silence longer than that is what the server reads as abandonment
+        -- each 50-150%. A backend that is back, a resume and a reconnect all set
+        the next beat to "now" (`request_heartbeat`, the end of a hold).
+        """
+        self._heartbeat_failures += 1
+        backoff = min(
+            self.HEARTBEAT_RETRY_SECONDS * (2 ** (self._heartbeat_failures - 1)),
+            self.HEARTBEAT_INTERVAL_SECONDS,
+        )
+        self._heartbeat_due_at = now + backoff * random.uniform(0.5, 1.5)
+        self._heartbeat_entry_id = entry_id
+
     def _heartbeat_tick(self) -> None:
         timer = getattr(self.runtime, "timer", None)
         session = timer.active_session() if timer is not None and timer.is_running() else None
@@ -474,22 +492,22 @@ class SyncService(LoopService):
                     entry_id, status, int(self.HEARTBEAT_UNSUPPORTED_RETRY_SECONDS // 60),
                 )
                 return
-            # Bounded exponential backoff with jitter: a backend that is reachable but
-            # failing (5xx, timeouts) is not asked every 30 s by every desktop for as
-            # long as it fails. 30 s, 60 s, then the heartbeat interval -- the ceiling,
-            # since a silence longer than that is what the server reads as abandonment
-            # -- each 50-150%. A backend that is back, a resume and a reconnect all set
-            # the next beat to "now" (`request_heartbeat`, the end of a hold).
-            self._heartbeat_failures += 1
-            backoff = min(
-                self.HEARTBEAT_RETRY_SECONDS * (2 ** (self._heartbeat_failures - 1)),
-                self.HEARTBEAT_INTERVAL_SECONDS,
-            )
-            self._heartbeat_due_at = now + backoff * random.uniform(0.5, 1.5)
-            self._heartbeat_entry_id = entry_id
+            self._heartbeat_backoff(now, entry_id)
             if not self._heartbeat_failing:        # one line per outage, not per attempt
                 self._heartbeat_failing = True
                 self.log.info("heartbeat for entry %s failed (%s); will retry", entry_id, exc)
+            return
+        except Exception:  # noqa: BLE001
+            # Anything the service layer did not wrap (a defect, an answer that
+            # is not JSON) takes the same backoff as a failing backend. Before
+            # this it recorded nothing, so the entry still read as "new" and
+            # the next pass -- at the busy cadence, every tenth of a second --
+            # asked again and logged a traceback each time (the soak's stub
+            # found it: 71 tracebacks in ten seconds).
+            self._heartbeat_backoff(now, entry_id)
+            if not self._heartbeat_failing:
+                self._heartbeat_failing = True
+                self.log.exception("heartbeat for entry %s failed unexpectedly; will retry", entry_id)
             return
 
         self._heartbeat_failures = 0

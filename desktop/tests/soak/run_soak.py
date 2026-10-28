@@ -96,6 +96,24 @@ class StubBackend:
         self._maybe_fail("app_usage")
         return {"ok": True}
 
+    def batch_sync_url_usage(self, entry_id, payload):
+        with self.lock:
+            self.calls["url_usage_batch"] += 1
+        self._maybe_fail("url_usage")
+        return {"ok": True}
+
+    # The liveness heartbeat the sync loop sends while a timer runs. The real
+    # service answers with the entry as the backend sees it; a missing method
+    # here used to raise AttributeError on every pass (71 tracebacks in ten
+    # seconds of the 1.3.3 soak) -- the unexpected-error path the service now
+    # backs off from, which this stub must still be able to drive.
+    def send_heartbeat(self, entry_id, timeout=None):
+        with self.lock:
+            self.calls["heartbeat"] += 1
+        self._maybe_fail("heartbeat")
+        return {"entry": {"id": entry_id, "end_time": None},
+                "closed_by_server": False, "closed_reason": None}
+
     # Task CRUD, exercised by the queue.
     def create_task(self, *a, **kw):
         with self.lock:

@@ -342,6 +342,33 @@ def test_a_heartbeat_never_raises_into_the_queue_loop(beat):
     beat.sync._send_heartbeat_if_due()        # must not raise
 
 
+def test_an_unexpected_heartbeat_error_backs_off_like_a_failing_backend(beat, caplog):
+    """A failure the service layer did not wrap must not be retried on every
+    sync pass. Before the fix nothing was recorded for the entry, so the next
+    pass (every tenth of a second while the queue is busy) asked again and
+    logged a traceback each time -- the 1.3.3 soak showed 71 in ten seconds."""
+    beat.backend.send_heartbeat.side_effect = RuntimeError("boom")
+    with caplog.at_level("INFO"):
+        beat.sync._send_heartbeat_if_due()
+        for _ in range(20):
+            beat.tick(advance=0.1)              # the busy cadence
+    assert beat.backend.send_heartbeat.call_count == 1, "one attempt, then the backoff"
+    assert beat.sync._heartbeat_due_at >= beat.now + SyncService.HEARTBEAT_RETRY_SECONDS * 0.5 - 2.1
+    assert beat.sync._heartbeat_failures == 1
+    tracebacks = [r for r in caplog.records if "failed unexpectedly" in r.getMessage()]
+    assert len(tracebacks) == 1, "one line per outage, with the traceback"
+    # Past the backoff it is asked again, and the backoff keeps growing.
+    beat.tick(advance=SyncService.HEARTBEAT_INTERVAL_SECONDS * 2)
+    assert beat.backend.send_heartbeat.call_count == 2
+    assert beat.sync._heartbeat_failures == 2
+    # A beat that gets through resets everything, as after an ApiError.
+    beat.backend.send_heartbeat.side_effect = None
+    with caplog.at_level("INFO"):
+        beat.tick(advance=SyncService.HEARTBEAT_INTERVAL_SECONDS * 2)
+    assert beat.sync._heartbeat_failures == 0
+    assert any("delivered again" in r.getMessage() for r in caplog.records)
+
+
 def test_the_beat_is_not_durable_work(beat, cache):
     beat.tick()
     assert cache.get_pending_count() == 0, "a heartbeat is not queued; the next one replaces a lost one"
