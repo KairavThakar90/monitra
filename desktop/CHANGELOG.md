@@ -20,6 +20,22 @@ re-grant a permission.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The idle-time prompt no longer stays on "Confirming with the server…" with every
+  answer greyed out.** After a crash, a sleep or a lost connection, Monitra shows the
+  prompt before the server has confirmed the gap. Once the server did confirm it, the
+  prompt did not notice and stayed locked until Monitra was restarted. It now unlocks
+  the moment the server answers, and **Retry now** also checks whether the server has
+  already confirmed before asking again.
+- **You can always get out of the idle-time prompt without being answered for.** If
+  the server is slow, down, or returns an error, the prompt offers **Retry now** (which
+  repeats exactly your answer, so an answer that did reach the server is confirmed,
+  never applied twice) and **Decide later** (which closes the prompt without deciding
+  anything). After Decide later nothing is counted or discarded and your timer keeps
+  running unchanged; the dashboard shows "An idle-time decision is waiting" until you
+  click it, open Monitra again, or sign in again, and the prompt comes back then.
+
 ### Added
 
 - **Announcements from your administrator now arrive as an Announcement card.** A message

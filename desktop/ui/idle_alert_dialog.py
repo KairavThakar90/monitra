@@ -139,7 +139,9 @@ class IdleAlertDialog(QDialog):
     #: Defaults for the provisional popup's recovery controls (the service
     #: sends its own with each status).
     RETRY_NOW_AFTER_S = 5.0
-    DEFER_AFTER_S = 60.0
+    #: Also how long a confirmed popup may show "Resuming…" before Decide
+    #: later is offered beside it.
+    DEFER_AFTER_S = 20.0
 
     #: A recovery of the same kind is logged at error level (and reported to
     #: the backend) at most this often; repeats inside the window are debug.
@@ -217,6 +219,14 @@ class IdleAlertDialog(QDialog):
         )
         self._retry_after = self.RETRY_NOW_AFTER_S
         self._defer_after = self.DEFER_AFTER_S
+        #: The service has reported that its last attempt failed (provisional
+        #: popup): the recovery controls are then offered at once.
+        self._status_failing = False
+        #: Answers that failed or timed out on this confirmed popup, and the
+        #: last button pressed, so Retry now can repeat exactly that answer.
+        self._resolve_failures = 0
+        self._last_action: Optional[str] = None
+        self._recovery_focused = False
         #: When each kind of recovery was last logged loudly, and when each
         #: was performed (for the back-off). Both keyed by kind.
         self._recovery_logged: Dict[str, float] = {}
@@ -393,19 +403,29 @@ class IdleAlertDialog(QDialog):
         recovery = QHBoxLayout()
         recovery.setSpacing(10)
         self.retry_btn = QPushButton("Retry now", self.card)
-        self.retry_btn.setObjectName("SecondaryBtn")
-        self.retry_btn.setMinimumSize(110, 32)
+        self.retry_btn.setObjectName("RecoveryBtn")
+        self.retry_btn.setMinimumSize(130, 36)
         self.retry_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.retry_btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.retry_btn.setAccessibleName("Retry now")
+        self.retry_btn.setToolTip(
+            "Ask the server again now. If your answer already reached it, it is "
+            "confirmed rather than applied twice."
+        )
         self.retry_btn.clicked.connect(self._retry_now)
         self.retry_btn.setVisible(False)
         recovery.addWidget(self.retry_btn)
         self.later_btn = QPushButton("Decide later", self.card)
-        self.later_btn.setObjectName("SecondaryBtn")
-        self.later_btn.setMinimumSize(120, 32)
+        self.later_btn.setObjectName("RecoveryBtn")
+        self.later_btn.setMinimumSize(140, 36)
         self.later_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.later_btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.later_btn.setAccessibleName("Decide later")
         self.later_btn.setToolTip(
-            "Close this for now. Your timer keeps running unchanged, and Monitra "
-            "asks again as soon as it can reach the server."
+            "Close this for now. Nothing is counted or discarded and your timer "
+            "keeps running unchanged. The decision stays pending: Monitra shows "
+            "it on the dashboard and asks again when you open it, open Monitra "
+            "again, or sign in again."
         )
         self.later_btn.clicked.connect(self._decide_later)
         self.later_btn.setVisible(False)
@@ -480,6 +500,26 @@ class IdleAlertDialog(QDialog):
             QPushButton#SecondaryBtn:disabled {{
                 color: {TEXT_MUTED};
                 border-color: {BORDER_LIGHT};
+                background-color: #FBFCFE;
+            }}
+            QPushButton#RecoveryBtn {{
+                background-color: #FFFFFF;
+                border: 2px solid {PRIMARY};
+                color: {PRIMARY};
+                font-weight: 700;
+                padding: 0 16px;
+            }}
+            QPushButton#RecoveryBtn:hover {{
+                background-color: {PRIMARY};
+                color: #FFFFFF;
+            }}
+            QPushButton#RecoveryBtn:focus {{
+                border: 2px solid {PRIMARY_HOVER};
+                background-color: #EEF2FF;
+            }}
+            QPushButton#RecoveryBtn:disabled {{
+                color: {TEXT_MUTED};
+                border-color: {BORDER_MID};
                 background-color: #FBFCFE;
             }}
             QPushButton#LinkBtn {{
@@ -572,13 +612,7 @@ class IdleAlertDialog(QDialog):
         if self._finished:
             return
         self.ensure_reachable("tick")
-        if self._locked:
-            elapsed = time.time() - self._waiting_since_epoch
-            self.retry_btn.setVisible(elapsed >= self._retry_after)
-            self.later_btn.setVisible(elapsed >= self._defer_after)
-        elif self.retry_btn.isVisible() or self.later_btn.isVisible():
-            self.retry_btn.setVisible(False)
-            self.later_btn.setVisible(False)
+        self._apply_recovery_availability()
         if (
             self._busy and not self._locked and self._busy_since is not None
             and time.monotonic() - self._busy_since > self.BUSY_LIMIT_S
@@ -781,6 +815,46 @@ class IdleAlertDialog(QDialog):
         super().resizeEvent(event)
         self._render_assignment()
 
+    def _apply_recovery_availability(self) -> None:
+        """Show Retry now and Decide later exactly when they are safe and useful.
+
+        Provisional popup: Retry after `retry_after` seconds of waiting (or at
+        once when the service reports a failure); Decide later after
+        `defer_after` seconds (or at once on a failure). Confirmed popup: both
+        the moment an answer has failed or timed out, and Decide later as
+        well once an answer has been in flight for `DEFER_AFTER_S` -- a user
+        must never sit behind "Resuming…" with nothing to press. While a
+        request is genuinely in flight the recovery buttons are disabled,
+        never hidden: a disabled button with a tooltip says what is happening;
+        a missing one says nothing.
+        """
+        if self._finished:
+            return
+        now = time.time()
+        if self._locked:
+            elapsed = now - self._waiting_since_epoch
+            retry = self._status_failing or elapsed >= self._retry_after
+            later = self._status_failing or elapsed >= self._defer_after
+            enabled = True
+        else:
+            busy_for = (time.monotonic() - self._busy_since) if (self._busy and self._busy_since) else 0.0
+            retry = self._resolve_failures > 0
+            later = self._resolve_failures > 0 or busy_for >= self.DEFER_AFTER_S
+            # Retry while an answer is in flight would be a duplicate; Decide
+            # later never is -- the in-flight answer still lands or fails in
+            # the service, and the user is simply not held hostage to it.
+            enabled = not self._busy
+        for button, show, usable in ((self.retry_btn, retry, enabled), (self.later_btn, later, True)):
+            if button.isVisible() != show:
+                button.setVisible(show)
+                if show:
+                    log.info("IDLE_POPUP_RECOVERY_OFFERED %s", button.text())
+            button.setEnabled(usable)
+        if retry and enabled and not self.retry_btn.hasFocus() and not self.later_btn.hasFocus() \
+                and not self._recovery_focused:
+            self._recovery_focused = True
+            self.retry_btn.setFocus()
+
     def _set_busy(self, busy: bool, message: str = "") -> None:
         """Disable every action while a request is in flight.
 
@@ -817,13 +891,18 @@ class IdleAlertDialog(QDialog):
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _resolve(self, action: str) -> None:
-        if self._busy or self._finished or self._locked:
+        if self._finished or self._locked:
+            return
+        if self._busy:
+            log.info("IDLE_DUPLICATE_PREVENTED an answer is already in flight; click ignored")
             return
         keep = self.keep_radio.isChecked()
+        self._last_action = action
         self._set_busy(
             True,
             "Stopping the timer…" if action == "stop" else "Resuming…",
         )
+        self._apply_recovery_availability()
         # The service is authoritative for the request; the server is
         # authoritative for the outcome. Nothing here decides whether the
         # idle time counts.
@@ -838,13 +917,16 @@ class IdleAlertDialog(QDialog):
 
     def _on_resolve_failed(self, message: str) -> None:
         self._set_busy(False)
+        self._resolve_failures += 1
         # The selection (Yes/No) is untouched, so pressing the same button
         # again repeats the same answer -- which the backend recognises, so a
         # request that did get through is confirmed rather than applied twice.
         self._set_status(
             f"{message} Your answer has not been saved yet and your timer is "
-            f"unaffected — press the button again to retry.", ERROR
+            f"unaffected — press Retry now (or the same button) to try again, "
+            f"or Decide later to come back to this.", ERROR
         )
+        self._apply_recovery_availability()
 
     def _on_period_cleared(self) -> None:
         """The period is gone (the timer stopped, or the session ended)."""
@@ -871,23 +953,64 @@ class IdleAlertDialog(QDialog):
             self._waiting_since_epoch = float(since)
         message = str(status.get("message") or "")
         failing = status.get("phase") in ("retrying", "auth")
+        self._status_failing = failing
         self._set_status(message, ERROR if failing else TEXT_SECONDARY)
+        self._apply_recovery_availability()
 
     def _retry_now(self) -> None:
-        if not self._locked or self._finished:
+        """Try again, or reconcile: whichever is the truth of the moment.
+
+        Provisional popup: if the service already holds a confirmed period for
+        this gap (the confirmation was missed), bind it -- nothing is sent --
+        else ask the service to report the held stretch again now. Confirmed
+        popup: re-send the last answer; the backend recognises a repeat of the
+        same answer, so one that did get through is confirmed, never applied
+        twice.
+        """
+        if self._finished or self._busy:
             return
-        self._set_status("Confirming with the server…", TEXT_SECONDARY)
-        retry = getattr(self.api.idle, "retry_interruption_now", None)
-        if retry is not None:
-            retry()
+        if self._locked:
+            pending_period = getattr(self.api.idle, "pending_period", None)
+            pending = pending_period() if pending_period is not None else None
+            if pending and self.is_provisional_for(pending):
+                log.info("IDLE_RETRY_NOW reconciled: the backend already holds period %s", pending.get("id"))
+                self.bind_confirmed_period(pending)
+                acked = getattr(self.api.idle, "popup_shown", None)
+                if acked is not None:
+                    acked(pending.get("id"))
+                return
+            log.info("IDLE_RETRY_NOW asking the service to report the held stretch again")
+            self._set_status("Confirming with the server…", TEXT_SECONDARY)
+            retry = getattr(self.api.idle, "retry_interruption_now", None)
+            if retry is not None:
+                retry()
+            return
+        if self._last_action:
+            log.info("IDLE_RETRY_NOW re-sending the last answer (%s)", self._last_action)
+            self._resolve(self._last_action)
 
     def _decide_later(self) -> None:
-        """Put the unconfirmed popup away; the service keeps the gap and asks again."""
-        if not self._locked or self._finished:
+        """Put the popup away without answering; nothing is counted or discarded.
+
+        Provisional: the service keeps the held stretch and keeps trying to
+        report it. Confirmed: the period stays pending *on the backend* and
+        in the service (`defer_pending`), the dashboard shows that a decision
+        is waiting, and the popup comes back when the user opens it, opens
+        Monitra again, or signs in again -- never on a timer, never answered
+        for them.
+        """
+        if self._finished:
             return
-        defer = getattr(self.api.idle, "defer_interruption", None)
+        if self._locked:
+            defer = getattr(self.api.idle, "defer_interruption", None)
+        else:
+            defer = getattr(self.api.idle, "defer_pending", None)
         if defer is not None:
             defer()
+        log.warning(
+            "IDLE_DECISION_DEFERRED by the user (%s popup, period=%s)",
+            "provisional" if self._locked else "confirmed", self._period.get("id"),
+        )
         self._finished = True
         self._tick_timer.stop()
         self._close_reassign_dialog()
@@ -902,12 +1025,27 @@ class IdleAlertDialog(QDialog):
         confirmation of the dialog already on screen" from "this is an
         unrelated, fresh idle period" — the latter still builds a normal
         dialog exactly as before this feature existed.
+
+        The backend's period (`IdlePeriodResponse`) carries no `client_op`;
+        only the service's own copy may. Matching on that field alone left a
+        provisional popup locked for ever once the backend had confirmed its
+        gap (the dashboard "raised" the locked dialog instead of unlocking
+        it). So: a `client_op` is compared when the period has one; the entry
+        id is compared when both sides have one; and otherwise the one-period
+        invariant decides -- the service holds at most one pending period, so
+        a confirmation arriving while this dialog is still provisional is the
+        confirmation of this gap.
         """
         if not self._locked or self._finished:
             return False
-        if self._provisional_client_op is None:
-            return True  # nothing to compare against; assume it is this one
-        return period.get("client_op") == self._provisional_client_op
+        period_op = period.get("client_op")
+        if period_op is not None and self._provisional_client_op is not None:
+            return period_op == self._provisional_client_op
+        mine = self._period.get("time_entry_id") or self._period.get("entry_id")
+        theirs = period.get("time_entry_id")
+        if mine is not None and theirs is not None:
+            return int(mine) == int(theirs)
+        return True
 
     def bind_confirmed_period(self, period: Dict[str, Any]) -> None:
         """The backend's real idle period has landed for this provisional

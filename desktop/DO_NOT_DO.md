@@ -1931,6 +1931,28 @@ the dialog already owns, and act only on an abnormal state
 `MoveWindowToDesktop`: re-showing a window keeps its desktop, and activating
 it switches the *user* to its desktop instead.
 
+### ❌ Do not match the backend's record on a field the backend does not send
+
+```python
+return period.get("client_op") == self._provisional_client_op   # IdlePeriodResponse has no client_op
+```
+
+**What it caused:** the provisional popup ("Confirming with the server…")
+could never be unlocked. The backend accepted the gap, `idle_period_opened`
+fired with the real period, the dashboard asked the dialog "is this yours?",
+the dialog compared a field that was never there, said no, and the dashboard
+raised the locked dialog again and acknowledged it. Every answer stayed
+disabled; Retry now and Decide later found nothing held to retry or defer;
+the only way out was a restart. Screenshot of 2026-10-27, a 27-minute gap on
+macOS. The tests had injected `client_op` into their fake periods, so they
+could not see it.
+
+**Instead:** match on what both sides have (`client_op` when the service added
+it, else the entry id, else the one-period invariant), put the identifying
+field *into* the emitted copy (`_pending_view`), test with the backend's real
+shape, and give the user a Retry that reconciles with what the service already
+holds.
+
 ### ❌ Do not dead-end a second launch with "Monitra is already running"
 
 ```python

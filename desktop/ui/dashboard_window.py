@@ -564,6 +564,9 @@ class DashboardWindow(QWidget):
         # it stays at the top of what the user can see however far they have
         # scrolled.
         self._action_banner = ActionBanner(self._content_scroll.viewport())
+        # A persistent banner is the pending idle decision; clicking it is
+        # the way back into the popup the user put away with Decide later.
+        self._action_banner.clicked.connect(self.reopen_idle_decision)
 
         # The divider between the task list and Activity. It owns the model of
         # how much each gets (expanded, compact or Activity's header alone) and
@@ -675,6 +678,15 @@ class DashboardWindow(QWidget):
         # confirmed it -- the popup opens now with the live count, locked,
         # and `_on_idle_period_opened` above unlocks it once confirmed.
         idle.interruption_pending.connect(self._on_interruption_pending)
+        # Decide later: the decision is still owed. Shown on the dashboard
+        # until it is answered; never answered for the user, never re-raised
+        # on a timer. `idle_period_cleared` takes the notice down with the
+        # period (the timer stopped, or the session ended).
+        idle.idle_decision_deferred.connect(self._on_idle_decision_deferred)
+        idle.idle_period_cleared.connect(self._on_idle_decision_gone)
+        # An answer that was in flight when the user chose Decide later may
+        # still land: the decision is then made, and the notice goes with it.
+        idle.resolve_succeeded.connect(lambda _r: self._on_idle_decision_gone())
 
         # A screenshot was captured. Edge-triggered from the service, which
         # emits once per capture -- at most one per ten-minute window -- so
@@ -746,6 +758,10 @@ class DashboardWindow(QWidget):
         rather than a second being built. The service holds at most one
         pending period, so the two guards agree.
         """
+        # Whatever notice said a decision was waiting: the popup is the decision.
+        gone = getattr(self, "_on_idle_decision_gone", None)
+        if gone is not None:
+            gone()
         if self._idle_dialog is not None:
             if self._idle_dialog.is_provisional_for(period):
                 # The dialog already on screen is the provisional view of
@@ -848,8 +864,39 @@ class DashboardWindow(QWidget):
         showing a number the backend no longer agrees with.
         """
         log.info("idle period resolved in UI: %s", result)
+        if not (isinstance(result, dict) and result.get("deferred")):
+            self._on_idle_decision_gone()
         self._load_today_time()
         self._update_stat_cards()
+
+    #: What the dashboard says while a decision the user deferred is still owed.
+    IDLE_DECISION_PENDING_MESSAGE = (
+        "An idle-time decision is waiting. Nothing has been counted or discarded "
+        "yet — click here to decide now."
+    )
+
+    def _on_idle_decision_deferred(self, _view: dict) -> None:
+        """Decide later: say so where the user works, until it is decided."""
+        log.info("IDLE_DECISION_PENDING_SHOWN the deferred decision is on the dashboard")
+        self._action_banner.show_persistent(self.IDLE_DECISION_PENDING_MESSAGE, "warning")
+        self.api.notify(
+            "An idle-time decision is still waiting in Monitra. Open Monitra to decide.",
+            NotificationLevel.WARNING, key="idle-decision-pending",
+        )
+
+    def _on_idle_decision_gone(self) -> None:
+        if self._action_banner.is_persistent:
+            self._action_banner.dismiss()
+
+    def reopen_idle_decision(self) -> bool:
+        """The user asked for the decision they put away. The service re-emits
+        the ordinary open edge, so the popup is built exactly as a fresh one."""
+        reopen = getattr(self.api.idle, "reopen_pending", None)
+        reopened = bool(reopen()) if reopen is not None else False
+        log.info("IDLE_DECISION_REOPEN_REQUESTED reopened=%s", reopened)
+        if reopened:
+            self._on_idle_decision_gone()
+        return reopened
 
     def _forget_idle_dialog(self, only=None) -> None:
         """Drop the recorded popup. With `only`, just that one: a replaced
@@ -902,7 +949,12 @@ class DashboardWindow(QWidget):
                 "IDLE_POPUP_REBUILT period=%s is pending with no popup on screen (reason=%s)",
                 pending.get("id"), reason,
             )
-            self._on_idle_period_opened(pending)
+            # Through the service when it can (a deferred decision is reopened
+            # and its "do not raise" flag cleared); straight to the builder
+            # otherwise.
+            reopen = getattr(self.api.idle, "reopen_pending", None)
+            if not (reopen is not None and reopen()):
+                self._on_idle_period_opened(pending)
             return self._idle_dialog is not None
         return False
 

@@ -120,7 +120,7 @@ CONFIG_WAIT_SECONDS = 20.0
 #: What the provisional popup is told. After the first the user may press
 #: "Retry now"; after the second it may be put away until the backend answers.
 CONFIRM_RETRY_NOW_AFTER_SECONDS = 5.0
-CONFIRM_DEFER_AFTER_SECONDS = 60.0
+CONFIRM_DEFER_AFTER_SECONDS = 20.0
 
 #: The dashboard must acknowledge a popup within this long (doubling each
 #: time) or it is raised again, at most `POPUP_REPEAT_LIMIT` times, after
@@ -228,6 +228,10 @@ class IdleService(LoopService):
     interruption_pending = Signal(dict)
     interruption_status = Signal(dict)
     interruption_withdrawn = Signal()
+    #: The user chose Decide later: a decision is still owed (the period, or
+    #: an empty dict while the gap is held unconfirmed). The dashboard shows
+    #: it; nothing is answered for the user. Edge: once per deferral.
+    idle_decision_deferred = Signal(dict)
     resolve_succeeded = Signal(dict)
     resolve_failed = Signal(str)
     reassign_succeeded = Signal(dict)
@@ -307,6 +311,14 @@ class IdleService(LoopService):
         #: Times the dashboard's popup had to be put back where the user could
         #: see it (minimised, off-screen, hidden, on another virtual desktop).
         self._popup_recoveries = 0
+        #: The user chose Decide later for what is pending: the popup is not
+        #: raised again by itself (no ack repeats, no re-emission when a held
+        #: gap is confirmed) until `reopen_pending()`, a restart or a sign-in.
+        self._deferred = False
+        #: An answer whose outcome is unknown (the request outlived its
+        #: deadline): the next attempt repeats the same answer and is logged
+        #: as a reconciliation rather than a fresh decision.
+        self._answer_uncertain = False
 
         # ── Diagnostics ──────────────────────────────────────────────────────
         self._ticks = 0
@@ -960,11 +972,84 @@ class IdleService(LoopService):
         self._pending = period
         self._pending_entry_id = entry_id
         self._state = IdleState.PENDING
-        self._popup_acked = False
         self._popup_emitted_at = time.monotonic()
         self._popup_repeats = 0
+        if self._deferred:
+            # The user put the provisional popup away with Decide later; the
+            # backend has now confirmed the gap. Not raised by itself: the
+            # dashboard shows a decision is waiting and the user reopens it.
+            self._popup_acked = True
+            self.log.warning(
+                "IDLE_DECISION_PENDING_DEFERRED period %s confirmed on entry %s while deferred; "
+                "not raised, shown as pending", period.get("id"), entry_id,
+            )
+            self.idle_decision_deferred.emit(self._pending_view())
+            return
+        self._popup_acked = False
         self.log.info("idle period %s pending on entry %s", period.get("id"), entry_id)
-        self.idle_period_opened.emit(dict(period))
+        self.idle_period_opened.emit(self._pending_view())
+
+    def _pending_view(self) -> Dict[str, Any]:
+        """The pending period as the dashboard sees it: the backend's record
+        plus the running session's `client_op`, which the backend's own
+        response does not carry and which the provisional popup matches on."""
+        view = dict(self._pending or {})
+        if "client_op" not in view:
+            session = self.runtime.timer.active_session() or {}
+            if session.get("client_op") and session.get("entry_id") == self._pending_entry_id:
+                view["client_op"] = session["client_op"]
+        return view
+
+    # ── Decide later / reopen (GUI thread; called by the popup and dashboard) ─
+
+    def is_deferred(self) -> bool:
+        """A decision is owed and the user asked not to be asked right now."""
+        return self._deferred and (self._pending is not None or self._interruption is not None)
+
+    def defer_pending(self) -> None:
+        """Decide later on a *confirmed* period: the popup goes away, the period
+        stays pending on the backend and here, nothing is counted or discarded,
+        and the running timer is untouched. The dashboard shows the pending
+        decision; the popup returns through `reopen_pending()`, a restart
+        (`GET /idle-periods/active`) or a sign-in -- never by itself."""
+        if self._pending is None:
+            return
+        self._deferred = True
+        self._popup_acked = True  # no "raise it again" repeats for a popup the user put away
+        self.log.warning(
+            "IDLE_DECISION_DEFERRED period=%s entry=%s state=%s answer_uncertain=%s; stays pending",
+            self._pending.get("id"), self._pending_entry_id, self._state, self._answer_uncertain,
+        )
+        self._send_diagnostic("decision_deferred", f"period={self._pending.get('id')}")
+        self.idle_decision_deferred.emit(self._pending_view())
+
+    def reopen_pending(self) -> bool:
+        """Raise the deferred decision again, at the user's request. True if
+        there was one to raise. The popup is emitted through the ordinary
+        `idle_period_opened` / `interruption_pending` edges, so the dashboard
+        builds it exactly as it builds a fresh one."""
+        if self._pending is not None and self._state in (IdleState.PENDING, IdleState.RESOLVING, IdleState.REASSIGNING):
+            self._deferred = False
+            self._popup_acked = False
+            self._popup_emitted_at = time.monotonic()
+            self._popup_repeats = 0
+            self.log.info("IDLE_POPUP_REOPENED period=%s", self._pending.get("id"))
+            self.idle_period_opened.emit(self._pending_view())
+            return True
+        intr = self._interruption
+        if intr is not None:
+            self._deferred = False
+            intr["provisional"] = True
+            intr["recorded_epoch"] = time.time()
+            self._last_status_key = None
+            self.log.info("IDLE_POPUP_REOPENED held stretch kind=%s", intr.get("kind"))
+            self.interruption_pending.emit(dict(intr))
+            self._report_next_at = 0.0
+            self._last_attempt_at = 0.0
+            self.wake()
+            return True
+        self._deferred = False
+        return False
 
     def popup_shown(self, period_id: Optional[int] = None) -> None:
         """The dashboard has put the popup on screen (or unlocked it).
@@ -1077,6 +1162,14 @@ class IdleService(LoopService):
             if ctx and ctx.get("epoch") == self._epoch:
                 self._on_report_failed_after_timeout(ctx, timeout)
         elif state == IdleState.RESOLVING:
+            # The server may have applied the answer and lost the reply: the
+            # next attempt repeats the same answer (same `resolved_at`), which
+            # the backend recognises -- reconciliation, not a second decision.
+            self._answer_uncertain = True
+            self.log.warning(
+                "IDLE_DECISION_UNCERTAIN period=%s the answer may have been applied; "
+                "the next attempt repeats it", (self._pending or {}).get("id"),
+            )
             self._state = IdleState.PENDING
             self.resolve_failed.emit("The server did not answer in time.")
         else:
@@ -1282,10 +1375,13 @@ class IdleService(LoopService):
         if intr is None:
             return
         intr["provisional"] = False
+        self._deferred = True
         self.log.warning(
             "IDLE_INTERRUPTION_DEFERRED by the user after %.0fs; the stretch stays held",
             time.monotonic() - float(intr.get("recorded_mono", time.monotonic())),
         )
+        self._send_diagnostic("decision_deferred", f"held kind={intr.get('kind')}")
+        self.idle_decision_deferred.emit({})
 
     @Slot(int)
     def _on_interruption_due(self, entry_id: int) -> None:
@@ -1397,6 +1493,8 @@ class IdleService(LoopService):
         self._pending = None
         self._pending_entry_id = None
         self._popup_acked = True
+        self._deferred = False
+        self._answer_uncertain = False
         self._state = IdleState.MONITORING if self._idle_enabled else IdleState.DISABLED
         if had_pending:
             self.idle_period_cleared.emit()
@@ -1438,6 +1536,10 @@ class IdleService(LoopService):
             self.resolve_failed.emit("Unsupported action.")
             return
         if self._state == IdleState.RESOLVING:
+            self.log.info(
+                "IDLE_DUPLICATE_PREVENTED period=%s an answer is already in flight",
+                (self._pending or {}).get("id"),
+            )
             return  # already in flight
         if self._state != IdleState.PENDING or not self._pending:
             self.resolve_failed.emit("This idle period is no longer pending.")
@@ -1445,15 +1547,32 @@ class IdleService(LoopService):
 
         period_id = int(self._pending["id"])
         answer = (bool(keep_idle_time), action)
-        if not self._answer or self._answer.get("period_id") != period_id or self._answer.get("answer") != answer:
+        repeated = bool(self._answer) and self._answer.get("period_id") == period_id and self._answer.get("answer") == answer
+        if not repeated:
+            if self._answer and self._answer.get("period_id") == period_id and self._answer_uncertain:
+                # A different answer after one whose outcome is unknown: the
+                # backend's resolve is idempotent on the first answer's
+                # `resolved_at`, and refuses a second answer with 409, which
+                # is handled as "already resolved". Nothing can apply twice.
+                self.log.warning(
+                    "IDLE_DECISION_CHANGED period=%s after an uncertain attempt; the backend decides",
+                    period_id,
+                )
             self._answer = {
                 "period_id": period_id, "answer": answer,
                 "resolved_at": datetime.now(timezone.utc).isoformat(),
             }
+            self._answer_uncertain = False
         resolved_at = self._answer["resolved_at"]
+        self._deferred = False
         self._state = IdleState.RESOLVING
         attempt = self._begin_inflight()
         ctx = self._ctx(attempt=attempt, period_id=period_id)
+        self.log.info(
+            "IDLE_DECISION_STARTED period=%s action=%s keep=%s attempt=%d request=idle-resolve:%s:%d %s",
+            period_id, action, bool(keep_idle_time), attempt, period_id, attempt,
+            "reconciling-repeat" if (repeated and self._answer_uncertain) else ("repeat" if repeated else "new"),
+        )
 
         def call():
             return self._api.resolve_idle_period(
@@ -1481,11 +1600,12 @@ class IdleService(LoopService):
     def _on_resolved(self, result: Dict[str, Any], action: str) -> None:
         counted = bool(result.get("counted")) if isinstance(result, dict) else False
         self.log.info(
-            "idle period %s resolved: action=%s counted=%s duration=%ss "
-            "entry_adjustment=%ss",
+            "IDLE_DECISION_CONFIRMED period %s resolved: action=%s counted=%s duration=%ss "
+            "entry_adjustment=%ss%s",
             (result or {}).get("id"), action, counted,
             (result or {}).get("idle_duration_seconds"),
             (result or {}).get("time_entry_adjustment_seconds"),
+            " (reconciled after an uncertain attempt)" if self._answer_uncertain else "",
         )
         # The verdict first, then the local consequences: for "stop" the
         # timer folds its final figure into the day the moment it stops, and

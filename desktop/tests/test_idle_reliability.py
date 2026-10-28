@@ -300,24 +300,35 @@ def test_retry_now_asks_again_at_once(qapp, cache, clock):
         _finish(second)
 
 
-def test_deciding_later_keeps_the_gap_and_the_popup_returns_when_the_backend_answers(qapp, cache, clock):
+def test_deciding_later_keeps_the_gap_and_shows_the_decision_as_pending_when_the_backend_answers(qapp, cache, clock):
     """The way out for an unreachable backend: nothing is counted or
-    discarded, and the question is asked again as soon as it can be."""
+    discarded, the gap is kept and reported, and once the backend confirms
+    it the decision is *shown as pending* -- not forced back on screen. The
+    user reopens it (the dashboard's notice, a restart, a sign-in)."""
     second, last_beat = _gap_session(cache, clock)
     second.idle_api.report_error = _timeout()
-    opened, withdrawn = [], []
+    opened, withdrawn, deferred = [], [], []
     second.idle.idle_period_opened.connect(opened.append)
     second.idle.interruption_withdrawn.connect(lambda: withdrawn.append(True))
+    second.idle.idle_decision_deferred.connect(deferred.append)
     try:
         _recover(second, last_beat)
         second.idle.defer_interruption()
         assert second.idle._interruption is not None, "deferring must not forget the gap"
         assert second.timer.is_running()
+        assert deferred == [{}], "the dashboard is told a decision is owed"
         second.idle_api.report_error = None
         second.idle._report_next_at = 0.0
         second.idle.tick()
-        assert len(opened) == 1 and opened[0]["id"] == 456
+        assert second.idle.pending_period()["id"] == 456, "the backend's period is held"
+        assert opened == [], "the user put it away; it is not forced back"
+        assert len(deferred) == 2 and deferred[1]["id"] == 456
+        assert second.idle.is_deferred()
         assert withdrawn == [], "the user put it away; nothing was refused"
+
+        assert second.idle.reopen_pending() is True
+        assert len(opened) == 1 and opened[0]["id"] == 456
+        assert not second.idle.is_deferred()
     finally:
         _finish(second)
 

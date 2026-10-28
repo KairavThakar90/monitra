@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QSizePolicy, QWidget,
@@ -50,7 +50,11 @@ _ACCENTS = {
 
 
 class ActionBanner(QFrame):
-    """`show_message(text, kind)` is its whole API."""
+    """`show_message(text, kind)` for a notice that dismisses itself;
+    `show_persistent(text, kind)` for one that stays until `dismiss()` and
+    emits `clicked` when pressed (a decision the user still owes)."""
+
+    clicked = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -59,6 +63,7 @@ class ActionBanner(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._kind = ""
+        self._persistent = False
         self._build_ui()
 
         self._dismiss = QTimer(self)
@@ -123,6 +128,24 @@ class ActionBanner(QFrame):
     def show_message(self, text: str, kind: str = "success") -> None:
         """Show `text` at the top of the parent, replacing whatever was up,
         and restart the dismissal clock."""
+        self._persistent = False
+        self._present(text, kind)
+        self._dismiss.start()
+
+    def show_persistent(self, text: str, kind: str = "warning") -> None:
+        """Show `text` until `dismiss()` -- for something that stays true,
+        such as a decision the user still owes. Clicking the banner emits
+        `clicked`, so the owner can open what it points at."""
+        self._dismiss.stop()
+        self._persistent = True
+        self._present(text, kind)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    @property
+    def is_persistent(self) -> bool:
+        return self.isVisible() and self._persistent
+
+    def _present(self, text: str, kind: str) -> None:
         accent, glyph = _ACCENTS.get(kind, _ACCENTS["success"])
         self._kind = kind
         self._icon.setPixmap(icons.pixmap(glyph, accent, 20))
@@ -131,11 +154,19 @@ class ActionBanner(QFrame):
         self.reposition()
         self.show()
         self.raise_()
-        self._dismiss.start()
 
     def dismiss(self) -> None:
         self._dismiss.stop()
+        self._persistent = False
+        self.unsetCursor()
         self.hide()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if event.button() == Qt.MouseButton.LeftButton and self._persistent:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     def reposition(self) -> None:
         """Top-centre of the parent, never wider than it. Called on show and

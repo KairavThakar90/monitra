@@ -720,18 +720,54 @@ report is still attempted every `UNREACHABLE_PROBE_SECONDS` whatever it says.
 
 **The provisional popup is always leavable.** It shows the service's status
 (`interruption_status`), offers **Retry now** after 5 s and **Decide later**
-after 60 s. Deciding later closes it without counting or discarding anything;
-the stretch stays held and the popup returns, as an ordinary confirmed one,
-when the backend accepts the report. A stop while a stretch is held withdraws
+after 20 s -- both at once the moment the service reports a failed attempt.
+Deciding later closes it without counting or discarding anything; the stretch
+stays held and keeps being reported. A stop while a stretch is held withdraws
 it -- the gap is then part of the stopped entry (the one residual way an
 unreachable backend lets a gap go unasked).
+
+**The confirmation must find its popup.** `IdlePeriodResponse` carries no
+`client_op`. The provisional popup once matched the confirmed period on
+exactly that field, so the confirmation never bound: the dashboard "raised"
+the still-locked dialog, acknowledged it, and the user sat behind "Confirming
+with the server…" with every answer disabled while the backend held a pending
+period (the production screenshot of 2026-10-27). Now the service emits the
+period with the running session's `client_op` added (`_pending_view`), and
+`IdleAlertDialog.is_provisional_for` compares `client_op` when both sides have
+one, the entry id when both have one, and otherwise trusts the one-period
+invariant. **Retry now** on a locked popup first asks the service whether it
+already holds the confirmed period and binds it without a request
+(`IDLE_RETRY_NOW reconciled`).
 
 **User decisions are not auto-retried; they are made safe to repeat.** A failed
 resolve keeps the period PENDING and the buttons enabled with the choice still
 selected; the same answer (same `resolved_at`) repeated is recognised by the
 backend, so a request that did get through is confirmed rather than applied
-twice. A failed reassign -- which has no idempotency key -- is reconciled by
+twice. An answer that outlives `REQUEST_DEADLINE_SECONDS` is marked
+*uncertain* (`IDLE_DECISION_UNCERTAIN`): the next attempt repeats it and is
+logged as a reconciliation (`IDLE_DECISION_STARTED … reconciling-repeat`,
+`IDLE_DECISION_CONFIRMED … reconciled`). A second request while one is in
+flight is refused (`IDLE_DUPLICATE_PREVENTED`) in the service and in the
+dialog. A failed reassign -- which has no idempotency key -- is reconciled by
 reading the period back before it is called a failure.
+
+**Decide later on a confirmed period.** After a failed or timed-out answer, or
+once an answer has been in flight for `DEFER_AFTER_S` (20 s), the confirmed
+popup offers **Retry now** (re-sends the last answer; disabled while one is in
+flight) and **Decide later** (never disabled). Decide later calls
+`IdleService.defer_pending()`: the popup closes, the period stays pending on
+the backend and in the service, nothing is counted or discarded, the running
+timer is untouched, the unacknowledged-popup watchdog stands down, and
+`idle_decision_deferred` tells the dashboard, which shows a persistent banner
+("An idle-time decision is waiting … click here to decide now") and a tray
+notice. A gap deferred while provisional that the backend then confirms is
+*not* raised by itself either (`IDLE_DECISION_PENDING_DEFERRED`); it joins the
+banner. The decision reappears only when the user clicks the banner
+(`reopen_pending()` → the ordinary `idle_period_opened` edge,
+`IDLE_POPUP_REOPENED`), launches Monitra again (the second launch's
+`bring_idle_popup_forward` reopens it), or signs in again / restarts (the
+period is read back from `GET /idle-periods/active`). The timer stopping clears
+it as it clears any pending period. Nothing ever answers on the user's behalf.
 
 **The popup is acknowledged or raised again.** The dashboard calls
 `BackgroundApi.idle.popup_shown(id)` after building it; an unacknowledged popup
@@ -786,6 +822,9 @@ are supervised; none of this is a new thread or a second timer per service.
 `IDLE_REPORT_FAILED` / `_REFUSED` / `_ALREADY_RESOLVED` / `_DISCARDED`,
 `IDLE_STRETCH_HELD`, `IDLE_INTERRUPTION_WITHDRAWN` / `_DEFERRED`,
 `IDLE_RETRY_NOW`, `IDLE_INFLIGHT_TIMEOUT`, `IDLE_RESOLVE_FAILED`,
+`IDLE_DECISION_STARTED` / `_CONFIRMED` / `_UNCERTAIN` / `_CHANGED` /
+`_DEFERRED` / `_PENDING_DEFERRED` / `_REOPEN_REQUESTED`, `IDLE_DUPLICATE_PREVENTED`,
+`IDLE_POPUP_REOPENED` / `_RECOVERY_OFFERED`,
 `IDLE_REASSIGN_FAILED` / `_RECONCILED`, `IDLE_POPUP_CREATE_FAILED` /
 `_NOT_ACKNOWLEDGED` / `_RECOVERED` / `_RECOVERY_BACKOFF` / `_BROUGHT_FORWARD` /
 `_REBUILT` / `_STALE` / `_BUSY_TIMEOUT`,

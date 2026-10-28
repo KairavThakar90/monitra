@@ -83,7 +83,35 @@ and puts the popup back; the log says what it found:
    the popup returns at the next sign-in (`GET /idle-periods/active`), which
    is correct and is why "signing out did not fix it" was true.
 
+## The decision itself: what the log says about an answer
+
+1. `IDLE_DECISION_STARTED period=… action=… keep=… attempt=N request=idle-resolve:<period>:<attempt> new|repeat|reconciling-repeat`
+   — every answer sent, with the task key that names the request.
+2. `IDLE_DECISION_CONFIRMED period … resolved: action=… counted=… entry_adjustment=…`
+   — the backend's verdict; `(reconciled after an uncertain attempt)` when a
+   lost reply was confirmed by repeating the same `resolved_at`.
+3. `IDLE_DECISION_UNCERTAIN` — the answer outlived the 45-second deadline; the
+   server may have applied it. The next attempt repeats it; nothing is applied twice.
+4. `IDLE_DUPLICATE_PREVENTED` — a second request while one was in flight
+   (service or dialog). Expected after a double click; never a fault.
+5. `IDLE_DECISION_DEFERRED period=…` — the user chose Decide later on a confirmed
+   period: still pending on the backend, nothing counted or discarded, the
+   dashboard banner is up (`IDLE_DECISION_PENDING_SHOWN`). `IDLE_INTERRUPTION_DEFERRED`
+   is the same for a gap not yet confirmed; `IDLE_DECISION_PENDING_DEFERRED` says the
+   backend confirmed such a gap while deferred and it was not raised.
+6. `IDLE_DECISION_REOPEN_REQUESTED reopened=…` / `IDLE_POPUP_REOPENED` — the user
+   clicked the banner or launched Monitra again; the popup was rebuilt.
+7. `IDLE_RETRY_NOW reconciled: the backend already holds period …` — a locked
+   provisional popup found its confirmation without sending anything (the
+   2026-10-27 failure, self-healed).
+
 ## "It got stuck on Confirming with the server…"
+
+The 2026-10-27 cause: the backend's period carries no `client_op`, the
+provisional popup matched on it, and the confirmation never unlocked the
+dialog. Look for `idle period <id> pending on entry <e>` followed by *no*
+`IDLE_DECISION_STARTED` and a popup the user says was disabled; fixed in
+1.3.3 (see ARCHITECTURE.md "The confirmation must find its popup").
 
 That text belongs to the *provisional* popup shown for a crash, power-cut or
 sleep gap. It now always has a way out (Retry now after 5 s, Decide later after
