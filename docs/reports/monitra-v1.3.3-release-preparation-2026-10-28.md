@@ -109,8 +109,26 @@ passed on re-run.
 
 ## 5. Artifact inventory
 
-**CI artifacts: none.** The required three (`Monitra-Windows`, `Monitra-macOS-arm64`,
-`Monitra-macOS-x86_64`) have not been built because the commit could not be pushed.
+### 5.1 CI runs (after the owner allowed the push, later the same day)
+
+| Run | Commit | Result |
+|---|---|---|
+| [40684726808](https://github.com/KairavThakar90/monitra/actions/runs/40684726808) | `709c721` | Regression suite failed on all three runners: macOS 5 tests (3 probe/idle tests written for a win32-only probe before `17a4afa` made macOS a supported presence probe; 2 machine-wide-install tests feeding `C:\...` paths to a POSIX `Path`), Windows 1 test (a 5 s budget outrun 18 min into the single-process suite). None in shipped behaviour. Fixed in `44b143f` (the probe now answers "unsupported_platform" before the macOS switch gate; the tests state the macOS contract; the Windows-path test is skipped off Windows; the Play-binds-entry wait is driven and budgeted like its neighbour). |
+| [40688614331](https://github.com/KairavThakar90/monitra/actions/runs/40688614331) | **`44b143f`** | **Every test passed on every runner** -- Windows 4246 passed / 118 skipped in the single process (20 min 17 s); macOS arm64 and x86_64 191 modules, 4206 passed, 0 failed, 157 skipped. All three built, smoke-tested, attested (unsigned) and checksummed. **Failed only at `actions/upload-artifact`: "Artifact storage quota has been hit ... Usage is recalculated every 6-12 hours"** -- the private-repository 500 MB artifact quota, with 181 MB of 1.3.2 artifacts live and a stale usage figure (the 2026-10-21 pattern). Deleting the three 1.3.2 artifacts and re-running the failed jobs was refused by this session's permission policy; see section 8. |
+
+Checksums the jobs computed for the `44b143f` build (from the run log; the files themselves
+were never uploaded, so the re-run's files must be checked against the re-run's own sidecars):
+
+| File | SHA-256 (run 40688614331) |
+|---|---|
+| `Monitra-Setup-1.3.3.exe` | `85a86c538bbf664b3c84f8986a80e24a43fa9639b923ee033e1cb29a1b77ef52` |
+| `Monitra-Portable-1.3.3.zip` | `1ef45b97310438a7f9b0ecefbbc6c947a4692ad7059d07305778541fa69056cd` |
+| `Monitra-macOS-arm64-1.3.3.dmg` | `edf52d355a0a347408efe728c1ffc21c95bcf283805398585da56380e22037cd` |
+| `Monitra-macOS-x86_64-1.3.3.dmg` | `1662cd54e73ee6d06e8c30721dc28518c4b61e013f2f539129a40b1fac9f34a2` |
+
+**Downloadable CI artifacts: none yet.** The required three (`Monitra-Windows-1.3.3`,
+`Monitra-macOS-arm64-1.3.3`, `Monitra-macOS-x86_64-1.3.3`) exist only on the runners that
+built them, which are gone; a re-run of the failed jobs rebuilds them from the same commit.
 
 Local Windows candidate build of `4a90fc5` (same scripts the Windows job runs; in
 `desktop/dist/`, git-ignored; **not a release artifact** -- the CI build is):
@@ -170,12 +188,11 @@ Qt settings, which the local backend correctly refused with 401. macOS: nothing 
 ## 8. What the owner has to run, in order
 
 ```
-# 1. push the candidate and build it (no tag, no release, no registration)
-git push origin smit
-#    GitHub -> Actions -> "Desktop release" -> Run workflow -> branch smit,
-#    "Attach the artifacts to a GitHub release" OFF
-#    (or from this machine once pushes are allowed:
-#     python <scratchpad>/tools/gh_dispatch.py dispatch smit ; ... wait <run id> ; ... artifacts <run id> <dir>)
+# 1. free the artifact quota and re-run the build of 44b143f (pushed; no tag, no release, no registration)
+#    GitHub -> Actions -> "Desktop release" -> run #39597960024 (the 2026-10-21 1.3.2 build):
+#    delete its three artifacts (verified copies are in dist-release-1.3.2/ci-build-2026-10-21-9ddf6df/),
+#    then run 40688614331 -> "Re-run failed jobs". If upload still says the quota is hit, the usage
+#    figure is stale: wait for the 6-12 h recalculation and re-run again.
 
 # 2. verify the three artifacts from the run (from desktop/)
 python tools/verify_release_artifacts.py --artifacts <dir with the three jobs' files> --tag v1.3.3
