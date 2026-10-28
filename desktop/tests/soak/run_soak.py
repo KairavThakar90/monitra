@@ -96,7 +96,7 @@ class StubBackend:
         self._maybe_fail("app_usage")
         return {"ok": True}
 
-    def batch_sync_url_usage(self, entry_id, payload):
+    def batch_sync_url_usage(self, payload):
         with self.lock:
             self.calls["url_usage_batch"] += 1
         self._maybe_fail("url_usage")
