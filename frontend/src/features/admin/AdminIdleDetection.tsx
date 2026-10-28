@@ -230,7 +230,7 @@ export const IdleDetection: React.FC = () => {
         <div className="mb-4 flex items-start justify-between gap-3">
           <p className="text-sm text-slate-600">
             When idle detection is off, the desktop does not watch this member for inactivity. A change reaches a
-            running desktop within a few minutes.
+            running desktop within a few seconds while it is connected, and within three minutes otherwise.
           </p>
           <InlineRefreshIndicator active={members.isFetching && !members.isLoading} label="Checking" />
         </div>

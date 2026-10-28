@@ -137,7 +137,7 @@ export const AdminScreenshotManagementPage: React.FC = () => {
                 className="rounded-b-2xl bg-[#F8FAFC] p-5 sm:p-6"
               >
                 <p className="mb-4 text-[13px] leading-5 text-[#64748B]">
-                  {tab.description} Desktops pick up a change within a few minutes.
+                  {tab.description} Connected desktops pick up a change within a few seconds, any desktop within three minutes.
                 </p>
                 {tab.id === "look" ? (
                   settings.isLoading ? (

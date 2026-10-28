@@ -349,7 +349,7 @@ export const ScreenManagement: React.FC = () => {
               </table>
             </div>
             <p className="mt-2 text-xs text-slate-500">
-              A change reaches a running desktop within a few minutes and applies to screenshots taken from then on.
+              A change reaches a connected desktop within a few seconds (any desktop within three minutes) and applies to screenshots taken from then on.
             </p>
             <Pagination
               page={currentPage}

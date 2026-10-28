@@ -268,7 +268,7 @@ export const SizeAndQuality: React.FC<{ settings: ScreenshotSettings }> = ({ set
       <div className="flex flex-col gap-3 rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-sm">
         <FormErrorBanner message={formError} />
         <p className="text-xs leading-5 text-slate-500">
-          Size and quality apply to screenshots captured from now on. Desktops pick up a change within a few minutes.
+          Size and quality apply to screenshots captured from now on. Connected desktops pick up a change within a few seconds, any desktop within three minutes.
           Screenshots already stored keep the size they were taken at.
         </p>
         {settings.version > 0 && settings.updated_by_username && (

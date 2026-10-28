@@ -146,7 +146,7 @@ describe('IdleDetection', () => {
     expect(switchFor('Carl Casual')!.getAttribute('aria-checked')).toBe('true');
     expect(minutesFor('Carl Casual')!.value).toBe('30');
     expect(container.textContent).toContain('When idle detection is off, the desktop does not watch this member for inactivity.');
-    expect(container.textContent).toContain('A change reaches a running desktop within a few minutes.');
+    expect(container.textContent).toContain('A change reaches a running desktop within a few seconds while it is connected, and within three minutes otherwise.');
   });
 
   it('shows each member\'s screenshot frequency, defaulting an absent value to 10', async () => {

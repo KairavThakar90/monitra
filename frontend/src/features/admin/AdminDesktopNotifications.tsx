@@ -400,7 +400,7 @@ const AnnouncementPanel: React.FC = () => {
       setLastSent({ ...draft, at: new Date().toLocaleTimeString() });
       setTitle("");
       setMessage("");
-      showToast("Announcement sent. Signed-in desktops will show it within a few minutes.", "success");
+      showToast("Announcement sent. Connected desktops show it within a few seconds.", "success");
     } catch (exc) {
       setFormError(formatApiError((exc as { data?: unknown })?.data, "Could not send the announcement."));
     }

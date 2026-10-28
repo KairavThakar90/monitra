@@ -562,7 +562,7 @@ export const AdminUserManagement: React.FC = () => {
                   })}
                 </div>
                 <p className="text-[11px] font-medium text-slate-500">
-                  Changes take effect on a running desktop within a few minutes.
+                  Changes take effect on a connected desktop within a few seconds, and on any desktop within three minutes.
                 </p>
 
                 {error && (

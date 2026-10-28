@@ -559,7 +559,7 @@ describe('AdminDesktopNotifications', () => {
     expect(writes()).toEqual([
       { method: 'POST', path: expect.stringMatching(/\/desktop-notifications\/push$/), body: { title: 'Announcement', message: 'The office closes at 4 pm today.' } },
     ]);
-    expect(showToast).toHaveBeenCalledWith('Announcement sent. Signed-in desktops will show it within a few minutes.', 'success');
+    expect(showToast).toHaveBeenCalledWith('Announcement sent. Connected desktops show it within a few seconds.', 'success');
     expect(announcementMessage().value).toBe('');
     expect(container.textContent).toContain('The office closes at 4 pm today.');
   });

@@ -270,7 +270,7 @@ describe('AdminUserManagement: desktop switches', () => {
     expect(text).toContain(
       "Measure keyboard and mouse activity, and the applications and websites used, while tracking time. Idle detection is managed in Screenshot Management.",
     );
-    expect(text).toContain('Changes take effect on a running desktop within a few minutes.');
+    expect(text).toContain('Changes take effect on a connected desktop within a few seconds, and on any desktop within three minutes.');
     expect(text).toContain('Choose what the Monitra desktop app does for this member.');
   });
 
