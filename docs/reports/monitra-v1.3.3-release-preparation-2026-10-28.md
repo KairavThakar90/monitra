@@ -126,6 +126,26 @@ were never uploaded, so the re-run's files must be checked against the re-run's 
 | `Monitra-macOS-arm64-1.3.3.dmg` | `edf52d355a0a347408efe728c1ffc21c95bcf283805398585da56380e22037cd` |
 | `Monitra-macOS-x86_64-1.3.3.dmg` | `1662cd54e73ee6d06e8c30721dc28518c4b61e013f2f539129a40b1fac9f34a2` |
 
+**Attempt 2 of run 40688614331** (re-run of the failed jobs, later that day, after the owner had
+deleted other artifacts): same outcome -- Windows 4246 passed / 118 skipped (20 min 36 s), macOS
+arm64 and x86_64 4206 passed / 0 failed; all three built, smoke-tested, checksummed; upload refused
+with the same quota message on all three. Attempt 2 digests (a build is not byte-reproducible, so
+they differ from attempt 1's): `Monitra-Setup-1.3.3.exe`
+`d634875aeab5314f27ec8d05d0b0b0b3acd6a50a82a38d4d1b300b233cf8ca02`, `Monitra-Portable-1.3.3.zip`
+`78c1015214410eea5f0bfa8aa2d752254f3d26a022a96a0ac44a8fab4c3f5073`, `Monitra-macOS-arm64-1.3.3.dmg`
+`9ae673dca4fa71b7d90559da6ec8a7e97ef78c8f13798678427a1055db65e388`, `Monitra-macOS-x86_64-1.3.3.dmg`
+`9f3a4171beaf5af3d508c5558471574cf050a6632da42fee769d82ec840795c0`.
+
+Investigation before that re-run: live Actions artifacts across **every** repository the account
+owns total 181 MB (the three 1.3.2 artifacts of run 39597960024); the Actions cache (1.2 GB of pip
+caches) has its own separate 10 GB limit; run 40688614331 has no artifacts; this credential cannot
+read Packages or billing (`read:packages` / billing scopes missing), so the usage figure GitHub is
+refusing on cannot be inspected from here. The likely cause is that Free-plan storage is metered
+per billing month: the 3.17 GB of old artifacts kept for most of October (deleted on 2026-10-21)
+consumed the month's allowance, which deleting more artifacts cannot restore. The 2026-10-21 upload
+succeeded only after the owner made the repository public for the upload. Rebuilding again without
+changing the account state is pointless; see section 8.
+
 **Downloadable CI artifacts: none yet.** The required three (`Monitra-Windows-1.3.3`,
 `Monitra-macOS-arm64-1.3.3`, `Monitra-macOS-x86_64-1.3.3`) exist only on the runners that
 built them, which are gone; a re-run of the failed jobs rebuilds them from the same commit.
@@ -188,11 +208,15 @@ Qt settings, which the local backend correctly refused with 401. macOS: nothing 
 ## 8. What the owner has to run, in order
 
 ```
-# 1. free the artifact quota and re-run the build of 44b143f (pushed; no tag, no release, no registration)
-#    GitHub -> Actions -> "Desktop release" -> run #39597960024 (the 2026-10-21 1.3.2 build):
-#    delete its three artifacts (verified copies are in dist-release-1.3.2/ci-build-2026-10-21-9ddf6df/),
-#    then run 40688614331 -> "Re-run failed jobs". If upload still says the quota is hit, the usage
-#    figure is stale: wait for the 6-12 h recalculation and re-run again.
+# 1. get the upload past the storage quota, then re-run the failed jobs of run 40688614331
+#    (commit 44b143f, already pushed; no tag, no release, no registration). Deleting artifacts did not
+#    help (181 MB live, still refused twice). One of, owner's choice -- read Settings -> Billing ->
+#    Usage first, it names the exhausted figure:
+#      a) make the repository public for the duration of the upload, as on 2026-10-21, re-run the
+#         failed jobs, download the artifacts, make it private again;
+#      b) Settings -> Billing -> Spending limits -> Actions: allow overage, then re-run;
+#      c) wait for the billing cycle / the 6-12 h recalculation, then re-run.
+#    Each re-run rebuilds and re-tests from the same commit (about 25 minutes).
 
 # 2. verify the three artifacts from the run (from desktop/)
 python tools/verify_release_artifacts.py --artifacts <dir with the three jobs' files> --tag v1.3.3
