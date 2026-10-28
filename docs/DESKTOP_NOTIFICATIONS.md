@@ -22,7 +22,36 @@ Two kinds, one schedule:
   Management) — a title and a message shown on every signed-in desktop
   *now*: a connected desktop shows it within a second or two. A desktop that
   is away hears about it when it comes back, for up to ten minutes; after that
-  the message is dropped ("now" is wrong ten minutes later).
+  the message is dropped ("now" is wrong ten minutes later). **It is shown as
+  the Announcement card** -- Monitra's own card, not the platform toast: the
+  Monitra mark, an "ANNOUNCEMENT" heading, the administrator's title and the
+  whole message as plain text (never markup), its own accent and surface, and
+  the card's own close button. A Windows toast cuts the title at 63 characters
+  and the body at about four lines and cannot carry a heading, so the card is
+  the one surface that shows every word the administrator wrote and tells the
+  message apart at a glance from a reminder or a "Logged in". It is an
+  informational notification like the rest (`NotificationLevel.ANNOUNCEMENT`,
+  in `SUPPRESSED_WHEN_OFF`): a member whose switch is off is shown none.
+
+  Delivery is **best effort within the lifetime**: nothing is acknowledged and
+  nothing is stored per desktop. A connected desktop hears the stream event;
+  one that is signed out, offline or closed for less than ten minutes is shown
+  it on its first schedule fetch when it comes back (including on a restart,
+  where the persisted snapshot is at the live version and the pushes arrive on a
+  same-version answer -- adopted, not dropped as "the level"); one that is away
+  longer never sees it. The desktop remembers what it has shown
+  (`wellbeing.pushes_seen`), so neither the poll nor a restart shows a message
+  twice.
+
+The same stream also carries the **desktop configuration revision** -- "an
+administrator changed something this desktop polls for" (a member's switches,
+the screens captured for them, the screenshot size and quality, the privacy
+rules; `backend/app/services/desktop_config_revision.py`). A desktop that asks
+with `since_config` is told when it moves and whether the change concerns it, and
+`NotificationScheduleService.config_changed` then makes `ScreenshotService`,
+`ActivityService` and `IdleService` re-read their polls at once instead of at
+their next three-minute interval. A desktop that does not ask (an older build) is
+never sent an event for a configuration change alone.
 
 A desktop no longer learns about a change only by asking every half minute: it
 keeps a small event stream open (`GET /desktop-notifications/stream`) and is

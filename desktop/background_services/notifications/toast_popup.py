@@ -61,8 +61,18 @@ _LEVEL_ACCENTS = {
     "success": "#16A34A",
     "warning": "#F59E0B",
     "error": "#EF4444",
+    "announcement": "#6D4AFF",
 }
 _DEFAULT_ACCENT = _LEVEL_ACCENTS["info"]
+
+#: The one level drawn as the Announcement card: an "ANNOUNCEMENT" eyebrow above
+#: the administrator's title, a tinted surface and its own accent, so a pushed
+#: message is told apart at a glance from a reminder or a "Logged in". The
+#: heading is this application's; the title and message are the administrator's,
+#: rendered as plain text -- never as markup.
+ANNOUNCEMENT_LEVEL = "announcement"
+ANNOUNCEMENT_HEADING = "Announcement"
+_ANNOUNCEMENT_SURFACE = "#F7F6FF"
 
 #: Qt's QWIDGETSIZE_MAX: "no maximum" for a widget dimension.
 _UNBOUNDED = 16777215
@@ -196,6 +206,14 @@ class ToastPopup(QWidget):
         body.setSpacing(self._TEXT_GAP)
         card_layout.addLayout(body, 1)
 
+        # The Announcement card's heading, above the administrator's title.
+        # Hidden on every other card: a wellbeing reminder has no eyebrow.
+        self._eyebrow = QLabel(ANNOUNCEMENT_HEADING.upper(), self._card)
+        self._eyebrow.setObjectName("toastEyebrow")
+        self._eyebrow.setTextFormat(Qt.TextFormat.PlainText)
+        self._eyebrow.hide()
+        body.addWidget(self._eyebrow)
+
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(self._HEADER_GAP)
@@ -203,6 +221,9 @@ class ToastPopup(QWidget):
 
         self._title = QLabel(self._card)
         self._title.setObjectName("toastTitle")
+        # What an administrator typed is text, never markup: Qt would otherwise
+        # guess rich text from a leading tag and render it.
+        self._title.setTextFormat(Qt.TextFormat.PlainText)
         # Wraps like the message below it. A single-line label is as wide as
         # its text and the card is a fixed width, so a long title -- an emoji
         # and "Stretch Your Hands & Wrists" -- was cut off at the close button.
@@ -219,6 +240,7 @@ class ToastPopup(QWidget):
 
         self._message = QLabel(self._card)
         self._message.setObjectName("toastMessage")
+        self._message.setTextFormat(Qt.TextFormat.PlainText)
         self._message.setWordWrap(True)
         body.addWidget(self._message)
 
@@ -239,7 +261,7 @@ class ToastPopup(QWidget):
 
     # ── Presentation ─────────────────────────────────────────────────────────
 
-    def _apply_style(self, accent: str) -> None:
+    def _apply_style(self, accent: str, announcement: bool = False) -> None:
         # The level is carried by the card's own left border, not by a
         # second inset QFrame drawn beside it with its own border-radius.
         # That second frame is only 4px wide, and Qt clamps a QSS
@@ -251,10 +273,11 @@ class ToastPopup(QWidget):
         # silhouette (reported directly from a screenshot). One rounded
         # rectangle -- the card's own border-and-background -- cannot
         # disagree with itself the way two independently-rounded ones can.
+        surface = _ANNOUNCEMENT_SURFACE if announcement else "#FFFFFF"
         self.setStyleSheet(
             f"""
             QFrame#toastCard {{
-                background: #FFFFFF;
+                background: {surface};
                 border: {self._BORDER_OTHER}px solid #EAEDF5;
                 border-left: {self._BORDER_LEFT}px solid {accent};
                 border-radius: 14px;
@@ -263,9 +286,15 @@ class ToastPopup(QWidget):
                 background: transparent;
                 border: none;
             }}
+            QLabel#toastEyebrow {{
+                color: {accent};
+                font-size: 10.5px;
+                font-weight: 700;
+                letter-spacing: 1.2px;
+            }}
             QLabel#toastTitle {{
                 color: #101828;
-                font-size: 14.5px;
+                font-size: {"15.5px" if announcement else "14.5px"};
                 font-weight: 700;
             }}
             QLabel#toastMessage {{
@@ -294,9 +323,11 @@ class ToastPopup(QWidget):
             to place it on, and the caller should fall back to the platform's
             own toast.
         """
+        announcement = level == ANNOUNCEMENT_LEVEL
         self._title.setText(title or "Monitra")
         self._message.setText(message)
-        self._apply_style(_LEVEL_ACCENTS.get(level, _DEFAULT_ACCENT))
+        self._eyebrow.setVisible(announcement)
+        self._apply_style(_LEVEL_ACCENTS.get(level, _DEFAULT_ACCENT), announcement)
 
         self._fit_text()
         if not self._move_to_corner(lift):
@@ -393,9 +424,15 @@ class ToastPopup(QWidget):
         # ones only recompute on a later event-loop turn, so a short message
         # shown after a tall one kept the tall one's height until the next
         # notification, one step behind.
+        eyebrow = 0
+        if not self._eyebrow.isHidden():
+            self._eyebrow.ensurePolished()
+            eyebrow = self._eyebrow.fontMetrics().lineSpacing()
+            self._eyebrow.setFixedHeight(eyebrow)
+            eyebrow += self._TEXT_GAP
         header = max(self._title.height(), self._CLOSE_SIZE)
         text_column = (
-            self.TOP_INSET + header + self._TEXT_GAP + self._message.height()
+            self.TOP_INSET + eyebrow + header + self._TEXT_GAP + self._message.height()
             + self._TEXT_PAD_BOTTOM
         )
         borders = 2 * self._BORDER_OTHER

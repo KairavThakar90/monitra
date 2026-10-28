@@ -22,6 +22,20 @@ re-grant a permission.
 
 ### Added
 
+- **Announcements from your administrator now arrive as an Announcement card.** A message
+  your administrator pushes is shown on Monitra's own card -- the Monitra mark, an
+  "Announcement" heading, the title and the whole message, with its own close button --
+  so it is told apart at a glance from a reminder or a routine notice, and nothing is cut
+  short. A message pushed while Monitra was closed is still shown when you open it, for up
+  to ten minutes after it was sent; it was previously lost on a restart.
+- **Your administrator's changes reach you in seconds.** Switching your screenshots,
+  notifications or activity tracking on or off, choosing which of your screens are
+  captured, changing the screenshot size or quality or a privacy rule now reaches a
+  connected Monitra within a second or two (it was up to three minutes), and within three
+  minutes otherwise. The last size and quality heard, and a switch an administrator moved,
+  are remembered across a restart, so a Monitra started without a connection follows what
+  was last set rather than the defaults.
+
 - **Your administrator can now choose which of your screens are captured.** If you use more
   than one screen, Monitra tells your administrator how many it can see (their number, size
   and which is your main screen -- never what is on them), and your administrator can switch

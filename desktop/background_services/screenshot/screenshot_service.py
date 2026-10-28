@@ -80,7 +80,7 @@ from datetime import datetime, timezone
 from time import time as _wall_time
 from typing import Any, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QTimer, Signal, Slot
 
 from background_services.notifications import NotificationLevel
 from background_services.screenshot import (
@@ -89,6 +89,9 @@ from background_services.screenshot import (
 from background_services.screenshot.url_rules import url_matches_rule
 from core.service import BaseService
 from sync.local_cache import CACHE_OWNER_KEY
+
+#: Where the size and quality an administrator chose are kept between starts.
+CAPTURE_SETTINGS_STATE_KEY = "screenshot.capture_settings"
 from tracking.active_window import get_active_window_details
 from tracking.browsers.manager import get_browser_manager
 
@@ -589,7 +592,9 @@ class ScreenshotService(BaseService):
             return self._screenshots_enabled
 
     def _set_capture_settings(self, settings: "config.CaptureSettings") -> None:
-        """Apply the size and quality an administrator chose. Edge-triggered."""
+        """Apply the size and quality an administrator chose. Edge-triggered, and
+        remembered in `app_state` so the next start -- offline, or before its first
+        refresh -- captures at the size the administrator chose, not the default."""
         with self._auth_lock:
             if settings == self._capture_settings:
                 return
@@ -599,6 +604,53 @@ class ScreenshotService(BaseService):
             settings.width, settings.height,
             "automatic" if settings.quality is None else f"{settings.quality}%",
         )
+        try:
+            self._cache.save_app_state(CAPTURE_SETTINGS_STATE_KEY, {
+                "image_width": settings.width, "image_height": settings.height, "image_quality": settings.quality,
+            })
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not persist the screenshot size and quality")
+
+    def _load_capture_settings(self) -> None:
+        """The size and quality as they were when this machine last heard. Parsed
+        with the same rules as an answer from the backend: anything damaged or out
+        of range leaves the default."""
+        try:
+            stored = self._cache.load_app_state(CAPTURE_SETTINGS_STATE_KEY)
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not read the persisted screenshot size and quality")
+            return
+        if isinstance(stored, dict):
+            with self._auth_lock:
+                self._capture_settings = config.parse_capture_settings(stored, self._capture_settings)
+
+    def _remember_in_profile(self, key: str, value: bool) -> None:
+        """Write a switch the poll reported into the persisted sign-in profile, so a
+        restart while offline seeds from what the administrator last set rather than
+        from the profile as it was at sign-in."""
+        session_manager = getattr(self.runtime, "session_manager", None)
+        update = getattr(session_manager, "update_user_info", None)
+        if update is None:
+            return
+        try:
+            update(**{key: value})
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not remember %s in the profile", key)
+
+    @Slot()
+    def refresh_config_now(self) -> None:
+        """Re-read the configuration now (an administrator changed something, or the
+        network came back). GUI thread; the request is on the pool and de-duplicated."""
+        self._refresh_config()
+
+    def reset_session(self) -> None:
+        """Sign-out: the privacy configuration (and the screens it excludes) is the
+        member's, not the machine's. Forgotten here so the next member's captures wait
+        for their own answer rather than running under the previous member's exclusions
+        for up to a refresh interval."""
+        self._privacy_config = {}
+        self._privacy_config_loaded = False
+        self._reported_displays = None
 
     def _current_capture_settings(self) -> "config.CaptureSettings":
         with self._auth_lock:
@@ -652,8 +704,9 @@ class ScreenshotService(BaseService):
                 self._set_capture_frequency(cfg.get("capture_frequency"))
                 # A key this answer does not carry (a backend older than
                 # Screenshot Management) says nothing and changes nothing.
-                if "screenshots_enabled" in cfg:
+                if isinstance(cfg.get("screenshots_enabled"), bool):
                     self._set_screenshots_enabled(cfg["screenshots_enabled"])
+                    self._remember_in_profile("screenshots_enabled", cfg["screenshots_enabled"])
                 self._set_capture_settings(
                     config.parse_capture_settings(cfg, self._current_capture_settings())
                 )
@@ -1836,7 +1889,14 @@ class ScreenshotService(BaseService):
             store.prune_orphans(self._cache.get_screenshot_backlog_paths())
         except Exception:  # noqa: BLE001
             self.log.exception("could not prune orphaned screenshot files")
+        self._load_capture_settings()
         self._config_refresh_timer.start()
+        # A restored session has a token: read the configuration now rather than
+        # at the first three-minute refresh (a fresh sign-in has none yet, and
+        # `apply_user_profile` is what reads it then).
+        api_client = getattr(self.runtime, "api_client", None)
+        if getattr(api_client, "access_token", None):
+            self._refresh_config()
         # Privacy exclusions have no login-time seed the way capture_frequency
         # does (apply_user_profile only carries the interval): without this,
         # `_privacy_config` stayed `{}` -- and therefore unenforced, see

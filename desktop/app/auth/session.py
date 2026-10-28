@@ -157,6 +157,21 @@ class SessionManager:
             except Exception:
                 pass  # Persistence failure should not break login flow
 
+    def update_user_info(self, **fields: Any) -> None:
+        """Write one or more fields into the signed-in profile, in memory and on
+        disk, without touching the token or the session window.
+
+        A switch an administrator moved reaches the desktop through a poll, not a
+        new sign-in; written back here, a restart while offline seeds from what
+        the administrator last set rather than from the profile as it was read
+        at sign-in. Nothing to do while signed out.
+        """
+        if self._access_token is None or not isinstance(self._user_info, dict):
+            return
+        if all(self._user_info.get(key) == value for key, value in fields.items()):
+            return
+        self.start_session(self._access_token, {**self._user_info, **fields})
+
     @staticmethod
     def _isoformat(value: Optional[datetime]) -> Optional[str]:
         return value.isoformat() if value is not None else None

@@ -293,6 +293,14 @@ class ApplicationRuntime(QObject):
         self.recovery.system_resumed.connect(self._on_system_resumed)
         # The status line says "uploaded" when the uploader confirms one.
         self.sync.screenshot_uploaded.connect(self.screenshot.refresh_status)
+        # An administrator changed something this desktop polls for (a member
+        # switch, the screens captured, the screenshot size, a privacy rule):
+        # the owners of those polls re-read now rather than at their next
+        # three-minute interval. The signal comes from the schedule service's
+        # loop thread; the slots live here, so Qt queues them to the GUI thread.
+        self.notification_schedule.config_changed.connect(self.screenshot.refresh_config_now)
+        self.notification_schedule.config_changed.connect(self.activity.refresh_config_now)
+        self.notification_schedule.config_changed.connect(self.idle.refresh_config_now)
 
         log.info("runtime constructed in %.0fms", (time.monotonic() - self._started_at) * 1000)
 
@@ -457,6 +465,9 @@ class ApplicationRuntime(QObject):
         self.maintenance.reset_session()
         # Logout wipes app_state below, the persisted schedule with it.
         self.notification_schedule.reset_session()
+        # The privacy configuration (and the screens it excludes) was the
+        # previous member's; the next one waits for their own.
+        self.screenshot.reset_session()
         if self.timer.is_running():
             self.timer.stop_tracking()
         # A break, and the task it holds, belong to the session that is
@@ -543,6 +554,13 @@ class ApplicationRuntime(QObject):
             self.sync.wake()
             self.maintenance.check_now()
             self.notification_schedule.check_now()
+            # A switch, a screen choice or a size changed while this desktop
+            # could not hear about it is in effect as soon as it can, not at
+            # the next three-minute refresh. Each is one small read, held
+            # while signed out and de-duplicated on the pool.
+            self.screenshot.refresh_config_now()
+            self.activity.refresh_config_now()
+            self.idle.refresh_config_now()
 
     def _on_system_resumed(self, gap_seconds: float) -> None:
         """The machine was asleep for `gap_seconds`; re-establish connectivity."""

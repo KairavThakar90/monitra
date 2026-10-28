@@ -76,7 +76,9 @@ sign-in profile (`GET /auth/me`), so a switch is in effect **before** the first 
 | Activity tracking | `GET /activity/config` → `activity_tracking_enabled` (new) | every 3 min |
 | Idle detection | `GET /idle-periods/config` → `idle_enabled`, `idle_minutes` | every 3 min |
 
-**A change is therefore not instant: it reaches a running desktop within a few minutes.**
+**A change reaches a connected desktop within a second or two, and any desktop within three minutes.** Every administrator's change to something a desktop polls for raises the deployment's *desktop configuration revision* (`system_settings` key `desktop_config`, `backend/app/services/desktop_config_revision.py`), which rides on the notification change stream the desktop already holds open (`GET /desktop-notifications/stream?since_config=`). The stream says whether the change concerns this desktop (its member, or every desktop), and if it does, `NotificationScheduleService.config_changed` makes the three owners re-read their polls at once -- the same de-duplicated requests the three-minute timers make. The stream is the accelerator and never the only path: the polls remain the guarantee, a reconnect re-reads all three, and a desktop that cannot hold a stream (an older build, a proxy that buffers) is exactly where it was: within three minutes.
+
+A switch a poll reports is also written back into the persisted sign-in profile (`SessionManager.update_user_info`), so a desktop restarted while offline starts from what the administrator last set, not from the profile as it was read at sign-in.
 
 Rules every one of them follows:
 

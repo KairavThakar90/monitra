@@ -113,6 +113,8 @@ from background_services.wellbeing.reminders import (
     MAX_PER_HOUR_RANGE,
     PUSH_TTL_SECONDS,
 )
+from PySide6.QtCore import Signal
+
 from core.service import LoopService, ServiceState
 from core.time_format import parse_utc
 from core.validation import validate_time_of_day
@@ -368,6 +370,15 @@ class NotificationScheduleService(LoopService):
 
     name = "notification_schedule"
 
+    #: An administrator changed something this desktop polls for -- a member
+    #: switch, the screens captured, the screenshot size or quality, a privacy
+    #: rule -- and it concerns this desktop. Emitted on the service's own thread,
+    #: on the edge only (one per new configuration revision that concerns us);
+    #: the runtime connects it to the services that own those polls, which then
+    #: re-read now instead of at their next three-minute interval. The stream is
+    #: the accelerator and never the only path: the polls remain the guarantee.
+    config_changed = Signal()
+
     #: A change an administrator makes reaches an open desktop within about
     #: half a minute (at worst this plus the jitter), so a notification set a
     #: minute ahead is known before its time. The same cadence as
@@ -456,6 +467,13 @@ class NotificationScheduleService(LoopService):
         self._stream_blocked_until = 0.0
         self._stream_failures = 0
         self._last_event_version: Optional[int] = None
+        #: The desktop configuration revision this desktop last heard of, sent
+        #: with every stream so the backend can say when it moves. 0 on start:
+        #: the first stream of a process then answers at once (the revision is
+        #: almost never 0) and the three configuration polls are made fresh --
+        #: one small read each, and the right answer from the first minute.
+        self._config_revision = 0
+        self._last_event_config: Optional[int] = None
         self._stream_up = False
         #: Whether the backend has answered (or failed to) since this service
         #: started: the end of "nothing is known yet" (see `ready`).
@@ -697,15 +715,28 @@ class NotificationScheduleService(LoopService):
         """The version in a `data:` line of the stream, or None for anything
         else (pings, blank separators, the `event:` line, a line this desktop
         does not understand)."""
+        event = NotificationScheduleService._event_payload(line)
+        return None if event is None else event[0]
+
+    @staticmethod
+    def _event_payload(line: str) -> Optional[Tuple[int, Optional[int], bool]]:
+        """`(version, config, concerns)` from a `data:` line, or None for anything
+        else. `config` is the configuration revision the event carries (None from a
+        backend that does not send one) and `concerns` whether a configuration
+        change since the one this desktop last heard concerns it."""
         if not isinstance(line, str) or not line.startswith("data:"):
             return None
         try:
-            version = json.loads(line[5:].strip()).get("version")
+            data = json.loads(line[5:].strip())
+            version = data.get("version")
         except (ValueError, AttributeError):
             return None
-        if isinstance(version, int) and not isinstance(version, bool) and version >= 0:
-            return version
-        return None
+        if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+            return None
+        config = data.get("config")
+        if isinstance(config, bool) or not isinstance(config, int) or config < 0:
+            config = None
+        return version, config, data.get("concerns") is True
 
     def _listen(self) -> int:
         """Read the change stream until something happens. Returns the delay
@@ -720,13 +751,15 @@ class NotificationScheduleService(LoopService):
         deadline = started + self.STREAM_LISTEN_S
         spoke = False
         try:
-            with self._api.open_stream(self._since, read_timeout=self.STREAM_READ_TIMEOUT_S) as stream:
+            with self._api.open_stream(
+                self._since, read_timeout=self.STREAM_READ_TIMEOUT_S, since_config=self._config_revision,
+            ) as stream:
                 for line in stream.lines():
                     spoke = True
                     self.heartbeat()
-                    version = self._event_version(line)
-                    if version is not None:
-                        return self._on_event(version)
+                    event = self._event_payload(line)
+                    if event is not None:
+                        return self._on_event(*event)
                     if self.stopping:
                         return self.POLL_INTERVAL_MS
                     if self._should_hold() is not None:
@@ -748,9 +781,13 @@ class NotificationScheduleService(LoopService):
             self._stream_up = True
             self.log.info("NOTIFICATION_STREAM_UP: changes arrive as they are made")
 
-    def _on_event(self, version: int) -> int:
-        """The server said the schedule's version moved. Fetch it -- once."""
-        if version == self._last_event_version:
+    def _on_event(self, version: int, config: Optional[int] = None, concerns: bool = False) -> int:
+        """The server said the schedule's version moved, or the desktop
+        configuration revision did. Fetch the schedule -- once -- and, when a
+        configuration change concerns this desktop, tell the owners of the
+        configuration polls to re-read now."""
+        config_moved = config is not None and config != self._config_revision
+        if version == self._last_event_version and not config_moved:
             # The same change signalled again although the fetch since then
             # should have caught up with it: the response is not getting
             # through, and signalling it again would be a loop.
@@ -758,7 +795,16 @@ class NotificationScheduleService(LoopService):
         self._last_event_version = version
         self._stream_working()
         self._need_fetch = True
-        self.log.info("NOTIFICATION_STREAM_EVENT: the schedule moved to version %d", version)
+        if config_moved:
+            self._config_revision = config
+            self.log.info(
+                "NOTIFICATION_STREAM_EVENT: configuration revision %d (%s this desktop), schedule version %d",
+                config, "concerns" if concerns else "not for", version,
+            )
+            if concerns:
+                self.config_changed.emit()
+        else:
+            self.log.info("NOTIFICATION_STREAM_EVENT: the schedule moved to version %d", version)
         return self.EVENT_FETCH_DELAY_MS
 
     def _stream_failed(self, reason: str, status: Optional[int]) -> int:
@@ -799,9 +845,22 @@ class NotificationScheduleService(LoopService):
         current = self._schedule
         if current is not None and parsed.version == current.version:
             # The level, not an edge. Only repair a persisted copy that
-            # logout removed.
+            # logout removed -- and adopt a pushed message this snapshot does
+            # not carry. Pushes are not persisted, so after a restart the
+            # persisted snapshot is at the live version with no pushes, and a
+            # message pushed while the desktop was closed (still inside its
+            # ten-minute lifetime) arrived on the first fetch and was dropped
+            # here as "the level". The same happened to a member switched back
+            # on while a push was live: the server had emptied `pushes` for
+            # them at the same version. Only the pushes are new; the scheduler
+            # is woken and nothing is logged as a schedule change.
             if not self._persisted:
                 self._persist(parsed)
+            known = {p.id for p in current.pushes}
+            if any(p.id not in known for p in parsed.pushes):
+                self._schedule = parsed
+                self._wake_scheduler()
+                return True
             return False
 
         self._schedule = parsed

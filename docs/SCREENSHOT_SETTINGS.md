@@ -80,8 +80,12 @@ GET /auth/me             ->  { ..., "screenshots_enabled": true }
 * The switch is seeded from the profile at sign-in and session verification, so a
   member who is off never captures even the first window of a session; the periodic
   refresh (`ScreenshotService.CONFIG_REFRESH_SECONDS`, 3 minutes) then follows an
-  administrator's change. **A change is therefore not instant: it reaches a running
-  desktop within about three minutes.**
+  administrator's change. **A change reaches a connected desktop within a second or two, and any desktop within three minutes.** Every administrator's change to something a desktop polls for raises the deployment's *desktop configuration revision* (`system_settings` key `desktop_config`, `backend/app/services/desktop_config_revision.py`), which rides on the notification change stream the desktop already holds open (`GET /desktop-notifications/stream?since_config=`). The stream says whether the change concerns this desktop (its member, or every desktop), and if it does, `NotificationScheduleService.config_changed` makes the three owners re-read their polls at once -- the same de-duplicated requests the three-minute timers make. The stream is the accelerator and never the only path: the polls remain the guarantee, a reconnect re-reads all three, and a desktop that cannot hold a stream (an older build, a proxy that buffers) is exactly where it was: within three minutes.
+* The size and quality last heard are kept in `app_state` (`screenshot.capture_settings`)
+  and read back when the service starts, and a restored session reads the configuration
+  at start rather than at its first three-minute refresh -- so a desktop started offline,
+  or capturing before its first refresh, uses the size the administrator chose rather
+  than the default.
 * **Only an explicit `false` turns capture off.** A missing key (a backend older than
   this feature), a `null` or any non-boolean leaves the switch where it was. A
   profile that carries no switch means *on*, so one member's "off" is never inherited

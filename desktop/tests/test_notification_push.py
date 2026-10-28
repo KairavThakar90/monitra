@@ -399,7 +399,7 @@ class StreamApi:
         return json.loads(json.dumps(self.payload))
 
     @contextmanager
-    def open_stream(self, since, *, read_timeout):
+    def open_stream(self, since, *, read_timeout, since_config=None):
         self.opens.append((self.clock.t, since))
         if self.open_error is not None:
             raise self.open_error
@@ -723,12 +723,16 @@ def test_a_state_of_the_stream_is_logged_on_the_edge_not_every_listen():
 # ── Native delivery ──────────────────────────────────────────────────────────
 
 def test_the_administrators_notifications_are_asked_to_be_native():
-    """Reminders, custom notifications and pushed messages go out as the platform's own notification."""
+    """Reminders and custom notifications go out as the platform's own notification; a pushed
+    message is the Announcement -- Monitra's own card, at its own level, so it carries the
+    Monitra mark, the "Announcement" heading and every word of a 300-character message."""
+    from background_services.notifications.notification_service import NotificationLevel
+
     seen = []
 
     class Recording(FakeNotifications):
         def notify(self, message, level=None, title=None, key=None, link=None, native=False):
-            seen.append((key, native))
+            seen.append((key, native, level))
             return super().notify(message, level, title, key, link, native)
 
     service, notifications, source, runtime = make(
@@ -741,5 +745,7 @@ def test_the_administrators_notifications_are_asked_to_be_native():
 
     run(service, 4)
 
-    assert {key for key, _ in seen} == {"wellbeing:push:p1", "wellbeing:custom:c1"}
-    assert all(native for _, native in seen)
+    by_key = {key: (native, level) for key, native, level in seen}
+    assert set(by_key) == {"wellbeing:push:p1", "wellbeing:custom:c1"}
+    assert by_key["wellbeing:custom:c1"] == (True, NotificationLevel.INFO)
+    assert by_key["wellbeing:push:p1"] == (False, NotificationLevel.ANNOUNCEMENT)

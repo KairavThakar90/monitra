@@ -292,6 +292,29 @@ class TestTheActivityConfigRefresh:
         activity.tick()
         assert asked == [1], "claimed before it was emitted, so it is not asked for again at once"
 
+    def test_what_the_poll_reports_is_written_into_the_persisted_profile(self, activity):
+        """So a restart while offline seeds from what the administrator last set, not from
+        the profile as it was at sign-in."""
+        remembered = []
+        activity.runtime.session_manager = SimpleNamespace(
+            user_info={"activity_tracking_enabled": True},
+            update_user_info=lambda **fields: remembered.append(fields),
+        )
+        activity.test_api.answer = {"activity_tracking_enabled": False}
+        activity._refresh_config()
+        assert remembered == [{"activity_tracking_enabled": False}]
+        activity.test_api.answer = {}
+        activity._refresh_config()
+        assert remembered == [{"activity_tracking_enabled": False}], "an answer without the switch says nothing"
+
+    def test_refresh_now_asks_at_once_but_not_while_signed_out(self, activity):
+        activity.runtime.api_client.access_token = None
+        activity.refresh_config_now()
+        assert activity.test_api.calls == 0
+        activity.runtime.api_client.access_token = "token"
+        activity.refresh_config_now()
+        assert activity.test_api.calls == 1
+
     def test_the_restored_session_profile_seeds_it_before_any_request_answers(self, activity):
         activity.runtime.session_manager = SimpleNamespace(user_info={"activity_tracking_enabled": False})
         activity.on_start()
@@ -437,7 +460,7 @@ class FakeScheduleApi:
     def get_schedule(self):
         return self.response
 
-    def open_stream(self, since, *, read_timeout):
+    def open_stream(self, since, *, read_timeout, since_config=None):
         from app.api.exceptions import ApiError
 
         raise ApiError("no change stream", status_code=404)

@@ -1105,6 +1105,17 @@ tick()  ->  first tick: read the persisted schedule, mark ready, wake Wellbeing
                                                    -> return, fetch 300 ms later)
 ```
 
+* **The stream also carries the desktop configuration revision.** The backend
+  raises one counter whenever an administrator changes something this desktop
+  polls for (a member switch, the screens captured, the screenshot size, a
+  privacy rule) and the stream, asked with `since_config`, says when it moved
+  and whether the change concerns this desktop. On that edge the service emits
+  `config_changed`; `ApplicationRuntime.__init__` connects it to
+  `ScreenshotService.refresh_config_now`, `ActivityService.refresh_config_now`
+  and `IdleService.refresh_config_now` -- the same de-duplicated pool requests
+  their three-minute timers make -- so a change reaches a connected desktop in
+  a second or two while the polls remain the guarantee. A reconnect
+  (`_on_network_state_changed`) re-reads the same three.
 * **The change stream is an accelerator, never the only path.** A desktop
   hears about an administrator's change (or a pushed message) within a second
   or two instead of at the next poll. The listen runs *inside* `tick()` on the

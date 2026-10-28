@@ -464,8 +464,17 @@ class ActivityService(LoopService):
         def on_success(config: Any) -> None:
             # A key the answer does not carry (a backend older than the switch)
             # says nothing and changes nothing.
-            if isinstance(config, dict) and "activity_tracking_enabled" in config:
+            if isinstance(config, dict) and isinstance(config.get("activity_tracking_enabled"), bool):
                 self.set_tracking_enabled(config["activity_tracking_enabled"])
+                # Into the persisted profile too, so a restart while offline seeds
+                # from what the administrator last set.
+                session_manager = getattr(self.runtime, "session_manager", None)
+                update = getattr(session_manager, "update_user_info", None)
+                if update is not None:
+                    try:
+                        update(activity_tracking_enabled=config["activity_tracking_enabled"])
+                    except Exception:  # noqa: BLE001
+                        self.log.exception("could not remember the activity switch in the profile")
 
         tasks.submit(
             self._activity_api.get_config,
@@ -476,6 +485,16 @@ class ActivityService(LoopService):
             key="activity-config",
             guard_generation=False,
         )
+
+    @Slot()
+    def refresh_config_now(self) -> None:
+        """Re-read the switch now (an administrator changed something, or the network
+        came back). GUI thread; not while signed out."""
+        api_client = getattr(self.runtime, "api_client", None)
+        if api_client is None or not getattr(api_client, "access_token", None):
+            return
+        self._config_read_at = time.monotonic()
+        self._refresh_config()
 
     def _maybe_refresh_config(self) -> None:
         """Called from the loop's tick (its own thread): ask for a refresh when due."""

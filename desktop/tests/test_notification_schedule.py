@@ -211,7 +211,7 @@ class FakeScheduleApi:
             raise self.error
         return self.response
 
-    def open_stream(self, since, *, read_timeout):
+    def open_stream(self, since, *, read_timeout, since_config=None):
         """An older backend: no change stream (404), so the poll is all there is.
         The stream itself is covered by test_notification_push.py."""
         raise ApiError("no change stream", status_code=404)

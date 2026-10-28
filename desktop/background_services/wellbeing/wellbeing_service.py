@@ -698,11 +698,19 @@ class WellbeingService(LoopService):
 
     # ── Delivery ──────────────────────────────────────────────────────────────
 
-    def _show(self, key: str, title: str, body: str) -> None:
+    def _show(self, key: str, title: str, body: str, *, announcement: bool = False) -> None:
         """Hand one reminder to the notification service.
 
         `notify` is safe from any thread: it hops to the notification
         service's own thread through a queued signal.
+
+        An administrator's pushed message (`announcement`) is shown on Monitra's
+        own Announcement card rather than the platform toast: the card is the one
+        surface that can carry the Monitra mark, an "Announcement" heading and the
+        whole of a 300-character message (a Windows toast cuts the title at 63
+        characters and the body at about four lines), and it stays up for the
+        service's `DISPLAY_MS` with its own close button. Reminders keep the
+        platform toast, which stays in the Action Center.
         """
         notifications = getattr(self.runtime, "notifications", None)
         if notifications is None:
@@ -711,12 +719,12 @@ class WellbeingService(LoopService):
         try:
             notifications.notify(
                 body,
-                NotificationLevel.INFO,
+                NotificationLevel.ANNOUNCEMENT if announcement else NotificationLevel.INFO,
                 title=title,
                 key=f"wellbeing:{key}",
                 # The platform's own notification, which stays in the Action
                 # Center; the application's own messages keep their card.
-                native=True,
+                native=not announcement,
             )
         except Exception:  # noqa: BLE001
             # A reminder that cannot be displayed must never stop the ones
@@ -802,7 +810,7 @@ class WellbeingService(LoopService):
         # An administrator's pushed message before anything else: it says "now".
         pushed = self._pending_push(now, schedule)
         if pushed is not None:
-            self._show(f"push:{pushed.id}", pushed.title, pushed.message)
+            self._show(f"push:{pushed.id}", pushed.title, pushed.message, announcement=True)
             self._last_shown = now
             self._note_shown(now_ist)
             seen = self._load_pushes_seen()

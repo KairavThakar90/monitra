@@ -84,6 +84,12 @@ class NotificationLevel:
     SUCCESS = "success"
     WARNING = "warning"
     ERROR = "error"
+    #: An administrator's pushed message. Informational like INFO (a member
+    #: whose notifications are off is shown none), but drawn as the
+    #: Announcement card -- the Monitra mark, an "Announcement" heading, the
+    #: administrator's title and message -- so it is told apart at a glance
+    #: from a wellbeing reminder or a "Logged in".
+    ANNOUNCEMENT = "announcement"
 
 
 #: Base size the artwork is defined at. There is exactly one definition of
@@ -420,7 +426,7 @@ class NotificationService(BaseService):
 
     #: The levels an administrator's "notifications off" silences. The two that
     #: say something is wrong (`WARNING`, `ERROR`) are deliberately not here.
-    SUPPRESSED_WHEN_OFF = frozenset({NotificationLevel.INFO, NotificationLevel.SUCCESS})
+    SUPPRESSED_WHEN_OFF = frozenset({NotificationLevel.INFO, NotificationLevel.SUCCESS, NotificationLevel.ANNOUNCEMENT})
 
     def _member_wants_notifications(self) -> bool:
         """Whether the signed-in member is shown informational notifications.

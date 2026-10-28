@@ -434,6 +434,15 @@ class IdleService(LoopService):
         self.config_changed.emit(enabled_value, minutes_value)
 
     @Slot()
+    def refresh_config_now(self) -> None:
+        """Re-read the idle settings now (an administrator changed something, or the
+        network came back). GUI thread; not while signed out."""
+        api_client = getattr(self.runtime, "api_client", None)
+        if api_client is None or not getattr(api_client, "access_token", None):
+            return
+        self._refresh_config()
+
+    @Slot()
     def _refresh_config(self) -> None:
         self._config_read_at = time.monotonic()
         epoch = self._epoch

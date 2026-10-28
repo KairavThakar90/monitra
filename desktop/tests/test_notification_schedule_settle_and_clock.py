@@ -55,7 +55,7 @@ class FakeApi:
             raise self.error
         return self.response
 
-    def open_stream(self, since, *, read_timeout):
+    def open_stream(self, since, *, read_timeout, since_config=None):
         from app.api.exceptions import ApiError
 
         raise ApiError("no change stream", status_code=404)

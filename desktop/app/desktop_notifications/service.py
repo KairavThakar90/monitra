@@ -8,7 +8,7 @@ something the scheduler can trust is the schedule service's job, not this
 client's.
 """
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator
+from typing import Any, Dict, Iterator, Optional
 
 from app.api.client import ApiClient, ApiStream, TIMEOUT_FAST
 from app.api.exceptions import ApiConnectionError, ApiError, ApiHttpError
@@ -25,19 +25,28 @@ class NotificationScheduleApiService:
         self.api_client = api_client
 
     @contextmanager
-    def open_stream(self, since: int, *, read_timeout: float) -> Iterator[ApiStream]:
+    def open_stream(
+        self, since: int, *, read_timeout: float, since_config: Optional[int] = None,
+    ) -> Iterator[ApiStream]:
         """Open the change stream; leave the block to close it.
 
         The stream carries no schedule, only a signal that the version moved
         past `since` -- the schedule itself is always fetched with
-        `get_schedule`. Failures to open it are raised as `ApiError`, a 404 with
-        its `status_code` (an older deployment without the route is a normal
-        state during a rollout); failures while reading are raised by
+        `get_schedule`. With `since_config` (the desktop configuration revision
+        this desktop last heard) the backend also signals when an administrator
+        changed something this desktop polls for -- a member switch, a screen
+        choice, the screenshot size -- so those polls can be made at once rather
+        than at their next interval. Failures to open it are raised as `ApiError`,
+        a 404 with its `status_code` (an older deployment without the route is a
+        normal state during a rollout); failures while reading are raised by
         `ApiStream.lines()` as the client's own exception types.
         """
+        params: Dict[str, Any] = {"since": since}
+        if since_config is not None:
+            params["since_config"] = since_config
         try:
             with self.api_client.stream_get(
-                "/desktop-notifications/stream", {"since": since}, read_timeout=read_timeout,
+                "/desktop-notifications/stream", params, read_timeout=read_timeout,
             ) as stream:
                 yield stream
         except ApiHttpError as exc:

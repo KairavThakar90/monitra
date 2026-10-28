@@ -70,7 +70,9 @@ Every number and the boolean are bounded and strict (`app/schemas/member_display
 The excluded numbers ride on the **privacy configuration** -- the member-specific "what is not captured"
 answer the desktop already fetches at sign-in and every three minutes, and which capture **waits for** before its
 first read of the screen. So there is no new channel, and no window in which the first capture of a session can
-happen before the instruction arrives. A change reaches a running desktop within a few minutes.
+happen before the instruction arrives. **A change reaches a connected desktop within a second or two, and any desktop within three minutes.** Every administrator's change to something a desktop polls for raises the deployment's *desktop configuration revision* (`system_settings` key `desktop_config`, `backend/app/services/desktop_config_revision.py`), which rides on the notification change stream the desktop already holds open (`GET /desktop-notifications/stream?since_config=`). The stream says whether the change concerns this desktop (its member, or every desktop), and if it does, `NotificationScheduleService.config_changed` makes the three owners re-read their polls at once -- the same de-duplicated requests the three-minute timers make. The stream is the accelerator and never the only path: the polls remain the guarantee, a reconnect re-reads all three, and a desktop that cannot hold a stream (an older build, a proxy that buffers) is exactly where it was: within three minutes.
+
+At sign-out the privacy configuration, the excluded screens with it, is forgotten (`ScreenshotService.reset_session`): the next member's captures wait for their own answer rather than running under the previous member's exclusions.
 
 | Desktop behaviour | Detail |
 |---|---|
