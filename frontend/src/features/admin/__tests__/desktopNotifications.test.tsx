@@ -14,6 +14,9 @@
  * - editing a built-in sends only what changed;
  * - a repeating reminder shows no time until "Only at a set time" is chosen, is
  *   fixed with exactly `{time}` and put back on its cadence with `{repeat:true}`;
+ * - an announcement is written once and POSTed to /push as {title, message}, after a
+ *   confirmation, with the title defaulting to "Announcement"; a blank message is
+ *   refused before any request and a refusal keeps what was typed;
  * - the hourly limit is shown with its default marked, changed with one PUT
  *   `{max_per_hour}`, shown at once, and put back when the server refuses.
  */
@@ -144,6 +147,8 @@ describe('AdminDesktopNotifications', () => {
         // The backend's rule: `repeat` removes a repeating reminder's time.
         const { repeat, ...change } = body as Body;
         Object.assign(state.builtin.find((b) => b.key === builtinMatch[1])!, change, repeat ? { time: null } : {});
+      } else if (url.pathname.endsWith('/push') && method === 'POST') {
+        // An announcement changes nothing the admin view lists; the version still moves.
       } else if (url.pathname.endsWith('/custom') && method === 'POST') {
         state.custom.push({ id: `c${state.custom.length + 1}`, created_at: null, updated_at: null, created_by: 'grace', ...body });
       } else if (customMatch && method === 'PATCH') {
@@ -535,5 +540,63 @@ describe('AdminDesktopNotifications', () => {
       expect(box('Lunch break')!.checked).toBe(true);
       expect(writes().map((w) => w.path.split('/').slice(-1)[0])).toEqual(['hydrate', 'limit']);
     });
+  });
+
+  const announcementMessage = () => container.querySelector('#announcement-message') as HTMLTextAreaElement;
+  const announcementTitle = () => container.querySelector('#announcement-title') as HTMLInputElement;
+
+  it('offers the announcement box above the custom notifications', () => {
+    const text = container.textContent!;
+    expect(text).toContain('Announcement message');
+    expect(text.indexOf('Announcement message')).toBeLessThan(text.indexOf('Custom notifications'));
+    expect(button('Send announcement')).toBeTruthy();
+  });
+
+  it('sends the announcement to every desktop as {title, message}, defaulting the title, and clears the box', async () => {
+    await type(announcementMessage(), 'The office closes at 4 pm today.');
+    await click(button('Send announcement'));
+
+    expect(writes()).toEqual([
+      { method: 'POST', path: expect.stringMatching(/\/desktop-notifications\/push$/), body: { title: 'Announcement', message: 'The office closes at 4 pm today.' } },
+    ]);
+    expect(showToast).toHaveBeenCalledWith('Announcement sent. Signed-in desktops will show it within a few minutes.', 'success');
+    expect(announcementMessage().value).toBe('');
+    expect(container.textContent).toContain('The office closes at 4 pm today.');
+  });
+
+  it('sends the title when one is given', async () => {
+    await type(announcementTitle(), 'Holiday');
+    await type(announcementMessage(), 'Monday is a holiday.');
+    await click(button('Send announcement'));
+
+    expect(writes()[0].body).toEqual({ title: 'Holiday', message: 'Monday is a holiday.' });
+  });
+
+  it('refuses a blank message before any request', async () => {
+    await type(announcementMessage(), '   ');
+    await click(button('Send announcement'));
+
+    expect(writes()).toHaveLength(0);
+    expect(container.textContent).toMatch(/Message/);
+    expect(container.querySelector('#announcement-message')!.getAttribute('aria-invalid')).toBe('true');
+  });
+
+  it('sends nothing when the administrator declines the confirmation', async () => {
+    confirmAnswer = false;
+    await type(announcementMessage(), 'Not yet.');
+    await click(button('Send announcement'));
+
+    expect(writes()).toHaveLength(0);
+    expect(announcementMessage().value).toBe('Not yet.');
+  });
+
+  it('keeps what was typed and says why when the server refuses the announcement', async () => {
+    refuseNext = { status: 403, detail: 'Insufficient permissions for this action' };
+    await type(announcementMessage(), 'Please read.');
+    await click(button('Send announcement'));
+
+    expect(container.textContent).toContain('Insufficient permissions for this action');
+    expect(announcementMessage().value).toBe('Please read.');
+    expect(showToast).not.toHaveBeenCalledWith(expect.stringContaining('Announcement sent'), 'success');
   });
 });

@@ -117,26 +117,41 @@ class DesktopNotificationService:
     # ── Reads ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def get_schedule(db: Session) -> Dict[str, Any]:
-        """What every desktop polls. Open to any signed-in client."""
+    def get_schedule(db: Session, current_user: Optional[User] = None) -> Dict[str, Any]:
+        """What every desktop polls. Open to any signed-in client.
+
+        The schedule is deployment-wide, but a member can be switched off from
+        User Management (`users.notifications_enabled`). For that member the answer
+        is `enabled: false` *and* empty -- every built-in reminder off, no custom
+        notification, no push -- so even a desktop that has never heard of the flag
+        shows them nothing. `version` stays the real one: the schedule itself did
+        not change, and a desktop compares it to know whether to adopt the lists.
+        """
         setting = SystemSettingRepository.get(db, SystemSettingKey.DESKTOP_NOTIFICATIONS)
         value = DesktopNotificationService._value(setting)
         now = datetime.now(timezone.utc)
+        # Only an explicit False switches a member off; a row that predates the
+        # column, or no caller at all, is "on" -- as it always was.
+        member_on = getattr(current_user, "notifications_enabled", None) is not False
         return {
             "version": value["version"],
             "updated_at": getattr(setting, "updated_at", None) if value["version"] else None,
             "server_time": now,
             "max_per_hour": DesktopNotificationService._max_per_hour(value),
             "builtin": [
-                {"key": row["key"], "enabled": row["enabled"], "time": row["time"], "weekdays": row["weekdays"]}
+                {
+                    "key": row["key"], "enabled": row["enabled"] and member_on,
+                    "time": row["time"], "weekdays": row["weekdays"],
+                }
                 for row in DesktopNotificationService._resolved_builtin(value)
             ],
             # A switched-off custom notification is simply not sent.
             "custom": [
                 {key: item[key] for key in ("id", "title", "message", "time", "weekdays")}
                 for item in value["custom"] if item["enabled"]
-            ],
-            "pushes": DesktopNotificationService._live_pushes(value, now),
+            ] if member_on else [],
+            "pushes": DesktopNotificationService._live_pushes(value, now) if member_on else [],
+            "enabled": member_on,
         }
 
     @staticmethod

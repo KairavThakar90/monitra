@@ -1183,6 +1183,68 @@ stored byte for byte as encoded. The qualities were
 raised about 10% on 2026-10-08 (from 72 / 45 / 20); the limit is what keeps the larger quality from
 becoming larger files.
 
+**What an administrator controls** ([docs/SCREENSHOT_SETTINGS.md](../docs/SCREENSHOT_SETTINGS.md) is
+authoritative). Three things arrive through `GET /screenshots/config` -- the endpoint
+`_refresh_config` already polls for the capture interval, every `CONFIG_REFRESH_SECONDS` (3 min) --
+and the first also rides on the sign-in profile (`apply_user_profile`): whether this member is
+captured at all (`screenshots_enabled`), and the image size and quality (`config.CaptureSettings`,
+parsed defensively by `config.parse_capture_settings`). There is no second channel and no new timer or
+thread.
+
+- **Only an explicit `false` turns capture off**, and a profile with no switch means *on* (so one
+  member's "off" is never inherited by the next to sign in). While off, `_run_due` plans nothing,
+  `_check_authorized` refuses a capture planned earlier *before the screen is read*, and no
+  unresolved-window event is sent -- no capture was expected. The schedule stays armed, and switching
+  back on plans the rest of the window at once (`_on_screenshots_switch_changed`, edge-triggered).
+  `health.DISABLED` tells the person why nothing is captured.
+- **Size** is a width x height canvas the screen is fitted into; on several displays it is the box the
+  primary display is fitted into (`compositor.output_size(box=...)`). At the default 1500x1500 every
+  number is the one it always was; at any other size the byte budgets scale with the canvas area
+  (`image_processor._scaled_budget`) so a bigger canvas is not compressed back to nothing.
+- **Quality** is Automatic (`None`: the adaptive search, fallback and hard limit above) or *fixed*:
+  `_encode_fixed` encodes at exactly that quality and runs none of the byte-budget passes, because
+  they would turn "90%" into "whatever fits in 135 KB". Its one ceiling is `FIXED_QUALITY_MAX_BYTES`,
+  under the server's upload limit, since an over-limit file is refused with a 413 and parked for ever.
+- The bounds in `config` are the backend's (`backend/app/core/screenshot_geometry.py`), compared by
+  `tests/test_screenshot_settings.py`: this client is never stricter than the server.
+
+**The other per-member switches** ([docs/MEMBER_TRACKING_SETTINGS.md](../docs/MEMBER_TRACKING_SETTINGS.md)
+is authoritative). Four things an administrator can switch off for one member, each stopping *its own
+feature only* (`tests/test_member_desktop_switches.py` applies every combination of the four): screenshots
+(above), desktop notifications, activity tracking and idle detection. They all follow the one pattern
+`IdleService` set: seeded from the sign-in profile (`BackgroundApi.apply_*_profile`), corrected by a periodic
+poll of a narrow config endpoint, edge-triggered, a failed refresh keeps the last value, only an explicit
+`false` turns anything off, and a profile with no switch means *on* (so one member's "off" is not inherited).
+
+- **Activity tracking** is owned by `ActivityService` (`tracking_enabled()`, `tracking_enabled_changed`), which
+  polls `GET /activity/config`. "Activity" is the whole of `background_services/activity/`, so
+  `AppUsageService` and `UrlUsageService` *ask* that switch (they do not read the backend) and the runtime
+  connects the signal to their `on_activity_tracking_changed`. Each remembers that a session is open even when
+  it is not recording (`_session_open`), so turning the switch on mid-session resumes against the same entry and
+  turning it off writes out what was measured first. It is **not** idle detection: `IdleService` reads
+  `ActivityService.idle_seconds()`, a plain system call that does not depend on a session being tracked.
+- **Desktop notifications** are a value on `NotificationScheduleService` (`notifications_enabled`), not a field
+  of the schedule snapshot: the schedule is the deployment's and survives a sign-out, the switch is the signed-in
+  member's and is wiped with `app_state`. It is read from every schedule answer (whatever its `version`) and
+  held by `WellbeingService._gate_reason`, the existing gate, so the whole scheduler -- built-in, custom and
+  pushed -- is held and its cadence restarts on release. It is also what `NotificationService.notify`
+  consults (`_member_wants_notifications`): informational notifications (`INFO`, `SUCCESS`) are dropped for a
+  member who is off -- every toast in the application passes through that one method -- while `WARNING` and
+  `ERROR` are still shown, since they say something is wrong. The decision is made before de-duplication.
+- **Idle detection** keeps `idle_enabled`/`idle_minutes` and its own poll, unchanged.
+
+**Which screens are captured** ([docs/SCREENSHOT_DISPLAYS.md](../docs/SCREENSHOT_DISPLAYS.md) is
+authoritative). The capture reads every attached display and merges them into one image;
+an administrator can switch individual screens off per member. The service does two things for that and
+opens no new channel, thread or timer: it **reports** the screens (`_report_displays`: `capture.list_displays()` on the
+`TaskRunner`, edge-triggered per member, at sign-in and on each configuration refresh, via
+`PUT /screenshots/displays`; state rather than a queued operation, so a failure is simply sent again by the next
+refresh) and it **honours the choice** (`excluded_displays` arrives on the privacy configuration capture already
+waits for, so the first capture of a session cannot precede it; `capture_all_displays(excluded=...)` drops those
+numbers *before any read*, so an excluded screen's pixels never exist here). With nothing excluded the call is
+the zero-argument one it always was. Every attached screen excluded raises `AllDisplaysExcluded` -- a decision,
+not a fault, so it is **not** retried: the window ends with an `excluded` / `displays_disabled` event.
+
 Two rules about the capture itself, each learned in production:
 
 - **Every expected capture ends in an image, a retry still inside its window,

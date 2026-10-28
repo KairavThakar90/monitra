@@ -102,12 +102,24 @@ class ActivityLogAction:
     ADD_TASKS_ALLOWED = "add_tasks_allowed"
     ADD_NONBILLABLE_TASKS_EXCLUDED = "add_nonbillable_tasks_excluded"
     ADD_NONBILLABLE_TASKS_ALLOWED = "add_nonbillable_tasks_allowed"
+    SCREENSHOTS_DISABLED = "screenshots_disabled"
+    SCREENSHOTS_ENABLED = "screenshots_enabled"
+    NOTIFICATIONS_DISABLED = "notifications_disabled"
+    NOTIFICATIONS_ENABLED = "notifications_enabled"
+    ACTIVITY_TRACKING_DISABLED = "activity_tracking_disabled"
+    ACTIVITY_TRACKING_ENABLED = "activity_tracking_enabled"
+    #: An administrator switched screenshot capture on or off for individual screens of one member.
+    SCREENSHOT_DISPLAYS_UPDATED = "screenshot_displays_updated"
 
     FEEDBACK_STATUS_CHANGED = "feedback_status_changed"
     FEEDBACK_DELETED = "feedback_deleted"
 
     SCREENSHOT_NOTICE_SENT = "screenshot_notice_sent"
     SCREENSHOT_DELETED = "screenshot_deleted"
+    #: The deployment-wide size and quality every desktop captures at.
+    SCREENSHOT_SETTINGS_UPDATED = "screenshot_settings_updated"
+    #: The deployment-wide list of who is copied on which email.
+    EMAIL_CC_UPDATED = "email_cc_updated"
 
     CLIENT_INVITED = "client_invited"
     CLIENT_INVITATION_RESENT = "client_invitation_resent"

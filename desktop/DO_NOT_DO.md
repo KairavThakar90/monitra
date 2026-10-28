@@ -1167,6 +1167,24 @@ no operating-system setting can swallow, and every delivery logs its surface
 do not make Focus assist or a full-screen app a reason for a card: that is the user's own
 request to be left alone, and the toast still lands in the Action Center.
 
+### ❌ Do not put a member's "notifications off" switch in one producer instead of the channel
+
+```python
+# WellbeingService._gate_reason: the scheduler stops asking for reminders ... and nothing else does
+if source is not None and getattr(source, "notifications_enabled", True) is False:
+    return "desktop notifications are turned off for this account"
+```
+
+**What it caused:** an administrator switched notifications off for a member and the member kept seeing
+notifications. The switch was honoured by the one producer written for it -- the reminder scheduler -- while
+roughly forty other call sites ("Logged in successfully", "Pending activity synced", "Back online", "Screenshot
+captured") went straight to `NotificationService.notify`. Backend and desktop tests both passed, because both
+tested the producer; the person at the machine saw the toasts. Found by the administrator, not by any test.
+
+**Instead:** gate where every notification passes (`NotificationService.notify`), at the level that carries the
+meaning -- informational ones (`INFO`, `SUCCESS`) are dropped, `WARNING` and `ERROR` are not, because silencing
+"permission needed" hides a fault. Test the channel with a real message at each level, not only the producer.
+
 ### ❌ Do not time an administrator's schedule by this machine's clock alone
 
 ```python

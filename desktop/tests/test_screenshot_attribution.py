@@ -122,8 +122,8 @@ class TestAnIdArrivingMidEncode:
 
         real_process = module.image_processor.process_merged
 
-        def process_then_bind(merged):
-            result = real_process(merged)
+        def process_then_bind(merged, **kwargs):
+            result = real_process(merged, **kwargs)
             # The backend confirms the start while this capture is encoding.
             svc.bind_entry_id(4242)
             return result

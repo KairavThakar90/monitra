@@ -659,7 +659,7 @@ class StatCardsRow(QWidget):
 
     def set_today_activity(
         self, percent: int, *, has_measurement: bool, is_tracking: bool,
-        capture_blocked: Optional[str] = None,
+        capture_blocked: Optional[str] = None, capture_disabled: bool = False,
     ) -> None:
         """Today's duration-weighted keyboard/mouse activity, as a single
         number -- the same figure `background_services.activity.today_summary`
@@ -677,7 +677,25 @@ class StatCardsRow(QWidget):
         "Not tracking yet" about it -- a denied permission dressed as a quiet
         user. The reason is named instead, in the warning colour, and a figure
         already measured earlier in the day is kept with the reason beneath it.
+
+        `capture_disabled` is an administrator having turned activity tracking off
+        for this member (`activity_capture_status()["disabled"]`). Nothing is being
+        measured because nothing is meant to be: the card says so, in the neutral
+        colour -- never "Tracking now", which would be untrue, and never the warning
+        colour, which would read as a fault. A figure measured earlier in the day is
+        kept, with the reason beneath it.
         """
+        if is_tracking and capture_disabled:
+            if has_measurement:
+                percent = max(0, min(100, percent))
+                self.activity_card.set_value(f"{percent}%")
+                self.activity_card.set_progress(percent)
+            else:
+                self.activity_card.set_value("—")
+                self.activity_card.set_progress(None)
+            self.activity_card.set_sub("Turned off by your administrator")
+            self.activity_card.set_theme("amber")
+            return
         blocked_text = (
             _CAPTURE_BLOCKED_TEXT.get(capture_blocked, "Capture unavailable")
             if is_tracking and capture_blocked else None

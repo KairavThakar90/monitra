@@ -428,7 +428,7 @@ class TestAFailedCaptureIsNotAWindowLost:
         from background_services.screenshot import screenshot_service as module
 
         if stage == "encode":
-            monkeypatch.setattr(module.image_processor, "process_merged", lambda m: None)
+            monkeypatch.setattr(module.image_processor, "process_merged", lambda m, **kwargs: None)
         elif stage == "write":
             monkeypatch.setattr(module.store, "write_screenshot", lambda *a, **k: None)
         else:
@@ -485,9 +485,9 @@ class TestAFailedCaptureIsNotAWindowLost:
         monkeypatch.setattr(module, "datetime", Recording)
         real_process = module.image_processor.process_merged
 
-        def process(merged):
+        def process(merged, **kwargs):
             order.append(("encode", len(stamps)))
-            return real_process(merged)
+            return real_process(merged, **kwargs)
 
         monkeypatch.setattr(module.image_processor, "process_merged", process)
         service.start_tracker(SESSION)

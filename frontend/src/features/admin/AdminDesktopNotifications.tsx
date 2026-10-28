@@ -14,6 +14,7 @@ import {
   useGetDesktopNotificationsQuery,
   useUpdateBuiltinNotificationMutation,
   useUpdateCustomNotificationMutation,
+  useSendDesktopAnnouncementMutation,
   useUpdateDesktopNotificationLimitMutation,
   type BuiltinNotification,
   type BuiltinNotificationChange,
@@ -30,6 +31,12 @@ import {
  * built-in reminders (switch, move, restrict to weekdays) and custom
  * notifications the administrator writes.
  *
+ * The Announcement box sends one message to every signed-in desktop at once
+ * (`POST /desktop-notifications/push`): a connected desktop shows it within a
+ * second or two, one that polls within about half a minute, and one that was away
+ * if it comes back within ten minutes. Members whose Desktop notifications switch
+ * is off in User Management do not receive it.
+ *
  * Times are IST, said on the page because the desktop reads them as IST
  * whatever this browser's timezone is. The route is administrators-only, and so
  * is every endpoint behind it.
@@ -37,6 +44,8 @@ import {
 
 const TITLE_MAX_LENGTH = 80;
 const MESSAGE_MAX_LENGTH = 300;
+/** What an announcement is titled when the administrator gives it no title. */
+const DEFAULT_ANNOUNCEMENT_TITLE = "Announcement";
 
 type Editing =
   | { kind: "builtin"; item: BuiltinNotification }
@@ -355,6 +364,122 @@ const NotificationDialog: React.FC<{ editing: Editing; onClose: () => void }> = 
   );
 };
 
+/** Write a message once and send it to every user's desktop. */
+const AnnouncementPanel: React.FC = () => {
+  const { showToast, confirmAction } = useFeedback();
+  const [sendAnnouncement, { isLoading: sending }] = useSendDesktopAnnouncementMutation();
+  const [title, setTitle] = useState("");
+  const [message, setMessage] = useState("");
+  const [errors, setErrors] = useState<Record<string, string | null>>({});
+  const [formError, setFormError] = useState<string | null>(null);
+  const [lastSent, setLastSent] = useState<{ title: string; message: string; at: string } | null>(null);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const titleCheck = title.trim() ? validateName(title, { fieldLabel: "Title", maxLength: TITLE_MAX_LENGTH }) : null;
+    const messageCheck = validatePlainText(message, { fieldLabel: "Message", maxLength: MESSAGE_MAX_LENGTH, required: true });
+    const next: Record<string, string | null> = {};
+    if (titleCheck && !titleCheck.ok) next.title = titleCheck.error;
+    if (!messageCheck.ok) next.message = messageCheck.error;
+    setErrors(next);
+    setFormError(null);
+    if (Object.values(next).some(Boolean) || !messageCheck.ok) return;
+
+    const draft = {
+      title: titleCheck && titleCheck.ok ? titleCheck.value : DEFAULT_ANNOUNCEMENT_TITLE,
+      message: messageCheck.value,
+    };
+    const confirmed = await confirmAction(
+      "Send this announcement to every user?",
+      `"${draft.message}" will be shown on every signed-in desktop. It cannot be recalled once sent.`,
+    );
+    if (!confirmed) return;
+
+    try {
+      await sendAnnouncement(draft).unwrap();
+      setLastSent({ ...draft, at: new Date().toLocaleTimeString() });
+      setTitle("");
+      setMessage("");
+      showToast("Announcement sent. Signed-in desktops will show it within a few minutes.", "success");
+    } catch (exc) {
+      setFormError(formatApiError((exc as { data?: unknown })?.data, "Could not send the announcement."));
+    }
+  };
+
+  return (
+    <section aria-labelledby="announcement-heading">
+      <div className="mb-3">
+        <h2 id="announcement-heading" className="text-[13px] font-bold uppercase tracking-wider text-[#64748B]">
+          Announcement message
+        </h2>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Show any custom message inside the app, on every user&apos;s desktop. Signed-in desktops that are online show it
+          within a minute; one that is away gets it if it comes back within ten minutes.
+        </p>
+      </div>
+      <form
+        onSubmit={submit}
+        noValidate
+        aria-label="Send an announcement"
+        className="space-y-4 rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-sm"
+      >
+        <FormErrorBanner message={formError} />
+        <div>
+          <label htmlFor="announcement-title" className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-500">
+            Title (optional)
+          </label>
+          <input
+            id="announcement-title"
+            value={title}
+            maxLength={TITLE_MAX_LENGTH}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder={DEFAULT_ANNOUNCEMENT_TITLE}
+            aria-invalid={errors.title ? true : undefined}
+            className={inputClass}
+          />
+          <FieldError message={errors.title} />
+        </div>
+        <div>
+          <label htmlFor="announcement-message" className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-500">
+            Announcement message
+          </label>
+          <textarea
+            id="announcement-message"
+            value={message}
+            maxLength={MESSAGE_MAX_LENGTH}
+            rows={3}
+            onChange={(event) => setMessage(event.target.value)}
+            placeholder="What every user sees on their desktop"
+            aria-invalid={errors.message ? true : undefined}
+            className={inputClass}
+          />
+          <div className="mt-1 text-right text-[11px] text-slate-400">
+            {message.length}/{MESSAGE_MAX_LENGTH}
+          </div>
+          <FieldError message={errors.message} />
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-xs text-slate-500">
+            Not shown to members whose Desktop notifications switch is off in User Management.
+          </p>
+          <button
+            type="submit"
+            disabled={sending}
+            className="rounded-lg bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[#8b5cf6] px-5 py-2 text-sm font-bold text-white shadow-md transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {sending ? "Sending…" : "Send announcement"}
+          </button>
+        </div>
+        {lastSent && (
+          <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs text-emerald-700">
+            Sent at {lastSent.at}: <span className="font-semibold">{lastSent.title}</span> &mdash; {lastSent.message}
+          </p>
+        )}
+      </form>
+    </section>
+  );
+};
+
 const rowButton =
   "rounded-lg border px-3 py-1.5 text-[11px] font-bold transition disabled:cursor-not-allowed disabled:opacity-50";
 
@@ -501,6 +626,8 @@ export const AdminDesktopNotifications: React.FC = () => {
           <ErrorNote message="Could not load the desktop notifications. Only administrators can open this page." />
         ) : (
           <>
+            <AnnouncementPanel />
+
             <section aria-labelledby="custom-notifications-heading">
               <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
                 <div>

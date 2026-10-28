@@ -16,6 +16,15 @@ class ScreenshotConfigResponse(BaseModel):
     """
 
     capture_frequency: int
+    #: False while an administrator has switched screenshots off for this member
+    #: (Screenshot Management). The desktop takes no screenshot while it is false.
+    screenshots_enabled: bool = True
+    #: The size every screenshot is made at, in pixels (deployment-wide).
+    image_width: int
+    image_height: int
+    #: A fixed WebP quality in percent, or ``null`` for Automatic -- the encoder
+    #: that starts at 79 and steps down to keep a busy screen under the size limit.
+    image_quality: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 

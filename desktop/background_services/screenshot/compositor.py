@@ -107,29 +107,40 @@ def output_size(
     displays: Sequence[Display],
     edge: Optional[int] = None,
     max_long_edge: Optional[int] = None,
+    box: Optional[Tuple[int, int]] = None,
 ) -> Tuple[int, int]:
     """
     The final image geometry for this arrangement.
 
     The scale is the one the primary display would have received on its own —
-    `edge / max(primary.width, primary.height)` — so a display's contents
-    occupy the same number of output pixels whether it is the only screen or
-    one of three. Capped so the long edge never exceeds `max_long_edge`.
+    the largest that fits it inside the target box, `min(box_width / primary.width,
+    box_height / primary.height)` — so a display's contents occupy the same
+    number of output pixels whether it is the only screen or one of three.
+    Capped so the long edge never exceeds `max_long_edge`.
+
+    The box is the size an administrator chose in Screenshot Management
+    (`box`), or the square `edge` (`config.IMAGE_SIZE` by default). For a square
+    the fit is `edge / max(primary.width, primary.height)`, exactly what this
+    function computed before the box existed, so an unconfigured machine's
+    geometry does not move.
 
     :return: `(width, height)`, each at least 1.
     """
-    target_edge = edge or config.IMAGE_SIZE
+    if box is not None:
+        box_width, box_height = box
+    else:
+        box_width = box_height = edge or config.IMAGE_SIZE
     ceiling = max_long_edge or config.max_canvas_long_edge()
 
     primary = primary_display(list(displays))
     if primary is None:
-        reference_long_edge = max(bounds.width, bounds.height)
+        reference_width, reference_height = bounds.width, bounds.height
     else:
-        reference_long_edge = max(primary.width, primary.height)
-    if reference_long_edge <= 0:
-        reference_long_edge = max(bounds.width, bounds.height, 1)
+        reference_width, reference_height = primary.width, primary.height
+    if reference_width <= 0 or reference_height <= 0:
+        reference_width, reference_height = max(bounds.width, 1), max(bounds.height, 1)
 
-    scale = target_edge / reference_long_edge
+    scale = min(box_width / reference_width, box_height / reference_height)
     width = max(1, round(bounds.width * scale))
     height = max(1, round(bounds.height * scale))
 

@@ -77,6 +77,9 @@ Indexes: `name`, `status`.
 | idle_enabled | boolean | default true |
 | idle_minutes | integer | default 5 |
 | capture_frequency | integer | NOT NULL |
+| screenshots_enabled | boolean | NOT NULL, default true. Whether the desktop captures this member's screenshots. Set in User Management; see [MEMBER_TRACKING_SETTINGS.md](MEMBER_TRACKING_SETTINGS.md). |
+| notifications_enabled | boolean | NOT NULL, default true. Whether the desktop shows this member the administrator's notifications (reminders, custom, pushed). Set in User Management. |
+| activity_tracking_enabled | boolean | NOT NULL, default true. Whether the desktop measures this member's keyboard/mouse activity and the applications and websites used. Set in User Management. |
 | status | varchar | default `'active'` |
 | password_hash | varchar | nullable (external/SSO users may have none) |
 | wp_capabilities | jsonb | WordPress/Hubstaff capability mirror, external-auth related |

@@ -115,10 +115,49 @@ def supported() -> bool:
     return _load_pil() is not None
 
 
-def process(raw: RawCapture, size: Optional[int] = None) -> Optional[ProcessedImage]:
+def _resolve_settings(
+    size: Optional[int], settings: Optional[config.CaptureSettings]
+) -> config.CaptureSettings:
+    """The size and quality to capture at.
+
+    `settings` is what an administrator chose in Screenshot Management. `size` is
+    the older square-edge argument and is kept for callers (and tests) that pass
+    it; with neither, the result is the default -- 1500x1500, Automatic quality --
+    which is exactly what this module produced before the setting existed.
+    """
+    if settings is not None:
+        return settings
+    if size:
+        return config.CaptureSettings(width=size, height=size)
+    return config.DEFAULT_CAPTURE_SETTINGS
+
+
+def _scaled_budget(budget: int, settings: config.CaptureSettings) -> int:
+    """A byte budget (tuned for 1500x1500) scaled to this canvas's area.
+
+    A larger canvas holds more pixels, and the same byte budget would compress it
+    harder -- throwing away the sharpness the larger canvas was chosen for (the
+    reason every figure in `config` is written at 1000px and scaled by area). A
+    smaller canvas is given proportionally fewer. Never above what the backend
+    accepts, and untouched -- the very same integer -- at the default geometry, so
+    an unconfigured machine's compression does not move by a byte.
+    """
+    if settings.is_default_geometry:
+        return budget
+    return max(1024, min(int(round(budget * settings.area_factor)), config.FIXED_QUALITY_MAX_BYTES))
+
+
+def process(
+    raw: RawCapture,
+    size: Optional[int] = None,
+    settings: Optional[config.CaptureSettings] = None,
+) -> Optional[ProcessedImage]:
     """
     Turn a raw capture into the stored WebP.
 
+    :param settings: the size and quality an administrator chose; see
+        `_resolve_settings`. Automatic quality runs the adaptive search below;
+        a fixed quality encodes at exactly that quality (`_encode_fixed`).
     :return: the processed image, or None if it could not be produced. Never
         raises — a malformed frame must not stop the capture loop.
     """
@@ -126,7 +165,8 @@ def process(raw: RawCapture, size: Optional[int] = None) -> Optional[ProcessedIm
     if Image is None:
         return None
 
-    edge = size or config.IMAGE_SIZE
+    chosen = _resolve_settings(size, settings)
+    canvas_width, canvas_height = chosen.width, chosen.height
     try:
         log.debug(
             "processing a %dx%d capture (%d raw bytes)",
@@ -134,26 +174,43 @@ def process(raw: RawCapture, size: Optional[int] = None) -> Optional[ProcessedIm
         )
         frame = Image.frombytes("RGB", (raw.width, raw.height), raw.pixels, "raw", "BGRX")
 
-        # Fit inside the square, preserving the aspect ratio. `thumbnail` only
+        # Fit inside the canvas, preserving the aspect ratio. `thumbnail` only
         # ever shrinks; a display narrower than the target is scaled up here so
-        # the output geometry is always exactly `edge x edge`.
-        scale = min(edge / raw.width, edge / raw.height)
+        # the output geometry is always exactly `width x height`.
+        scale = min(canvas_width / raw.width, canvas_height / raw.height)
         target = (max(1, round(raw.width * scale)), max(1, round(raw.height * scale)))
         frame = frame.resize(target, Image.LANCZOS)
 
-        canvas = Image.new("RGB", (edge, edge), config.PAD_COLOR)
-        canvas.paste(frame, ((edge - target[0]) // 2, (edge - target[1]) // 2))
+        canvas = Image.new("RGB", (canvas_width, canvas_height), config.PAD_COLOR)
+        canvas.paste(
+            frame, ((canvas_width - target[0]) // 2, (canvas_height - target[1]) // 2)
+        )
 
-        primary = _encode(canvas, edge, edge, config.TARGET_FILE_BYTES)
-        finished = _apply_fallback(canvas, primary)
-        return _enforce_size_limit(canvas, finished, compositor.max_image_bytes(1))
+        if chosen.quality is not None:
+            return _encode_fixed(canvas, canvas_width, canvas_height, chosen.quality)
+
+        primary = _encode(
+            canvas, canvas_width, canvas_height, _scaled_budget(config.TARGET_FILE_BYTES, chosen)
+        )
+        finished = _apply_fallback(
+            canvas, primary,
+            trigger_bytes=(
+                None if chosen.is_default_geometry
+                else _scaled_budget(config.fallback_trigger_bytes(), chosen)
+            ),
+        )
+        return _enforce_size_limit(
+            canvas, finished, _scaled_budget(compositor.max_image_bytes(1), chosen)
+        )
     except Exception:  # noqa: BLE001
         log.exception("could not process a %dx%d capture", raw.width, raw.height)
         return None
 
 
 def process_merged(
-    merged: MergedCapture, size: Optional[int] = None
+    merged: MergedCapture,
+    size: Optional[int] = None,
+    settings: Optional[config.CaptureSettings] = None,
 ) -> Optional[ProcessedImage]:
     """
     Turn a multi-display capture into the one stored WebP.
@@ -175,6 +232,7 @@ def process_merged(
         return None
     if not merged.placements:
         return None
+    chosen = _resolve_settings(size, settings)
 
     if merged.display_count == 1:
         # One display in the image, so it is rendered as a single-display
@@ -199,22 +257,37 @@ def process_merged(
                 height=only.height,
                 monitor_number=only.display.number,
             ),
-            size=size,
+            settings=chosen,
         )
 
-    edge = size or config.IMAGE_SIZE
     try:
         canvas = compositor.compose(Image, merged.placements, merged.bounds)
         if canvas is None:
             return None
 
         width, height = compositor.output_size(
-            merged.bounds, merged.displays, edge=edge
+            merged.bounds, merged.displays, box=(chosen.width, chosen.height)
         )
         if (width, height) != canvas.size:
             canvas = canvas.resize((width, height), Image.LANCZOS)
 
-        target = compositor.target_file_bytes(merged.display_count)
+        if chosen.quality is not None:
+            fixed = _encode_fixed(canvas, width, height, chosen.quality)
+            log.info(
+                "SCREENSHOT_COMPOSED width=%d height=%d display_count=%d "
+                "source=%dx%d placements=%s fixed_quality=%d",
+                width, height, merged.display_count,
+                merged.bounds.width, merged.bounds.height,
+                compositor.describe_placements(merged.placements, merged.bounds),
+                chosen.quality,
+            )
+            return ProcessedImage(
+                data=fixed.data, width=fixed.width, height=fixed.height,
+                quality=fixed.quality, primary_size_bytes=fixed.primary_size_bytes,
+                display_count=merged.display_count,
+            )
+
+        target = _scaled_budget(compositor.target_file_bytes(merged.display_count), chosen)
         log.info(
             "SCREENSHOT_COMPOSED width=%d height=%d display_count=%d "
             "source=%dx%d placements=%s target_bytes=%d",
@@ -227,10 +300,13 @@ def process_merged(
         primary = _encode(canvas, width, height, target)
         finished = _apply_fallback(
             canvas, primary,
-            trigger_bytes=compositor.fallback_trigger_bytes(merged.display_count),
+            trigger_bytes=_scaled_budget(
+                compositor.fallback_trigger_bytes(merged.display_count), chosen
+            ),
         )
         finished = _enforce_size_limit(
-            canvas, finished, compositor.max_image_bytes(merged.display_count),
+            canvas, finished,
+            _scaled_budget(compositor.max_image_bytes(merged.display_count), chosen),
         )
         return ProcessedImage(
             data=finished.data,
@@ -279,6 +355,47 @@ def _encode(canvas, width: int, height: int, target_bytes: int) -> ProcessedImag
     data = best or b""
     return ProcessedImage(
         data=data, width=width, height=height, quality=best_quality,
+        primary_size_bytes=len(data),
+    )
+
+
+def _encode_fixed(canvas, width: int, height: int, quality: int) -> ProcessedImage:
+    """
+    Encode at exactly the quality an administrator chose.
+
+    None of the byte-budget machinery runs: the adaptive search, the fallback
+    pass and the hard limit exist to make Automatic quality small, and applying
+    them here would quietly turn "90%" into "whatever fits in 135 KB" -- the
+    setting would be a number on a page with no effect on the picture.
+
+    The one ceiling is `FIXED_QUALITY_MAX_BYTES`, the largest file the backend
+    will accept. A fixed quality that produced more would be refused with a 413
+    and parked for ever, so above it the quality is lowered, step by step, and
+    the capture says so (`SCREENSHOT_FIXED_QUALITY_LOWERED`). The returned
+    `quality` is the one the image was really encoded at.
+    """
+    current = quality
+    steps = 0
+    while True:
+        buffer = io.BytesIO()
+        canvas.save(buffer, format="WEBP", quality=current, method=config.WEBP_METHOD)
+        data = buffer.getvalue()
+        if (
+            len(data) <= config.FIXED_QUALITY_MAX_BYTES
+            or current <= config.MIN_IMAGE_QUALITY
+            or steps >= config.FIXED_QUALITY_MAX_STEPS
+        ):
+            break
+        current = max(config.MIN_IMAGE_QUALITY, current - config.FIXED_QUALITY_STEP)
+        steps += 1
+
+    if current != quality:
+        log.warning(
+            "SCREENSHOT_FIXED_QUALITY_LOWERED chosen=%d used=%d size=%d limit=%d",
+            quality, current, len(data), config.FIXED_QUALITY_MAX_BYTES,
+        )
+    return ProcessedImage(
+        data=data, width=width, height=height, quality=current,
         primary_size_bytes=len(data),
     )
 

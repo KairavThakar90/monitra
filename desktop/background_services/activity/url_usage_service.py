@@ -43,6 +43,9 @@ class UrlUsageService(LoopService):
         #: than discarded. See `AppUsageService` for the full reasoning.
         self._client_op: Optional[str] = None
         self._tracking = False
+        #: A timer session is running, whether or not it is being recorded (see
+        #: `on_activity_tracking_changed`).
+        self._session_open = False
 
         # Current URL session state
         self._current_browser: Optional[str] = None
@@ -64,11 +67,50 @@ class UrlUsageService(LoopService):
     def start_tracker(self, session: Dict[str, Any]) -> None:
         self._entry_id = session.get("entry_id")
         self._client_op = session.get("client_op")
+        self._session_open = True
+        if not self._activity_tracking_allowed():
+            self.log.info(
+                "activity tracking is turned off for this account; browser URLs "
+                "will not be recorded for entry %s", self._entry_id,
+            )
+            return
+        self._begin_tracking()
+
+    def _begin_tracking(self) -> None:
         self._tracking = True
         self._reset_session()
         self._unavailable_reported.clear()
         self.log.info("browser URL usage tracking started for entry %s", self._entry_id)
         self.wake()
+
+    # ── The member's activity-tracking switch ─────────────────────────────────
+    #
+    # Browser URLs are part of "activity" (background_services/activity/), so an
+    # administrator turning activity tracking off in User Management stops them. The
+    # switch is owned by `ActivityService`; this service asks it, and the runtime
+    # connects its change signal to `on_activity_tracking_changed`.
+
+    def _activity_tracking_allowed(self) -> bool:
+        check = getattr(getattr(self.runtime, "activity", None), "tracking_enabled", None)
+        return True if check is None else bool(check())
+
+    def on_activity_tracking_changed(self, enabled: bool) -> None:
+        """The member's switch moved while a session may be running (GUI thread)."""
+        if not self._session_open:
+            return
+        if enabled and not self._tracking:
+            self._begin_tracking()
+        elif not enabled and self._tracking:
+            self._end_tracking()
+
+    def _end_tracking(self) -> None:
+        """Stop recording but keep the session's identity, so turning the switch
+        back on during the same session resumes against the same entry."""
+        self._observe_now()
+        self._flush_session()
+        self._tracking = False
+        self._reset_session()
+        self.log.info("browser URL usage tracking paused: activity tracking was turned off")
 
     def bind_entry_id(self, entry_id: int) -> None:
         """Attribute in-progress URL sessions to a late-arriving entry id."""
@@ -100,6 +142,7 @@ class UrlUsageService(LoopService):
             self._last_observed = now
 
     def stop_tracker(self) -> None:
+        self._session_open = False
         self._observe_now()
         self._flush_session()
         self._tracking = False

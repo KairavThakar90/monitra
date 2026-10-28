@@ -16,9 +16,10 @@ Two kinds, one schedule:
   stays the desktop's.
 * **Custom notifications** — a title and a message the administrator writes,
   shown once a day at a chosen time on chosen weekdays.
-* **Pushed messages** (the route and the desktop side exist; **the admin web page has
-  no button for them** -- the buttons were taken out at the owner's request,
-  2026-10-08) — a title and a message shown on every signed-in desktop
+* **Pushed messages** (sent from the admin page's **Announcement message** box on Settings →
+  Desktop Notifications: a message, an optional title that defaults to "Announcement", a
+  confirmation first; not shown to members whose Desktop notifications switch is off in User
+  Management) — a title and a message shown on every signed-in desktop
   *now*: a connected desktop shows it within a second or two. A desktop that
   is away hears about it when it comes back, for up to ten minutes; after that
   the message is dropped ("now" is wrong ten minutes later).

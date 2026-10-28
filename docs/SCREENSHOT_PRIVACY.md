@@ -1,7 +1,10 @@
 # Screenshot privacy: rules, members, and who a new rule applies to
 
 Which applications and websites are blanked out of a member's screenshots.
-Admin page: **Settings > Screenshot Privacy** (`/admin/settings/screenshot-privacy`).
+Admin page: **Settings > Screenshot Management > Privacy rules** -- a section of the
+Screenshot Management accordion (`/admin/settings/screenshot-management#privacy`; see
+[SCREENSHOT_SETTINGS.md](SCREENSHOT_SETTINGS.md)). It used to be a page of its own, and the old
+address `/admin/settings/screenshot-privacy` still works: it redirects there and opens that section.
 
 ## The model
 

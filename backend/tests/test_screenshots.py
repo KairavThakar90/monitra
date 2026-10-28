@@ -495,18 +495,36 @@ class ScreenshotConfigurationTests(unittest.TestCase):
     capture cadence, so it must be strict about a misconfigured row rather
     than silently substituting a default the user never asked for."""
 
+    #: What Screenshot Management reports for a deployment nobody has configured.
+    UNCONFIGURED = {"image_width": 1500, "image_height": 1500, "image_quality": None}
+
+    def _config(self, user):
+        with patch(f"{SVC}.ScreenshotSettingsService.effective", return_value=dict(self.UNCONFIGURED)):
+            return TimeEntryScreenshotService.get_screenshot_config(MagicMock(), user)
+
     def test_the_stored_frequency_is_read_from_the_user_row(self):
-        config = TimeEntryScreenshotService.get_screenshot_config(_user(capture_frequency=15))
-        self.assertEqual(config, {"capture_frequency": 15})
+        config = self._config(_user(capture_frequency=15))
+        self.assertEqual(config["capture_frequency"], 15)
+
+    def test_an_unconfigured_deployment_reports_the_defaults_and_capture_on(self):
+        # A row that predates the screenshots_enabled column reads None, which
+        # must mean "captured" -- exactly what it meant before the column existed.
+        config = self._config(_user(capture_frequency=15))
+        self.assertEqual(config, {"capture_frequency": 15, "screenshots_enabled": True, **self.UNCONFIGURED})
+
+    def test_only_an_explicit_false_turns_capture_off(self):
+        self.assertFalse(self._config(_user(capture_frequency=15, screenshots_enabled=False))["screenshots_enabled"])
+        self.assertTrue(self._config(_user(capture_frequency=15, screenshots_enabled=True))["screenshots_enabled"])
+        self.assertTrue(self._config(_user(capture_frequency=15, screenshots_enabled=None))["screenshots_enabled"])
 
     def test_a_null_frequency_is_refused_rather_than_defaulted(self):
         with self.assertRaises(HTTPException) as raised:
-            TimeEntryScreenshotService.get_screenshot_config(_user(capture_frequency=None))
+            self._config(_user(capture_frequency=None))
         self.assertEqual(raised.exception.status_code, 500)
 
     def test_a_non_positive_frequency_is_refused(self):
         with self.assertRaises(HTTPException) as raised:
-            TimeEntryScreenshotService.get_screenshot_config(_user(capture_frequency=0))
+            self._config(_user(capture_frequency=0))
         self.assertEqual(raised.exception.status_code, 500)
 
 

@@ -159,6 +159,13 @@ class DesktopScheduleRead(BaseModel):
     custom: List[ScheduleCustomRead]
     #: Messages pushed in the last ``PUSH_TTL_SECONDS``. Empty most of the time.
     pushes: List[SchedulePushRead] = []
+    #: Whether *this member* is shown the notifications at all (User Management's
+    #: "Desktop notifications" switch). The schedule is deployment-wide but the
+    #: caller is not, so it is answered per caller. When false the lists above are
+    #: already emptied -- every reminder off, no custom notification, no push -- so
+    #: a desktop that predates this field shows nothing either. A desktop that knows
+    #: it also holds its reminders back, and resumes the moment it turns true.
+    enabled: bool = True
 
 
 # ── What the administrator reads ─────────────────────────────────────────────

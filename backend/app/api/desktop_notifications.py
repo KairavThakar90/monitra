@@ -42,8 +42,8 @@ _FORBIDDEN = {403: {"description": "The caller is not an administrator."}}
         "`version` rises on every change."
     ),
 )
-def schedule(_current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
-    return DesktopNotificationService.get_schedule(db)
+def schedule(current_user: User = Depends(get_current_user), db: Session = Depends(get_db, scope="function")):
+    return DesktopNotificationService.get_schedule(db, current_user)
 
 
 @router.get(

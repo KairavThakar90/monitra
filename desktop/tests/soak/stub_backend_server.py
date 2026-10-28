@@ -778,7 +778,10 @@ class Handler(BaseHTTPRequestHandler):
         elif m == "GET" and p == "/screenshots/config":
             self._send(200, {"capture_frequency": CAPTURE_FREQUENCY_MINUTES})
         elif m == "GET" and p == "/screenshot/privacy-config":
-            self._send(200, {"applications": [], "urls": [], "excluded_applications": [], "excluded_urls": []})
+            self._send(200, {"applications": [], "urls": [], "excluded_applications": [], "excluded_urls": [],
+                             "excluded_displays": []})
+        elif m == "PUT" and p == "/screenshots/displays":
+            self._send(200, {"excluded_displays": []})
 
         elif m == "POST" and (mm := re.fullmatch(r"/time-entries/(\d+)/app-usage/batch", p)):
             self._app_usage_batch(json_body())

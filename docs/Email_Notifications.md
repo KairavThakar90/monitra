@@ -1,5 +1,9 @@
 # Email notifications
 
+> **Who is copied on each email** is an administrator's decision, made per address and per email in
+> Settings -> Email Management. See [EMAIL_MANAGEMENT.md](EMAIL_MANAGEMENT.md); the outbox reads that policy
+> when it sends each email.
+
 Monitra sends two automated emails. Both are queued into a database outbox and
 delivered from there; neither is sent inline from the request that triggers it.
 

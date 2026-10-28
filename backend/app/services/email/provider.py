@@ -99,6 +99,12 @@ class OutgoingEmail:
     #: links -- where copying anyone would hand them the recipient's access, and
     #: for rehearsals that are meant to reach only their own test list.
     copy_exempt: bool = False
+    #: The addresses to copy, as decided by the CC policy for this email
+    #: (`EmailCcService.cc_for`, set by the outbox at send time). `None` means
+    #: nobody has decided and the standing CC (`EMAIL_CC_ADDRESSES`) applies, which
+    #: is what a caller outside the outbox gets; an empty tuple means "copy no one".
+    #: Ignored when `copy_exempt`.
+    cc: Optional[Sequence[str]] = None
 
 
 def standing_cc_addresses(exclude: Sequence[str] = ()) -> list[str]:
@@ -117,6 +123,25 @@ def standing_cc_addresses(exclude: Sequence[str] = ()) -> list[str]:
             address = normalise_address(raw, field_label="EMAIL_CC_ADDRESSES entry")
         except EmailAddressError:
             logger.warning("EMAIL_CC_INVALID_ENTRY: ignoring %r in EMAIL_CC_ADDRESSES", raw.strip())
+            continue
+        if address not in skip and address not in cc:
+            cc.append(address)
+    return cc
+
+
+def _clean_cc(addresses: Sequence[str], exclude: Sequence[str] = ()) -> list[str]:
+    """A policy's CC addresses, validated and de-duplicated, never repeating a recipient.
+
+    Same tolerance as `standing_cc_addresses`: one bad entry is skipped and logged
+    rather than stopping the email it was meant to accompany.
+    """
+    skip = {address.strip().lower() for address in exclude}
+    cc: list[str] = []
+    for raw in addresses:
+        try:
+            address = normalise_address(raw, field_label="CC address")
+        except EmailAddressError:
+            logger.warning("EMAIL_CC_INVALID_ENTRY: ignoring %r in the CC policy", raw)
             continue
         if address not in skip and address not in cc:
             cc.append(address)
@@ -201,7 +226,12 @@ def build_mime_message(message: OutgoingEmail) -> EmailMessage:
     mime["From"] = formataddr((from_name, from_address))
     mime["To"] = ", ".join(recipients)
     # `send_message` delivers to Cc as well as To, so this is also the envelope.
-    cc = [] if message.copy_exempt else standing_cc_addresses(exclude=recipients)
+    if message.copy_exempt:
+        cc: list[str] = []
+    elif message.cc is not None:
+        cc = _clean_cc(message.cc, exclude=recipients)
+    else:
+        cc = standing_cc_addresses(exclude=recipients)
     if cc:
         mime["Cc"] = ", ".join(cc)
     mime["Subject"] = assert_header_safe(message.subject, field_label="Subject")

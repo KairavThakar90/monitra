@@ -24,6 +24,20 @@ _SWITCH_ACTIONS = {
         ActivityLogAction.ADD_NONBILLABLE_TASKS_ALLOWED, ActivityLogAction.ADD_NONBILLABLE_TASKS_EXCLUDED,
         "adding Non billable tasks",
     ),
+    # The three desktop switches. Like the Non billable one they send no email
+    # (they are not in MEMBER_ACCESS_SWITCHES), and they are recorded only when
+    # they actually move.
+    "screenshots_enabled": (
+        ActivityLogAction.SCREENSHOTS_ENABLED, ActivityLogAction.SCREENSHOTS_DISABLED, "screenshot capture",
+    ),
+    "notifications_enabled": (
+        ActivityLogAction.NOTIFICATIONS_ENABLED, ActivityLogAction.NOTIFICATIONS_DISABLED,
+        "desktop notifications",
+    ),
+    "activity_tracking_enabled": (
+        ActivityLogAction.ACTIVITY_TRACKING_ENABLED, ActivityLogAction.ACTIVITY_TRACKING_DISABLED,
+        "activity tracking",
+    ),
 }
 
 
@@ -111,6 +125,10 @@ class MemberService:
             data.pop("can_add_tasks", None)
         if data.get("can_add_nonbillable_tasks") is None:
             data.pop("can_add_nonbillable_tasks", None)
+        # The desktop switches are NOT NULL columns too: a `null` means "leave it".
+        for switch in ("screenshots_enabled", "notifications_enabled", "activity_tracking_enabled"):
+            if data.get(switch) is None:
+                data.pop(switch, None)
         # These three columns are NOT NULL. A client sending `null` for one
         # meant "leave it", and reaching the column turned it into an
         # IntegrityError that was reported as a duplicate e-mail address.
@@ -234,8 +252,10 @@ class MemberService:
         administrator accounts.
         """
         switches = {
+            # `MemberAccessUpdate` carries only the sign-in and task switches; the
+            # desktop switches are set one member at a time from User Management.
             key: getattr(payload, key) for key in _SWITCH_ACTIONS
-            if getattr(payload, key) is not None
+            if getattr(payload, key, None) is not None
         }
         may_edit_administrators = has_permission(current_user, "manage_employees")
         updated, failed = [], []

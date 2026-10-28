@@ -27,6 +27,12 @@ export interface Member {
   can_add_nonbillable_tasks?: boolean;
   /** The Members directory's Allow / Exclude switch for signing in. Absent on an older backend means allowed. */
   can_login?: boolean;
+  /** Screenshot Management's per-member switch. Absent on an older backend means on; only an explicit `false` is off. */
+  screenshots_enabled?: boolean;
+  /** User Management's per-member switch for the administrator's reminders and messages on the desktop. Absent means on. */
+  notifications_enabled?: boolean;
+  /** User Management's per-member switch for keyboard/mouse activity and application/website usage. Absent means on. */
+  activity_tracking_enabled?: boolean;
   created_at?: string;
   updated_at?: string;
   organization?: { id: number; name: string };
@@ -271,6 +277,11 @@ export const membersApi = baseApi.injectEndpoints({
           Object.assign(draft.items[index], body);
           reconcileRow(draft, index, arg);
         });
+        // The full list (pickers, the Screenshot Management idle table) shows the change too.
+        const optimisticAll = patchEveryCachedQuery({ dispatch, getState }, 'getAllMembers', (draft) => {
+          const row = Array.isArray(draft) ? draft.find((m: Member) => m.id === id) : null;
+          if (row) Object.assign(row, body);
+        });
 
         try {
           const { data } = await queryFulfilled;
@@ -281,8 +292,13 @@ export const membersApi = baseApi.injectEndpoints({
             draft.items[index] = data;
             reconcileRow(draft, index, arg);
           });
+          patchEveryCachedQuery({ dispatch, getState }, 'getAllMembers', (draft) => {
+            const index = Array.isArray(draft) ? draft.findIndex((m: Member) => m.id === id) : -1;
+            if (index >= 0) draft[index] = data;
+          });
         } catch {
           optimistic.undo();
+          optimisticAll.undo();
         }
       },
     }),

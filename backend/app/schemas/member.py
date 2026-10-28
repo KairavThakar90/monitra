@@ -3,7 +3,7 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Annotated, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from app.core.validation import optional_integer_field
 
@@ -136,6 +136,13 @@ class MemberUpdate(BaseModel):
     #: does not unassign the projects they already own; it only stops them
     #: being chosen again. See app/services/project_ownership.py.
     can_own_projects: Optional[bool] = None
+    #: The three per-member desktop switches in User Management. Each is on
+    #: unless an administrator turns it off; omitting one leaves it as it is, and
+    #: only a real true/false is accepted (not "yes" or 1). Each acts on its own
+    #: feature only -- see docs/MEMBER_TRACKING_SETTINGS.md.
+    screenshots_enabled: Optional[StrictBool] = None
+    notifications_enabled: Optional[StrictBool] = None
+    activity_tracking_enabled: Optional[StrictBool] = None
 
     @field_validator("can_own_projects")
     @classmethod
@@ -181,6 +188,12 @@ class MemberResponse(BaseModel):
     can_add_nonbillable_tasks: bool = False
     can_login: bool = True
     can_own_projects: bool = False
+    #: The three per-member desktop switches (User Management): whether the
+    #: desktop captures this member's screen, shows them the administrator's
+    #: notifications, and measures their activity.
+    screenshots_enabled: bool = True
+    notifications_enabled: bool = True
+    activity_tracking_enabled: bool = True
     created_at: datetime
     updated_at: datetime
 
@@ -193,7 +206,10 @@ class MemberResponse(BaseModel):
         # never assumed.
         return False if value is None else value
 
-    @field_validator("can_add_tasks", "can_login", mode="before")
+    @field_validator(
+        "can_add_tasks", "can_login", "screenshots_enabled", "notifications_enabled",
+        "activity_tracking_enabled", mode="before",
+    )
     @classmethod
     def unset_means_allowed(cls, value):
         # Only an explicit False withdraws; an unset value is the default.

@@ -72,6 +72,13 @@ describe('describeCaptureState', () => {
     expect(view.tone).toBe('neutral');
   });
 
+  it('says a window with every screen switched off is a decision, not a privacy rule', () => {
+    const view = describeCaptureState(emptyWindow('excluded', 'displays_disabled'));
+    expect(view.label).toBe('Screens switched off');
+    expect(view.detail).toContain('switched off for every screen');
+    expect(view.tone).toBe('neutral');
+  });
+
   it('reports a machine that cannot capture', () => {
     expect(describeCaptureState(emptyWindow('unavailable', 'capture_unavailable')).label)
       .toBe('Capture unavailable');

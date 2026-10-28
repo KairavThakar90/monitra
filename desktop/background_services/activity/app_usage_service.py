@@ -49,6 +49,9 @@ class AppUsageService(LoopService):
         self._entry_id: Optional[int] = None
         self._client_op: Optional[str] = None
         self._tracking = False
+        #: A timer session is running, whether or not it is being recorded (see
+        #: `on_activity_tracking_changed`).
+        self._session_open = False
         self._current_app: Optional[str] = None
         self._current_title: Optional[str] = None
         self._segment_start: Optional[float] = None
@@ -67,11 +70,50 @@ class AppUsageService(LoopService):
         # backend has issued an entry id are stored against it and adopted
         # later -- see `_flush_segment` and `bind_entry_id`.
         self._client_op = session.get("client_op")
+        self._session_open = True
+        if not self._activity_tracking_allowed():
+            self.log.info(
+                "activity tracking is turned off for this account; application usage "
+                "will not be recorded for entry %s", self._entry_id,
+            )
+            return
+        self._begin_tracking()
+
+    def _begin_tracking(self) -> None:
         self._tracking = True
         self._reset_segment()
         self._unclassified_reported.clear()
         self.log.info("application usage tracking started for entry %s", self._entry_id)
         self.wake()
+
+    # ── The member's activity-tracking switch ─────────────────────────────────
+    #
+    # Application usage is part of "activity" (background_services/activity/), so an
+    # administrator turning activity tracking off in User Management stops it. The
+    # switch is owned by `ActivityService`; this service asks it, and the runtime
+    # connects its change signal to `on_activity_tracking_changed`.
+
+    def _activity_tracking_allowed(self) -> bool:
+        check = getattr(getattr(self.runtime, "activity", None), "tracking_enabled", None)
+        return True if check is None else bool(check())
+
+    def on_activity_tracking_changed(self, enabled: bool) -> None:
+        """The member's switch moved while a session may be running (GUI thread)."""
+        if not self._session_open:
+            return
+        if enabled and not self._tracking:
+            self._begin_tracking()
+        elif not enabled and self._tracking:
+            self._end_tracking()
+
+    def _end_tracking(self) -> None:
+        """Stop recording but keep the session's identity, so turning the switch
+        back on during the same session resumes against the same entry."""
+        self._observe_now()
+        self._flush_segment()
+        self._tracking = False
+        self._reset_segment()
+        self.log.info("application usage tracking paused: activity tracking was turned off")
 
     def bind_entry_id(self, entry_id: int) -> None:
         """Attribute the in-progress segment to a late-arriving entry id."""
@@ -110,6 +152,7 @@ class AppUsageService(LoopService):
             self._last_observed = now
 
     def stop_tracker(self) -> None:
+        self._session_open = False
         self._observe_now()
         self._flush_segment()
         self._tracking = False

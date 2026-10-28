@@ -451,6 +451,19 @@ class BackgroundApi:
         """
         self._runtime.screenshot.apply_user_profile(user_data)
 
+    def apply_member_switches_profile(self, user_data: Optional[Dict[str, Any]]) -> None:
+        """Seed the member's desktop switches from a `/auth/me` payload.
+
+        The per-member switches an administrator sets in User Management --
+        activity tracking and desktop notifications here, screenshots in
+        `apply_screenshot_profile`, idle detection in `apply_idle_profile` -- are
+        in the profile already fetched at sign-in and session verification, so
+        they are in effect before a session can start, without another request.
+        Each acts on its own feature only.
+        """
+        self._runtime.activity.apply_user_profile(user_data)
+        self._runtime.notification_schedule.apply_user_profile(user_data)
+
     def resolve_idle_period(self, keep_idle_time: bool, action: str) -> None:
         """Answer the pending idle popup. `action` is "stop" or "resume"."""
         self._runtime.idle.resolve(keep_idle_time, action)

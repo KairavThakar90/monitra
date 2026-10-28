@@ -115,3 +115,5 @@ class PrivacyConfigResponse(BaseModel):
     urls: List[ScreenshotUrlResponse]
     excluded_applications: List[ScreenshotExclusionResponse]
     excluded_urls: List[ScreenshotExclusionResponse]
+    #: Screen numbers (1-based, the operating system's order) not to capture for this member.
+    excluded_displays: List[int] = []

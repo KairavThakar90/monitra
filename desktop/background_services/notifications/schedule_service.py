@@ -120,6 +120,13 @@ from core.validation import validate_time_of_day
 #: Where the last good schedule is kept, so a start while offline can use it.
 SCHEDULE_STATE_KEY = "notifications.schedule"
 
+#: Whether *this member* is shown the notifications at all (User Management's
+#: "Desktop notifications" switch). Kept apart from the schedule, which is the
+#: deployment's and survives a sign-out: this one is the signed-in user's, so it is
+#: wiped with the rest of `app_state` at logout and the next person starts from
+#: their own profile.
+MEMBER_ENABLED_STATE_KEY = "notifications.member_enabled"
+
 #: Every weekday, Monday = 0 ... Sunday = 6 (`datetime.weekday()`).
 ALL_WEEKDAYS: frozenset = frozenset(range(7))
 
@@ -461,8 +468,60 @@ class NotificationScheduleService(LoopService):
         self._clock_offset = 0.0
         #: Whether a large offset is already in the log (reported on the edge).
         self._skew_logged = False
+        #: Whether this member is shown the notifications (see
+        #: `MEMBER_ENABLED_STATE_KEY`). On until the server says otherwise, and only
+        #: an explicit `False` turns it off, so a missing or damaged answer can never
+        #: silence anyone. A plain bool, rebound whole: safe to read from any thread.
+        self._member_enabled = True
+        #: Whether anything fresher than the persisted copy has been heard (the
+        #: sign-in profile, or an answer), so the persisted copy read at the first
+        #: tick never overwrites it.
+        self._member_known = False
+        #: What is on disk for it, so it is written once per change and only from
+        #: this service's thread, never from the GUI thread that seeds it.
+        self._member_enabled_stored: Optional[bool] = None
 
     # ── Read side ─────────────────────────────────────────────────────────────
+
+    @property
+    def notifications_enabled(self) -> bool:
+        """Whether the signed-in member is shown the notifications at all.
+
+        False holds the whole reminder scheduler (built-in, custom and pushed);
+        see `WellbeingService._gate_reason`. Functional alerts -- a permission
+        that is needed, an update, an idle prompt -- are not the scheduler's and
+        never depend on it.
+        """
+        return self._member_enabled
+
+    def apply_user_profile(self, user_data: Optional[Dict[str, Any]]) -> None:
+        """Seed the switch from a `/auth/me` payload (sign-in, session verification).
+
+        Without this a member who is switched off would be shown reminders until
+        the first poll answered -- and, on a machine another member used before,
+        would inherit *that* member's setting meanwhile. A profile that does not
+        carry the field (a backend older than the switch) means on.
+        """
+        if not isinstance(user_data, dict):
+            return
+        user = user_data.get("user") if isinstance(user_data.get("user"), dict) else user_data
+        self._set_member_enabled(user.get("notifications_enabled", True))
+
+    def _set_member_enabled(self, value: Any) -> None:
+        """Adopt the switch. Edge-triggered; only a real boolean is believed."""
+        if not isinstance(value, bool):
+            return
+        self._member_known = True
+        if value == self._member_enabled:
+            return
+        self._member_enabled = value
+        self.log.info(
+            "NOTIFICATIONS_SWITCH enabled=%s; desktop notifications are turned %s for this account",
+            value, "on" if value else "off",
+        )
+        # The scheduler may be idle (held by the switch) or sleeping until a
+        # deadline: ask it to look again now. `wake` is queued and thread-safe.
+        self._wake_scheduler()
 
     @property
     def schedule(self) -> Optional[NotificationSchedule]:
@@ -514,8 +573,13 @@ class NotificationScheduleService(LoopService):
     def reset_session(self) -> None:
         """Logout wipes `app_state`, the persisted copy included. The schedule
         itself is deployment-wide, not the user's, so the snapshot stays; it is
-        simply written again on the next successful poll."""
+        simply written again on the next successful poll. The member's own switch
+        is the user's, not the deployment's: it goes with them, and the next person
+        to sign in is seeded from their own profile."""
         self._persisted = False
+        self._member_enabled = True
+        self._member_known = False
+        self._member_enabled_stored = None
 
     # ── The loop ──────────────────────────────────────────────────────────────
 
@@ -720,6 +784,13 @@ class NotificationScheduleService(LoopService):
     def _apply(self, payload: Any, *, source: str) -> bool:
         """Adopt `payload` if it parses and its version is new. Returns
         whether the snapshot changed. Never raises."""
+        # The member's switch is read from every answer, whatever its version: it
+        # is the caller's, not the schedule's, and an administrator can change it
+        # without the schedule's version moving. An answer without it (a backend
+        # older than the switch) says nothing.
+        if isinstance(payload, dict) and "enabled" in payload:
+            self._set_member_enabled(payload["enabled"])
+            self._persist_member_enabled()
         parsed = parse_schedule(payload, now_mono=self._monotonic())
         if parsed is None:
             self.log.warning("notification schedule ignored: the response was not usable")
@@ -743,9 +814,33 @@ class NotificationScheduleService(LoopService):
         self._wake_scheduler()
         return True
 
+    def _persist_member_enabled(self) -> None:
+        """Remember the member's switch across a restart, once per change."""
+        if self._cache is None or self._member_enabled_stored == self._member_enabled:
+            return
+        try:
+            self._cache.save_app_state(MEMBER_ENABLED_STATE_KEY, self._member_enabled)
+            self._member_enabled_stored = self._member_enabled
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not persist the notifications switch")
+
+    def _load_member_enabled(self) -> None:
+        """The switch as it was when this machine last heard, so a start while
+        offline does not show a switched-off member a reminder."""
+        try:
+            stored = self._cache.load_app_state(MEMBER_ENABLED_STATE_KEY)
+        except Exception:  # noqa: BLE001
+            self.log.exception("could not read the persisted notifications switch")
+            return
+        if isinstance(stored, bool):
+            self._member_enabled_stored = stored
+            if not self._member_known:
+                self._member_enabled = stored
+
     def _load_persisted(self) -> None:
         if self._cache is None:
             return
+        self._load_member_enabled()
         try:
             stored = self._cache.load_app_state(SCHEDULE_STATE_KEY)
         except Exception:  # noqa: BLE001

@@ -30,6 +30,13 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import end_transaction
+from app.core.screenshot_geometry import (
+    DEFAULT_IMAGE_EDGE,
+    LEGACY_SINGLE_DISPLAY_EDGES,
+    MAX_ASPECT_RATIO,
+    MAX_IMAGE_EDGE,
+    MIN_IMAGE_EDGE,
+)
 from app.core.time_format import ist_day_end_utc, ist_day_start_utc, ist_today, to_ist
 from app.models.time_entry import TimeEntry
 from app.models.time_entry_screenshot import TimeEntryScreenshot
@@ -47,6 +54,7 @@ from app.services.google_drive_service import (
     drive_service,
 )
 from app.services.member_scope import visible_member_ids
+from app.services.screenshot_settings import ScreenshotSettingsService
 
 logger = logging.getLogger(__name__)
 
@@ -72,32 +80,11 @@ _RIFF = b"RIFF"
 _WEBP = b"WEBP"
 
 
-#: The edge of a single-display capture's square canvas. 1500 since 2026-10-12;
-#: the desktop's `screenshot/config.IMAGE_SIZE` is the other half of this number.
-SINGLE_DISPLAY_EDGE = 1500
-
-#: Square edges stored before that change. Captures at these edges are still
-#: valid -- an older desktop keeps uploading 1000px squares until it updates, and
-#: a queued capture taken before the update is uploaded after it.
-LEGACY_SINGLE_DISPLAY_EDGES = (1000,)
-
-#: The shortest side accepted. It was a quarter of the 1000px square and stays
-#: there: raising it with the canvas would make the server stricter than the
-#: clients that already upload, and a capture refused here is parked as failed.
-MIN_IMAGE_EDGE = 250
-
-
-#: Hard ceiling on either edge of an accepted screenshot. A merged
-#: multi-display image is wider than the single-display square by design, and
-#: the desktop caps its own long edge at 4000 (see the client's
-#: `MAX_CANVAS_LONG_EDGE`); this is the server's independent bound, because the
-#: backend validates everything even when the client already did.
-MAX_IMAGE_EDGE = 4000
-
-#: Widest aspect ratio accepted, long edge over short. Eight 16:9 monitors in a
-#: row reach about 14:1; beyond that the image is not a desk, and the rule is
-#: here so a malformed or hostile upload cannot claim to be one.
-MAX_ASPECT_RATIO = 20.0
+#: The edge of a single-display capture's square canvas, and the other limits on
+#: an image's geometry, are defined once in `app/core/screenshot_geometry.py`:
+#: the administrator's Screenshot Management setting is bounded by the same
+#: numbers, so a size an administrator can choose is never one this refuses.
+SINGLE_DISPLAY_EDGE = DEFAULT_IMAGE_EDGE
 
 
 def _validate_geometry(width: int, height: int) -> Optional[str]:
@@ -1164,19 +1151,30 @@ class TimeEntryScreenshotService:
         return max(1, int(settings.SCREENSHOT_WINDOW_MINUTES))
 
     @staticmethod
-    def get_screenshot_config(current_user: User) -> dict:
+    def get_screenshot_config(db: Session, current_user: User) -> dict:
         """The authenticated user's own screenshot configuration, straight
         from the users table. Strict, like `TimeEntryIdlePeriodService.
         get_idle_config`: this is the value the desktop's own scheduler will
         use for itself, so a misconfigured row must not be silently patched
-        over here -- it needs to be visible and fixed at the source."""
+        over here -- it needs to be visible and fixed at the source.
+
+        Besides the member's capture interval it carries what Screenshot
+        Management decides: whether this member is captured at all, and the size
+        and quality of the image (deployment-wide). Only an explicit False turns
+        capture off -- a row that predates the column is captured, as it always
+        was.
+        """
         frequency = current_user.capture_frequency
         if frequency is None or int(frequency) <= 0:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Screenshot capture frequency is misconfigured for this user.",
             )
-        return {"capture_frequency": int(frequency)}
+        return {
+            "capture_frequency": int(frequency),
+            "screenshots_enabled": current_user.screenshots_enabled is not False,
+            **ScreenshotSettingsService.effective(db),
+        }
 
     @staticmethod
     def get_timeline(

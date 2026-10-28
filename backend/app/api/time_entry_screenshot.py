@@ -16,6 +16,8 @@ from app.schemas.time_entry_screenshot import (
     ScreenshotTimelineResponse, ScreenshotUploadResponse,
     TimeEntryScreenshotCreate, TimeEntryScreenshotRead,
 )
+from app.schemas.member_display import DisplayReport, DisplayReportResponse
+from app.services.member_display import MemberDisplayService
 from app.services.time_entry_screenshot import TimeEntryScreenshotService
 from app.services.time_entry_liveness import TimeEntryLivenessService
 
@@ -73,14 +75,38 @@ def record_capture_events(
 
 
 @router.get("/screenshots/config", response_model=ScreenshotConfigResponse)
-def get_screenshot_config(current_user: User = Depends(get_current_user)):
+def get_screenshot_config(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db, scope="function"),
+):
     """The authenticated user's screenshot capture configuration.
 
-    `GET /auth/me` already returns the same field as part of the profile;
-    this is the narrow projection the desktop's screenshot scheduler polls,
-    mirroring `GET /idle-periods/config`.
+    `GET /auth/me` already returns the capture interval and the member's
+    `screenshots_enabled` switch as part of the profile; this is the narrow
+    projection the desktop's screenshot scheduler polls, mirroring
+    `GET /idle-periods/config`. It also carries the image size and quality an
+    administrator set in Screenshot Management, which are not in the profile.
     """
-    return TimeEntryScreenshotService.get_screenshot_config(current_user)
+    return TimeEntryScreenshotService.get_screenshot_config(db, current_user)
+
+
+@router.put(
+    "/screenshots/displays",
+    response_model=DisplayReportResponse,
+    summary="The desktop reports the screens it can see",
+    description=(
+        "Always about the caller. Records the screens the member's computer has so an administrator can see "
+        "them and switch capture off for individual ones; it never changes an administrator's choice. The "
+        "reply names the screens to leave out, so the desktop learns its instructions in the same round "
+        "trip. Idempotent: reporting the same screens again changes nothing an administrator can see."
+    ),
+)
+def report_displays(
+    payload: DisplayReport,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db, scope="function"),
+):
+    return {"excluded_displays": MemberDisplayService.report(db, current_user, payload)}
 
 
 @router.post(

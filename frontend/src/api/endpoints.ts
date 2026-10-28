@@ -231,8 +231,24 @@ export const ENDPOINTS = {
     BUILTIN: (key: string) => `${API_BASE_URL}/desktop-notifications/builtin/${encodeURIComponent(key)}`,
     // How many notifications a desktop may show in a rolling hour.
     LIMIT: `${API_BASE_URL}/desktop-notifications/limit`,
+    // An announcement: a message shown on every signed-in desktop as soon as it arrives.
+    PUSH: `${API_BASE_URL}/desktop-notifications/push`,
     CUSTOM: `${API_BASE_URL}/desktop-notifications/custom`,
     CUSTOM_BY_ID: (id: string) => `${API_BASE_URL}/desktop-notifications/custom/${encodeURIComponent(id)}`,
+  },
+  // Screenshot Management: the size and quality every desktop captures at.
+  // Administrators only.
+  SCREENSHOT_SETTINGS: {
+    BASE: `${API_BASE_URL}/screenshot-settings`,
+  },
+  // Screenshot Management -> Multi-screen: the screens each member's computer
+  // reports, and which of them are captured. Administrators only.
+  SCREENSHOT_DISPLAYS: {
+    BASE: `${API_BASE_URL}/screenshot-displays`,
+  },
+  // Email Management: who is copied on which email Monitra sends. Administrators only.
+  EMAIL_CC: {
+    BASE: `${API_BASE_URL}/email-cc`,
   },
   // The activity trail: every recorded user action, read employee-wise by the
   // Logs page. Needs `view_employees`; a leader is answered with their team.

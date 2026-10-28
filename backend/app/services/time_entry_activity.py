@@ -30,6 +30,13 @@ def weighted_activity_percentage(
 
 class TimeEntryActivityService:
     @staticmethod
+    def get_activity_config(current_user: User) -> dict:
+        """Whether the desktop may measure this user's activity, straight from the
+        users table. Only an explicit False turns it off: a row that predates the
+        column is measured, as it always was."""
+        return {"activity_tracking_enabled": current_user.activity_tracking_enabled is not False}
+
+    @staticmethod
     def get_today_summary(
         db: Session,
         current_user: User,

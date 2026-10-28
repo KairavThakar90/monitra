@@ -165,6 +165,8 @@ _HELD_EVENTS = {
     "excluded": ("excluded", "privacy_rule"),
     "privacy_config": ("blocked", "privacy_config_unavailable"),
     "unavailable": ("unavailable", "capture_unavailable"),
+    # Every attached screen is one the administrator switched capture off for.
+    "displays_disabled": ("excluded", "displays_disabled"),
 }
 
 
@@ -272,7 +274,23 @@ class ScreenshotService(BaseService):
         #: exactly like `IdleService._idle_minutes` defaults to 5 pre-seed.
         self._capture_frequency_minutes: Optional[int] = None
 
+        #: Whether an administrator has screenshots on for this member
+        #: (Screenshot Management), and the size and quality they chose. Written
+        #: on the GUI thread (`apply_user_profile`, `_refresh_config`) and read
+        #: on a pool thread at capture time, so both live behind `_auth_lock`.
+        #: Until the server has said otherwise a member is captured at the
+        #: default size and Automatic quality -- exactly what this service did
+        #: before the setting existed -- and only an explicit `False` from the
+        #: server turns capture off, so a missing or unreadable answer can never
+        #: switch it off.
+        self._screenshots_enabled = True
+        self._capture_settings = config.DEFAULT_CAPTURE_SETTINGS
+
         self._privacy_config: Dict[str, Any] = {}
+        #: The screens last reported to the backend, with whose they were, so a
+        #: report is sent when the arrangement or the signed-in member changes
+        #: and not on every refresh. Written on the GUI thread, read on the pool.
+        self._reported_displays: Optional[Tuple[Any, ...]] = None
         #: Whether `_refresh_privacy_config` has resolved at least once
         #: (success or failure) since this process started. `{}` alone
         #: cannot distinguish "no exclusions" from "not fetched yet" --
@@ -383,7 +401,12 @@ class ScreenshotService(BaseService):
         # and is told at Start -- not minutes later, at a random instant in
         # the first window, when the first capture happens to come due.
         self._access_blocked_state = None
-        self._probe_screen_access()
+        if self._screenshots_are_enabled():
+            # No one is told to grant Screen Recording for a capture that will
+            # not be taken.
+            self._probe_screen_access()
+        else:
+            self.log.info("screenshots are turned off for this account; nothing will be captured")
         # Plan and arm immediately, so a session that begins mid-window still
         # gets whatever the window has left rather than waiting for the next.
         self._health_timer.start()
@@ -514,9 +537,72 @@ class ScreenshotService(BaseService):
         if not isinstance(user_data, dict):
             return
         user = user_data.get("user") if isinstance(user_data.get("user"), dict) else user_data
+        # The member's capture switch is read from every profile -- and a profile
+        # that does not carry it (a backend older than Screenshot Management)
+        # means "on", not "whatever the last person who signed in here had".
+        # Without that reset, a member switched off signing out and an older
+        # backend's member signing in would inherit the first one's "off".
+        self._set_screenshots_enabled(user.get("screenshots_enabled", True))
+        self._report_displays()
         if "capture_frequency" not in user:
             return
         self._set_capture_frequency(user.get("capture_frequency"))
+
+    def _set_screenshots_enabled(self, value: Any) -> None:
+        """Apply the member's capture switch. Edge-triggered: only a change does anything.
+
+        Only a real boolean is believed. A `null`, a string or anything else is a
+        damaged answer and leaves the switch where it was -- it can neither turn
+        capture off nor on.
+        """
+        if not isinstance(value, bool):
+            return
+        with self._auth_lock:
+            if value == self._screenshots_enabled:
+                return
+            self._screenshots_enabled = value
+        self.log.info(
+            "SCREENSHOTS_SWITCH enabled=%s; screenshots are turned %s for this account",
+            value, "on" if value else "off",
+        )
+        self._on_screenshots_switch_changed(value)
+
+    def _on_screenshots_switch_changed(self, enabled: bool) -> None:
+        """React to the switch moving while tracking. GUI thread.
+
+        Off: whatever was planned for this window is dropped, and a capture that
+        has not yet read the screen is refused by `_check_authorized`. On: the
+        rest of the current window is planned at once, so a member switched back
+        on is not left waiting for the next window.
+        """
+        if self._tracking:
+            if enabled:
+                self._planned_index = None
+                self._on_due()
+            else:
+                self._planned_times = []
+                self._arm_safely()
+        self._refresh_status()
+
+    def _screenshots_are_enabled(self) -> bool:
+        with self._auth_lock:
+            return self._screenshots_enabled
+
+    def _set_capture_settings(self, settings: "config.CaptureSettings") -> None:
+        """Apply the size and quality an administrator chose. Edge-triggered."""
+        with self._auth_lock:
+            if settings == self._capture_settings:
+                return
+            self._capture_settings = settings
+        self.log.info(
+            "SCREENSHOT_SETTINGS size=%dx%d quality=%s",
+            settings.width, settings.height,
+            "automatic" if settings.quality is None else f"{settings.quality}%",
+        )
+
+    def _current_capture_settings(self) -> "config.CaptureSettings":
+        with self._auth_lock:
+            return self._capture_settings
 
     def _set_capture_frequency(self, minutes: Any) -> None:
         try:
@@ -561,8 +647,16 @@ class ScreenshotService(BaseService):
 
         def on_success(results: Any) -> None:
             cfg, privacy_cfg = results
+            self._report_displays()
             if isinstance(cfg, dict):
                 self._set_capture_frequency(cfg.get("capture_frequency"))
+                # A key this answer does not carry (a backend older than
+                # Screenshot Management) says nothing and changes nothing.
+                if "screenshots_enabled" in cfg:
+                    self._set_screenshots_enabled(cfg["screenshots_enabled"])
+                self._set_capture_settings(
+                    config.parse_capture_settings(cfg, self._current_capture_settings())
+                )
             if isinstance(privacy_cfg, dict):
                 self._privacy_config = privacy_cfg
                 # A privacy configuration that has been fetched is a
@@ -580,6 +674,81 @@ class ScreenshotService(BaseService):
             # regression, not error handling.
             on_error=lambda exc: self.log.info("screenshot config refresh failed: %s", exc),
             key="screenshot-config",
+        )
+
+    def _excluded_displays(self) -> frozenset:
+        """Screen numbers an administrator switched capture off for this member.
+
+        Read from the privacy configuration, the member-specific answer capture
+        already waits for before its first read of the screen. Anything that is
+        not a list of whole numbers (an older backend sends none) means "none".
+        """
+        raw = self._privacy_config.get("excluded_displays") if isinstance(self._privacy_config, dict) else None
+        if not isinstance(raw, list):
+            return frozenset()
+        return frozenset(n for n in raw if isinstance(n, int) and not isinstance(n, bool) and n > 0)
+
+    def _grab_screens(self):
+        """Read the screens that are to be captured; see `capture.capture_all_displays`."""
+        excluded = self._excluded_displays()
+        if not excluded:
+            return capture.capture_all_displays()
+        return capture.capture_all_displays(excluded=excluded)
+
+    def _report_displays(self) -> None:
+        """Tell the backend which screens this computer has, when that has changed.
+
+        Feeds Screenshot Management -> Screens, where an administrator sees how
+        many screens a member uses and switches individual ones off. The reading
+        and the request both run on the pool; the GUI thread only records that
+        the report went through. Nothing is reported for a member whose
+        screenshots are switched off ("nothing is read, queued or reported"),
+        for a machine that cannot capture, or when nobody is signed in.
+
+        Edge-triggered: the arrangement is compared with the one last reported
+        (per member), so an unchanged desk is a no-op. A report that fails keeps
+        the old signature, so the next configuration refresh simply sends it
+        again -- state, not a queued operation, so there is nothing to retry
+        harder or to duplicate.
+        """
+        send = getattr(self._screenshot_api, "report_displays", None)
+        if send is None or not self._screenshots_are_enabled() or not capture.supported():
+            return
+        tasks = getattr(self.runtime, "tasks", None)
+        owner = self._current_user_id()
+        if tasks is None or owner is None:
+            return
+
+        def _send() -> Optional[Tuple[Any, ...]]:
+            displays = capture.list_displays()
+            if not displays:
+                return None
+            payload = [
+                {
+                    "number": d.number, "width": d.width, "height": d.height,
+                    "left": d.left, "top": d.top, "is_primary": bool(d.is_primary),
+                }
+                for d in displays
+            ]
+            signature = (owner, tuple(tuple(sorted(item.items())) for item in payload))
+            with self._auth_lock:
+                if signature == self._reported_displays:
+                    return None
+            send(payload)
+            return signature
+
+        def on_success(signature: Optional[Tuple[Any, ...]]) -> None:
+            if signature is None:
+                return
+            with self._auth_lock:
+                self._reported_displays = signature
+            self.log.info("SCREENSHOT_DISPLAYS_REPORTED count=%d", len(signature[1]))
+
+        tasks.submit(
+            _send,
+            on_success=on_success,
+            on_error=lambda exc: self.log.info("screen report failed: %s", exc),
+            key="screenshot-displays",
         )
 
     def _refresh_privacy_config(self) -> None:
@@ -685,6 +854,11 @@ class ScreenshotService(BaseService):
                 return False, None, None, "stale_scheduler_generation"
             if not self._authorized:
                 return False, None, None, "timer_stopped"
+            # Checked here as well as in the schedule: a capture planned before
+            # an administrator turned screenshots off can come due after the
+            # desktop has heard, and this runs before the screen is read.
+            if not self._screenshots_enabled:
+                return False, None, None, "screenshots_disabled"
             entry_id = self._entry_id
             client_op = self._client_op
 
@@ -787,6 +961,17 @@ class ScreenshotService(BaseService):
         index = scheduler.window_index(now, window)
         outcome = self._roll_window(index)
         self._check_stuck()
+
+        # Screenshots are turned off for this member: plan nothing, capture
+        # nothing, report nothing -- no capture is *expected*, so a window that
+        # ends without one is not an unresolved window. The schedule stays armed
+        # (for the next window's start) so that switching it back on needs no
+        # restart; `_on_screenshots_switch_changed` plans the rest of the
+        # current window the moment that happens.
+        if not self._screenshots_are_enabled():
+            self._planned_times = []
+            self._planned_index = index
+            return
 
         if not self._capture_available():
             outcome.held = "unavailable"
@@ -1110,6 +1295,13 @@ class ScreenshotService(BaseService):
             self._on_capture_held(index, record.get("reason"))
             return
 
+        if record.get("displays_disabled"):
+            outcome = self._outcome_for(index)
+            if outcome is not None:
+                outcome.held = "displays_disabled"
+            self._refresh_status()
+            return
+
         if record.get("failed"):
             self._on_capture_failed(index, record["failed"], record.get("detail"))
             return
@@ -1246,6 +1438,7 @@ class ScreenshotService(BaseService):
             "consecutive_failed_windows": self._consecutive_failed_windows,
             "last_failure_reason": self._last_failure_reason,
             "held": held,
+            "disabled": not self._screenshots_are_enabled(),
         }
 
         def compute() -> "health.ScreenshotStatus":
@@ -1477,7 +1670,13 @@ class ScreenshotService(BaseService):
         # one image. The display count is metadata on that single event — it
         # never becomes a second capture, a second queue row or a second
         # upload, whatever the machine has plugged in.
-        merged = capture.capture_all_displays()
+        try:
+            merged = self._grab_screens()
+        except capture.AllDisplaysExcluded as exc:
+            # A decision, not a fault: nothing was read and retrying would read
+            # the same list again. The window is recorded with its own reason.
+            self.log.info("screenshot capture skipped: %s", exc)
+            return {"displays_disabled": True, "index": index, "detail": str(exc)}
         # The instant the screen was read, not the instant it finished encoding:
         # the backend files the capture into its window by this timestamp, and
         # the encode can take a second or more on a dense screen. Stamping after
@@ -1494,7 +1693,9 @@ class ScreenshotService(BaseService):
             }
         mac_diagnostics.log_capture(merged)  # logging only; no-op off macOS
 
-        processed = image_processor.process_merged(merged)
+        processed = image_processor.process_merged(
+            merged, settings=self._current_capture_settings()
+        )
         if processed is None or not processed.data:
             return {
                 "failed": "encode_failed", "index": index,

@@ -7,7 +7,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
 from app.schemas.time_entry_activity import (
-    TimeEntryActivityCreate, TimeEntryActivityBatchCreate, TimeEntryActivityUpdate,
+    ActivityConfigResponse, TimeEntryActivityCreate, TimeEntryActivityBatchCreate, TimeEntryActivityUpdate,
     TimeEntryActivityRecord, TimeEntryActivityResponse, TimeEntryActivityBatchResponse,
     TimeEntryActivityListResponse, TimeEntryActivityOverviewResponse,
     TimeEntryActivityTimelineResponse, TimeEntryActivityHourlyResponse,
@@ -32,6 +32,22 @@ from app.services.time_entry_activity import (
 from app.services.time_entry_unwanted_activity import TimeEntryUnwantedActivityService
 
 router = APIRouter(tags=["Time Entry Activity"])
+
+
+@router.get(
+    "/activity/config",
+    response_model=ActivityConfigResponse,
+    summary="Whether this user's activity is measured",
+)
+def get_activity_config(current_user: User = Depends(get_current_user)):
+    """The authenticated user's activity-tracking switch (User Management).
+
+    `GET /auth/me` carries the same value in the profile; this is the narrow
+    projection the desktop's activity tracker polls, mirroring
+    `GET /idle-periods/config`. Declared before the `/time-entries/...` routes
+    only for readability -- the paths do not overlap.
+    """
+    return EntryActivityService.get_activity_config(current_user)
 
 
 @router.post(

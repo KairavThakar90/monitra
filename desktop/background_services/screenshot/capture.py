@@ -27,6 +27,22 @@ However many displays are read, this returns a single `MergedCapture` with a
 single pixel buffer. Nothing downstream — the queue, the uploader, Drive, the
 database, the grid — ever sees more than one screenshot per capture instant.
 
+Choosing screens
+----------------
+An administrator can switch capture off for individual screens of a member
+(Screenshot Management -> Screens). `capture_all_displays(excluded=...)` leaves
+those display numbers out *before anything is read*: an excluded screen is never
+grabbed, so its pixels never exist in this process. What remains is composed
+exactly as before -- the canvas is sized to the screens that are captured, and
+`displays_expected` counts them, so a deliberate omission is not reported as an
+incomplete capture. Screens are enumerated first because their numbers are the
+operating system's current order, not something to remember.
+
+If every attached screen is excluded there is nothing to capture, and that is
+not a failure to retry: `AllDisplaysExcluded` says so, and the service records
+the window with its own reason instead of retrying a capture that cannot
+succeed.
+
 Failure
 -------
 A display that fails is retried `config.display_capture_retries()` times, and
@@ -42,7 +58,7 @@ show, and None is returned exactly as before.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Collection, List, Optional
 
 from background_services.screenshot import compositor, config
 from background_services.screenshot.compositor import CanvasBounds, Placement
@@ -55,6 +71,19 @@ log = get_logger("screenshot.capture")
 
 #: Resolved once; `None` until the first probe, then the module or False.
 _mss_module = None
+
+
+class AllDisplaysExcluded(Exception):
+    """Every attached screen is one an administrator switched capture off for.
+
+    Deliberately an exception and not a `None`: `None` means "the screen could
+    not be read", which is retried inside the window. This is the opposite -- a
+    decision, not a fault -- and retrying it would only read the same list again.
+    """
+
+    def __init__(self, attached: int) -> None:
+        super().__init__(f"all {attached} attached display(s) are excluded from capture")
+        self.attached = attached
 
 
 @dataclass(frozen=True)
@@ -170,17 +199,38 @@ def _grab(sct, display: Display) -> Optional[Placement]:
     return None
 
 
-def capture_all_displays() -> Optional[MergedCapture]:
+def list_displays() -> List[Display]:
     """
-    Grab every attached display for one screenshot event.
+    The displays attached right now, without reading any of their pixels.
+
+    What the service reports to the backend so an administrator can see how many
+    screens a member is using. Empty when `mss` is unavailable or the session has
+    no display. Never raises.
+    """
+    module = _load_mss()
+    if module is None:
+        return []
+    try:
+        return enumerate_displays(module)
+    except Exception:  # noqa: BLE001
+        log.exception("could not list displays")
+        return []
+
+
+def capture_all_displays(excluded: Collection[int] = ()) -> Optional[MergedCapture]:
+    """
+    Grab the attached displays for one screenshot event, except the excluded ones.
 
     Displays are enumerated inside this call, so an arrangement changed since
     the last capture — a monitor plugged in, unplugged or moved — is picked up
     with no restart and no cache to invalidate.
 
+    :param excluded: display numbers an administrator switched capture off for.
+        They are not read, composed or counted.
     :return: the merged material for one image, or None when the screen cannot
-        be read at all. Never raises: a failed grab must not take down the
-        service thread.
+        be read at all. Never raises a fault: a failed grab must not take down
+        the service thread. The one exception raised is `AllDisplaysExcluded`,
+        which is a decision rather than a fault.
     """
     module = _load_mss()
     if module is None:
@@ -193,6 +243,18 @@ def capture_all_displays() -> Optional[MergedCapture]:
             # virtual session. Nothing meaningful to capture.
             log.warning("no physical display reported; skipping capture")
             return None
+
+        attached = len(displays)
+        if excluded:
+            kept = [d for d in displays if d.number not in excluded]
+            if not kept:
+                raise AllDisplaysExcluded(attached)
+            if len(kept) != attached:
+                log.info(
+                    "SCREENSHOT_DISPLAYS_EXCLUDED capturing %d of %d display(s); excluded=%s",
+                    len(kept), attached, sorted(d.number for d in displays if d.number in excluded),
+                )
+            displays = kept
 
         if not config.multi_display_enabled() and len(displays) > 1:
             from background_services.screenshot.displays import primary_display
@@ -236,6 +298,8 @@ def capture_all_displays() -> Optional[MergedCapture]:
                 merged.display_count, merged.displays_expected,
             )
         return merged
+    except AllDisplaysExcluded:
+        raise
     except Exception:  # noqa: BLE001
         log.exception("screen capture failed")
         return None

@@ -89,6 +89,13 @@ const ACTION_LABELS: Record<string, string> = {
   desktop_notification_updated: 'Updated desktop notification',
   desktop_notification_deleted: 'Deleted desktop notification',
   desktop_notification_pushed: 'Pushed desktop notification',
+  screenshots_enabled: 'Turned on screenshots',
+  screenshots_disabled: 'Turned off screenshots',
+  notifications_enabled: 'Turned on desktop notifications',
+  notifications_disabled: 'Turned off desktop notifications',
+  activity_tracking_enabled: 'Turned on activity tracking',
+  activity_tracking_disabled: 'Turned off activity tracking',
+  screenshot_settings_updated: 'Updated screenshot settings',
 };
 
 /**
