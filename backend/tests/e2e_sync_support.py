@@ -84,7 +84,7 @@ def _insert_user(conn, org: int, stamp: str, kind: str, role: str, permissions: 
             INSERT INTO users (organization_id, username, email, name, role_name,
                                permissions, is_active, capture_frequency, status)
             VALUES (:org, :username, :email, :name, :role,
-                    CAST(:permissions AS jsonb), true, 0, 'active')
+                    CAST(:permissions AS jsonb), true, 10, 'active')
             RETURNING id
             """
         ),

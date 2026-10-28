@@ -99,7 +99,7 @@ def provision(role: str = "employee") -> dict:
                 INSERT INTO users (organization_id, username, email, name, role_name,
                                    permissions, is_active, capture_frequency, status)
                 VALUES (:org, :username, :email, :name, :role,
-                        CAST(:permissions AS jsonb), true, 0, 'active')
+                        CAST(:permissions AS jsonb), true, 10, 'active')
                 RETURNING id
                 """
             ),

@@ -78,6 +78,10 @@ class MemberDisplayService:
         """
         if not current_user.organization_id or getattr(current_user, "is_service_principal", False):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a member's own desktop may report its screens.")
+        if (current_user.role_name or "").strip().lower() in NOT_CAPTURED_ROLES:
+            # A client or the release account is never captured, so it has no
+            # screens to report: the same rule the overview and the choice apply.
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "This account is not captured and has no screens to report.")
 
         for attempt in (1, 2):
             try:

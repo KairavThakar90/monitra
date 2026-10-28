@@ -337,7 +337,15 @@ class ScopeTests(unittest.TestCase):
         self.admin = _user(user_id=5)
         for member_id, role, org in ((40, "employee", ORG), (41, "client", ORG), (42, "release_bot", ORG), (43, "employee", ORG + 1)):
             _add_member(self.db, member_id, role=role, organization_id=org)
-            Service.report(self.db, _user(role, user_id=member_id, organization_id=org), _report(_screen(1), _screen(2)))
+            reporter = _user(role, user_id=member_id, organization_id=org)
+            if role in ("client", "release_bot"):
+                # Never captured, so never reported: the same rule the overview and the choice apply.
+                with self.assertRaises(HTTPException) as caught:
+                    Service.report(self.db, reporter, _report(_screen(1), _screen(2)))
+                self.assertEqual(caught.exception.status_code, 403)
+                self.assertEqual(_rows(self.db, member_id), {})
+            else:
+                Service.report(self.db, reporter, _report(_screen(1), _screen(2)))
 
     def test_other_organisations_clients_and_the_release_account_are_not_found(self):
         for member_id in (41, 42, 43, 999):
