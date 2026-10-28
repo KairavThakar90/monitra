@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 from markupsafe import Markup
 
 from app.core.config import settings
+from app.core.email_catalogue import NO_CC_NOTE, register_email
 from app.core.time_format import IST, to_ist
 from app.models.email_notification import (
     TYPE_MEMBER_ACCESS, TYPE_MANUAL_TIME_DECISION, TYPE_MANUAL_TIME_RECEIPT, TYPE_MANUAL_TIME_REQUEST,
@@ -1185,23 +1186,54 @@ def build_client_login_link_email(payload: dict[str, Any], recipients: list[str]
 
 
 #: Maps a notification type to the builder that renders it. The outbox is
-#: type-agnostic: adding a third email is a builder, an entry here and a
-#: `dedupe_key`, with nothing in the delivery machinery changing.
+#: type-agnostic: adding an email is a builder, one `_register(...)` call beside
+#: it and a `dedupe_key`, with nothing in the delivery machinery changing.
+#:
+#: `_register` is the one place an email is made to exist: it puts the builder
+#: here *and* records the words Email Management shows for it
+#: (`app.core.email_catalogue`), so the page, the CC policy and the outbox can
+#: never disagree about which emails there are. `check_registry()` refuses, at
+#: start-up, a builder that was added here any other way.
 #:
 #: `build_client_invitation_email` and `build_client_login_link_email` are
-#: deliberately **not** registered here. Both render a bearer secret into the
-#: message (an invitation token, a login handoff token), and the outbox's
-#: payload is a durable, plaintext row in `email_notifications` -- see the
-#: "never a token, a password or a session identifier" rule on that model.
+#: deliberately registered **without** a builder. Both render a bearer secret
+#: into the message (an invitation token, a login handoff token), and the
+#: outbox's payload is a durable, plaintext row in `email_notifications` -- see
+#: the "never a token, a password or a session identifier" rule on that model.
 #: `workflows.queue_client_invitation_email`/`queue_client_login_link_email`
 #: call these builders directly and send immediately instead of going through
-#: `EmailOutboxService.enqueue`, so the secret is never persisted.
-BUILDERS = {
-    "welcome": build_welcome_email,
-    "feedback": build_feedback_email,
-    "feedback_status": build_feedback_status_email,
-    "release": build_release_email,
-}
+#: `EmailOutboxService.enqueue`, so the secret is never persisted -- and nobody
+#: is ever copied on them (`copy_exempt`).
+BUILDERS: dict[str, Any] = {}
+
+
+def _register(key: str, builder, name: str, goes_to: str, trigger: str, **metadata) -> None:
+    """Make one email exist: the outbox dispatches `key` to `builder`, and Email
+    Management lists it as `name`. `builder=None` is an email that is sent at once,
+    never queued, and must then be `cc_allowed=False`."""
+    register_email(key, name, goes_to, trigger, queued=builder is not None, **metadata)
+    if builder is not None:
+        BUILDERS[key] = builder
+
+
+_register(
+    "welcome", build_welcome_email, "Welcome", "New user",
+    "Once, when the account is first created",
+    enabled_setting="WELCOME_EMAIL_ENABLED",
+)
+_register(
+    "feedback", build_feedback_email, "Feedback received", "Admin/HR addresses from config",
+    "A user submits feedback in the desktop app",
+)
+_register(
+    "feedback_status", build_feedback_status_email, "Feedback status (Working / Resolved)",
+    "The person who submitted it", "Admin changes the feedback status",
+)
+_register(
+    "release", build_release_email, "New version available", "Every active user",
+    "A desktop release is published",
+    note="Off by default (RELEASE_EMAIL_ENABLED).", enabled_setting="RELEASE_EMAIL_ENABLED",
+)
 
 
 # ----------------------------------------------------------------------
@@ -1481,10 +1513,11 @@ def build_weekly_report_email(payload: dict[str, Any], recipients: list[str]) ->
     )
 
 
-#: Registered after the fact rather than inside the literal above, because the
-#: builder is defined below it. The dict is still the one registry the outbox
-#: dispatches through — `TYPE_WEEKLY_REPORT`'s wire value, matched exactly.
-BUILDERS[TYPE_WEEKLY_REPORT] = build_weekly_report_email
+#: Registered beside its builder — `TYPE_WEEKLY_REPORT`'s wire value, matched exactly.
+_register(
+    TYPE_WEEKLY_REPORT, build_weekly_report_email, "Weekly productivity report", "Each user",
+    "Mondays, 9:00 AM IST",
+)
 
 
 # ----------------------------------------------------------------------
@@ -1632,7 +1665,10 @@ def build_monthly_report_email(payload: dict[str, Any], recipients: list[str]) -
     )
 
 
-BUILDERS[TYPE_MONTHLY_REPORT] = build_monthly_report_email
+_register(
+    TYPE_MONTHLY_REPORT, build_monthly_report_email, "Monthly productivity report", "Each user",
+    "1st of the month, 9:00 AM IST",
+)
 
 
 # ----------------------------------------------------------------------
@@ -1919,9 +1955,19 @@ def build_manual_time_decision_email(payload: dict[str, Any], recipients: list[s
     )
 
 
-BUILDERS[TYPE_MANUAL_TIME_REQUEST] = build_manual_time_request_email
-BUILDERS[TYPE_MANUAL_TIME_RECEIPT] = build_manual_time_receipt_email
-BUILDERS[TYPE_MANUAL_TIME_DECISION] = build_manual_time_decision_email
+_register(
+    TYPE_MANUAL_TIME_REQUEST, build_manual_time_request_email, "Manual time request, for review",
+    "Admins, HR, managers, and the leaders of the related project",
+    "An employee submits a manual time request",
+)
+_register(
+    TYPE_MANUAL_TIME_RECEIPT, build_manual_time_receipt_email, "Manual time request, receipt",
+    "The requester", "Same moment as the review email",
+)
+_register(
+    TYPE_MANUAL_TIME_DECISION, build_manual_time_decision_email,
+    "Manual time decision (Approved / Rejected)", "The requester", "A reviewer decides the request",
+)
 
 
 # ----------------------------------------------------------------------
@@ -2200,7 +2246,10 @@ def build_monthly_project_summary_email(payload: dict[str, Any], recipients: lis
     )
 
 
-BUILDERS[TYPE_MONTHLY_PROJECT_SUMMARY] = build_monthly_project_summary_email
+_register(
+    TYPE_MONTHLY_PROJECT_SUMMARY, build_monthly_project_summary_email, "Monthly project summary",
+    "Admins, project owners and leaders (each sees their own scope)", "1st of the month, 9:00 AM IST",
+)
 
 
 # ----------------------------------------------------------------------
@@ -2362,7 +2411,11 @@ def build_project_budget_alert_email(payload: dict[str, Any], recipients: list[s
     )
 
 
-BUILDERS[TYPE_PROJECT_BUDGET_ALERT] = build_project_budget_alert_email
+_register(
+    TYPE_PROJECT_BUDGET_ALERT, build_project_budget_alert_email, "Project hours alert",
+    "Admins, owners and leaders of that project",
+    "A fixed-hours project reaches 50%, 20% or 10% remaining, or runs out. Checked every 5 minutes",
+)
 
 
 # ----------------------------------------------------------------------
@@ -2529,7 +2582,19 @@ def build_screenshot_notice_email(payload: dict[str, Any], recipients: list[str]
     )
 
 
-BUILDERS[TYPE_SCREENSHOT_NOTICE] = build_screenshot_notice_email
+#: The two private-link emails: listed, locked, never queued, never copied.
+_register(
+    "client_invitation", None, "Client invitation", "The client", "Admin invites a client",
+    cc_allowed=False, note=NO_CC_NOTE,
+)
+_register(
+    "client_login_link", None, "Client sign-in link", "The client", "Client requests a link",
+    cc_allowed=False, note=NO_CC_NOTE,
+)
+_register(
+    TYPE_SCREENSHOT_NOTICE, build_screenshot_notice_email, "Screenshot notice, with the picture attached",
+    "The employee the screenshot belongs to", "An admin, HR or leader sends a notice about it",
+)
 
 
 # ----------------------------------------------------------------------
@@ -2712,4 +2777,8 @@ def build_member_access_email(payload: dict[str, Any], recipients: list[str]) ->
     )
 
 
-BUILDERS[TYPE_MEMBER_ACCESS] = build_member_access_email
+_register(
+    TYPE_MEMBER_ACCESS, build_member_access_email,
+    "Access update (Excluded / Allowed, for Login or Add Task)", "The affected member",
+    "An admin moves a Login or Add Task switch", enabled_setting="ACCESS_CHANGE_EMAIL_ENABLED",
+)

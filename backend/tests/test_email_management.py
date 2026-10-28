@@ -36,7 +36,11 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.config import settings
 from app.core.database import Base, get_db
-from app.core.email_catalogue import CC_ALLOWED_KEYS, EMAIL_TRIGGERS, MAX_CC_ADDRESSES, TRIGGER_KEYS
+from app.core import email_catalogue
+from app.core.email_catalogue import (
+    MAX_CC_ADDRESSES, EmailRegistryError, cc_allowed_keys, check_registry, email_triggers, register_email,
+    trigger_keys,
+)
 from app.core.permissions import ROLE_PERMISSIONS
 from app.core.security import get_current_user
 from app.main import app
@@ -54,6 +58,9 @@ from app.services.email_cc import EMAIL_CC_MANAGE_ROLES, EmailCcService as Servi
 ORG = 7
 STANDING = ["bharat@storetransform.com", "projectmanager663@gmail.com", "hr@storetransform.com", "piyush@storetransform.com"]
 EXEMPT = ["client_invitation", "client_login_link"]
+EMAIL_TRIGGERS = email_triggers()
+TRIGGER_KEYS = trigger_keys()
+CC_ALLOWED_KEYS = cc_allowed_keys()
 
 
 @compiles(JSONB, "sqlite")
@@ -114,9 +121,10 @@ def _env(**overrides):
 
 class CatalogueTests(unittest.TestCase):
 
-    def test_there_are_fifteen_emails_numbered_in_order(self):
-        self.assertEqual([t.number for t in EMAIL_TRIGGERS], list(range(1, 16)))
-        self.assertEqual(len(set(TRIGGER_KEYS)), 15)
+    def test_every_email_is_numbered_in_registration_order(self):
+        self.assertEqual([t.number for t in EMAIL_TRIGGERS], list(range(1, len(EMAIL_TRIGGERS) + 1)))
+        self.assertEqual(len(set(TRIGGER_KEYS)), len(EMAIL_TRIGGERS))
+        self.assertGreaterEqual(len(EMAIL_TRIGGERS), 15)
 
     def test_only_the_two_private_link_emails_are_not_copyable(self):
         self.assertEqual([t.key for t in EMAIL_TRIGGERS if not t.cc_allowed], EXEMPT)
@@ -126,17 +134,130 @@ class CatalogueTests(unittest.TestCase):
         # The two private-link emails are sent immediately, never queued, so they
         # have no outbox builder; every other row must be a builder, and vice versa.
         self.assertEqual(set(BUILDERS), set(TRIGGER_KEYS) - set(EXEMPT))
+        self.assertEqual({t.key for t in EMAIL_TRIGGERS if not t.queued}, set(EXEMPT))
+        self.assertEqual(check_registry(BUILDERS, settings), EMAIL_TRIGGERS)
 
     def test_the_two_private_link_emails_are_the_builders_that_refuse_a_copy(self):
         from app.services.email import messages
 
-        source = open(messages.__file__, encoding="utf-8").read()
-        self.assertGreaterEqual(source.count("copy_exempt=True"), 2)
+        invitation = messages.build_client_invitation_email(
+            {"token": "secret", "project_names": ["Alpha"]}, ["client@example.com"],
+        )
+        link = messages.build_client_login_link_email({"token": "secret"}, ["client@example.com"])
+        for message in (invitation, link):
+            with self.subTest(subject=message.subject):
+                self.assertTrue(message.copy_exempt)
+        for key in EXEMPT:
+            self.assertEqual(Service.cc_for(_sqlite_session(), key), [])
 
     def test_the_configuration_flags_named_by_the_catalogue_exist(self):
         for trigger in EMAIL_TRIGGERS:
             if trigger.enabled_setting:
                 self.assertTrue(hasattr(settings, trigger.enabled_setting), trigger.enabled_setting)
+
+
+class RegistryTests(unittest.TestCase):
+    """A new email is one registration beside its builder, and nothing else.
+
+    These register a temporary email the way a developer would, prove it is
+    manageable end to end with no other change, and remove it again.
+    """
+
+    KEY = "registry_test_email"
+
+    def setUp(self):
+        self.addCleanup(self._unregister)
+
+    def _unregister(self):
+        email_catalogue._registry.pop(self.KEY, None)
+        BUILDERS.pop(self.KEY, None)
+
+    def _register(self, *, builder=True, **metadata):
+        from app.services.email import messages
+
+        messages._register(
+            self.KEY, (lambda payload, recipients: OutgoingEmail(
+                to=tuple(recipients), subject="Registry test", text_body="x", html_body="<p>x</p>",
+            )) if builder else None,
+            "Registry test email", "Whoever the test names", "Only during this test", **metadata,
+        )
+
+    def test_a_registered_email_is_listed_manageable_and_copied_with_no_other_change(self):
+        self._register()
+        triggers = email_triggers()
+        self.assertEqual(triggers[-1].key, self.KEY)
+        self.assertEqual(triggers[-1].number, len(triggers))
+        self.assertIn(self.KEY, cc_allowed_keys())
+        self.assertEqual(check_registry(BUILDERS, settings), triggers)
+
+        db = _sqlite_session()
+        admin = _admin(user_id=5, username="grace")
+        with _env():
+            # The page lists it (the frontend renders what GET returns). An untouched
+            # deployment copies its standing list on every copyable email, the new one
+            # included -- exactly what the environment list did before the page existed.
+            view = Service.get_admin(db, admin)
+            self.assertEqual(view["triggers"][-1]["key"], self.KEY)
+            self.assertTrue(view["is_default"])
+            self.assertTrue(all(self.KEY in a["triggers"] for a in view["addresses"]))
+            self.assertEqual(Service.cc_for(db, self.KEY), STANDING)
+            # Once a policy has been saved, an email it does not name is copied to nobody:
+            # a new email never reaches an address an administrator did not tick for it.
+            Service.update(db, admin, _update(("hr@storetransform.com", ["welcome"])))
+            self.assertEqual(Service.cc_for(db, self.KEY), [])
+            self.assertTrue(all(self.KEY not in a["triggers"] for a in Service.get_admin(db, admin)["addresses"]))
+            # The schema accepts it, the policy stores it, and a send reads it back.
+            Service.update(db, admin, _update(("hr@storetransform.com", [self.KEY])))
+            self.assertEqual(Service.cc_for(db, self.KEY), ["hr@storetransform.com"])
+            self.assertEqual(Service.cc_for(db, "welcome"), [])
+            # The outbox can dispatch it.
+            self.assertIn(self.KEY, BUILDERS)
+
+            # The row outlives the registration (a restart re-registers, the policy is a stored row).
+            app.dependency_overrides[get_db] = lambda: db
+            app.dependency_overrides[get_current_user] = lambda: admin
+            try:
+                body = TestClient(app).get("/api/v1/email-cc").json()
+            finally:
+                app.dependency_overrides.clear()
+            self.assertEqual(body["triggers"][-1]["key"], self.KEY)
+            self.assertEqual(body["addresses"], [{"email": "hr@storetransform.com", "triggers": [self.KEY]}])
+
+    def test_once_removed_it_is_gone_cleanly(self):
+        self._register()
+        self._unregister()
+        self.assertNotIn(self.KEY, trigger_keys())
+        self.assertNotIn(self.KEY, BUILDERS)
+        with self.assertRaises(ValidationError):
+            _update(("hr@storetransform.com", [self.KEY]))
+        with _env():
+            self.assertEqual(Service.cc_for(_sqlite_session(), self.KEY), [])
+
+    def test_a_key_registered_twice_is_refused(self):
+        self._register()
+        with self.assertRaises(EmailRegistryError):
+            self._register()
+
+    def test_a_copyable_email_that_is_never_queued_is_refused(self):
+        with self.assertRaises(EmailRegistryError):
+            self._register(builder=False)
+        self.assertNotIn(self.KEY, trigger_keys())
+
+    def test_a_builder_added_without_a_registration_fails_the_start_up_check(self):
+        BUILDERS[self.KEY] = lambda payload, recipients: None
+        with self.assertRaises(EmailRegistryError) as caught:
+            check_registry(BUILDERS, settings)
+        self.assertIn(self.KEY, str(caught.exception))
+
+    def test_a_registration_naming_a_flag_that_does_not_exist_fails_the_start_up_check(self):
+        self._register(enabled_setting="NO_SUCH_FLAG")
+        with self.assertRaises(EmailRegistryError):
+            check_registry(BUILDERS, settings)
+
+    def test_a_blank_key_is_refused(self):
+        for key in ("", " x", None):
+            with self.subTest(key=key), self.assertRaises(EmailRegistryError):
+                register_email(key, "n", "g", "t")
 
 
 # ── The default: unchanged behaviour ────────────────────────────────────────
@@ -295,6 +416,31 @@ class ChangeTests(unittest.TestCase):
         self.assertEqual(saved["version"], 0)
         self.assertTrue(saved["is_default"])
         self.assertEqual(_audit(self.db), [])
+
+    def test_a_save_over_a_newer_version_is_refused_and_changes_nothing(self):
+        from fastapi import HTTPException
+
+        with _env():
+            first = Service.update(self.db, self.admin, _update(("hr@storetransform.com", ["welcome"])))
+            self.assertEqual(first["version"], 1)
+            stale = EmailCcUpdate(addresses=[{"email": "late@example.com", "triggers": ["welcome"]}], version=0)
+            with self.assertRaises(HTTPException) as caught:
+                Service.update(self.db, self.admin, stale)
+            self.assertEqual(caught.exception.status_code, 409)
+            self.assertEqual(Service.cc_for(self.db, "welcome"), ["hr@storetransform.com"])
+            self.assertEqual(Service.get_admin(self.db, self.admin)["version"], 1)
+
+    def test_a_save_that_names_the_current_version_is_applied(self):
+        with _env():
+            Service.update(self.db, self.admin, _update(("hr@storetransform.com", ["welcome"])))
+            current = EmailCcUpdate(addresses=[{"email": "next@example.com", "triggers": ["welcome"]}], version=1)
+            self.assertEqual(Service.update(self.db, self.admin, current)["version"], 2)
+            self.assertEqual(Service.cc_for(self.db, "welcome"), ["next@example.com"])
+
+    def test_a_save_without_a_version_is_applied_as_before(self):
+        with _env():
+            Service.update(self.db, self.admin, _update(("hr@storetransform.com", ["welcome"])))
+            self.assertEqual(Service.update(self.db, self.admin, _update(("b@example.com", ["welcome"])))["version"], 2)
 
     def test_addresses_are_stored_lower_cased(self):
         with _env():
@@ -529,7 +675,7 @@ class RouteTests(unittest.TestCase):
         body = read.json()
         self.assertTrue(body["is_default"])
         self.assertEqual([a["email"] for a in body["addresses"]], STANDING)
-        self.assertEqual([t["number"] for t in body["triggers"]], list(range(1, 16)))
+        self.assertEqual([t["number"] for t in body["triggers"]], list(range(1, len(EMAIL_TRIGGERS) + 1)))
         locked = {t["key"] for t in body["triggers"] if not t["cc_allowed"]}
         self.assertEqual(locked, set(EXEMPT))
 
@@ -545,6 +691,17 @@ class RouteTests(unittest.TestCase):
         )
         self.assertEqual(self.client.get("/api/v1/email-cc").json()["version"], 1)
         self.assertEqual(Service.cc_for(self.db, "welcome"), ["hr@storetransform.com", "new.person@example.com"])
+
+    def test_a_stale_version_is_409_over_http_and_the_list_is_unchanged(self):
+        self.client.put("/api/v1/email-cc", json={"addresses": [
+            {"email": "hr@storetransform.com", "triggers": ["welcome"]}], "version": 0})
+        stale = self.client.put("/api/v1/email-cc", json={"addresses": [], "version": 0})
+        self.assertEqual(stale.status_code, 409, stale.text)
+        self.assertIn("changed by someone else", stale.json()["detail"])
+        body = self.client.get("/api/v1/email-cc").json()
+        self.assertEqual(body["version"], 1)
+        self.assertEqual([a["email"] for a in body["addresses"]], ["hr@storetransform.com"])
+        self.assertEqual(self.client.put("/api/v1/email-cc", json={"addresses": [], "version": -1}).status_code, 422)
 
     def test_bad_requests_are_422_and_change_nothing(self):
         bodies = (

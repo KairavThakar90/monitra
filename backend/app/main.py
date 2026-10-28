@@ -119,6 +119,16 @@ try:
 except Exception:  # noqa: BLE001
     logger.warning("Could not report email configuration", exc_info=True)
 
+# The email registry is checked at boot and a fault stops the start: an outbox
+# builder that is not registered (so Email Management cannot show it and nobody
+# can be copied on it), a copyable email that is never queued, or a configuration
+# flag the registry names that does not exist. Each is a developer error that
+# would otherwise surface as a silently unmanageable email in production.
+from app.core.email_catalogue import check_registry as _check_email_registry  # noqa: E402
+from app.services.email.messages import BUILDERS as _EMAIL_BUILDERS  # noqa: E402
+
+_check_email_registry(_EMAIL_BUILDERS, settings)
+
 # The WFPM timer integration, stated at boot for the same reason again. With
 # WFPM_TIMER_START_URL / WFPM_TIMER_STOP_URL unset, timers start and stop
 # exactly as they always have and WFPM is simply never told -- nothing

@@ -55,6 +55,7 @@ Options:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import sys
 from datetime import datetime, timezone
@@ -137,6 +138,11 @@ def describe() -> bool:
 
 
 def send(message, label: str) -> bool:
+    # A smoke message copies nobody: the administrators' CC policy (Email
+    # Management) is applied by the outbox at send time, and a message built
+    # outside it would otherwise copy the environment's standing list -- people
+    # the administrators may have removed -- on a test email.
+    message = dataclasses.replace(message, cc=())
     print(f"\nSending {label} to {list(message.to)} ...")
     try:
         get_email_provider().send(message)

@@ -9,13 +9,18 @@ the emails themselves).
 Monitra used to copy one fixed list of addresses (`EMAIL_CC_ADDRESSES`) on every email it sent. Now an
 administrator decides, **per address and per email**: an address is copied on an email only when that email is
 ticked for it, and otherwise it is not. Addresses can be added and removed. The page is a grid -- one row per
-email (the fifteen in `backend/app/core/email_catalogue.py`), one column per CC address.
+email (every email registered in `backend/app/core/email_catalogue.py`, fifteen today), one column per CC address.
 
 The people an email is *addressed to* are never affected; this only governs the `Cc` header.
 
 ## The fifteen emails
 
-The catalogue is one list, shared by the page and the API, keyed by the outbox's `notification_type`:
+The catalogue is one **registry**, shared by the page, the API and the outbox, keyed by the outbox's
+`notification_type`. An email is registered **where its builder is** -- one `_register(...)` call beside each
+builder in `backend/app/services/email/messages.py` carries the key, the builder and the words the page shows.
+There is no second list: the number is the registration order, the page reads the registry through the API, the
+schema validates against it, and `check_registry()` runs when the backend starts and refuses to start on a builder
+that is not registered, a copyable email that is never queued, or a configuration flag that does not exist.
 
 | # | Key | Email | `cc_allowed` |
 |---|---|---|---|
@@ -25,10 +30,10 @@ The catalogue is one list, shared by the page and the API, keyed by the outbox's
 | 4 | `release` | New version available (off by default, `RELEASE_EMAIL_ENABLED`) | yes |
 | 5 | `weekly_report` | Weekly productivity report | yes |
 | 6 | `monthly_report` | Monthly productivity report | yes |
-| 7 | `monthly_project_summary` | Monthly project summary | yes |
-| 8 | `manual_time_request` | Manual time request, for review | yes |
-| 9 | `manual_time_receipt` | Manual time request, receipt | yes |
-| 10 | `manual_time_decision` | Manual time decision (Approved / Rejected) | yes |
+| 7 | `manual_time_request` | Manual time request, for review | yes |
+| 8 | `manual_time_receipt` | Manual time request, receipt | yes |
+| 9 | `manual_time_decision` | Manual time decision (Approved / Rejected) | yes |
+| 10 | `monthly_project_summary` | Monthly project summary | yes |
 | 11 | `project_budget_alert` | Project hours alert | yes |
 | 12 | `client_invitation` | Client invitation | **no** |
 | 13 | `client_login_link` | Client sign-in link | **no** |
@@ -38,8 +43,8 @@ The catalogue is one list, shared by the page and the API, keyed by the outbox's
 **12 and 13 are never copied.** They carry a bearer secret (an invitation's Set-password / Reject links, a one-time
 sign-in link); copying anyone would hand that person the client's access. They are sent immediately rather than
 through the outbox and are `copy_exempt`. The page shows them locked, the schema refuses to store them in a
-policy (422), and `cc_for` returns nothing for them whatever is stored. A test keeps the catalogue equal to the
-outbox's builders plus these two.
+policy (422), and `cc_for` returns nothing for them whatever is stored. They are registered with no builder, and
+the registry refuses a copyable email that has none (the outbox is the only place the policy is applied).
 
 An email switched off in configuration (`WELCOME_EMAIL_ENABLED`, `RELEASE_EMAIL_ENABLED`,
 `ACCESS_CHANGE_EMAIL_ENABLED`) is still listed and still configurable, with a "Switched off in configuration"
@@ -88,7 +93,7 @@ to the environment's list -- either would copy the wrong people on a real email.
 | Call | |
 |---|---|
 | `GET /api/v1/email-cc` | The fifteen emails (key, number, name, who it goes to, when, `cc_allowed`, `note`, `active`), the addresses with their emails, `is_default`, `version`, who last changed it and when. |
-| `PUT /api/v1/email-cc` | `{"addresses": [{"email": "...", "triggers": ["welcome", ...]}]}` -- a **replacement**. 422 for an invalid or repeated address, an unknown email key, or a private-link email. Idempotent: saving what is already in force writes and audits nothing. |
+| `PUT /api/v1/email-cc` | `{"addresses": [{"email": "...", "triggers": ["welcome", ...]}], "version": 3}` -- a **replacement**. 422 for an invalid or repeated address, an unknown email key, or a private-link email. `version` is optional: when it is sent (the page always sends the version it was built from) and is no longer the stored version, the save is **409** and nothing changes, so two administrators cannot silently overwrite each other; the page then reloads what is in force. Idempotent: saving what is already in force writes and audits nothing. |
 
 Everyone else, including HR and a service credential, is 403 on both.
 
@@ -99,13 +104,21 @@ removed and the emails switched on or off, and logged as `EMAIL_CC_CHANGED`.
 
 * No migration. Deploy the backend, then the frontend; the page is empty-handed until then (404 on the API).
 * Nothing changes for any email until an administrator saves.
-* Adding a new email to the product means adding its row to `email_catalogue.py` with the key its builder is
-  registered under. Existing addresses do **not** automatically get it: it appears unticked, so a new email is never
-  copied to anyone by accident.
+* **Adding a new email to the product** is one `_register(key, builder, name, goes_to, trigger, ...)` call beside
+  its builder in `messages.py` (plus the builder, the template and the `dedupe_key` the outbox already needs). It
+  then appears on the page, in the API and in the schema with no further change anywhere -- there is no frontend
+  list, no second backend list and no seed row. Forgetting the registration (`BUILDERS[key] = ...` by hand) stops
+  the backend starting and fails `tests/test_email_management.py::RegistryTests`. Once a policy has been saved,
+  existing addresses do **not** automatically get the new email: it appears unticked, so it is never copied to anyone
+  by accident. (An untouched deployment still copies its standing list on every copyable email, the new one
+  included -- that is what the environment list always did.)
+* `backend/scripts/smoke_email.py` copies nobody: a message built outside the outbox would otherwise carry the
+  environment's standing list, which administrators may have changed.
 
 ## Verification
 
-`backend/tests/test_email_management.py` (catalogue, defaults, change, validation, permissions, damaged rows, the
-provider, the real send path, the whole flow over HTTP) and
+`backend/tests/test_email_management.py` (catalogue, the registry -- a temporary email registered the way a
+developer would, manageable end to end and removed cleanly -- defaults, change, the version check, validation,
+permissions, damaged rows, the provider, the real send path, the whole flow over HTTP) and
 `frontend/src/features/admin/__tests__/emailManagement.test.tsx`. Not covered by an automated run: a real SMTP
 server and a real browser -- no email is sent by any test.

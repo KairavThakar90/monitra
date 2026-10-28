@@ -9,7 +9,7 @@ it, and otherwise it is not. Addresses can be added and removed.
 
 The policy is a list of ``{"email": ..., "triggers": [email keys]}``. The email keys
 are the outbox's ``notification_type`` values, listed in
-``app/core/email_catalogue.py`` -- the same fifteen emails the page shows.
+``app/core/email_catalogue.py`` -- the same emails the page shows.
 
 Where it is kept
 ----------------
@@ -55,7 +55,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.email_catalogue import CC_ALLOWED_KEYS, EMAIL_TRIGGERS, MAX_CC_ADDRESSES
+from app.core.email_catalogue import MAX_CC_ADDRESSES, cc_allowed_keys, email_triggers
 from app.core.permissions import resolve_role_alias
 from app.core.validation import InputValidationError, validate_email
 from app.models.activity_log import ActivityLogAction, ActivityLogModule
@@ -85,7 +85,7 @@ class EmailCcService:
     @staticmethod
     def cc_for(db: Session, notification_type: str) -> List[str]:
         """The addresses to copy on one email, in the policy's order. Never raises on a damaged row."""
-        if notification_type not in CC_ALLOWED_KEYS:
+        if notification_type not in cc_allowed_keys():
             return []
         policy = EmailCcService._policy(SystemSettingRepository.get(db, SystemSettingKey.EMAIL_CC))
         return [a["email"] for a in policy["addresses"] if notification_type in a["triggers"]]
@@ -103,6 +103,13 @@ class EmailCcService:
         EmailCcService._require_manage(current_user)
         setting = EmailCcService._locked_setting(db)
         before = EmailCcService._policy(setting)
+        if payload.version is not None and payload.version != before["version"]:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email management was changed by someone else since you opened it. "
+                       "Reload the page to see the current list, then make your change again.",
+            )
 
         after = [
             {"email": a.email, "triggers": EmailCcService._ordered(a.triggers)} for a in payload.addresses
@@ -173,7 +180,7 @@ class EmailCcService:
     def _ordered(keys: List[str]) -> List[str]:
         """Email keys in the catalogue's order, so equal policies compare equal."""
         wanted = set(keys)
-        return [key for key in CC_ALLOWED_KEYS if key in wanted]
+        return [key for key in cc_allowed_keys() if key in wanted]
 
     @staticmethod
     def _same(before: List[Dict[str, Any]], after: List[Dict[str, Any]]) -> bool:
@@ -182,7 +189,7 @@ class EmailCcService:
     @staticmethod
     def _default_addresses() -> List[Dict[str, Any]]:
         """The configured standing CC, each copied on every email that may be copied."""
-        return [{"email": email, "triggers": list(CC_ALLOWED_KEYS)} for email in standing_cc_addresses()]
+        return [{"email": email, "triggers": list(cc_allowed_keys())} for email in standing_cc_addresses()]
 
     @staticmethod
     def _policy(setting: Optional[SystemSetting]) -> Dict[str, Any]:
@@ -227,7 +234,7 @@ class EmailCcService:
                     "trigger": t.trigger, "cc_allowed": t.cc_allowed, "note": t.note,
                     "active": bool(getattr(settings, t.enabled_setting)) if t.enabled_setting else True,
                 }
-                for t in EMAIL_TRIGGERS
+                for t in email_triggers()
             ],
             "addresses": policy["addresses"],
             "max_addresses": MAX_CC_ADDRESSES,

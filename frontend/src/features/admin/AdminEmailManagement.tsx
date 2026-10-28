@@ -175,10 +175,18 @@ export const AdminEmailManagement: React.FC = () => {
   const submit = async () => {
     if (!dirty || saving) return;
     try {
-      await save({ addresses: toPayload(draft, order) }).unwrap();
+      // The version this grid was built from goes with the save: the server refuses
+      // (409) a save over a newer policy rather than silently discarding what
+      // another administrator saved in between.
+      await save({ addresses: toPayload(draft, order), version: data.version }).unwrap();
       showToast("Email management saved.", "success");
     } catch (exc) {
       showToast(formatApiError(errorData(exc), "Could not save email management."), "error");
+      if ((exc as { status?: unknown } | undefined)?.status === 409) {
+        // Someone else saved first: show what is now in force. The grid re-syncs
+        // from the server's version, so the unsaved ticks are dropped deliberately.
+        void query.refetch();
+      }
     }
   };
 

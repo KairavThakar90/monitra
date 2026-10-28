@@ -45,6 +45,8 @@ export interface EmailCcSettings {
 
 export interface EmailCcUpdate {
   addresses: EmailCcAddress[];
+  /** The `version` the grid was built from; the server answers 409 if it has moved. */
+  version?: number;
 }
 
 const QUERY = 'getEmailCc' as const;

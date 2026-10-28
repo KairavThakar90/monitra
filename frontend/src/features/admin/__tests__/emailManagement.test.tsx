@@ -224,7 +224,7 @@ describe('AdminEmailManagement', () => {
     expect(writes()).toEqual([{
       method: 'PUT',
       path: expect.stringMatching(/\/email-cc$/),
-      body: { addresses: [
+      body: { version: 2, addresses: [
         { email: 'hr@example.com', triggers: ['welcome'] },
         { email: 'boss@example.com', triggers: ['welcome', 'feedback'] },
       ] },
@@ -301,7 +301,7 @@ describe('AdminEmailManagement', () => {
 
     expect(cell('boss@example.com', 'Welcome')).toBeNull();
     await click(button('Save changes'));
-    expect(writes()[0].body).toEqual({ addresses: [{ email: 'hr@example.com', triggers: ['welcome', 'feedback'] }] });
+    expect(writes()[0].body).toEqual({ version: 2, addresses: [{ email: 'hr@example.com', triggers: ['welcome', 'feedback'] }] });
   });
 
   it('says nobody is copied when the list is emptied, and can still be saved', async () => {
@@ -313,7 +313,7 @@ describe('AdminEmailManagement', () => {
     expect(row('Welcome')).toBeTruthy();
     expect(row('Welcome')!.disabled).toBe(true);
     await click(button('Save changes'));
-    expect(writes()[0].body).toEqual({ addresses: [] });
+    expect(writes()[0].body).toEqual({ version: 2, addresses: [] });
   });
 
   it('puts the saved state back on Discard', async () => {
@@ -339,6 +339,26 @@ describe('AdminEmailManagement', () => {
     expect(showToast).toHaveBeenCalledWith('Each CC address may be listed once.', 'error');
     expect(ticked('boss@example.com', 'Welcome')).toBe(true);
     expect(button('Save changes')!.disabled).toBe(false);
+  });
+
+  it('sends the version it was built from, and reloads what is now in force when someone else saved first', async () => {
+    await mount();
+    await click(cell('boss@example.com', 'Welcome'));
+    // Another administrator saved meanwhile: the server refuses this save and the
+    // page shows their list, not the stale ticks.
+    state = { ...state, version: 3, addresses: [{ email: 'other@example.com', triggers: ['welcome'] }] };
+    refuseNext = { status: 409, detail: 'Email management was changed by someone else since you opened it.' };
+    await click(button('Save changes'));
+    await until(() => calls.filter((c) => c.method === 'GET').length >= 2);
+    await until(() => container.textContent!.includes('other@example.com'));
+
+    expect(writes()[0].body).toEqual({ version: 2, addresses: [
+      { email: 'hr@example.com', triggers: ['welcome', 'feedback'] },
+      { email: 'boss@example.com', triggers: ['welcome', 'feedback'] },
+    ] });
+    expect(showToast).toHaveBeenCalledWith('Email management was changed by someone else since you opened it.', 'error');
+    expect(container.textContent).not.toContain('boss@example.com');
+    expect(button('Save changes')!.disabled).toBe(true);
   });
 
   it('says plainly when nothing has been saved yet', async () => {
