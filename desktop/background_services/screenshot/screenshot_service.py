@@ -306,6 +306,9 @@ class ScreenshotService(BaseService):
         #: cover, uncovered.
         self._privacy_config_loaded = False
 
+        #: A "refresh now" that arrived while a refresh was in flight, to be made
+        #: when that one completes (see `refresh_config_now`).
+        self._config_refresh_again = False
         self._config_refresh_timer = QTimer(self)
         self._config_refresh_timer.setInterval(self.CONFIG_REFRESH_SECONDS * 1000)
         self._config_refresh_timer.timeout.connect(self._refresh_config)
@@ -640,8 +643,18 @@ class ScreenshotService(BaseService):
     @Slot()
     def refresh_config_now(self) -> None:
         """Re-read the configuration now (an administrator changed something, or the
-        network came back). GUI thread; the request is on the pool and de-duplicated."""
-        self._refresh_config()
+        network came back). GUI thread; the request is on the pool and de-duplicated.
+        A request the pool de-duplicates -- a refresh is already in flight -- is not
+        lost: it is made again the moment that refresh completes, so what the
+        administrator just changed is never left to the next three-minute timer."""
+        if self._refresh_config() is None:
+            self._config_refresh_again = True
+
+    def _config_refresh_done(self) -> None:
+        """A refresh completed (either way): make the one that was asked for meanwhile."""
+        if self._config_refresh_again:
+            self._config_refresh_again = False
+            self._refresh_config()
 
     def reset_session(self) -> None:
         """Sign-out: the privacy configuration (and the screens it excludes) is the
@@ -680,13 +693,14 @@ class ScreenshotService(BaseService):
             return self._capture_frequency_minutes * 60
         return config.window_seconds()
 
-    def _refresh_config(self) -> None:
-        """Re-read the capture interval and privacy config from the backend."""
+    def _refresh_config(self):
+        """Re-read the capture interval and privacy config from the backend.
+        Returns the pool handle, or None when nothing was submitted."""
         if self._screenshot_api is None:
-            return
+            return None
         tasks = getattr(self.runtime, "tasks", None)
         if tasks is None:
-            return
+            return None
 
         def _fetch_configs():
             cfg = self._screenshot_api.get_config()
@@ -719,13 +733,23 @@ class ScreenshotService(BaseService):
                 # every later successful refresh left capture held for good.
                 self._privacy_config_loaded = True
 
-        tasks.submit(
-            _fetch_configs,
-            on_success=on_success,
+        def on_error(exc: BaseException) -> None:
             # A failed refresh keeps the last known interval. Blanking a
             # valid local value because the network blipped is a
             # regression, not error handling.
-            on_error=lambda exc: self.log.info("screenshot config refresh failed: %s", exc),
+            self.log.info("screenshot config refresh failed: %s", exc)
+            self._config_refresh_done()
+
+        def on_success_then_again(results: Any) -> None:
+            try:
+                on_success(results)
+            finally:
+                self._config_refresh_done()
+
+        return tasks.submit(
+            _fetch_configs,
+            on_success=on_success_then_again,
+            on_error=on_error,
             key="screenshot-config",
         )
 

@@ -97,10 +97,10 @@ def test_a_configuration_change_that_concerns_this_desktop_fires_the_signal_once
     delay = service.tick()                  # fetch, listen: hears revision 7
     assert len(fired) == 1
     assert delay == service.EVENT_FETCH_DELAY_MS
-    assert not service._need_fetch, "the schedule's version did not move, so it is not fetched again"
-    service.tick()                          # a quiet listen
+    assert service._need_fetch, "the member's own switch rides on the schedule answer, so it is read again"
+    service.tick()                          # the fetch, and a quiet listen
     assert len(fired) == 1
-    assert len(api.fetches) == 1, "one schedule read for a configuration change, not one per event"
+    assert len(api.fetches) == 2
     assert service._stream_up, "a configuration event is progress, not the same version signalled twice"
     assert any("configuration revision 7 (concerns this desktop)" in m for m in logs.messages)
 
@@ -112,8 +112,9 @@ def test_a_configuration_change_for_someone_else_fires_nothing_but_is_still_prog
     api.scripts = [config_event(1, 7, False), config_event(1, 8, False), quiet]
 
     service.tick()                          # fetch; revision 7, not for us
-    service.tick()                          # fetch; revision 8, not for us -- same schedule version again
+    service.tick()                          # revision 8, not for us -- same schedule version again
     assert fired == []
+    assert len(api.fetches) == 1, "a change for someone else is not a schedule read on this desktop"
     assert service._stream_up and service._stream_failures == 0
     assert service._config_revision == 8
 
@@ -342,6 +343,96 @@ class TestTheScreenshotServiceRemembers:
         service = harness.module.ScreenshotService(harness.runtime, harness.cache, harness.api)
         service.refresh_config_now()
         assert [s["key"] for s in harness.runtime.tasks.submissions] == ["screenshot-config"]
+
+
+# ── A "refresh now" is never lost to a refresh already in flight ─────────────
+
+
+class HoldingTasks:
+    """A pool whose tasks complete only when the test says so, de-duplicating by key as the real one does."""
+
+    def __init__(self):
+        self.in_flight = {}
+        self.submitted = []
+
+    def submit(self, fn, on_success=None, on_error=None, key=None, **kwargs):
+        self.submitted.append(key)
+        if key in self.in_flight:
+            return None
+        self.in_flight[key] = (fn, on_success, on_error)
+        return object()
+
+    def complete(self, key, fail=False):
+        fn, on_success, on_error = self.in_flight.pop(key)
+        if fail:
+            on_error(RuntimeError("offline"))
+        else:
+            on_success(fn())
+
+
+class TestRefreshNowSurvivesAnInFlightRefresh:
+    def test_screenshot_configuration(self, qapp, cache, tmp_path, monkeypatch):
+        from tests.test_screenshot_settings import FakeScreenshotApi
+        from background_services.screenshot import screenshot_service as module
+        from core import paths
+
+        monkeypatch.setenv("MONITRA_DATA_DIR", str(tmp_path / "monitra"))
+        paths.reset_cache()
+        tasks = HoldingTasks()
+        runtime = SimpleNamespace(storage=cache.storage, timer=SimpleNamespace(active_session=lambda: None),
+                                  tasks=tasks, sync=SimpleNamespace(wake=lambda: None),
+                                  api_client=SimpleNamespace(access_token="token"),
+                                  session_manager=SimpleNamespace(user_info={"id": 9}))
+        api = FakeScreenshotApi()
+        service = module.ScreenshotService(runtime, cache, api)
+        try:
+            service._refresh_config()                       # the timer's own refresh, still running
+            api.config_answer = {"capture_frequency": 10, "screenshots_enabled": False}
+            service.refresh_config_now()                    # the administrator's change: de-duplicated
+            configs = lambda: [k for k in tasks.submitted if k == "screenshot-config"]  # noqa: E731
+            assert len(configs()) == 2
+            tasks.complete("screenshot-config")             # the running refresh lands
+            assert len(configs()) == 3, "re-issued the moment the running one completed"
+            tasks.complete("screenshot-config")
+            assert service._screenshots_are_enabled() is False
+            service.refresh_config_now()                    # nothing in flight: submitted at once, once
+            assert len(configs()) == 4
+            tasks.complete("screenshot-config", fail=True)  # nothing asked for meanwhile: no re-issue
+            assert len(configs()) == 4
+        finally:
+            paths.reset_cache()
+
+    def test_activity_configuration(self, qapp):
+        from background_services.activity.activity_service import ActivityService
+
+        tasks = HoldingTasks()
+        answers = {"activity_tracking_enabled": True}
+        api = SimpleNamespace(get_config=lambda: dict(answers))
+        runtime = SimpleNamespace(tasks=tasks, api_client=SimpleNamespace(access_token="token"),
+                                  session_manager=SimpleNamespace(user_info={}), storage=None, cache=None)
+        service = ActivityService(runtime, None, activity_api=api)
+        service._refresh_config()
+        answers["activity_tracking_enabled"] = False
+        service.refresh_config_now()
+        assert tasks.submitted == ["activity-config", "activity-config"]
+        tasks.complete("activity-config")
+        assert len(tasks.submitted) == 3
+        tasks.complete("activity-config")
+        assert service.tracking_enabled() is False
+
+    def test_idle_configuration(self, qapp):
+        from background_services.idle.idle_service import IdleService
+
+        tasks = HoldingTasks()
+        api = SimpleNamespace(get_config=lambda: {"idle_enabled": True, "idle_minutes": 7})
+        runtime = SimpleNamespace(tasks=tasks, api_client=SimpleNamespace(access_token="token"),
+                                  storage=None, cache=None, timer=SimpleNamespace(active_session=lambda: None))
+        service = IdleService(runtime, api)
+        service._refresh_config()
+        service.refresh_config_now()
+        assert tasks.submitted == ["idle-config", "idle-config"]
+        tasks.complete("idle-config", fail=True)
+        assert len(tasks.submitted) == 3, "re-issued after the in-flight one failed"
 
 
 # ── The Announcement card ───────────────────────────────────────────────────

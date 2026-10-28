@@ -440,10 +440,20 @@ class IdleService(LoopService):
         api_client = getattr(self.runtime, "api_client", None)
         if api_client is None or not getattr(api_client, "access_token", None):
             return
-        self._refresh_config()
+        # A request the pool de-duplicates (a refresh is in flight) is made again the
+        # moment that refresh completes, never left to the next three-minute timer.
+        if self._refresh_config() is None:
+            self._config_refresh_again = True
+
+    def _config_refresh_done(self) -> None:
+        """A refresh completed (either way): make the one that was asked for meanwhile."""
+        if getattr(self, "_config_refresh_again", False):
+            self._config_refresh_again = False
+            self._refresh_config()
 
     @Slot()
-    def _refresh_config(self) -> None:
+    def _refresh_config(self):
+        """Returns the pool handle, or None when nothing was submitted."""
         self._config_read_at = time.monotonic()
         epoch = self._epoch
 
@@ -457,13 +467,23 @@ class IdleService(LoopService):
                 )
                 self._config_loaded = True
 
-        self.runtime.tasks.submit(
-            self._api.get_config,
-            on_success=on_success,
+        def on_error(exc: BaseException) -> None:
             # A failed refresh keeps the last known configuration. Blanking a
             # valid local value because the network blipped is a regression,
             # not error handling.
-            on_error=lambda exc: self.log.info("idle config refresh failed: %s", exc),
+            self.log.info("idle config refresh failed: %s", exc)
+            self._config_refresh_done()
+
+        def on_success_then_again(config: Dict[str, Any]) -> None:
+            try:
+                on_success(config)
+            finally:
+                self._config_refresh_done()
+
+        return self.runtime.tasks.submit(
+            self._api.get_config,
+            on_success=on_success_then_again,
+            on_error=on_error,
             key="idle-config",
             guard_generation=False,
         )

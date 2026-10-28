@@ -453,13 +453,14 @@ class ActivityService(LoopService):
         self.tracking_enabled_changed.emit(value)
 
     @Slot()
-    def _refresh_config(self) -> None:
-        """Re-read the switch from the backend (GUI thread; the request is on the pool)."""
+    def _refresh_config(self):
+        """Re-read the switch from the backend (GUI thread; the request is on the pool).
+        Returns the pool handle, or None when nothing was submitted."""
         if self._activity_api is None:
-            return
+            return None
         tasks = getattr(self.runtime, "tasks", None)
         if tasks is None:
-            return
+            return None
 
         def on_success(config: Any) -> None:
             # A key the answer does not carry (a backend older than the switch)
@@ -476,15 +477,31 @@ class ActivityService(LoopService):
                     except Exception:  # noqa: BLE001
                         self.log.exception("could not remember the activity switch in the profile")
 
-        tasks.submit(
-            self._activity_api.get_config,
-            on_success=on_success,
+        def on_error(exc: BaseException) -> None:
             # A failed refresh keeps the last known setting. Blanking a valid
             # local value because the network blipped is a regression.
-            on_error=lambda exc: self.log.info("activity config refresh failed: %s", exc),
+            self.log.info("activity config refresh failed: %s", exc)
+            self._config_refresh_done()
+
+        def on_success_then_again(config: Any) -> None:
+            try:
+                on_success(config)
+            finally:
+                self._config_refresh_done()
+
+        return tasks.submit(
+            self._activity_api.get_config,
+            on_success=on_success_then_again,
+            on_error=on_error,
             key="activity-config",
             guard_generation=False,
         )
+
+    def _config_refresh_done(self) -> None:
+        """A refresh completed (either way): make the one that was asked for meanwhile."""
+        if getattr(self, "_config_refresh_again", False):
+            self._config_refresh_again = False
+            self._refresh_config()
 
     @Slot()
     def refresh_config_now(self) -> None:
@@ -494,7 +511,10 @@ class ActivityService(LoopService):
         if api_client is None or not getattr(api_client, "access_token", None):
             return
         self._config_read_at = time.monotonic()
-        self._refresh_config()
+        # A request the pool de-duplicates (a refresh is in flight) is made again the
+        # moment that refresh completes, never left to the next three-minute timer.
+        if self._refresh_config() is None:
+            self._config_refresh_again = True
 
     def _maybe_refresh_config(self) -> None:
         """Called from the loop's tick (its own thread): ask for a refresh when due."""
