@@ -82,6 +82,14 @@ class InputAccess(str, Enum):
     DENIED = "denied"
     RESTART_REQUIRED = "restart_required"
     UNAVAILABLE = "unavailable"
+    #: The listener is installed and reports success, yet the OS's own idle
+    #: clock says the user is producing input the listener is not receiving.
+    #: Decided by `ActivityService` from the per-window comparison, not by any
+    #: permission call: on macOS this is what a grant that is not in effect
+    #: for this build looks like (the tap is created, and hears only events
+    #: aimed at Monitra itself); on Windows, a low-level hook the system has
+    #: silently removed.
+    NOT_IN_EFFECT = "not_in_effect"
 
 
 @dataclass(frozen=True)
@@ -229,6 +237,25 @@ def guidance(state: InputAccess) -> Tuple[str, str]:
             "app once it has been reopened. Quit and reopen Monitra. Keyboard "
             "and mouse activity is not being measured until then; your timer is "
             "not affected.",
+        )
+    if state is InputAccess.NOT_IN_EFFECT:
+        if _is_macos():
+            return (
+                "Activity tracking is not receiving input",
+                "macOS reports keyboard and mouse activity that Monitra is not "
+                "receiving, so today's activity is being under-measured. Quit and "
+                "reopen Monitra. If this continues, open System Settings > Privacy "
+                "& Security > Input Monitoring, turn Monitra off and on again, then "
+                "reopen Monitra. Click here to open System Settings. Your timer is "
+                "not affected.",
+            )
+        return (
+            "Activity tracking is not receiving input",
+            "Windows reports keyboard and mouse activity that Monitra is not "
+            "receiving, so today's activity is being under-measured. Monitra has "
+            "restarted its input listener; if this continues, restart Monitra. "
+            "Input to programs running as administrator cannot be seen by "
+            "Monitra. Your timer is not affected.",
         )
     if state is InputAccess.UNAVAILABLE:
         return (

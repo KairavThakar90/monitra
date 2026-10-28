@@ -193,6 +193,17 @@ class InputEventCounter:
         self._supported: Optional[bool] = None  # unknown until first start()
         #: Why the last start() failed, or None after a success.
         self._failure: Optional[str] = None
+        #: Diagnostics: raw callbacks received since the listener was started,
+        #: before any counting rule (auto-repeat, chord) is applied. Together
+        #: with the counted totals this tells "the OS delivered nothing" from
+        #: "the OS delivered events and the counter discarded them". Integers
+        #: only; what the event was is never kept.
+        self._received: Dict[str, int] = self._fresh_received()
+        self._restarts = 0
+
+    @staticmethod
+    def _fresh_received() -> Dict[str, int]:
+        return {"key_down": 0, "key_up": 0, "click": 0, "scroll": 0, "move": 0}
 
     # ── Press bookkeeping (called with the lock held) ─────────────────────────
 
@@ -256,15 +267,18 @@ class InputEventCounter:
     def _on_press(self, key) -> None:
         now = time.monotonic()
         with self._lock:
+            self._received["key_down"] += 1
             self._press_locked(_key_identity(key), _normalize_key(key), now)
 
     def _on_release(self, key) -> None:
         with self._lock:
+            self._received["key_up"] += 1
             self._release_locked(_key_identity(key))
 
     def _on_click(self, x, y, button, pressed) -> None:
         if pressed:
             with self._lock:
+                self._received["click"] += 1
                 self._clicks += 1
                 # CTRL+click is how a link is opened in a background tab.
                 self._mark_chorded_locked(exclude=None)
@@ -278,10 +292,12 @@ class InputEventCounter:
         would change a stored measurement's meaning as a side effect.
         """
         with self._lock:
+            self._received["scroll"] += 1
             self._mark_chorded_locked(exclude=None)
 
     def _on_move(self, x, y) -> None:
         with self._lock:
+            self._received["move"] += 1
             self._movements += 1
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -305,22 +321,45 @@ class InputEventCounter:
 
     def diagnostics(self) -> Dict[str, object]:
         """What the counting backend can say about its own health. Counts
-        only, never content; for the activity service's diagnostic lines."""
+        only, never content; for the activity service's diagnostic lines.
+
+        `received` is every callback the listener delivered since it was
+        started (auto-repeats and chords included); the counted totals the
+        service keeps are what survived the counting rules. The gap between
+        the two is the counting logic; a `received` of zero is the OS.
+        """
+        with self._lock:
+            received = dict(self._received)
         out: Dict[str, object] = {
             "platform": sys.platform,
             "counting": self.counting,
             "failure": self._failure,
+            "received": received,
+            "restarts": self._restarts,
         }
         if self._mac_tap is not None:
             try:
                 out.update(self._mac_tap.diagnostics())
             except Exception:  # noqa: BLE001
                 pass
-        if sys.platform == "darwin":
-            from background_services.activity.mac_input_tap import system_idle_seconds
-
-            out["os_idle_seconds"] = system_idle_seconds()
         return out
+
+    def restart(self) -> bool:
+        """
+        Tear the listener down and install it again. Returns `start()`'s answer.
+
+        The recovery for a listener that is installed but no longer hearing
+        what the OS reports: Windows silently removes a low-level hook whose
+        callback has been too slow too often, and a Quartz tap can be left
+        disabled. Stopping first is what makes this safe -- there is never a
+        moment with two listeners, so a restart can never double-count. The
+        `received` counters start over with the new listener.
+        """
+        self.stop()
+        self._restarts += 1
+        with self._lock:
+            self._received = self._fresh_received()
+        return self.start()
 
     def start(self) -> bool:
         """Start counting. Returns True when input events are being counted.
@@ -451,8 +490,10 @@ class InputEventCounter:
         now = time.monotonic()
         with self._lock:
             if not pressed:
+                self._received["key_up"] += 1
                 self._release_locked(identity)
                 return
+            self._received["key_down"] += 1
             self._press_locked(identity, name, now)
 
     def stop(self) -> None:

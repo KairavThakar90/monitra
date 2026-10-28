@@ -36,9 +36,32 @@ owner of input counting, and this is not it.
 The hook thread went with them. It could not be stopped -- `stop()` cleared a
 flag that a thread parked in `GetMessageW` never got to read -- so it ran for
 the life of the process, servicing hooks that did not exist.
+
+macOS
+-----
+The same question has a permission-free answer on macOS:
+`CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateHIDSystemState,
+kCGAnyInputEventType)` is the window server's own "seconds since any HID
+event" clock, readable by any process -- no Input Monitoring, no event tap.
+That makes it the one thing on a Mac that can say whether the user was there
+*independently of the tap*: when the tap counted nothing, or next to nothing,
+while this clock kept resetting, the user was working and the listener was
+deaf (a permission not in effect for this build, secure keyboard entry, a tap
+the system disabled). `ActivityService` relies on exactly that comparison.
+
+Two safeguards, because this reading was never confirmed on real hardware
+from this machine: the clock is trusted only once it has been seen to climb
+past `MAC_CLOCK_TRUST_SECONDS` (a clock stuck at zero would call every second
+"present"), and idle *detection* on macOS stays off unless
+`MONITRA_MAC_IDLE_DETECTION=1` -- turning idle popups on for every Mac user
+is a product decision, not a side effect of a diagnostic. Presence sampling
+(`active_seconds`, the deaf-listener check) uses the reading as soon as it is
+trusted.
 """
 from __future__ import annotations
 
+import math
+import os
 import sys
 from typing import Optional, Tuple, Dict, Any
 
@@ -47,6 +70,16 @@ from core.logging_setup import get_logger
 log = get_logger("activity.probe")
 
 _IS_WINDOWS = sys.platform == "win32"
+_IS_MACOS = sys.platform == "darwin"
+
+#: Environment switch that lets `idle_seconds()` answer on macOS, i.e. turns
+#: idle detection on there. Off by default: see the module docstring.
+MAC_IDLE_DETECTION_ENV = "MONITRA_MAC_IDLE_DETECTION"
+
+#: The macOS idle clock is believed only after one reading at least this
+#: large: a clock that never climbs is broken, and a broken clock reading zero
+#: would mark every second as present and every listener as deaf.
+MAC_CLOCK_TRUST_SECONDS = 5.0
 
 if _IS_WINDOWS:  # pragma: no cover - platform specific
     import ctypes
@@ -62,11 +95,41 @@ if _IS_WINDOWS:  # pragma: no cover - platform specific
     _kernel32 = ctypes.windll.kernel32
 
 
+def _is_macos() -> bool:
+    """A function so a test can stand in for the platform."""
+    return _IS_MACOS
+
+
+def mac_idle_detection_enabled() -> bool:
+    return os.getenv(MAC_IDLE_DETECTION_ENV, "0") == "1"
+
+
+def _mac_last_input_age() -> float:
+    """Seconds since the last HID event the window server saw. Raises on failure."""
+    from Quartz import (  # type: ignore
+        CGEventSourceSecondsSinceLastEventType, kCGAnyInputEventType,
+        kCGEventSourceStateHIDSystemState,
+    )
+
+    return float(
+        CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateHIDSystemState, kCGAnyInputEventType)
+    )
+
+
+def _mac_cursor_position() -> Tuple[int, int]:
+    """The pointer's location, through CoreGraphics (thread-safe; no AppKit)."""
+    from Quartz import CGEventCreate, CGEventGetLocation  # type: ignore
+
+    event = CGEventCreate(None)
+    location = CGEventGetLocation(event)
+    return int(location.x), int(location.y)
+
+
 class InputProbe:
     """Samples whether the user was present, never how much they did."""
 
     def __init__(self) -> None:
-        self._supported = _IS_WINDOWS
+        self._supported = _IS_WINDOWS or _is_macos()
         self._last_cursor: Optional[Tuple[int, int]] = None
         #: Why the last reading was unavailable, and how many in a row have
         #: been. A reading that fails is `None` to the caller; this is how an
@@ -75,6 +138,10 @@ class InputProbe:
         self._failure_reason: Optional[str] = None
         self._consecutive_failures = 0
         self._total_failures = 0
+        #: macOS: the largest reading seen, and whether the clock has proved
+        #: itself live (see `MAC_CLOCK_TRUST_SECONDS`).
+        self._mac_clock_max = 0.0
+        self._mac_clock_trusted = False
 
         if not self._supported:
             log.warning(
@@ -86,6 +153,14 @@ class InputProbe:
     @property
     def supported(self) -> bool:
         return self._supported
+
+    @property
+    def presence_ready(self) -> bool:
+        """Whether `sample()` can answer right now: supported, and on macOS
+        the idle clock has been seen to run."""
+        if not self._supported:
+            return False
+        return self._mac_clock_trusted if _is_macos() else True
 
     def idle_seconds(self) -> Optional[float]:
         """Seconds since the last system-wide keyboard or mouse input.
@@ -99,7 +174,27 @@ class InputProbe:
         feed the activity percentage are already the one place system input is
         observed, and a second global listener for the same events would be a
         duplicate capture path.
+
+        On macOS it answers only with `MONITRA_MAC_IDLE_DETECTION=1` and once
+        the clock is trusted; otherwise None, with the reason in
+        `diagnostics()`. Presence sampling does not go through here.
         """
+        if _is_macos():
+            if not mac_idle_detection_enabled():
+                self._failure_reason = (
+                    f"macos_idle_detection_disabled (set {MAC_IDLE_DETECTION_ENV}=1 to enable)"
+                )
+                return None
+            if not self._mac_clock_trusted:
+                self._idle_seconds()  # keep testing the clock
+                if not self._mac_clock_trusted:
+                    self._failure_reason = self._failure_reason or "macos_idle_clock_not_yet_trusted"
+                    return None
+        return self._idle_seconds()
+
+    def last_input_age(self) -> Optional[float]:
+        """The raw reading, for presence and diagnostics, wherever the platform
+        has one. Not gated by the macOS idle-detection switch."""
         return self._idle_seconds()
 
     def _idle_seconds(self) -> Optional[float]:
@@ -107,6 +202,8 @@ class InputProbe:
         if not self._supported:
             self._failure_reason = f"unsupported_platform:{sys.platform}"
             return None
+        if _is_macos():
+            return self._mac_idle_seconds()
         try:  # pragma: no cover - platform specific
             info = _LASTINPUTINFO()
             info.cbSize = ctypes.sizeof(_LASTINPUTINFO)
@@ -122,6 +219,27 @@ class InputProbe:
         self._failure_reason = None
         return reading
 
+    def _mac_idle_seconds(self) -> Optional[float]:
+        try:
+            reading = _mac_last_input_age()
+        except Exception as exc:  # noqa: BLE001 - Quartz missing, or the call failed
+            self._note_failure(f"{type(exc).__name__}: {exc}")
+            return None
+        if not math.isfinite(reading) or reading < 0:
+            self._note_failure(f"CGEventSourceSecondsSinceLastEventType returned {reading!r}")
+            return None
+        self._consecutive_failures = 0
+        self._failure_reason = None
+        if reading > self._mac_clock_max:
+            self._mac_clock_max = reading
+        if not self._mac_clock_trusted and reading >= MAC_CLOCK_TRUST_SECONDS:
+            self._mac_clock_trusted = True
+            log.info(
+                "macOS idle clock confirmed live (read %.1fs); presence sampling is on",
+                reading,
+            )
+        return reading
+
     def _note_failure(self, reason: str) -> None:
         self._failure_reason = reason
         self._consecutive_failures += 1
@@ -129,22 +247,30 @@ class InputProbe:
 
     def diagnostics(self) -> Dict[str, Any]:
         """What this probe can say about its own health. No user content."""
-        return {
+        out = {
             "supported": self._supported,
             "platform": sys.platform,
             "failure_reason": self._failure_reason,
             "consecutive_failures": self._consecutive_failures,
             "total_failures": self._total_failures,
         }
+        if _is_macos():
+            out["mac_clock_trusted"] = self._mac_clock_trusted
+            out["mac_clock_max_seconds"] = round(self._mac_clock_max, 1)
+            out["mac_idle_detection"] = mac_idle_detection_enabled()
+        return out
 
     def _cursor_moved(self) -> bool:
         if not self._supported:
             return False
         try:  # pragma: no cover - platform specific
-            point = _POINT()
-            if not _user32.GetCursorPos(ctypes.byref(point)):
-                return False
-            position = (point.x, point.y)
+            if _is_macos():
+                position = _mac_cursor_position()
+            else:
+                point = _POINT()
+                if not _user32.GetCursorPos(ctypes.byref(point)):
+                    return False
+                position = (point.x, point.y)
             moved = self._last_cursor is not None and position != self._last_cursor
             self._last_cursor = position
             return moved
@@ -169,6 +295,9 @@ class InputProbe:
             return None
 
         idle = self._idle_seconds()
+        if _is_macos() and not self._mac_clock_trusted:
+            # Not yet shown to be a live clock: "unknown", never "present".
+            return None
         moved = self._cursor_moved()
         return {
             "active": (idle is not None and idle < window_seconds) or moved,

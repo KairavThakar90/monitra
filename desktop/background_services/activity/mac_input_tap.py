@@ -141,36 +141,6 @@ def unresolvable_watch_keys(watch_keys) -> set:
     return {key for key in watch_keys if key not in RELEASABLE_KEY_NAMES}
 
 
-def system_idle_seconds() -> Optional[float]:
-    """
-    Seconds since the last keyboard or mouse event the OS saw. **Log-only.**
-
-    `CGEventSourceSecondsSinceLastEventType` reads the window server's own idle
-    clock and needs no Input Monitoring permission, which is exactly what
-    makes it useful here: when the tap has counted nothing for a whole window,
-    this says whether the user was in fact idle (a large value) or whether the
-    user was working and the tap was deaf to it (a small value) -- secure
-    input, a permission that is not in effect, a tap the system disabled.
-    That distinction cannot be made from the counts alone.
-
-    It feeds a diagnostic line and nothing else: not `active_seconds`, not the
-    percentage, not idle detection. None where it cannot be read. Never
-    raises.
-    """
-    try:
-        from Quartz import (
-            CGEventSourceSecondsSinceLastEventType, kCGAnyInputEventType,
-            kCGEventSourceStateHIDSystemState,
-        )
-
-        value = CGEventSourceSecondsSinceLastEventType(
-            kCGEventSourceStateHIDSystemState, kCGAnyInputEventType
-        )
-        return float(value) if value is not None else None
-    except Exception:  # noqa: BLE001 - a diagnostic must never fail the caller
-        return None
-
-
 class MacInputTap:
     """
     A listen-only Quartz event tap that reports counted events via callbacks.

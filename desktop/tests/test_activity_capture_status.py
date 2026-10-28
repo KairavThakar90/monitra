@@ -45,13 +45,15 @@ def _service(*, counter_ok: bool, failure, probe_sample):
     counter.snapshot_and_reset.return_value = _counts()
     counter.drain_watched_presses.return_value = {}
     counter.diagnostics.return_value = {
-        "installed": counter_ok, "events_seen": 0, "re_enabled": 0, "os_idle_seconds": 3.0,
+        "installed": counter_ok, "events_seen": 0, "re_enabled": 0,
     }
     service._counter = counter
     probe = MagicMock()
     probe.supported = probe_sample is not None
     probe.sample.return_value = probe_sample
     probe.idle_seconds.return_value = None
+    probe.last_input_age.return_value = 3.0
+    probe.diagnostics.return_value = {"supported": probe.supported}
     service._probe = probe
     service.log = MagicMock()
     service.changes = []

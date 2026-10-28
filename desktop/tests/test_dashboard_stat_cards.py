@@ -338,3 +338,23 @@ def test_an_unknown_blocked_state_still_reads_as_a_capture_problem(dashboard, mo
     dashboard._update_stat_cards()
 
     assert dashboard._stat_cards.activity_card._sub.full_text() == "Capture unavailable"
+
+
+def test_a_listener_that_is_installed_but_deaf_reads_as_not_receiving_input(dashboard, monkeypatch):
+    """The October shape: the listener is running, the OS reports input it is
+    not delivered, and a figure still exists. The figure stays and the
+    reason sits beneath it."""
+    from background_services.public_api import TodaySnapshot
+    from background_services.activity.today_summary import totals_from_percent
+
+    dashboard._on_today_activity_loaded(
+        TodaySnapshot(totals=totals_from_percent(3, 7200), remote_ok=True)
+    )
+    monkeypatch.setattr(dashboard.api, "is_timer_running", lambda: True)
+    monkeypatch.setattr(dashboard.api, "activity_capture_status", _blocked("not_in_effect"))
+
+    dashboard._update_stat_cards()
+
+    card = dashboard._stat_cards.activity_card
+    assert card._value.full_text() == "3%"
+    assert card._sub.full_text() == "Not receiving input"

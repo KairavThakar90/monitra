@@ -22,6 +22,19 @@ re-grant a permission.
 
 ### Fixed
 
+- **Today's Activity no longer reads a quiet day when the keyboard/mouse listener
+  has stopped hearing you.** On a Mac whose Input Monitoring permission is not in
+  effect for the installed build, or on Windows when the system has dropped the input
+  hook, Monitra was still recording every minute as almost no activity. It now checks
+  each minute against the operating system's own "last input" clock, restarts the
+  listener once, and then says **Not receiving input** on the card and in a
+  notification with what to do, instead of recording a low day. Nothing is added to
+  your activity; only the explanation is.
+- **On macOS, Space, Enter, Tab, Backspace, Escape and the arrow keys now count on
+  every press.** Each used to count once per minute, which read a Mac typist as less
+  active than a Windows one doing the same work. A missing Input Monitoring
+  permission is also named on the card ("Needs Input Monitoring") rather than shown
+  as "Not tracking yet".
 - **The idle-time prompt no longer stays on "Confirming with the server…" with every
   answer greyed out.** After a crash, a sleep or a lost connection, Monitra shows the
   prompt before the server has confirmed the gap. Once the server did confirm it, the

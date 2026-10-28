@@ -560,7 +560,26 @@ one number, and must never be summed:
   tallies behind a second pair of Win32 hooks, which `ActivityService` added
   to the counter's. See DO_NOT_DO.md — the hooks never installed, so the
   tallies were a permanent zero and the `keyboard` flag built on them had
-  degenerated into "present and the cursor did not move".
+  degenerated into "present and the cursor did not move". On macOS the same
+  question is answered by the window server's own HID idle clock
+  (`CGEventSourceSecondsSinceLastEventType`, no permission, no tap), believed
+  only once it has been seen to climb past `MAC_CLOCK_TRUST_SECONDS`; idle
+  *detection* on macOS stays off unless `MONITRA_MAC_IDLE_DETECTION=1`, because
+  turning idle popups on for every Mac user is a product decision.
+- **The deaf-listener check** (`ActivityService._check_listener_hearing`): per
+  window, the seconds in which the probe said the OS saw input (`os_active`)
+  against the seconds in which the counter heard anything (`heard`). A window
+  with `os_active >= 15` and `heard <= 20%` of it is a listener that is
+  installed and not receiving -- on a Mac, an Input Monitoring grant that is
+  not in effect for this build (the tap is created and hears only events aimed
+  at Monitra itself); on Windows, a low-level hook the system silently removed.
+  The first such window restarts the listener (`InputEventCounter.restart`,
+  old one gone before the new one exists, so never a double count); the second
+  names the state `not_in_effect` to the user, with platform-specific advice;
+  a window heard normally clears it. The window is recorded as measured either
+  way -- nothing is invented to fill the gap. `ACTIVITY_LISTENER_DEAF`,
+  `ACTIVITY_LISTENER_RESTARTED` and `ACTIVITY_LISTENER_HEARING` are the log
+  record; every `activity window:` line carries `os_active` and `heard`.
 - **InputEventCounter** (`input_counter.py`): the single source of
   keystroke/click/movement counts, feeding the backend's
   `keyboard_strokes`/`mouse_clicks`/`mouse_movements` columns, the activity

@@ -559,15 +559,3 @@ def test_diagnostics_count_events_and_re_enables(tap, quartz):
     assert diag["events_seen"] == 3
     assert diag["re_enabled"] == 1
     assert set(diag) == {"installed", "failure", "thread_alive", "events_seen", "re_enabled"}
-
-
-def test_the_os_idle_clock_is_log_only_and_never_raises(monkeypatch):
-    monkeypatch.setitem(sys.modules, "Quartz", None)
-    assert mac_input_tap.system_idle_seconds() is None
-
-    fake = _FakeQuartz()
-    fake.kCGEventSourceStateHIDSystemState = 1
-    fake.kCGAnyInputEventType = 0xFFFFFFFF
-    fake.CGEventSourceSecondsSinceLastEventType = lambda state, kind: 12.5
-    monkeypatch.setitem(sys.modules, "Quartz", fake)
-    assert mac_input_tap.system_idle_seconds() == 12.5

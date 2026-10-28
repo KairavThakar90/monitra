@@ -81,7 +81,13 @@ switch is (`activity/input_access.py`), the TODAY'S ACTIVITY card says "Needs
 Input Monitoring" while the timer runs, the counter is retried every minute,
 and unwanted-activity detection stays quiet; nothing crashes. A permission
 granted after launch may need Monitra to be quit and reopened before macOS
-applies it ("Restart Monitra to resume"). The listeners only run while a timer is actively tracking,
+applies it ("Restart Monitra to resume"). A grant that is not in effect for the
+running build (macOS keys it to the bundle's signature, so a re-signed build is
+a new app) leaves the tap installed but deaf to other applications; Monitra
+notices this by comparing against the OS's own idle clock, restarts the
+listener once, and then says "Not receiving input" on the card and in a
+notification. Idle *detection* on macOS is off by default; set
+`MONITRA_MAC_IDLE_DETECTION=1` to turn it on (unverified on real hardware). The listeners only run while a timer is actively tracking,
 and only aggregate counts (plus tallies for the handful of rule keys, e.g.
 CTRL) ever leave the input callbacks — what was typed is never stored or
 transmitted.

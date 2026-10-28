@@ -168,6 +168,22 @@ class ActivityService(LoopService):
     #: idle user or a listener that has gone deaf, and the line carries what
     #: is needed to tell which.
     SILENT_WINDOW_MIN_SECONDS = 30
+    #: The deaf-listener check. Every sampled second the presence probe (the
+    #: OS's own idle clock: `GetLastInputInfo`, or on macOS the window server's
+    #: HID clock, neither of which needs a permission or a hook) says whether
+    #: the user produced input, and the counter says whether it heard any.
+    #: A window in which the OS saw input for at least DEAF_MIN_OS_ACTIVE_SECONDS
+    #: and the counter heard something in no more than DEAF_HEARD_FRACTION of
+    #: those seconds is a listener that is installed but not receiving: a Mac
+    #: whose Input Monitoring grant is not in effect for this build hears only
+    #: events aimed at Monitra itself, and Windows silently removes a slow
+    #: low-level hook. The first such window restarts the listener; from
+    #: DEAF_WINDOWS_BEFORE_NOTICE consecutive windows on, the state is named to
+    #: the user as `not_in_effect`. A window with little OS input proves
+    #: nothing either way and leaves the state as it was.
+    DEAF_MIN_OS_ACTIVE_SECONDS = 15
+    DEAF_HEARD_FRACTION = 0.2
+    DEAF_WINDOWS_BEFORE_NOTICE = 2
 
     def __init__(self, runtime, cache, activity_api=None, parent=None) -> None:
         super().__init__(runtime, parent)
@@ -215,6 +231,12 @@ class ActivityService(LoopService):
         #: Consecutive flushed windows with no counted event while counting
         #: was on. Drives the rate of `ACTIVITY_CAPTURE_SILENT` lines.
         self._silent_windows = 0
+        #: Per window: seconds in which the OS reported input (probe), and
+        #: seconds in which the counter heard any event. Their ratio is the
+        #: deaf-listener check; `_deaf_windows` is the consecutive run.
+        self._os_active = 0
+        self._heard = 0
+        self._deaf_windows = 0
 
     @property
     def supported(self) -> bool:
@@ -295,6 +317,8 @@ class ActivityService(LoopService):
         self._keyboard_strokes = 0
         self._mouse_clicks = 0
         self._mouse_movements = 0
+        self._os_active = 0
+        self._heard = 0
 
     def _flush_window(self) -> None:
         """Write the sampled window to the local queue and start a new one.
@@ -358,14 +382,81 @@ class ActivityService(LoopService):
             self.log.exception("could not persist activity window")
         else:
             self.log.info(
-                "activity window: %d/%ds active (%d%%, keys=%d, clicks=%d, moves=%d) for entry %s",
+                "activity window: %d/%ds active (%d%%, keys=%d, clicks=%d, moves=%d, "
+                "os_active=%d, heard=%d) for entry %s",
                 self._active, self._sampled, act_percent,
                 self._keyboard_strokes, self._mouse_clicks, self._mouse_movements,
-                self._entry_id,
+                self._os_active, self._heard, self._entry_id,
             )
             self._diagnose_window()
+            self._check_listener_hearing()
             self.activity_window_recorded.emit(record)
         self._reset_window()
+
+    def _check_listener_hearing(self) -> None:
+        """
+        Is the listener receiving what the OS says the user is producing?
+
+        Zero or near-zero counts beside an OS idle clock that kept resetting is
+        a listener that is installed and deaf, and it is the one failure the
+        counts alone can never reveal: the window is recorded, uploaded and
+        averaged like any other, and the day reads as a quiet one. The October
+        evidence had exactly that shape -- tens of keystrokes and a few thousand
+        pointer events over a working day, about what a person sends to
+        Monitra's own window, against half a million on a day the listener
+        heard everything.
+
+        The first deaf window restarts the listener (Windows: a fresh hook; the
+        counter guarantees the old one is gone before the new one exists, so
+        nothing is counted twice). From the second consecutive deaf window the
+        state is named to the user as `not_in_effect`, with platform-specific
+        advice, and cleared the moment a window is heard normally again. The
+        window that was measured is recorded exactly as measured, either way.
+        """
+        if not self._counter.counting:
+            return
+        if self._os_active < self.DEAF_MIN_OS_ACTIVE_SECONDS:
+            return  # too little OS input to judge by; the state stands
+        deaf = self._heard <= self.DEAF_HEARD_FRACTION * self._os_active
+        if not deaf:
+            if self._deaf_windows:
+                self.log.info(
+                    "ACTIVITY_LISTENER_HEARING again after %d deaf window(s): "
+                    "os_active=%d heard=%d", self._deaf_windows, self._os_active, self._heard,
+                )
+            self._deaf_windows = 0
+            if self._capture_blocked == input_access.InputAccess.NOT_IN_EFFECT.value:
+                self._on_capture_restored()
+            return
+
+        self._deaf_windows += 1
+        try:
+            diag = dict(self._counter.diagnostics())
+        except Exception:  # noqa: BLE001
+            diag = {}
+        self.log.warning(
+            "ACTIVITY_LISTENER_DEAF windows=%d window_seconds=%d os_active=%d heard=%d "
+            "keys=%d clicks=%d moves=%d counter=%s probe=%s; the OS reported input the "
+            "listener did not receive",
+            self._deaf_windows, self._sampled, self._os_active, self._heard,
+            self._keyboard_strokes, self._mouse_clicks, self._mouse_movements,
+            diag, self._probe.diagnostics(),
+        )
+        if self._deaf_windows == 1:
+            restarted = self._counter.restart()
+            self.log.warning(
+                "ACTIVITY_LISTENER_RESTARTED ok=%s; a listener that no longer hears "
+                "the OS is replaced before it is reported", restarted,
+            )
+            if not restarted:
+                self._evaluate_capture(False)
+            return
+        if self._deaf_windows >= self.DEAF_WINDOWS_BEFORE_NOTICE:
+            self._on_capture_blocked(input_access.InputAccessStatus(
+                input_access.InputAccess.NOT_IN_EFFECT,
+                f"{self._deaf_windows} consecutive windows heard <= "
+                f"{int(self.DEAF_HEARD_FRACTION * 100)}% of the seconds the OS reported input",
+            ))
 
     def _diagnose_window(self) -> None:
         """
@@ -398,16 +489,18 @@ class ActivityService(LoopService):
             diag = dict(self._counter.diagnostics())
         except Exception:  # noqa: BLE001
             diag = {}
-        idle = diag.pop("os_idle_seconds", None)
-        if idle is None:
-            idle = self._probe.idle_seconds()
+        try:
+            idle = self._probe.last_input_age()
+            idle_text = f"{float(idle):.0f}" if idle is not None else "n/a"
+        except Exception:  # noqa: BLE001 - a diagnostic never fails the window
+            idle_text = "n/a"
         self.log.warning(
             "ACTIVITY_CAPTURE_SILENT windows=%d window_seconds=%d probe_active_seconds=%d "
-            "os_idle_seconds=%s counter=%s; zero keyboard/mouse events were counted "
-            "while counting is on (a small os_idle_seconds here means the user was "
-            "active and the listener did not hear it)",
-            self._silent_windows, self._sampled, self._active,
-            "n/a" if idle is None else f"{idle:.0f}", diag,
+            "os_active=%d os_idle_seconds=%s counter=%s; zero keyboard/mouse events were "
+            "counted while counting is on (os_active > 0 or a small os_idle_seconds here "
+            "means the user was active and the listener did not hear it)",
+            self._silent_windows, self._sampled, self._active, self._os_active,
+            idle_text, diag,
         )
 
     # ── The member's switch (User Management) ──────────────────────────────────
@@ -561,6 +654,7 @@ class ActivityService(LoopService):
         self._reset_window()
         self._held_events = []
         self._silent_windows = 0
+        self._deaf_windows = 0
         self._monitor.start_session()
         counting = self._counter.start()
         self._evaluate_capture(counting)
@@ -590,16 +684,24 @@ class ActivityService(LoopService):
         self._capture_blocked = status.state.value
         self._capture_detail = status.detail
         self.log.warning(
-            "ACTIVITY_CAPTURE_BLOCKED state=%s detail=%s platform=%s; no keyboard/"
-            "mouse activity is being measured and no window is recorded until "
-            "counting starts (retried every %ds while the timer runs)",
-            status.state.value, status.detail, sys.platform, self.CAPTURE_RETRY_SECONDS,
+            "ACTIVITY_CAPTURE_BLOCKED state=%s detail=%s platform=%s; keyboard/mouse "
+            "activity is not being measured as the OS reports it%s",
+            status.state.value, status.detail, sys.platform,
+            (
+                " (the listener is installed; windows are recorded as heard)"
+                if status.state is input_access.InputAccess.NOT_IN_EFFECT
+                else f" and no window is recorded until counting starts (retried every "
+                     f"{self.CAPTURE_RETRY_SECONDS}s while the timer runs)"
+            ),
         )
         if status.state is input_access.InputAccess.DENIED:
             # The supported way to put Monitra in the Input Monitoring list
             # and in front of the user. Grants nothing by itself.
             input_access.request_input_access()
         title, message = input_access.guidance(status.state)
+        settings_states = (
+            input_access.InputAccess.DENIED, input_access.InputAccess.NOT_IN_EFFECT,
+        )
         notifications = getattr(self.runtime, "notifications", None)
         if notifications is not None:
             try:
@@ -608,7 +710,8 @@ class ActivityService(LoopService):
                     key=f"activity-capture:{status.state.value}",
                     link=(
                         input_access.SETTINGS_URL
-                        if status.state is input_access.InputAccess.DENIED else None
+                        if status.state in settings_states and input_access.required()
+                        else None
                     ),
                 )
             except Exception:  # noqa: BLE001
@@ -788,6 +891,12 @@ class ActivityService(LoopService):
             if not self._counter.supported:
                 return self.SAMPLE_INTERVAL_MS
             sample = {"active": counted_any, "mouse": counts["movements"] > 0}
+        elif sample.get("active"):
+            # The OS itself saw input this second -- independently of the
+            # listener. Compared against `_heard` at the window's end.
+            self._os_active += 1
+        if counted_any:
+            self._heard += 1
 
         self._sampled += 1
         if sample.get("active") or counted_any:

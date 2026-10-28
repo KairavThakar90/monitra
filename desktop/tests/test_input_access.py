@@ -139,5 +139,23 @@ def test_the_settings_link_opens_the_input_monitoring_pane():
 def test_only_a_running_counter_is_allowed():
     assert input_access.InputAccessStatus(InputAccess.NOT_REQUIRED).allowed
     assert input_access.InputAccessStatus(InputAccess.GRANTED).allowed
-    for state in (InputAccess.DENIED, InputAccess.RESTART_REQUIRED, InputAccess.UNAVAILABLE):
+    for state in (
+        InputAccess.DENIED, InputAccess.RESTART_REQUIRED, InputAccess.UNAVAILABLE,
+        InputAccess.NOT_IN_EFFECT,
+    ):
         assert not input_access.InputAccessStatus(state).allowed
+
+
+def test_not_in_effect_guidance_is_platform_specific(macos, monkeypatch):
+    """A listener that is installed and deaf has a different remedy on each
+    platform: on a Mac the grant is the suspect; on Windows a restart, and
+    the administrator-window limitation is named rather than hidden."""
+    title, message = input_access.guidance(InputAccess.NOT_IN_EFFECT)
+    assert "not receiving" in title
+    assert "Input Monitoring" in message and "reopen" in message
+
+    monkeypatch.setattr(input_access, "_is_macos", lambda: False)
+    title, message = input_access.guidance(InputAccess.NOT_IN_EFFECT)
+    assert "not receiving" in title
+    assert "administrator" in message
+    assert "System Settings" not in message

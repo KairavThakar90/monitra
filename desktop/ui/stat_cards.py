@@ -43,6 +43,7 @@ _fmt = format_hms
 _CAPTURE_BLOCKED_TEXT = {
     "denied": "Needs Input Monitoring",
     "restart_required": "Restart Monitra to resume",
+    "not_in_effect": "Not receiving input",
     "unavailable": "Capture unavailable",
 }
 

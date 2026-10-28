@@ -806,6 +806,28 @@ user once with the switch's location, exposes it to the card, and retries the
 counter every minute while the timer runs. An absence of measurement is shown
 as the reason for it, never as a percentage and never as idleness.
 
+### ❌ Do not trust a listener because it is installed
+
+**What it caused:** a Mac user's October: 6-8 October read 6,000-9,000
+keystrokes and 560,000 pointer events a day at 32-41%; 9-14 and 21-28 October
+read 13-100 keystrokes and 4,000-26,000 pointer events over the same working
+hours at 1-4%. The low days are what a Quartz tap hears when the Input
+Monitoring grant is not in effect for the running build (an unsigned or
+re-signed bundle is a new app to macOS): `CGEventTapCreate` succeeds, the tap
+is delivered only the events aimed at Monitra's own window, and every window
+is recorded, uploaded and averaged as a quiet minute. Counts alone cannot tell
+"the user did nothing" from "the listener heard nothing", and nothing checked.
+Windows has the same failure in a different coat: a low-level hook whose
+callback is too slow too often is silently removed by the system.
+
+**Instead:** compare against the OS's own idle clock, which needs no
+permission and no hook (`GetLastInputInfo`; `CGEventSourceSecondsSinceLastEventType`
+on macOS). A window in which the OS saw input for 15 s or more and the
+listener heard something in at most a fifth of those seconds is deaf: restart
+the listener once, name the state (`not_in_effect`) from the second such
+window, clear it when a window is heard normally. Record the window exactly as
+measured meanwhile.
+
 ---
 
 ## Styling
