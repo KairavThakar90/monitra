@@ -1,5 +1,7 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException
+
+from app.services.desktop_config_revision import DesktopConfigRevisionService
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -51,6 +53,7 @@ def create_application(req: ScreenshotApplicationCreate, db: Session = Depends(g
     applied = ScreenshotPrivacyService.exclude_members(db, member_ids, application_id=app.id)
     db.commit()
     db.refresh(app)
+    DesktopConfigRevisionService.bump(db, member_id=None, what="privacy_application_created")
     return ScreenshotApplicationCreatedResponse.model_validate(app, from_attributes=True).model_copy(update={"applied_to_count": applied})
 
 @router.put("/applications/{app_id}", response_model=ScreenshotApplicationResponse)
@@ -62,6 +65,7 @@ def update_application(app_id: int, req: ScreenshotApplicationUpdate, db: Sessio
         setattr(app, k, v)
     db.commit()
     db.refresh(app)
+    DesktopConfigRevisionService.bump(db, member_id=None, what="privacy_application_updated")
     return app
 
 @router.delete("/applications/{app_id}")
@@ -71,6 +75,7 @@ def delete_application(app_id: int, db: Session = Depends(get_db, scope="functio
         raise HTTPException(status_code=404, detail="Application not found")
     db.delete(app)
     db.commit()
+    DesktopConfigRevisionService.bump(db, member_id=None, what="privacy_application_deleted")
     return {"ok": True}
 
 @router.get("/urls", response_model=List[ScreenshotUrlResponse])
@@ -95,6 +100,7 @@ def create_url(req: ScreenshotUrlCreate, db: Session = Depends(get_db, scope="fu
     applied = ScreenshotPrivacyService.exclude_members(db, member_ids, url_id=url.id)
     db.commit()
     db.refresh(url)
+    DesktopConfigRevisionService.bump(db, member_id=None, what="privacy_url_created")
     return ScreenshotUrlCreatedResponse.model_validate(url, from_attributes=True).model_copy(update={"applied_to_count": applied})
 
 @router.put("/urls/{url_id}", response_model=ScreenshotUrlResponse)
@@ -106,6 +112,7 @@ def update_url(url_id: int, req: ScreenshotUrlUpdate, db: Session = Depends(get_
         setattr(url, k, v)
     db.commit()
     db.refresh(url)
+    DesktopConfigRevisionService.bump(db, member_id=None, what="privacy_url_updated")
     return url
 
 @router.delete("/urls/{url_id}")
@@ -115,6 +122,7 @@ def delete_url(url_id: int, db: Session = Depends(get_db, scope="function"), cur
         raise HTTPException(status_code=404, detail="URL not found")
     db.delete(url)
     db.commit()
+    DesktopConfigRevisionService.bump(db, member_id=None, what="privacy_url_deleted")
     return {"ok": True}
 
 # --- User exclusions ---
@@ -143,12 +151,14 @@ def create_exclusion(user_id: int, req: ScreenshotExclusionCreate, db: Session =
         existing.is_excluded = req.is_excluded
         db.commit()
         db.refresh(existing)
+        DesktopConfigRevisionService.bump(db, member_id=user_id, what="privacy_exclusion_updated")
         return existing
 
     excl = ScreenshotExclusion(**req.dict())
     db.add(excl)
     db.commit()
     db.refresh(excl)
+    DesktopConfigRevisionService.bump(db, member_id=user_id, what="privacy_exclusion_created")
     return excl
 
 @router.put("/users/{user_id}/screenshot-exclusions/{exclusion_id}", response_model=ScreenshotExclusionResponse)
@@ -159,6 +169,7 @@ def update_exclusion(user_id: int, exclusion_id: int, req: ScreenshotExclusionUp
     excl.is_excluded = req.is_excluded
     db.commit()
     db.refresh(excl)
+    DesktopConfigRevisionService.bump(db, member_id=user_id, what="privacy_exclusion_updated")
     return excl
 
 @router.delete("/users/{user_id}/screenshot-exclusions/{exclusion_id}")
@@ -168,6 +179,7 @@ def delete_exclusion(user_id: int, exclusion_id: int, db: Session = Depends(get_
         raise HTTPException(status_code=404, detail="Exclusion not found")
     db.delete(excl)
     db.commit()
+    DesktopConfigRevisionService.bump(db, member_id=user_id, what="privacy_exclusion_deleted")
     return {"ok": True}
 
 # --- Desktop Config ---

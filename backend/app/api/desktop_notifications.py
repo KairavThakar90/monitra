@@ -8,6 +8,8 @@ or move its time, and create, edit or delete custom ones. See
 ``app/services/desktop_notifications.py`` for the rules and
 ``docs/DESKTOP_NOTIFICATIONS.md`` for the contract.
 """
+from typing import Optional
+
 from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -60,6 +62,15 @@ def schedule(current_user: User = Depends(get_current_user), db: Session = Depen
 )
 async def stream(
     since: int = Query(0, ge=0, description="The schedule version the client has applied."),
+    since_config: Optional[int] = Query(
+        None, ge=0,
+        description=(
+            "The desktop configuration revision the client last heard. When given, the stream also "
+            "ends with one event when that moves, carrying `config` (the new revision) and `concerns` "
+            "(whether a change since concerns this desktop: its member or every desktop). A client that "
+            "does not send it is never told about a configuration change alone."
+        ),
+    ),
     _current_user: User = Depends(get_current_user),
 ):
     # The session that authenticated this request is released when the
@@ -67,7 +78,7 @@ async def stream(
     # database connection while it waits (docs/DB_CONNECTION_LIFECYCLE.md).
     install_shutdown_hook()
     return StreamingResponse(
-        event_stream(since),
+        event_stream(since, since_config=since_config, user_id=getattr(_current_user, "id", None)),
         media_type="text/event-stream",
         headers={
             # No caching, no compression, and no buffering by a reverse proxy:

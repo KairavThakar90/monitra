@@ -70,7 +70,14 @@ class SystemSettingKey:
     #: ``app/services/email_cc.py``.
     EMAIL_CC = "email_cc"
 
-    ALL = (MAINTENANCE_MODE, DESKTOP_NOTIFICATIONS, SCREENSHOT_SETTINGS, EMAIL_CC)
+    #: "Something an administrator set for a desktop changed": ``{"revision": int,
+    #: "changes": [{"revision": int, "member": user id or null}]}``, raised on every
+    #: per-member switch, screen choice, screenshot setting or privacy rule change and
+    #: carried on the notification change stream so a connected desktop re-reads its
+    #: configuration at once. See ``app/services/desktop_config_revision.py``.
+    DESKTOP_CONFIG = "desktop_config"
+
+    ALL = (MAINTENANCE_MODE, DESKTOP_NOTIFICATIONS, SCREENSHOT_SETTINGS, EMAIL_CC, DESKTOP_CONFIG)
 
 
 class SystemSetting(Base):

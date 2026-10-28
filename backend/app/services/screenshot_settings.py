@@ -70,6 +70,7 @@ from app.models.user import User
 from app.repositories.system_setting import SystemSettingRepository
 from app.schemas.screenshot_settings import ScreenshotSettingsUpdate
 from app.services.activity_log import ActivityLogService
+from app.services.desktop_config_revision import DesktopConfigRevisionService
 from app.services.screenshot_privacy import PRIVACY_MANAGE_ROLES
 
 logger = logging.getLogger("uvicorn.error")
@@ -161,6 +162,8 @@ class ScreenshotSettingsService:
             current_user.id, current_user.username, current_user.organization_id,
             stored["version"], description,
         )
+        # Every desktop reads these: tell them all to re-read now.
+        DesktopConfigRevisionService.bump(db, member_id=None, what="screenshot_settings")
         return ScreenshotSettingsService._admin_payload(setting)
 
     # ── Helpers ───────────────────────────────────────────────────────────

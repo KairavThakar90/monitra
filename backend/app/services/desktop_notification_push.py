@@ -52,7 +52,8 @@ import json
 import logging
 import signal
 import time
-from typing import AsyncIterator, Callable, Optional
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator, Callable, Dict, Optional, Tuple, Union
 
 from starlette.concurrency import run_in_threadpool
 
@@ -115,8 +116,15 @@ def install_shutdown_hook() -> None:
             continue
 
 
-def sse_event(version: int) -> str:
-    return f"event: schedule\ndata: {json.dumps({'version': version})}\n\n"
+def sse_event(version: int, config: Optional[int] = None, concerns: Optional[bool] = None) -> str:
+    """One event. `config` and `concerns` are added only for a client that asked
+    about the configuration revision (`since_config`); an older desktop reads the
+    `version` key alone and ignores the rest."""
+    data: Dict[str, Any] = {"version": version}
+    if config is not None:
+        data["config"] = config
+        data["concerns"] = bool(concerns)
+    return f"event: schedule\ndata: {json.dumps(data)}\n\n"
 
 
 #: A comment line: ignored by every event-stream reader, and enough for the
@@ -125,15 +133,41 @@ SSE_PING = ": ping\n\n"
 SSE_OPEN = ": connected\n\n"
 
 
-def _read_version_from_database() -> int:
-    """The stored version, on a session of its own that is closed before this
-    returns (a background task never borrows a request's)."""
+@dataclass(frozen=True)
+class WatchState:
+    """What the watcher reads: the schedule's version and the desktop configuration
+    revision (``app/services/desktop_config_revision.py``) with the changes it
+    remembers, so a stream can say whether a change concerns its desktop."""
+
+    version: int
+    config: int = 0
+    changes: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)
+
+    @property
+    def key(self) -> Tuple[int, int]:
+        return (self.version, self.config)
+
+
+def _coerce(state: Union[int, WatchState]) -> WatchState:
+    """A reader may return the version alone (the tests' fake stores do)."""
+    if isinstance(state, WatchState):
+        return state
+    return WatchState(version=int(state))
+
+
+def _read_version_from_database() -> WatchState:
+    """The stored version and configuration revision, on a session of its own
+    that is closed before this returns (a background task never borrows a
+    request's). Two single-row reads."""
     from app.core.database import get_session_local
+    from app.services.desktop_config_revision import DesktopConfigRevisionService
     from app.services.desktop_notifications import DesktopNotificationService
 
     db = get_session_local()()
     try:
-        return DesktopNotificationService.current_version(db)
+        version = DesktopNotificationService.current_version(db)
+        config = DesktopConfigRevisionService.current(db)
+        return WatchState(version=version, config=config["revision"], changes=tuple(config["changes"]))
     finally:
         db.close()
 
@@ -141,34 +175,40 @@ def _read_version_from_database() -> int:
 class Subscription:
     """One open stream's view of the watcher."""
 
-    def __init__(self, watcher: "VersionWatcher", version: int) -> None:
+    def __init__(self, watcher: "VersionWatcher", state: WatchState) -> None:
         self._watcher = watcher
-        #: The version this stream last told its client about (or was opened at).
-        self.seen = version
+        #: What this stream last compared against (the state it was opened at, or
+        #: the last move it looked at and did not report).
+        self.seen = state.key
 
     @property
     def version(self) -> int:
         return self._watcher.version
 
+    @property
+    def state(self) -> WatchState:
+        return self._watcher.state
+
     async def wait(self, timeout: float) -> bool:
-        """Wait up to ``timeout`` seconds for the version to move; True if it has."""
+        """Wait up to ``timeout`` seconds for the version or the configuration
+        revision to move; True if either has."""
         watcher = self._watcher
         changed = watcher.changed_event()  # taken before the comparison: no lost wake-up
-        if watcher.version != self.seen:
+        if watcher.state.key != self.seen:
             return True
         try:
             await asyncio.wait_for(changed.wait(), timeout)
         except asyncio.TimeoutError:
             pass
-        return watcher.version != self.seen
+        return watcher.state.key != self.seen
 
 
 class VersionWatcher:
     """Reads the stored version for every stream open in this process."""
 
-    def __init__(self, read_version: Optional[Callable[[], int]] = None) -> None:
+    def __init__(self, read_version: Optional[Callable[[], Union[int, WatchState]]] = None) -> None:
         self._read_version = read_version or _read_version_from_database
-        self._version = 0
+        self._state = WatchState(version=0)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._changed: Optional[asyncio.Event] = None
         self._poked: Optional[asyncio.Event] = None
@@ -179,7 +219,11 @@ class VersionWatcher:
 
     @property
     def version(self) -> int:
-        return self._version
+        return self._state.version
+
+    @property
+    def state(self) -> WatchState:
+        return self._state
 
     @property
     def subscribers(self) -> int:
@@ -206,19 +250,19 @@ class VersionWatcher:
             self._poked = asyncio.Event()
             self._task = None
             self._subscribers = 0
-            self._version = 0
+            self._state = WatchState(version=0)
 
     def _ensure_running(self) -> None:
         if self._task is None or self._task.done():
             self._task = asyncio.ensure_future(self._watch())
 
     async def _refresh(self) -> None:
-        self._publish(await run_in_threadpool(self._read_version))
+        self._publish(_coerce(await run_in_threadpool(self._read_version)))
 
-    def _publish(self, version: int) -> None:
-        if version == self._version:
+    def _publish(self, state: WatchState) -> None:
+        if state.key == self._state.key:
             return
-        self._version = version
+        self._state = state
         previous = self._changed
         self._changed = asyncio.Event()
         previous.set()  # type: ignore[union-attr]
@@ -274,7 +318,7 @@ class _SubscriptionContext:
         except BaseException:
             self._release()
             raise
-        return Subscription(watcher, watcher.version)
+        return Subscription(watcher, watcher.state)
 
     async def __aexit__(self, *exc_info) -> None:
         self._release()
@@ -294,7 +338,10 @@ def notify_changed() -> None:
     watcher.poke()
 
 
-async def event_stream(since: int, *, source: Optional[VersionWatcher] = None) -> AsyncIterator[str]:
+async def event_stream(
+    since: int, *, source: Optional[VersionWatcher] = None,
+    since_config: Optional[int] = None, user_id: Optional[int] = None,
+) -> AsyncIterator[str]:
     """The body of ``GET /desktop-notifications/stream``.
 
     If the stored version already differs from ``since`` (the client missed a
@@ -303,12 +350,33 @@ async def event_stream(since: int, *, source: Optional[VersionWatcher] = None) -
     then one event. Either way the stream ends after the event: the client
     fetches the schedule and opens a new one, so a change is signalled exactly
     once and there is nothing to repeat if the client is slow.
+
+    A client that also says which configuration revision it last heard
+    (``since_config``) is told, the same way, when that moves -- with whether
+    the change concerns the desktop signed in as ``user_id``. A client that does
+    not ask (an older desktop) is never sent an event for a configuration change
+    alone: it would read the unchanged ``version`` as the same change signalled
+    twice and back off its stream.
     """
+    from app.services.desktop_config_revision import DesktopConfigRevisionService
+
     source = source or watcher
     deadline = time.monotonic() + MAX_STREAM_SECONDS
+
+    def event(state: WatchState) -> str:
+        if since_config is None:
+            return sse_event(state.version)
+        concerns = DesktopConfigRevisionService.concerns(
+            {"revision": state.config, "changes": list(state.changes)}, since_config, user_id,
+        )
+        return sse_event(state.version, state.config, concerns)
+
+    def moved(state: WatchState) -> bool:
+        return state.version != since or (since_config is not None and state.config != since_config)
+
     async with source.subscription() as subscription:
-        if subscription.version != since:
-            yield sse_event(subscription.version)
+        if moved(subscription.state):
+            yield event(subscription.state)
             return
         yield SSE_OPEN
         while not _shutting_down:
@@ -316,6 +384,12 @@ async def event_stream(since: int, *, source: Optional[VersionWatcher] = None) -
             if remaining <= 0:
                 return
             if await subscription.wait(min(HEARTBEAT_SECONDS, remaining)):
-                yield sse_event(subscription.version)
-                return
+                state = subscription.state
+                if moved(state):
+                    yield event(state)
+                    return
+                # The configuration revision moved and this client did not ask
+                # about it: nothing to say. Keep waiting for the version.
+                subscription.seen = state.key
+                continue
             yield SSE_PING

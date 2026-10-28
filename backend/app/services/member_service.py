@@ -11,12 +11,21 @@ from app.repositories.member import MemberRepository
 from app.core.security import has_permission
 from app.schemas.member import MemberAccessUpdate, MemberCreate, MemberUpdate
 from app.services.activity_log import ActivityLogService
+from app.services.desktop_config_revision import DesktopConfigRevisionService
 from app.services.email.workflows import MEMBER_ACCESS_SWITCHES, queue_member_access_notification
 from app.services.member_scope import may_view_in_directory, may_view_member, visible_directory_ids
 
 logger = logging.getLogger(__name__)
 
 #: The two per-member switches, each with the action its two positions record.
+#: The member fields a desktop polls for (`/screenshots/config`, `/activity/config`,
+#: `/idle-periods/config`, `/desktop-notifications/schedule`). A change to any of them
+#: raises the desktop configuration revision so a connected desktop re-reads them now.
+DESKTOP_CONFIG_FIELDS = frozenset({
+    "screenshots_enabled", "notifications_enabled", "activity_tracking_enabled",
+    "idle_enabled", "idle_minutes", "capture_frequency",
+})
+
 _SWITCH_ACTIONS = {
     "can_login": (ActivityLogAction.LOGIN_ALLOWED, ActivityLogAction.LOGIN_EXCLUDED, "signing in"),
     "can_add_tasks": (ActivityLogAction.ADD_TASKS_ALLOWED, ActivityLogAction.ADD_TASKS_EXCLUDED, "adding tasks"),
@@ -156,6 +165,7 @@ class MemberService:
         # result: the second finds nothing changed and does none of it, rather
         # than both reading the old position and both acting.
         db.refresh(member, with_for_update=True)
+        before_desktop = {key: getattr(member, key, None) for key in DESKTOP_CONFIG_FIELDS}
         excluding = data.get("can_login") is False and member.can_login is not False
         # Read before the save overwrites them: a switch is recorded only when
         # it actually moved, so re-sending the current position logs nothing.
@@ -187,6 +197,11 @@ class MemberService:
                 saved,
             )
         MemberService._notify_access_change(db, saved, switched, changed_at, background_tasks)
+        # Anything the member's desktop polls for: tell it to re-read now rather than
+        # at its next poll. After the save and its audit, never before.
+        desktop_fields = sorted(key for key in data if key in DESKTOP_CONFIG_FIELDS and before_desktop.get(key) != data[key])
+        if desktop_fields:
+            DesktopConfigRevisionService.bump(db, member_id=saved.id, what="member:" + ",".join(desktop_fields))
         if other_fields:
             MemberService._record(
                 db, current_user, ActivityLogAction.MEMBER_UPDATED,

@@ -53,6 +53,7 @@ from app.models.user import User
 from app.repositories.member_display import MemberDisplayRepository
 from app.schemas.member_display import DisplayReport, ScreenChoices
 from app.services.activity_log import ActivityLogService
+from app.services.desktop_config_revision import DesktopConfigRevisionService
 from app.services.screenshot_privacy import NOT_CAPTURED_ROLES, PRIVACY_MANAGE_ROLES
 
 logger = logging.getLogger("uvicorn.error")
@@ -190,6 +191,7 @@ class MemberDisplayService:
             "SCREENSHOT_DISPLAYS_CHANGED: admin=%s member=%s organization=%s change=%s",
             current_user.id, member.id, organization_id, description,
         )
+        DesktopConfigRevisionService.bump(db, member_id=member.id, what="screenshot_displays")
         return MemberDisplayService._member_payload(member, list(rows.values()))
 
     # ── Helpers ───────────────────────────────────────────────────────────
