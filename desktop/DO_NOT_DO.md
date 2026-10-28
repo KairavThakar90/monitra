@@ -1314,6 +1314,24 @@ was set to (`2026-10-08@12:40`) -- and let a different time be a different turn.
 Honour a date-only record from before for today, so an upgrade repeats nothing.
 `tests/test_notification_hourly_limit.py` reproduces it.
 
+### ❌ Do not treat a same-version answer as nothing new when it carries a push
+
+```python
+if current is not None and parsed.version == current.version:
+    return False          # "the level, not an edge"
+```
+
+**What it caused (found by reading, 2026-10-28):** pushes are deliberately not
+persisted, so after a restart the persisted snapshot is at the live version with
+no pushes. The first fetch answered the same version *with* a message pushed
+while the desktop was closed -- still inside its ten-minute lifetime, which the
+doc promises is shown -- and `_apply` dropped it as the level. A member switched
+back on while a push was live lost it the same way (the server had emptied
+`pushes` for them at the same version). **Instead:** on an equal version, adopt
+an answer whose pushes carry an id the snapshot does not have, wake the
+scheduler, log nothing as a schedule change. `pushes_seen` still keeps a restart
+from showing one twice.
+
 ### ❌ Do not let a limit on repeating reminders hold back an administrator's notification
 
 An hourly cap that counted every notification alike would have let two repeating

@@ -794,7 +794,11 @@ class NotificationScheduleService(LoopService):
             return self._stream_failed(f"version {version} signalled again with no progress", None)
         self._last_event_version = version
         self._stream_working()
-        self._need_fetch = True
+        # The schedule is fetched again only if its version moved. A configuration
+        # change alone ends every desktop's stream, and a hundred desktops each
+        # fetching an unchanged schedule for it would be a hundred reads for nothing.
+        if version != self._since:
+            self._need_fetch = True
         if config_moved:
             self._config_revision = config
             self.log.info(

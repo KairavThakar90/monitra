@@ -41,22 +41,22 @@ re-grant a permission.
   and which is your main screen -- never what is on them), and your administrator can switch
   capture off for individual screens. A screen that is switched off is never read; the
   screenshot is made from the screens that remain. Until your administrator chooses
-  something, every screen is captured exactly as before. A change reaches a running Monitra
-  within a few minutes. If every screen you have is switched off, no screenshot is taken and
+  something, every screen is captured exactly as before. A change reaches a connected Monitra
+  within seconds (any Monitra within three minutes). If every screen you have is switched off, no screenshot is taken and
   your administrator is told why.
 - **Your administrator can now control your screenshots from the web admin panel.**
   - **Turn them off for you:** if screenshots are switched off for your account, Monitra
     takes none. The line beside ACTIVITY says "Screenshots are turned off", and your time
     is tracked exactly as before. Screenshots already taken are kept and still upload.
-    Switch them back on and capture resumes within a few minutes, without restarting.
+    Switch them back on and capture resumes within seconds, without restarting.
   - **Size and quality:** the administrator can choose the size (width and height) of
     every screenshot and either leave the quality on Automatic -- as it has always been --
     or fix it to a percentage such as 50%, 75% or 90%. A fixed quality is used as chosen;
     only if a file would be too large for the server to accept is the quality lowered
     to fit. Until the administrator changes anything, screenshots are captured exactly as
     before.
-  - A change reaches a running Monitra within a few minutes (the same refresh that
-    delivers your capture interval); it does not need a new sign-in.
+  - A change reaches a connected Monitra within seconds, and any Monitra within three minutes
+    (the same refresh that delivers your capture interval); it does not need a new sign-in.
 - **Your administrator can also switch off, one at a time and only for you, the reminders
   and messages you are shown, and the measuring of your activity.** Each switch does only
   what it says:
@@ -68,7 +68,7 @@ re-grant a permission.
     the applications and websites you use, and the Activity card says "Turned off by your
     administrator". Your time, screenshots and idle detection are unaffected.
   - **Idle detection** keeps its own switch and idle time, as before.
-  Turning one back on takes effect within a few minutes, without restarting.
+  Turning one back on takes effect within seconds, without restarting.
 
 ## [1.3.3]
 

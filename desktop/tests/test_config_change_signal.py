@@ -38,7 +38,7 @@ from background_services.notifications.schedule_service import (
     SCHEDULE_STATE_KEY, NotificationScheduleService, parse_schedule,
 )
 from tests.test_notification_push import (  # noqa: F401  (fixtures and fakes)
-    Clock, FakeCache, FakeStream, StreamApi, make_listener, payload, push, quiet,
+    Clock, FakeCache, StreamApi, make_listener, payload, push, quiet,
 )
 
 
@@ -96,9 +96,11 @@ def test_a_configuration_change_that_concerns_this_desktop_fires_the_signal_once
 
     delay = service.tick()                  # fetch, listen: hears revision 7
     assert len(fired) == 1
-    assert delay == service.EVENT_FETCH_DELAY_MS, "the schedule is fetched too, in case it moved"
-    service.tick()                          # the fetch, and a quiet listen
+    assert delay == service.EVENT_FETCH_DELAY_MS
+    assert not service._need_fetch, "the schedule's version did not move, so it is not fetched again"
+    service.tick()                          # a quiet listen
     assert len(fired) == 1
+    assert len(api.fetches) == 1, "one schedule read for a configuration change, not one per event"
     assert service._stream_up, "a configuration event is progress, not the same version signalled twice"
     assert any("configuration revision 7 (concerns this desktop)" in m for m in logs.messages)
 
