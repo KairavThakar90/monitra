@@ -20,34 +20,12 @@ re-grant a permission.
 
 ## [Unreleased]
 
-### Fixed
+## [1.3.3]
 
-- **Today's Activity no longer reads a quiet day when the keyboard/mouse listener
-  has stopped hearing you.** On a Mac whose Input Monitoring permission is not in
-  effect for the installed build, or on Windows when the system has dropped the input
-  hook, Monitra was still recording every minute as almost no activity. It now checks
-  each minute against the operating system's own "last input" clock, restarts the
-  listener once, and then says **Not receiving input** on the card and in a
-  notification with what to do, instead of recording a low day. Nothing is added to
-  your activity; only the explanation is.
-- **On macOS, Space, Enter, Tab, Backspace, Escape and the arrow keys now count on
-  every press.** Each used to count once per minute, which read a Mac typist as less
-  active than a Windows one doing the same work. A missing Input Monitoring
-  permission is also named on the card ("Needs Input Monitoring") rather than shown
-  as "Not tracking yet".
-- **The idle-time prompt no longer stays on "Confirming with the server…" with every
-  answer greyed out.** After a crash, a sleep or a lost connection, Monitra shows the
-  prompt before the server has confirmed the gap. Once the server did confirm it, the
-  prompt did not notice and stayed locked until Monitra was restarted. It now unlocks
-  the moment the server answers, and **Retry now** also checks whether the server has
-  already confirmed before asking again.
-- **You can always get out of the idle-time prompt without being answered for.** If
-  the server is slow, down, or returns an error, the prompt offers **Retry now** (which
-  repeats exactly your answer, so an answer that did reach the server is confirmed,
-  never applied twice) and **Decide later** (which closes the prompt without deciding
-  anything). After Decide later nothing is counted or discarded and your timer keeps
-  running unchanged; the dashboard shows "An idle-time decision is waiting" until you
-  click it, open Monitra again, or sign in again, and the prompt comes back then.
+The installer and the macOS bundles are still unsigned (see 1.3.2 below for
+what that means on first run). **This is the first version that can install an
+update by itself**: on 1.3.2 and earlier, Monitra only tells you a new version
+exists and opens the download page, so install 1.3.3 by hand once.
 
 ### Added
 
@@ -98,15 +76,6 @@ re-grant a permission.
     administrator". Your time, screenshots and idle detection are unaffected.
   - **Idle detection** keeps its own switch and idle time, as before.
   Turning one back on takes effect within seconds, without restarting.
-
-## [1.3.3]
-
-The installer and the macOS bundles are still unsigned (see 1.3.2 below for
-what that means on first run). **This is the first version that can install an
-update by itself**: on 1.3.2 and earlier, Monitra only tells you a new version
-exists and opens the download page, so install 1.3.3 by hand once.
-
-### Added
 - **Mandatory updates with a 24-hour grace period.** When your administrator
   publishes a required update, the update prompt now says so, offers "Later"
   with a countdown to the deadline, and comes back at every check. The
@@ -122,6 +91,33 @@ exists and opens the download page, so install 1.3.3 by hand once.
   nothing.
 
 ### Fixed
+
+- **Today's Activity no longer reads a quiet day when the keyboard/mouse listener
+  has stopped hearing you.** On a Mac whose Input Monitoring permission is not in
+  effect for the installed build, or on Windows when the system has dropped the input
+  hook, Monitra was still recording every minute as almost no activity. It now checks
+  each minute against the operating system's own "last input" clock, restarts the
+  listener once, and then says **Not receiving input** on the card and in a
+  notification with what to do, instead of recording a low day. Nothing is added to
+  your activity; only the explanation is.
+- **On macOS, Space, Enter, Tab, Backspace, Escape and the arrow keys now count on
+  every press.** Each used to count once per minute, which read a Mac typist as less
+  active than a Windows one doing the same work. A missing Input Monitoring
+  permission is also named on the card ("Needs Input Monitoring") rather than shown
+  as "Not tracking yet".
+- **The idle-time prompt no longer stays on "Confirming with the server…" with every
+  answer greyed out.** After a crash, a sleep or a lost connection, Monitra shows the
+  prompt before the server has confirmed the gap. Once the server did confirm it, the
+  prompt did not notice and stayed locked until Monitra was restarted. It now unlocks
+  the moment the server answers, and **Retry now** also checks whether the server has
+  already confirmed before asking again.
+- **You can always get out of the idle-time prompt without being answered for.** If
+  the server is slow, down, or returns an error, the prompt offers **Retry now** (which
+  repeats exactly your answer, so an answer that did reach the server is confirmed,
+  never applied twice) and **Decide later** (which closes the prompt without deciding
+  anything). After Decide later nothing is counted or discarded and your timer keeps
+  running unchanged; the dashboard shows "An idle-time decision is waiting" until you
+  click it, open Monitra again, or sign in again, and the prompt comes back then.
 - An update whose installer is not on the download server any more is refused
   with "The download server answered with a web page instead of the installer"
   rather than "incomplete, try again" (a retry could not help). Nothing is
