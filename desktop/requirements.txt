@@ -1,4 +1,13 @@
-PySide6
+# The GUI toolkit is pinned to the exact version the suite, the local builds
+# and the real-window checks run on. Left bare, the release job installed
+# whatever was newest on the day: v1.3.2 (built 2026-10-09) and v1.3.3
+# (2026-10-29) shipped Qt 6.12.0, published the day before the first of them,
+# while everything had been verified on 6.11.2 -- and on 6.12 the Request
+# dialog's time fields were drawn one pixel wide. Move this pin on purpose:
+# install the new version, run `python -m pytest tests/ -q` on it, then change
+# it. tests/test_dependency_pins.py fails on a bare line and on a PySide6 under
+# test that is not this one.
+PySide6==6.11.2
 httpx
 python-dotenv
 

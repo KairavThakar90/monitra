@@ -14,6 +14,7 @@ than here: the timer commits locally the instant the user acts and reconciles
 with the backend afterwards, so the UI is immediate without the widget having
 to guess at, or duplicate, the authoritative state.
 """
+import html
 import math
 import uuid
 from datetime import date, datetime, timezone
@@ -58,6 +59,7 @@ from core.task_marker import (
     NON_BILLABLE_SUFFIX, split_non_billable, with_non_billable_suffix,
 )
 from core.logging_setup import get_logger
+from core.text_safety import clean_search_text, plain_tooltip
 from core.time_format import format_hms, ist_today
 
 #: What the user is told when an administrator has switched Add Task off for
@@ -930,6 +932,7 @@ class ManualTimeEntryDialog(QDialog):
         layout.addLayout(form)
 
         self.error_label = QLabel("", self)
+        self.error_label.setTextFormat(Qt.TextFormat.PlainText)   # server / validator text: shown literally, never as HTML
         self.error_label.setObjectName("ErrorLabel")
         self.error_label.setWordWrap(True)
         self.error_label.hide()
@@ -997,7 +1000,6 @@ class ManualTimeEntryDialog(QDialog):
                 background-color: #FFFFFF;
             }}
             QTimeEdit#TimeEditInner {{
-                border: none;
                 background: transparent;
                 font-size: 13px;
                 color: #0F172A;
@@ -1269,7 +1271,7 @@ class TaskRow(QFrame):
         self._leading_icon.setStyleSheet(
             f"QLabel {{ background: transparent; }}{TOOLTIP_QSS}"
         )
-        self._leading_icon.setToolTip(self.project_name)
+        self._leading_icon.setToolTip(plain_tooltip(self.project_name))
         name_row.addWidget(self._leading_icon)
 
         # Elides rather than clips: a name longer than its column ends in an
@@ -2225,7 +2227,9 @@ class TaskSection(QWidget):
     def set_error(self, message: str, *, retry: bool = False) -> None:
         self._clear_rows()
         link = ' <a href="retry">Retry</a>' if retry else ""
-        self._status_label.setText(f"{icons.img_tag('warning', ERROR)} {message}{link}")
+        # This label stays rich text (the warning icon and the Retry link), so what goes into it is
+        # escaped: `message` can be a server error, and a gateway's HTML page must not be rendered.
+        self._status_label.setText(f"{icons.img_tag('warning', ERROR)} {html.escape(str(message))}{link}")
         self._status_label.show()
         self._has_loaded_tasks = False
 
@@ -2323,7 +2327,7 @@ class TaskSection(QWidget):
         than in a widget of this card's own, so there is exactly one filter
         state and no way for two search boxes to disagree.
         """
-        text = text or ""
+        text = clean_search_text(text)
         if text == self._search_text:
             return
         self._search_text = text
@@ -3023,9 +3027,18 @@ class TaskSection(QWidget):
             new_desc = f"{orig_desc}\n[duplicate]".strip()
 
         assignee_id = row.task.get("assignee_id") or 1
+        # The copy's name is built from another person's task, so it is checked like any typed name: too long
+        # after " (Copy)", or a legacy name the rules refuse, is explained here and not sent.
+        copy_name = validate_name(f"{orig_name} (Copy)", field_label="Task name")
+        if not copy_name.ok:
+            self.api.notify(
+                f"This task cannot be duplicated: {copy_name.error}", NotificationLevel.ERROR,
+                key=f"duplicate-task-refused:{row.task.get('id')}",
+            )
+            return
         self._run_task_mutation(
             lambda: self.task_service.create_task(
-                row.project_id, f"{orig_name} (Copy)", assignee_id
+                row.project_id, copy_name.value, assignee_id
             ),
             success_message="Task duplicated successfully.",
             key=f"duplicate-task:{row.task.get('id')}",

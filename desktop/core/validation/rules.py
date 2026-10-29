@@ -87,7 +87,7 @@ MAX_LIST_PARAM_ITEMS = 200
 
 # --- Patterns (mirror of the backend's) ------------------------------------
 
-EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+EMAIL_PATTERN = re.compile(r"^[^\s@<>(){}\[\]\x22\\,;:]+@[^\s@<>(){}\[\]\x22\\,;:]+\.[^\s@<>(){}\[\]\x22\\,;:]+$")
 UUID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -104,6 +104,10 @@ TIME_OF_DAY_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 ALLOWED_URL_SCHEMES = ("http", "https")
 
 HTML_TAG_PATTERN = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(\s[^<>]*)?/?>")
+#: Text that *starts* as a JSON object or array: `{ "key":` or `[ "item",`. A document cut short by a length limit is not
+#: valid JSON, so `looks_like_json_document` cannot see it; this does. Same source in all three catalogues.
+JSON_FRAGMENT_PATTERN = re.compile(r'^\s*(?:\{\s*"[^"\n]{0,200}"\s*:|\[\s*"[^"\n]{0,200}"\s*[,\]]|\{\s*\[|\[\s*\{\s*"[^"\n]{0,200}"\s*:)')
+
 ENCODED_MARKUP_PATTERN = re.compile(r"&(?:lt|gt|#0*(?:60|62)|#[xX]0*3[cCeE]);")
 SCRIPT_URI_PATTERN = re.compile(r"\b(?:javascript|vbscript|data)\s*:", re.IGNORECASE)
 EVENT_HANDLER_PATTERN = re.compile(r"\bon[a-z]{3,20}\s*=", re.IGNORECASE)
@@ -191,6 +195,7 @@ __all__ = [
     "TIME_OF_DAY_PATTERN",
     "ALLOWED_URL_SCHEMES",
     "HTML_TAG_PATTERN",
+    "JSON_FRAGMENT_PATTERN",
     "ENCODED_MARKUP_PATTERN",
     "SCRIPT_URI_PATTERN",
     "EVENT_HANDLER_PATTERN",

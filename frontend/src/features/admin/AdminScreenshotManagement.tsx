@@ -123,7 +123,7 @@ export const SizeAndQuality: React.FC<{ settings: ScreenshotSettings }> = ({ set
             <label htmlFor="screenshot-width" className={labelClass}>
               Width (px)
             </label>
-            <input
+            <input maxLength={5}
               id="screenshot-width"
               type="text"
               inputMode="numeric"
@@ -143,7 +143,7 @@ export const SizeAndQuality: React.FC<{ settings: ScreenshotSettings }> = ({ set
             <label htmlFor="screenshot-height" className={labelClass}>
               Height (px)
             </label>
-            <input
+            <input maxLength={5}
               id="screenshot-height"
               type="text"
               inputMode="numeric"
@@ -227,7 +227,7 @@ export const SizeAndQuality: React.FC<{ settings: ScreenshotSettings }> = ({ set
             <label htmlFor="screenshot-quality" className={labelClass}>
               Quality (%)
             </label>
-            <input
+            <input maxLength={3}
               id="screenshot-quality"
               type="text"
               inputMode="numeric"

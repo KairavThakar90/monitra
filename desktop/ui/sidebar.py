@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMenu, QStackedWidget, QToolButton, QProxyStyle, QStyle
 )
 from background_services.public_api import BreakStatus
+from core.text_safety import clean_search_text, plain_tooltip
 from core.time_format import format_hms, ist_greeting
 from core.validation import SEARCH_MAX_LENGTH
 from ui import icons
@@ -172,7 +173,7 @@ class ProjectItem(QPushButton):
             parts.append(f"{_format_seconds(self._total_seconds)} tracked on this day")
         if self._has_active_timer:
             parts.append("timer running")
-        self.setToolTip(" — ".join(parts))
+        self.setToolTip(plain_tooltip(" — ".join(parts)))
 
     def set_total_seconds(self, seconds: Optional[int]) -> None:
         """Show the project's tracked time for the displayed day.
@@ -980,10 +981,10 @@ class SidebarWidget(QWidget):
 
         # Set tooltip showing full name and full email on user card & labels
         full_tooltip = f"{name}\n{email}" if email else name
-        self._user_card.setToolTip(full_tooltip)
-        self._avatar_label.setToolTip(full_tooltip)
-        self._user_name_label.setToolTip(name)
-        self._user_email_label.setToolTip(email)
+        self._user_card.setToolTip(plain_tooltip(full_tooltip))
+        self._avatar_label.setToolTip(plain_tooltip(full_tooltip))
+        self._user_name_label.setToolTip(plain_tooltip(name))
+        self._user_email_label.setToolTip(plain_tooltip(email))
 
         self._user_info_widget.setVisible(not self._collapsed)
         self._chevron_label.setVisible(not self._collapsed)
@@ -1333,7 +1334,7 @@ class SidebarWidget(QWidget):
         self.project_selected.emit(project)
 
     def _on_search_changed(self, text: str) -> None:
-        self._search_text = text
+        self._search_text = clean_search_text(text)
         self._current_page = 1
         self._rebuild_project_list()
         self._scroll_to_top()

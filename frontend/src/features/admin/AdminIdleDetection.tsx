@@ -144,7 +144,7 @@ const IdleRow: React.FC<{ member: Member }> = ({ member }) => {
       <td className="px-4 py-3 capitalize text-slate-600">{(member.role || "").replace(/_/g, " ")}</td>
       <td className="px-4 py-3">
         <div className="w-28">
-          <input
+          <input maxLength={6}
             type="text"
             inputMode="numeric"
             autoComplete="off"
@@ -164,7 +164,7 @@ const IdleRow: React.FC<{ member: Member }> = ({ member }) => {
       </td>
       <td className="px-4 py-3">
         <div className="w-28">
-          <input
+          <input maxLength={4}
             type="text"
             inputMode="numeric"
             autoComplete="off"

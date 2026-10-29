@@ -5,7 +5,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.core.validation import IdentifierList, OptionalIdempotencyKey, OptionalPlainDescription
+from app.core.validation import IdentifierList, OptionalIdempotencyKey, OptionalPlainDescription, validate_name
 
 
 class BillingType(str, Enum):
@@ -95,7 +95,7 @@ class ProjectCreate(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("Project name cannot be empty")
-        return value
+        return validate_name(value, field_label="Project name")
 
     @field_validator("employee_ids")
     @classmethod
@@ -190,7 +190,7 @@ class ProjectUpdate(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("Project name cannot be empty")
-        return value
+        return validate_name(value, field_label="Project name")
 
     @field_validator("employee_ids")
     @classmethod
@@ -237,7 +237,7 @@ class TaskCreate(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("Task name cannot be empty")
-        return value
+        return validate_name(value, field_label="Task name")
 
     @field_validator("assignee_ids")
     @classmethod
@@ -276,7 +276,7 @@ class TaskUpdate(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("Task name cannot be empty")
-        return value
+        return validate_name(value, field_label="Task name")
 
 
 class TaskAssigneesSet(BaseModel):

@@ -1,12 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ClientInvitationError, getClientInvitationAPI, setClientPasswordAPI } from "../../api/auth";
-import {
-  FieldError,
-  PASSWORD_MAX_LENGTH,
-  PASSWORD_MIN_LENGTH,
-  useFormValidation,
-} from "../../validation";
+import { EMAIL_MAX_LENGTH, FieldError, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, useFormValidation } from "../../validation";
 
 /**
  * Where an invited client chooses their password.
@@ -185,7 +180,7 @@ export const ClientSetPassword: React.FC = () => {
                   {/* Read-only, and the field password managers pair the new
                       password with: without a username beside it they save a
                       password for nobody. */}
-                  <input
+                  <input maxLength={EMAIL_MAX_LENGTH}
                     id="client-email"
                     name="username"
                     type="email"

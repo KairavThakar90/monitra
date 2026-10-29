@@ -102,6 +102,7 @@ class MandatoryUpdateScreen(QWidget):
         layout.addLayout(brand)
 
         self._title = QLabel("Update required", card)
+        self._title.setTextFormat(Qt.TextFormat.PlainText)   # server / validator text: shown literally, never as HTML
         self._title.setObjectName("UpdateRequiredTitle")
         self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_font = QFont()
@@ -111,6 +112,7 @@ class MandatoryUpdateScreen(QWidget):
         layout.addWidget(self._title)
 
         self._blurb = QLabel("", card)
+        self._blurb.setTextFormat(Qt.TextFormat.PlainText)   # server / validator text: shown literally, never as HTML
         self._blurb.setObjectName("UpdateRequiredBlurb")
         self._blurb.setWordWrap(True)
         self._blurb.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -158,6 +160,7 @@ class MandatoryUpdateScreen(QWidget):
         layout.addWidget(self._progress)
 
         self._status = QLabel("", card)
+        self._status.setTextFormat(Qt.TextFormat.PlainText)   # server / validator text: shown literally, never as HTML
         self._status.setObjectName("UpdateRequiredStatus")
         self._status.setWordWrap(True)
         self._status.hide()

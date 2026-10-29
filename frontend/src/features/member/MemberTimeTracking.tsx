@@ -25,6 +25,8 @@ import { DateRangeFilter, DEFAULT_RANGE } from "../dashboard/v2/filters";
 import type { DateRange } from "../dashboard/v2/filters";
 import { formatHMS, formatISTDate, formatISTTime, istTodayISO, istWallClockToUtcISO } from "../../utils/duration";
 import { series } from "../dashboard/v2/theme";
+import { formatApiError } from '../../api/utils';
+import { DESCRIPTION_MAX_LENGTH, validateDescription } from '../../validation';
 
 /**
  * The member's own time tracking.
@@ -122,17 +124,24 @@ const TransferEntryModal: React.FC<{
       setError("That is the project and task this entry already has.");
       return;
     }
+    // The reason is prose another person reads: the same rule the backend enforces, checked here so a
+    // refused value is explained at the field instead of arriving as a rejected request.
+    const checkedReason = validateDescription(reason, { fieldLabel: 'Reason' });
+    if (!checkedReason.ok) {
+      setError(checkedReason.error);
+      return;
+    }
     try {
       await transfer({
         id: entry.id,
         to_project_id: Number(toProjectId),
         to_task_id: Number(toTaskId),
-        reason: reason.trim() || undefined,
+        reason: checkedReason.value || undefined,
       }).unwrap();
       showToast("Time entry transferred.", "success");
       onClose();
     } catch (err: any) {
-      setError(err?.data?.detail || "Could not transfer this time entry.");
+      setError(formatApiError(err?.data, "Could not transfer this time entry."));
     }
   };
 
@@ -557,6 +566,11 @@ export const MemberTimeTracking: React.FC = () => {
       setFormError("Say why this time was not tracked automatically — an approver will read it.");
       return;
     }
+    const checkedFormReason = validateDescription(formReason, { fieldLabel: 'The reason', required: true });
+    if (!checkedFormReason.ok) {
+      setFormError(checkedFormReason.error);
+      return;
+    }
 
     try {
       await createRequest({
@@ -568,7 +582,7 @@ export const MemberTimeTracking: React.FC = () => {
         // claim they were UTC and shift the entry by 5h30m.
         start_time: istWallClockToUtcISO(formDate, formClockIn),
         end_time: istWallClockToUtcISO(formDate, formClockOut),
-        description: formReason.trim(),
+        description: checkedFormReason.value,
         // No is_billable: the backend takes it from the project's billing
         // type (fixed hours bill, free ones do not).
       }).unwrap();
@@ -576,7 +590,7 @@ export const MemberTimeTracking: React.FC = () => {
       setDrawerOpen(false);
       setTab("requests");
     } catch (error: any) {
-      setFormError(error?.data?.detail?.message || error?.data?.detail || "Could not submit this request.");
+      setFormError(formatApiError(error?.data, "Could not submit this request."));
     }
   };
 
@@ -586,7 +600,7 @@ export const MemberTimeTracking: React.FC = () => {
       await withdrawRequest(id).unwrap();
       showToast("Request withdrawn.", "success");
     } catch (error: any) {
-      showToast(error?.data?.detail || "Could not withdraw this request.", "error");
+      showToast(formatApiError(error?.data, "Could not withdraw this request."), "error");
     }
   };
 
@@ -887,7 +901,7 @@ export const MemberTimeTracking: React.FC = () => {
 
                 <div>
                   <label className="text-[11px] font-bold uppercase tracking-wider text-[#94A3B8]">Reason</label>
-                  <textarea
+                  <textarea maxLength={DESCRIPTION_MAX_LENGTH}
                     value={formReason}
                     onChange={(event) => setFormReason(event.target.value)}
                     rows={3}

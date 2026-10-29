@@ -43,6 +43,7 @@ from .rules import (
     ENCODED_MARKUP_PATTERN,
     EVENT_HANDLER_PATTERN,
     HTML_TAG_PATTERN,
+    JSON_FRAGMENT_PATTERN,
     IDENTIFIER_MAX,
     IDENTIFIER_MIN,
     NAME_MAX_LENGTH,
@@ -101,11 +102,12 @@ def looks_like_json_document(value: str) -> bool:
     if not (text.startswith("{") and text.endswith("}")) and not (
         text.startswith("[") and text.endswith("]")
     ):
-        return False
+        return JSON_FRAGMENT_PATTERN.match(text) is not None
     try:
         json.loads(text)
     except (ValueError, RecursionError):
-        return False
+        # Not a whole document -- but may still be the start of one that a length limit cut short.
+        return JSON_FRAGMENT_PATTERN.match(text) is not None
     return True
 
 

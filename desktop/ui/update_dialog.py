@@ -248,6 +248,7 @@ class UpdateDialog(QDialog):
         card.addWidget(self._progress)
 
         self._status = QLabel("", self.card)
+        self._status.setTextFormat(Qt.TextFormat.PlainText)   # server / validator text: shown literally, never as HTML
         self._status.setObjectName("UpdateStatus")
         self._status.setWordWrap(True)
         self._status.hide()

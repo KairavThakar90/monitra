@@ -38,6 +38,7 @@ import {
   formatFileSize,
 } from '../../api/desktopRelease';
 import type { DesktopDownloadIndex, DesktopRelease, DownloadKey } from '../../api/desktopRelease';
+import { validateUrl } from '../../validation';
 
 /** Display order and copy for each build. */
 const CARDS: Array<{
@@ -169,7 +170,9 @@ function DownloadCard({
               {release.release_notes}
             </p>
           )}
-          {release.release_notes_url && (
+          {/* Only an http(s) address becomes a link: a stored `javascript:` or `data:` URL would run
+              script when clicked. The backend refuses to store one; this is the second line. */}
+          {release.release_notes_url && validateUrl(release.release_notes_url).ok && (
             <a
               href={release.release_notes_url}
               target="_blank"

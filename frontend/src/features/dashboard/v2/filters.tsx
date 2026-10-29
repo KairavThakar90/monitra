@@ -4,6 +4,7 @@ import type { Member } from "../../../store/api/membersApi";
 import type { Project } from "../../../store/api/projectsApi";
 import { brandGradient } from "./theme";
 import { SEARCH_MAX_LENGTH } from "../../../validation";
+import { neutraliseSpreadsheetFormula } from "../../../utils/safeText";
 
 /* ------------------------------------------------------------------ */
 /* Dropdown shell — click-outside handling shared by every filter      */
@@ -1018,7 +1019,7 @@ export const exportToCsv = (
   quoteAll = false
 ) => {
   const escape = (cell: string | number) => {
-    const text = String(cell);
+    const text = neutraliseSpreadsheetFormula(cell);
     if (quoteAll || /[",\n]/.test(text)) return '"' + text.replace(/"/g, '""') + '"';
     return text;
   };

@@ -62,7 +62,7 @@ def batch_record_app_usage(
 )
 def get_app_usage(
     time_entry_id: int,
-    application_name: Optional[str] = Query(None),
+    application_name: Optional[str] = Query(None, max_length=255),
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
     skip: int = Query(0, ge=0),
@@ -109,7 +109,7 @@ def get_app_usage_summary(
 def get_app_usage_global(
     user_id: Optional[int] = Query(None),
     time_entry_id: Optional[int] = Query(None),
-    application_name: Optional[str] = Query(None),
+    application_name: Optional[str] = Query(None, max_length=255),
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
     skip: int = Query(0, ge=0),

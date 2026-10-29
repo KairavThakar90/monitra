@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { V2Shell } from '../dashboard/v2/V2Shell';
 import { Card, EmptyState, ErrorNote, Spinner } from '../member/MemberUi';
 import { useGetAllProjectsQuery } from '../../store/api/projectsApi';
-import { SEARCH_MAX_LENGTH } from '../../validation';
+import { EMAIL_MAX_LENGTH, SEARCH_MAX_LENGTH } from '../../validation';
 import {
   DEFAULT_CLIENT_PERMISSIONS,
   useCreateClientInvitationMutation,
@@ -14,6 +14,7 @@ import {
   type ClientPermissions,
   type ClientProjectRef,
 } from '../../store/api/clientsApi';
+import { formatApiError } from '../../api/utils';
 
 const STATUS_STYLES: Record<ClientListItem['status'], string> = {
   pending: 'bg-amber-50 text-amber-700 border border-amber-200',
@@ -274,7 +275,7 @@ const AddClientModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       await createInvitation({ email: email.trim(), project_ids: Array.from(selectedIds), permissions }).unwrap();
       onClose();
     } catch (err: any) {
-      setError(err?.data?.detail || 'Could not send the invitation. Please try again.');
+      setError(formatApiError(err?.data, 'Could not send the invitation. Please try again.'));
     }
   };
 
@@ -299,7 +300,7 @@ const AddClientModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             <label className="block text-xs font-semibold text-[#94A3B8] tracking-wider uppercase mb-1">
               Client Email Address
             </label>
-            <input
+            <input maxLength={EMAIL_MAX_LENGTH}
               type="email"
               required
               value={email}
@@ -362,7 +363,7 @@ const EditAccessModal: React.FC<{ client: ClientListItem; onClose: () => void }>
       await updateAccess({ id: client.id, project_ids: Array.from(selectedIds), permissions }).unwrap();
       onClose();
     } catch (err: any) {
-      setError(err?.data?.detail || 'Could not update access. Please try again.');
+      setError(formatApiError(err?.data, 'Could not update access. Please try again.'));
     }
   };
 

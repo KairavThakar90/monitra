@@ -234,6 +234,7 @@ class StatusBar(QFrame):
         layout.setSpacing(12)
 
         self._msg = QLabel("Ready", self)
+        self._msg.setTextFormat(Qt.TextFormat.PlainText)   # server / validator text: shown literally, never as HTML
         self._msg.setFont(QFont("Segoe UI", 10))
         self._msg.setStyleSheet(f"color: {TEXT_MUTED};")
         layout.addWidget(self._msg)

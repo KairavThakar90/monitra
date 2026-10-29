@@ -13,6 +13,8 @@ dialog, connect, then fire the initial load) rather than the dialog alone,
 since the bug was in the interaction between the two, not in either widget
 by itself.
 """
+import re
+
 from PySide6.QtCore import QTime
 from PySide6.QtWidgets import QFormLayout
 
@@ -343,3 +345,49 @@ def test_the_reasons_are_the_backends_own_set():
     assert [value for value, _ in MANUAL_ENTRY_REASONS] == backend_values
     assert [label for _, label in MANUAL_ENTRY_REASONS] == backend_labels
     assert MANUAL_ENTRY_REASONS == tuple(REASONS)
+
+
+# ── The time fields are drawn, on the toolkit the build ships ───────────────
+#
+# v1.3.2 and v1.3.3 shipped with Start Time and End Time drawn empty, so no
+# custom time could be entered. The installer was built on whatever PySide6 was
+# newest that day (6.12.0, published 2026-10-08), and on Qt 6.12 a button-less
+# QTimeEdit whose stylesheet rule names a `border` lays its inner line edit out
+# one pixel wide. The value was still held -- Duration read "1h 0m" -- but
+# nothing could be seen or typed. Every test and every local run had used
+# 6.11.2, where the same rule is harmless. The rule no longer names a border
+# (setFrame(False) already removes it), PySide6 is pinned
+# (tests/test_dependency_pins.py), and the two tests below read the shown
+# fields' geometry back and the rule itself, so the field cannot collapse
+# quietly on the next toolkit either.
+
+
+def _shown(qapp, dialog):
+    dialog.show()
+    for _ in range(3):
+        qapp.processEvents()
+    return dialog
+
+
+def test_the_time_fields_show_their_whole_value(qapp):
+    """The inner edit of each time field is wide enough for its text and
+    takes most of the field -- not the 1 px Qt 6.12 gave it."""
+    dialog = _shown(qapp, ManualTimeEntryDialog(PROJECTS, initial_project_id=10))
+    try:
+        for field in (dialog.start_input, dialog.end_input):
+            edit = field.lineEdit()
+            needed = edit.fontMetrics().horizontalAdvance(field.text())
+            assert edit.width() >= needed + 4, (field.text(), edit.geometry(), field.geometry())
+            assert edit.width() >= field.width() * 0.8, (edit.geometry(), field.geometry())
+    finally:
+        dialog.close()
+
+
+def test_the_time_field_rule_names_no_border(qapp):
+    """`setFrame(False)` is what removes the frame; a `border` in the rule is
+    redundant on Qt 6.11 and collapses the field on Qt 6.12."""
+    dialog = ManualTimeEntryDialog(PROJECTS, initial_project_id=10)
+    rule = re.search(r"QTimeEdit#TimeEditInner\s*\{([^}]*)\}", dialog.styleSheet())
+    assert rule is not None
+    assert "border" not in rule.group(1), rule.group(1)
+    assert not dialog.start_input.hasFrame() and not dialog.end_input.hasFrame()

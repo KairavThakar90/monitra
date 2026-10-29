@@ -22,6 +22,7 @@ import { useAuth } from '../auth/authContext';
 import { DateRangeFilter, DEFAULT_RANGE, type DateRange } from '../dashboard/v2/filters';
 import { AppIcon } from "../../components/AppIcon";
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
+import { safeLabel } from '../../utils/safeText';
 
 /**
  * How often the Add Task / Login headcounts are re-read while the page is in
@@ -225,10 +226,10 @@ const MemberProfileView: React.FC<{ member: Member }> = ({ member }) => {
         <div className="w-full xl:w-1/3 space-y-6">
           <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm text-center sticky top-6">
             <div className={`mx-auto flex h-24 w-24 items-center justify-center rounded-2xl text-3xl font-black text-white shadow-md ${GRADIENT_CYAN_PURPLE}`}>
-              {(memberDetails.name || 'U').substring(0, 2).toUpperCase()}
+              {safeLabel(memberDetails.name, 'U').substring(0, 2).toUpperCase()}
             </div>
-            <h2 className="mt-5 text-2xl font-black text-slate-800">{memberDetails.name}</h2>
-            <p className="text-sm font-semibold text-slate-500">{memberDetails.designation || memberDetails.role}</p>
+            <h2 className="mt-5 text-2xl font-black text-slate-800">{safeLabel(memberDetails.name, 'Unnamed member')}</h2>
+            <p className="text-sm font-semibold text-slate-500">{safeLabel(memberDetails.designation, safeLabel(memberDetails.role))}</p>
             
             <div className="mt-5 flex justify-center gap-2">
               <span className={`inline-flex items-center rounded-md px-2.5 py-1 text-[11px] font-bold tracking-wider uppercase border ${memberDetails.status === 'active' ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : 'bg-rose-50 text-rose-600 border-rose-200'}`}>
@@ -242,7 +243,7 @@ const MemberProfileView: React.FC<{ member: Member }> = ({ member }) => {
             <div className="mt-8 divide-y divide-slate-100 border-t border-slate-100 text-left">
               <div className="py-3 flex justify-between items-center">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Email</span>
-                <span className="text-sm font-semibold text-slate-700">{memberDetails.email}</span>
+                <span className="text-sm font-semibold text-slate-700">{safeLabel(memberDetails.email)}</span>
               </div>
               <div className="py-3 flex justify-between items-center">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Floor</span>
@@ -1168,11 +1169,11 @@ export const AdminMembers: React.FC = () => {
                       <td className="px-4 py-4">
                         <div className="flex items-center gap-3">
                           <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white shadow-sm ${GRADIENT_CYAN_PURPLE}`}>
-                            {(member.name || 'U').substring(0, 2).toUpperCase()}
+                            {safeLabel(member.name, 'U').substring(0, 2).toUpperCase()}
                           </div>
                           <div className="min-w-0">
-                            <div className="font-bold text-slate-800 truncate cursor-pointer hover:text-blue-600 hover:underline transition" onClick={() => setSelectedProfileId(member.id)}>{member.name || '-'}</div>
-                            <div className="text-xs text-slate-500 truncate mt-0.5">{member.email || '-'}</div>
+                            <div className="font-bold text-slate-800 truncate cursor-pointer hover:text-blue-600 hover:underline transition" onClick={() => setSelectedProfileId(member.id)}>{safeLabel(member.name)}</div>
+                            <div className="text-xs text-slate-500 truncate mt-0.5">{safeLabel(member.email)}</div>
                           </div>
                         </div>
                       </td>
@@ -1188,7 +1189,7 @@ export const AdminMembers: React.FC = () => {
                       <td className="px-4 py-4">
                         <StatusBadge status={member.status} />
                       </td>
-                      <td className="px-4 py-4 font-medium text-slate-600">{member.designation || '-'}</td>
+                      <td className="px-4 py-4 font-medium text-slate-600">{safeLabel(member.designation)}</td>
                       <td className="px-4 py-4 font-medium text-slate-600">{member.floor || '-'}</td>
                       <td className="px-4 py-4">
                         <AddTaskSwitch

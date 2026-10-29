@@ -19,6 +19,7 @@ from background_services.public_api import (
     ACTIVITY_DESKTOP_DAYS, DateAvailability, SCREENSHOT_DESKTOP_DAYS,
 )
 from core.logging_setup import get_logger
+from core.text_safety import plain_tooltip
 from core.validation import SEARCH_MAX_LENGTH, validate_search_term
 from core.time_format import ist_clock, ist_today
 
@@ -810,7 +811,7 @@ class UsageActivityRow(QFrame):
         # own tooltip too (see TOOLTIP_QSS): this one came out as dark text
         # on whatever the platform draws behind a transparent tooltip.
         self.title_lbl.setStyleSheet(f"QLabel {{ color: {TEXT_PRIMARY}; }}{TOOLTIP_QSS}")
-        self.title_lbl.setToolTip(full_title)
+        self.title_lbl.setToolTip(plain_tooltip(full_title))
         mid_layout.addWidget(self.title_lbl)
 
         # Subtitle (Clickable URL for URLs tab)
@@ -827,7 +828,7 @@ class UsageActivityRow(QFrame):
                 }}
                 {TOOLTIP_QSS}
             """)
-            self.sub_lbl.setToolTip(f"Click to open: {url_text}")
+            self.sub_lbl.setToolTip(plain_tooltip(f"Click to open: {url_text}"))
             self.sub_lbl.mousePressEvent = lambda e, u=url_text: safe_open_url(u)
             # The label draws its own text, so a stylesheet `:hover` underline
             # no longer reaches it; the underline is the font's, set on enter
@@ -1857,6 +1858,13 @@ class ActivitySection(QWidget):
     def set_screenshot_status(self, status: Optional[dict]) -> None:
         """Render one `ScreenshotStatus` dict, or hide the line."""
         label = self._shot_status
+        if not isinstance(status, dict):
+            # Only a real status dict is shown. The label is plain text (a headline is somebody
+            # else's words and must read literally), so anything else handed in -- a test
+            # double's stand-in object, say -- would be drawn as its repr, hundreds of pixels
+            # wide, and become the panel's minimum width. A host without a real status shows
+            # nothing, which is what the docstring of _connect_screenshot_status promises.
+            status = None
         headline = (status or {}).get("headline") or ""
         if not headline or (status or {}).get("state") == "inactive":
             label.setVisible(False)
@@ -1866,13 +1874,14 @@ class ActivitySection(QWidget):
         glyph, colour = self._STATUS_STYLE.get(
             (status or {}).get("severity"), ("", TEXT_SECONDARY)
         )
+        label.setTextFormat(Qt.TextFormat.PlainText)
         label.setText(f"{glyph} {headline}".strip())
         label.setStyleSheet(
             f"QLabel#ScreenshotStatus {{ color: {colour}; font-size: 12px; "
             f"font-weight: 600; background: transparent; }}"
         )
         detail = (status or {}).get("detail") or ""
-        label.setToolTip(detail)
+        label.setToolTip(plain_tooltip(detail))
         label.setVisible(True)
 
     def set_tracking_active(self, active: bool) -> None:

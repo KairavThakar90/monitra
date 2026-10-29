@@ -14,7 +14,9 @@ class AdjustmentCreate(BaseModel):
     desktop's unwanted-activity rules. Negative seconds only from clients;
     identity/context fields are derived server-side from the time entry."""
     adjustment_seconds: int = Field(..., lt=0, ge=-MAX_ADJUSTMENT_MAGNITUDE_SECONDS)
-    reason: str = Field(..., min_length=1)
+    #: Machine-written by the desktop's unwanted-activity rules, so bounded rather than
+    #: content-checked (a key name may be `<`); unbounded, it was a way to store a megabyte.
+    reason: str = Field(..., min_length=1, max_length=1000)
     source_activity_type: Optional[str] = Field(None, max_length=50)
     source_key_or_action: Optional[str] = Field(None, max_length=100)
     #: The desktop's client_event_id for the unwanted-activity event that

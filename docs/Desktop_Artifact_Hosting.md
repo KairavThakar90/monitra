@@ -246,13 +246,14 @@ inventory.
    `.dmg` = `application/x-apple-diskimage` (or in the site's `web.config`:
    `<system.webServer><staticContent><mimeMap fileExtension=".dmg"
    mimeType="application/x-apple-diskimage" /></staticContent></system.webServer>`).
-   **Since 2026-10-27 the repository ships this mapping itself:**
-   `frontend/public/download_app_files/web.config`, scoped to that folder only
-   (Vite copies `public/` verbatim, so it deploys with the site; the site root's
-   own configuration is untouched). What remains for the owner is to deploy the
-   frontend and check (runbook §8.7). Note also that a *missing* file under that
-   folder answers `200 text/html` (the site's index page), not `404`; the
-   desktop refuses such an answer and so does the tool below. Then prove it:
+   **Set it at the site level in IIS Manager, by hand.** From 2026-10-27 to
+   2026-10-29 the repository shipped the mapping itself as a folder-scoped
+   `frontend/public/download_app_files/web.config`; after the deploy that carried
+   it the whole folder -- `.exe` included -- answered `500`, so the file was
+   removed again and must also be deleted from the deployed folder (runbook
+   §8.7, step 1). Note also that a *missing* file under that folder answers
+   `200 text/html` (the site's index page), not `404`; the desktop refuses such
+   an answer and so does the tool below. Then prove it:
    `python desktop/tools/verify_download_urls.py --base-url https://staff.peakworkos.com/download_app_files/ --version <v> --artifacts <ci outputs>`
    must print three `OK` lines.
 8. Run the first real update on a **signed** build, from a pilot account, on a

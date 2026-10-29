@@ -10,6 +10,7 @@ panel's header and is driven by the screenshot service's own state through the
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -118,3 +119,24 @@ class TestItFollowsTheService:
             time.sleep(0.01)
         assert "Uploading" in widget._shot_status.text()
         runtime.screenshot._tracking = False
+
+
+class TestAHostWithoutARealStatus:
+    def test_a_stand_in_object_is_not_drawn_as_its_repr(self, qapp):
+        """The label is plain text, so whatever it is given is drawn literally. A
+        `MagicMock` host answers `screenshot_status()` with a mock whose `.get()` is
+        another mock -- and `<MagicMock name=... id=...>` drawn as text is ~800 px
+        wide and differs in width from one instance to the next (the id). On the
+        macOS runners that made it the Activity panel's minimum width and failed
+        `test_layout_stability` by 1-3 px per panel (run 40878108382, 2026-10-29).
+        Only a real status dict is ever shown."""
+        widget = ActivitySection(api=MagicMock(), api_client=MagicMock())
+        try:
+            assert widget._shot_status.isHidden()
+            assert widget._shot_status.text() == ""
+            widget.set_screenshot_status(MagicMock())
+            assert widget._shot_status.isHidden() and widget._shot_status.text() == ""
+            widget.set_screenshot_status("not a dict")
+            assert widget._shot_status.isHidden()
+        finally:
+            widget.deleteLater()

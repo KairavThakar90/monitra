@@ -14,6 +14,7 @@ import { formatHMS, formatISTDate, formatISTTime, formatISTTime12, istTodayISO, 
 import { useIstToday, useOnResume } from '../../hooks/useResume';
 import { Pagination } from '../../components/Pagination';
 import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
+import { formatApiError } from '../../api/utils';
 
 // The IST calendar day, read when needed. This used to be the UTC day frozen
 // at module load, which called the wrong day "today" between 00:00 and 05:30
@@ -248,7 +249,7 @@ const SearchablePicker: React.FC<{
       {open && (
         <div className="absolute left-0 right-0 top-full z-40 mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
           <div className="border-b border-slate-100 p-2.5">
-            <input
+            <input maxLength={SEARCH_MAX_LENGTH}
               autoFocus
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -532,7 +533,7 @@ export const AdminTimeTracking: React.FC = () => {
       if (error?.status === 409 || error?.data?.detail === 'Conflict' || error?.data?.detail?.includes('overlap')) {
         showToast('Conflict: This entry overlaps with existing tracked time.', 'error');
       } else {
-        showToast(error?.data?.detail || 'Failed to approve request', 'error');
+        showToast(formatApiError(error?.data, 'Failed to approve request'), 'error');
       }
     }
   };
@@ -542,7 +543,7 @@ export const AdminTimeTracking: React.FC = () => {
       await rejectRequest(id).unwrap();
       showToast('Rejected manual request', 'success');
     } catch (error: any) {
-      showToast(error?.data?.detail || 'Failed to reject request', 'error');
+      showToast(formatApiError(error?.data, 'Failed to reject request'), 'error');
     }
   };
 
@@ -551,7 +552,7 @@ export const AdminTimeTracking: React.FC = () => {
       await deleteRequest(id).unwrap();
       showToast('Deleted manual request', 'success');
     } catch (error: any) {
-      showToast(error?.data?.detail || 'Failed to delete request', 'error');
+      showToast(formatApiError(error?.data, 'Failed to delete request'), 'error');
     }
   };
 
@@ -718,7 +719,7 @@ export const AdminTimeTracking: React.FC = () => {
       setActiveTab('requests');
       setIsDrawerOpen(false);
     } catch (error: any) {
-      setFormError(error?.data?.detail?.message || error?.data?.detail || 'Failed to save the manual time entry.');
+      setFormError(formatApiError(error?.data, 'Failed to save the manual time entry.'));
     }
   };
 

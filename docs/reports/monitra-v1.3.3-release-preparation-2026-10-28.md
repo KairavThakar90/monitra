@@ -272,3 +272,42 @@ python -m alembic current
 
 Until step 1 has produced the three artifacts and step 5 has run on real devices, 1.3.3 is a
 verified **candidate**, not a release.
+
+## 9. Found after the build (2026-10-29): 1.3.3 must not be published -- 1.3.4 replaces it
+
+The owner installed the run-40 Windows artifact and reported that the Request dialog's
+**Start Time and End Time were empty and could not be typed into**, so no custom time could
+be requested. 1.3.2 had the same defect.
+
+**Cause -- desktop only; backend and website not involved.** `desktop/requirements.txt`
+listed a bare `PySide6`, so every CI build installed the newest toolkit of the day. PySide6
+6.12.0 was published on 2026-10-08; 1.3.2 was built on 2026-10-09 and 1.3.3 on 2026-10-29,
+so both shipped Qt 6.12.0 (`_internal/PySide6/Qt6Core.dll` 6.12.0.0 in the installed
+1.3.3), while every test, every local run and the local `dist/` build used 6.11.2. On Qt
+6.12 a button-less `QTimeEdit` whose stylesheet rule names a `border` lays its inner line
+edit out one pixel wide; the rule for the two time fields carried a redundant `border: none`
+(`setFrame(False)` already removes the frame). The value was held -- "Duration: 1h 0m" was
+right -- which is why it read as a save problem. Reproduced with the real dialog on both
+toolkits: 6.11.2 inner edit 252 px, 6.12.0 inner edit 1 px.
+
+**Fix (branch `smit`, after 44b143f):**
+
+- `ui/task_table.py`: the `QTimeEdit#TimeEditInner` rule no longer names a border. Rendered
+  identically on 6.11.2 and 6.12.0 (inner edit 252 px on both; the Request dialog pictured
+  the same on both).
+- `requirements.txt`: `PySide6==6.11.2`, the version the suite, the local builds and the
+  real-window checks run on. Moving the pin is deliberate (install, run the suite, then
+  change the line).
+- `tests/test_manual_time_entry_dialog.py`: shows the dialog and reads the time fields'
+  geometry back (fails on 6.12 with the old rule -- verified -- and passes with the fix on
+  both), and reads the rule itself for a `border`.
+- `tests/test_dependency_pins.py`: fails on an unpinned PySide6 and when the PySide6 under
+  test is not the pinned one, so a developer's environment and the build are the same
+  toolkit.
+- `DO_NOT_DO.md`: two entries (the border rule; the unpinned toolkit).
+- `version.py` 1.3.4, `CHANGELOG.md` `## [1.3.4]`. The `v1.3.3` tag is already pushed and a
+  version identifies exactly one build, so the corrective release is 1.3.4; the 1.3.3
+  artifacts in `dist-release-1.3.3/` are not to be hosted or registered.
+
+Steps 3 to 5 in section 8 apply to **1.3.4** (`DOWNLOAD_VERSION = '1.3.4'`, tag `v1.3.4`),
+after a CI build of the fixed commit.

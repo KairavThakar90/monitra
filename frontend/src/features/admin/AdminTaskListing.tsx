@@ -15,10 +15,12 @@ import { formatHMS } from "../../utils/duration";
 import { PaginationArrow } from '../../components/PaginationArrow';
 import { DateRangeFilter, MemberMultiSelect, ProjectMultiSelect, rangeFor, DEFAULT_RANGE, type DateRange } from '../dashboard/v2/filters';
 import { useGetAllMembersQuery } from '../../store/api/membersApi';
-import { FieldError, useFormValidation } from '../../validation';
+import { FieldError, SEARCH_MAX_LENGTH, useFormValidation } from '../../validation';
 import { useAuth } from '../auth/authContext';
 import { usageColor } from '../dashboard/v2/theme';
 import { billingTypeLabel, billingTypesFor, type BillingKind, type BillingScope } from '../../utils/billing';
+import { formatApiError } from '../../api/utils';
+import { safeLabel } from '../../utils/safeText';
 
 const formatDate = (dateStr: string | null) => {
   if (!dateStr) return "-";
@@ -140,7 +142,7 @@ export const ProjectPicker: React.FC<{
       {open && (
         <div className="absolute left-0 right-0 top-full z-30 mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
           <div className="border-b border-slate-100 p-2.5">
-            <input
+            <input maxLength={SEARCH_MAX_LENGTH}
               autoFocus
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -168,7 +170,7 @@ export const ProjectPicker: React.FC<{
                 className={`block w-full truncate rounded-lg px-3 py-2 text-left text-sm transition hover:bg-slate-50 ${project.id === value ? "bg-blue-50 font-bold text-blue-700" : "font-semibold text-slate-700"}`}
                 title={project.project_name}
               >
-                {project.project_name}
+                {safeLabel(project.project_name)}
               </button>
             )) : (
               <p className="px-3 py-5 text-center text-xs font-semibold text-slate-400">{emptyText}</p>
@@ -214,7 +216,7 @@ const TaskBudgetCell: React.FC<{ projectId: number; task: ProjectTaskSummaryTask
       setSaved(value);
       setEditing(false);
     } catch (err: any) {
-      showToast(err?.data?.detail || 'Could not save the estimated hours.', 'error');
+      showToast(formatApiError(err?.data, 'Could not save the estimated hours.'), 'error');
     }
   };
 
@@ -531,7 +533,7 @@ export const AdminTaskListing: React.FC = () => {
       // changing a filter.
     } catch (err: any) {
       console.error(err);
-      const errorMsg = err?.data?.detail || err?.data?.message || "Unable to create task. Please try again.";
+      const errorMsg = formatApiError(err?.data, typeof err?.data?.message === 'string' ? err.data.message : "Unable to create task. Please try again.");
       setFormError(errorMsg);
       showToast(errorMsg, "error");
     }

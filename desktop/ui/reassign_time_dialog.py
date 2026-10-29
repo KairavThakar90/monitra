@@ -165,6 +165,7 @@ class ReassignTimeDialog(QDialog):
         card.addWidget(self.task_combo)
 
         self.status_label = QLabel("", self.card)
+        self.status_label.setTextFormat(Qt.TextFormat.PlainText)   # server / validator text: shown literally, never as HTML
         self.status_label.setFont(QFont("Segoe UI", 10))
         self.status_label.setWordWrap(True)
         self.status_label.setVisible(False)

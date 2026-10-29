@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
     QListView, QVBoxLayout, QWidget,
 )
 
+from core.text_safety import clean_search_text
 from core.validation import SEARCH_MAX_LENGTH
 from ui import icons
 from ui.styles import (
@@ -296,7 +297,7 @@ class _PickerPopup(QFrame):
     # ── Filtering and choosing ────────────────────────────────────────────────
 
     def _on_search_changed(self, text: str) -> None:
-        self.proxy.set_term(text)
+        self.proxy.set_term(clean_search_text(text))
         self._fit()
         if self.proxy.rowCount() > 0:
             # The first match is the one Enter takes.

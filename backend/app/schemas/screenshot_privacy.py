@@ -2,7 +2,9 @@ from pydantic import BaseModel, model_validator
 from typing import List, Literal, Optional
 from datetime import datetime
 
-from app.core.validation import IdentifierList
+from app.core.validation import (
+    Identifier, IdentifierList, Name, OptionalName, OptionalPlainText, PlainText,
+)
 
 
 class ScreenshotRuleScope(BaseModel):
@@ -37,15 +39,21 @@ class ScreenshotApplicationBase(BaseModel):
     is_active: bool = True
 
 class ScreenshotApplicationCreate(ScreenshotApplicationBase):
+    # Re-declared here, not on the Base: the Response models inherit the Base, and a row stored
+    # before these rules must still be returned as it is. These are what an administrator TYPES.
+    name: Name
+    process_name: PlainText
+    category: Name
+    description: OptionalPlainText = None
     #: Optional. Omitted, the rule is only added to the catalogue (nobody is
     #: excluded until the per-member toggle is used), exactly as before.
     apply_to: Optional[ScreenshotRuleScope] = None
 
 class ScreenshotApplicationUpdate(BaseModel):
-    name: Optional[str] = None
-    process_name: Optional[str] = None
-    category: Optional[str] = None
-    description: Optional[str] = None
+    name: OptionalName = None
+    process_name: OptionalPlainText = None
+    category: OptionalName = None
+    description: OptionalPlainText = None
     is_active: Optional[bool] = None
 
 class ScreenshotApplicationResponse(ScreenshotApplicationBase):
@@ -68,14 +76,19 @@ class ScreenshotUrlBase(BaseModel):
     is_active: bool = True
 
 class ScreenshotUrlCreate(ScreenshotUrlBase):
+    name: Name
+    #: A hostname or a pattern such as `*.example.com` -- so plain text, not the strict DOMAIN rule.
+    domain: PlainText
+    url_pattern: PlainText
+    category: Name
     #: See `ScreenshotApplicationCreate.apply_to`.
     apply_to: Optional[ScreenshotRuleScope] = None
 
 class ScreenshotUrlUpdate(BaseModel):
-    name: Optional[str] = None
-    domain: Optional[str] = None
-    url_pattern: Optional[str] = None
-    category: Optional[str] = None
+    name: OptionalName = None
+    domain: OptionalPlainText = None
+    url_pattern: OptionalPlainText = None
+    category: OptionalName = None
     is_active: Optional[bool] = None
 
 class ScreenshotUrlResponse(ScreenshotUrlBase):
@@ -98,7 +111,11 @@ class ScreenshotExclusionBase(BaseModel):
     is_excluded: bool = True
 
 class ScreenshotExclusionCreate(ScreenshotExclusionBase):
-    pass
+    user_id: Identifier
+    application_id: Optional[Identifier] = None
+    url_id: Optional[Identifier] = None
+    #: The two the table's CHECK constraint allows; anything else was a 500 from the database.
+    exclusion_type: Literal["application", "url"]
 
 class ScreenshotExclusionUpdate(BaseModel):
     is_excluded: bool
