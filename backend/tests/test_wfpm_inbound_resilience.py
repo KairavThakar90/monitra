@@ -123,9 +123,13 @@ class ProjectLinkedFromTaskTests(_Permitted):
         self.assertEqual(self._tasks(), [])
 
     def test_an_invalid_project_block_is_refused_and_no_task_is_made(self):
-        with self.assertRaises(HTTPException) as ctx:
-            self.create(project=WfpmTaskProject(project_name="   "))
-        self.assertEqual(ctx.exception.status_code, 422)
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):                  # the schema refuses it at the boundary now
+            WfpmTaskProject(project_name="   ")
+        for bad in ('{"a": 1}', "<script>alert(1)</script>"):
+            with self.assertRaises(ValidationError):
+                WfpmTaskProject(project_name=bad)
         self.assertEqual((self._projects(), self._tasks()), ([], []))
 
     def test_the_project_gets_its_default_tasks_like_any_other(self):

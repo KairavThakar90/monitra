@@ -192,15 +192,27 @@ class CreateProjectTests(_Db):
         self.db.commit()   # the unique index is per organization
         self.assertEqual(WfpmSyncService.get_project(self.db, self.admin, "55")["project_name"], "Website rebuild")
 
+    def test_the_wfpm_schemas_refuse_a_blank_or_markup_name_at_the_boundary(self):
+        """The WFPM request schemas now apply Monitra's own NAME rule, so FastAPI answers 422 before
+        any service runs (they were a thin `str` that accepted `{"a":1}` and `<script>`)."""
+        from pydantic import ValidationError
+
+        for bad in ("   ", '{"a": 1}', "<script>alert(1)</script>", "bad\x00name"):
+            with self.assertRaises(ValidationError, msg=bad):
+                WfpmProjectCreate(project_name=bad, deadline=TOMORROW, billing_type="free")
+            with self.assertRaises(ValidationError, msg=bad):
+                _project_payload(project_name=bad)
+
     def test_a_blank_name_is_a_422_not_a_500(self):
-        """The thin WFPM schema accepts it; Monitra's own `ProjectCreate`
-        refuses it. Raised inside a route that would be a 500."""
+        """The service still guards a payload that got past the schema (built without validation
+        here): Monitra's own `ProjectCreate` refuses it. Raised inside a route that would be a 500."""
+        blank_sync = _project_payload().model_copy(update={"project_name": "   "})
+        blank_unmapped = WfpmProjectCreate.model_construct(
+            project_name="   ", description=None, employee_ids=[], deadline=TOMORROW, billing_type="free",
+        )
         for create in (
-            lambda: WfpmSyncService.create_project(self.db, self.admin, _project_payload(project_name="   ")),
-            lambda: WfpmSyncService.create_unmapped_project(
-                self.db, self.admin,
-                WfpmProjectCreate(project_name="   ", deadline=TOMORROW, billing_type="free"),
-            ),
+            lambda: WfpmSyncService.create_project(self.db, self.admin, blank_sync),
+            lambda: WfpmSyncService.create_unmapped_project(self.db, self.admin, blank_unmapped),
         ):
             with self.assertRaises(HTTPException) as ctx:
                 create()

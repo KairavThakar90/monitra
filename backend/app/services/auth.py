@@ -17,6 +17,7 @@ from app.models.refresh_token import RefreshToken
 from app.models.sso_handoff_token import SsoHandoffToken
 from app.core.login_access import login_disabled, refuse_if_login_disabled
 from app.core.permissions import ROLE_PERMISSIONS, resolve_role_alias
+from app.core.validation import InputValidationError, validate_name
 from fastapi import HTTPException, status
 from starlette.concurrency import run_in_threadpool
 from app.services.external_auth_service import ExternalAuthService
@@ -52,6 +53,24 @@ def _provider_block_diagnostics(response: httpx.Response) -> tuple[dict[str, str
     title_match = re.search(r"<title[^>]*>\s*(.*?)\s*</title>", body, flags=re.IGNORECASE | re.DOTALL)
     title = re.sub(r"\s+", " ", title_match.group(1)).strip()[:160] if title_match else None
     return headers, title
+
+def _profile_text(value, label: str) -> str | None:
+    """A name or designation the identity provider sent, by the shared NAME rule -- or None.
+
+    The provider's response is as untrusted as a request body: this used to be `str(value)` and a
+    straight assignment, so a dict or list became the text `{...}` / `[...]` and was stored as a
+    member's name (raw JSON on the Members page), and markup or control characters were stored
+    as sent. Anything that is not text, or that the rule refuses, is None: the caller keeps the
+    account's current value rather than overwriting it with something that was never accepted.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return validate_name(value, field_label=label)
+    except InputValidationError:
+        logger.warning("AUTH_PROVIDER_FIELD_REFUSED: the provider's %s was not usable and was ignored", label.lower())
+        return None
+
 
 def _normalize_role(value) -> str | None:
     """A provider role name reduced to the form ROLE_PERMISSIONS is keyed on.
@@ -380,7 +399,8 @@ class AuthService:
         hubstaff_user_id = wp_user.get("hubstaff_user_id")
         hubstaff_user_id = str(hubstaff_user_id).strip() if hubstaff_user_id is not None else None
         email = str(wp_user.get("email", "")).strip().lower()
-        name = str(wp_user.get("name", "")).strip()
+        raw_name = wp_user.get("name")
+        name = raw_name.strip() if isinstance(raw_name, str) else ""
         if not email or not name:
             missing = [
                 field for field, value in (("email", email), ("name", name)) if not value
@@ -390,7 +410,8 @@ class AuthService:
                 ", ".join(missing),
             )
             raise HTTPException(status_code=502, detail="Invalid authentication provider response")
-        hubstaff_designation = wp_user.get("hubstaff_designation")
+        hubstaff_designation = _profile_text(wp_user.get("hubstaff_designation"), "Designation")
+        safe_name = _profile_text(name, "Name")
         idle_enabled = wp_user.get("idle_enabled", True)
         idle_minutes = wp_user.get("idle_minutes", 5)
         # Provisioning values only (an existing account keeps its own; see
@@ -464,7 +485,8 @@ class AuthService:
             if hubstaff_user_id:
                 user.hubstaff_user_id = hubstaff_user_id
             user.email = email
-            user.name = name
+            if safe_name:
+                user.name = safe_name
             if hubstaff_designation:
                 user.designation = hubstaff_designation
             # NOT synced from the provider. They are per-member settings an
@@ -510,12 +532,15 @@ class AuthService:
             # Ensure username is unique and valid
             username_val = wp_user.get("username") or email.split("@")[0]
 
+            if not safe_name:
+                # A new account has no earlier name to keep.
+                raise HTTPException(status_code=502, detail="Invalid authentication provider response")
             user_create = UserCreate(
                 organization_id=organization_id,
                 hubstaff_user_id=hubstaff_user_id,
                 username=username_val[:255],
                 email=email,
-                name=name,
+                name=safe_name,
                 designation=hubstaff_designation,
                 role_name=role_name,
                 permissions=resolved_permissions,
@@ -898,11 +923,14 @@ class AuthService:
                 db.commit()
 
             username_val = str(profile.get("username") or email.split("@")[0])
+            safe_name = _profile_text(name, "Name")
+            if not safe_name:
+                raise HTTPException(status_code=502, detail="Invalid authentication provider response")
             user_create = UserCreate(
                 organization_id=organization_id,
                 username=username_val[:255],
                 email=email,
-                name=name,
+                name=safe_name,
                 role_name=role_name,
                 permissions={p: True for p in ROLE_PERMISSIONS[role_name]},
                 # Plain minutes -- see the note beside the other

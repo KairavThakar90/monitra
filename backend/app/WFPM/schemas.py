@@ -21,8 +21,8 @@ from typing import Annotated, Any, Literal, Optional
 from pydantic import AfterValidator, BaseModel, BeforeValidator, Field
 
 from app.core.validation import (
-    Identifier, InputValidationError, OptionalIdempotencyKey, OptionalIdentifier,
-    validate_idempotency_key, validate_identifier,
+    Identifier, InputValidationError, Name, OptionalIdempotencyKey, OptionalIdentifier, OptionalName,
+    OptionalPlainDescription, validate_idempotency_key, validate_identifier,
 )
 from app.schemas.project_management import BillingType, PersonRead, ProjectRead, TaskRead
 
@@ -86,8 +86,8 @@ class WfpmProjectCreate(BaseModel):
     #: never chooses them. The service pins `leader_id` to
     #: `app.WFPM.service.DEFAULT_PROJECT_LEADER_ID` and `fixed_hours` to `None`
     #: for every project it creates. See app/WFPM/service.py.
-    project_name: str = Field(..., max_length=150)
-    description: Optional[str] = Field(None, max_length=5000)
+    project_name: Name
+    description: OptionalPlainDescription = None
     employee_ids: list[int] = Field(default_factory=list)
     deadline: date
     billing_type: BillingType
@@ -98,7 +98,7 @@ class WfpmTaskCreate(BaseModel):
     #: names one. The route pins it to the authenticated caller's own id for
     #: every task it creates, so a request can never assign another user's
     #: task. See app/WFPM/router.py.
-    name: str = Field(..., max_length=150)
+    name: Name
     client_op: OptionalIdempotencyKey = None
 
 
@@ -118,8 +118,8 @@ class WfpmProjectSyncCreate(WfpmProjectCreate):
 class WfpmProjectSyncUpdate(BaseModel):
     """What WFPM may change on a linked project. Every field is optional and
     only the ones actually sent are applied."""
-    project_name: Optional[str] = Field(None, max_length=150)
-    description: Optional[str] = Field(None, max_length=5000)
+    project_name: OptionalName = None
+    description: OptionalPlainDescription = None
     #: An explicit null clears the deadline.
     deadline: Optional[date] = None
     #: By name, because WFPM does not know Monitra's status ids.
@@ -136,8 +136,8 @@ class WfpmTaskProject(BaseModel):
     exactly the rules of `POST /WFPM/sync/projects`, and then the task. Ignored
     when the project is already linked: a change to a project is a PATCH.
     """
-    project_name: str = Field(..., max_length=150)
-    description: Optional[str] = Field(None, max_length=5000)
+    project_name: Name
+    description: OptionalPlainDescription = None
     employee_ids: list[int] = Field(default_factory=list)
     deadline: Optional[date] = None
     billing_type: BillingType = BillingType.free
@@ -147,7 +147,7 @@ class WfpmTaskSyncCreate(BaseModel):
     #: The task's id in WFPM. The idempotency key of this create, and the id a
     #: timer started on this task reports back to WFPM.
     wfpm_task_id: WfpmId
-    name: str = Field(..., max_length=150)
+    name: Name
     #: A Monitra user id. Optional: a task may be created unassigned and given
     #: an assignee later through the assignee route.
     assignee_id: OptionalIdentifier = None
@@ -167,7 +167,7 @@ class WfpmTaskSyncCreate(BaseModel):
 class WfpmTaskSyncUpdate(BaseModel):
     """What WFPM may change on a linked task. Only the fields sent are
     applied. The assignee is changed through its own route, not here."""
-    name: Optional[str] = Field(None, max_length=150)
+    name: OptionalName = None
     #: By name, because WFPM does not know Monitra's status ids.
     status: Optional[Literal["todo", "in_progress", "completed"]] = None
     #: An explicit null clears the task's budget.

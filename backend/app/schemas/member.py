@@ -5,7 +5,7 @@ from typing import Annotated, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
-from app.core.validation import optional_integer_field
+from app.core.validation import optional_integer_field, validate_email, validate_name
 
 #: Screenshot capture interval, in minutes (`users.capture_frequency`).
 #:
@@ -69,12 +69,22 @@ class MemberFloor(str, Enum):
 
 
 def _clean_required(value: str, field_name: str, max_length: int) -> str:
-    cleaned = value.strip()
-    if not cleaned:
+    """A member's name or designation, by the shared NAME rule.
+
+    This was a strip-and-length check, so `{"a": 1}`, `<script>` and control characters were
+    stored as somebody's name and shown on the Members page as exactly that -- raw JSON in the
+    member details. The shared rule refuses markup, whole JSON/XML documents and control
+    characters, and still accepts every real name (apostrophes, hyphens, accents, any script).
+    """
+    if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} cannot be empty")
-    if len(cleaned) > max_length:
-        raise ValueError(f"{field_name} must be {max_length} characters or fewer")
-    return cleaned
+    return validate_name(value, field_label=field_name, max_length=max_length)
+
+
+def _clean_email(value: str) -> str:
+    """The shared EMAIL rule (control characters, length, shape), lower-cased throughout:
+    members are looked up by their lower-cased address, so the local part is folded too."""
+    return validate_email(value).lower()
 
 
 class MemberCreate(BaseModel):
@@ -98,10 +108,7 @@ class MemberCreate(BaseModel):
     @field_validator("email")
     @classmethod
     def normalize_email(cls, value: str):
-        email = value.strip().lower()
-        if len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
-            raise ValueError("email must be a valid email address")
-        return email
+        return _clean_email(value)
 
     @model_validator(mode="after")
     def validate_dates(self):
@@ -165,9 +172,7 @@ class MemberUpdate(BaseModel):
     def normalize_optional_email(cls, value: Optional[str]):
         if value is None:
             return value
-        email = value.strip().lower()
-        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
-            raise ValueError("email must be a valid email address")
+        email = _clean_email(value)
         return email
 
 
