@@ -113,7 +113,9 @@ class SignInIsRefusedTests(unittest.TestCase):
         row = RefreshToken()
         row.user_id = 77
         row.revoked_at = None
-        row.expires_at = NOW + timedelta(days=30)
+        # Relative to the real clock: `NOW + 30 days` was a fixed date, so this test began failing on the day that
+        # window ended (2026-10-29) with 'session expired' -- the refresh path it is not about.
+        row.expires_at = datetime.now(timezone.utc) + timedelta(days=30)
         db = MagicMock()
         db.scalar.return_value = row
         with patch("app.services.auth.UserRepository.get_by_id", return_value=_user(can_login=False)):

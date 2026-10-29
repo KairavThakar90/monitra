@@ -36,11 +36,46 @@ from app.schemas.screenshot_privacy import ScreenshotRuleScope
 #: would only reach an existing administrator after they next sign in.
 PRIVACY_MANAGE_ROLES = frozenset({"administrator", "org_admin", "super_admin"})
 
+#: Who may create, edit and delete privacy rules and a member's exclusions: the administrators and HR --
+#: the people responsible for what the organisation records about its staff (the same two roles that hold
+#: `screenshots:delete`). Matched on role name, for the reason above. Applying a *new* rule to members at
+#: creation (`apply_to`) stays the administrators' act (`PRIVACY_MANAGE_ROLES`).
+PRIVACY_RULE_ROLES = PRIVACY_MANAGE_ROLES | {"hr"}
+
 #: Accounts that never capture screenshots, so a rule is never applied to them.
 NOT_CAPTURED_ROLES = frozenset({"client", "release_bot"})
 
 
 class ScreenshotPrivacyService:
+    @staticmethod
+    def require_rule_manager(current_user: User) -> User:
+        """The gate on every route that changes a privacy rule or an exclusion. Administrators and HR only;
+        a service principal, a client, a leader, a manager and an employee are refused with a 403 before
+        anything is read or written."""
+        role = resolve_role_alias((current_user.role_name or "").strip().lower())
+        if getattr(current_user, "is_service_principal", False) or role not in PRIVACY_RULE_ROLES:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions for this action",
+            )
+        if not current_user.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account is not associated with an organization.",
+            )
+        return current_user
+
+    @staticmethod
+    def member_in_caller_organization(db: Session, current_user: User, user_id: int) -> User:
+        """The member `user_id`, if -- and only if -- they belong to the caller's organization. Anything else
+        is a 404, the same answer as for a member who does not exist, so the route does not reveal who is."""
+        member = db.scalars(
+            select(User).where(User.id == user_id, User.organization_id == current_user.organization_id)
+        ).first()
+        if member is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found")
+        return member
+
     @staticmethod
     def _require_manage(current_user: User) -> int:
         """The administrator gate, returning the organization they act in."""

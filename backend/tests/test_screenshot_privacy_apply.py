@@ -312,12 +312,16 @@ class LeavingTheFilterOutTests(PrivacyCase):
         self.assertEqual(self.count(ScreenshotApplication), 1)
         self.assertEqual(self.count(ScreenshotExclusion), 0)
 
-    def test_it_still_needs_no_administrator(self):
-        """Unchanged on purpose: only the *new* ability to exclude other people
-        is gated. (The catalogue endpoints are open to any signed-in user today;
-        that is a separate decision.)"""
+    def test_the_plain_request_now_needs_an_administrator_or_hr_like_every_other_change_to_a_rule(self):
+        """It used to need nobody ("the catalogue endpoints are open to any signed-in user; that is a
+        separate decision"). That decision has been made: changing a rule is for administrators and HR
+        (`test_screenshot_privacy_authorization.py` holds the full matrix). Applying a rule to members
+        stays the administrators' alone."""
         self.as_user(ALICE)
+        self.assertEqual(self.create_app().status_code, 403)
+        self.assertEqual(self.create_url().status_code, 403)
 
+        self.as_user(HR)
         self.assertEqual(self.create_app().status_code, 200)
         self.assertEqual(self.create_url().status_code, 200)
 

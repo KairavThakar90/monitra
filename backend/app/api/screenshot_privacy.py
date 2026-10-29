@@ -1,5 +1,5 @@
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.services.desktop_config_revision import DesktopConfigRevisionService
 from sqlalchemy.orm import Session
@@ -22,15 +22,22 @@ from app.services.screenshot_privacy import ScreenshotPrivacyService
 
 router = APIRouter(prefix="/api/v1/screenshot", tags=["Screenshot Privacy"])
 
+
+def require_rule_manager(current_user: User = Depends(get_current_user)) -> User:
+    """Administrators and HR: the only people who may change a privacy rule or anyone's exclusions. Enforced
+    here on the server for every client -- the web page hiding a button is a courtesy, not the control."""
+    return ScreenshotPrivacyService.require_rule_manager(current_user)
+
 # --- Admin APIs ---
 
 @router.get("/applications", response_model=List[ScreenshotApplicationResponse])
 def list_applications(db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
-    # TODO: Add admin role check if needed
+    # The catalogue itself is readable by any signed-in user (it is what the desktop is configured from); changing it is not.
     return db.query(ScreenshotApplication).all()
 
 @router.post(
     "/applications",
+    dependencies=[Depends(require_rule_manager)],
     response_model=ScreenshotApplicationCreatedResponse,
     summary="Add an application rule, optionally switching it on for all members or chosen members",
     description=(
@@ -56,7 +63,7 @@ def create_application(req: ScreenshotApplicationCreate, db: Session = Depends(g
     DesktopConfigRevisionService.bump(db, member_id=None, what="privacy_application_created")
     return ScreenshotApplicationCreatedResponse.model_validate(app, from_attributes=True).model_copy(update={"applied_to_count": applied})
 
-@router.put("/applications/{app_id}", response_model=ScreenshotApplicationResponse)
+@router.put("/applications/{app_id}", response_model=ScreenshotApplicationResponse, dependencies=[Depends(require_rule_manager)])
 def update_application(app_id: int, req: ScreenshotApplicationUpdate, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     app = db.query(ScreenshotApplication).filter(ScreenshotApplication.id == app_id).first()
     if not app:
@@ -68,7 +75,7 @@ def update_application(app_id: int, req: ScreenshotApplicationUpdate, db: Sessio
     DesktopConfigRevisionService.bump(db, member_id=None, what="privacy_application_updated")
     return app
 
-@router.delete("/applications/{app_id}")
+@router.delete("/applications/{app_id}", dependencies=[Depends(require_rule_manager)])
 def delete_application(app_id: int, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     app = db.query(ScreenshotApplication).filter(ScreenshotApplication.id == app_id).first()
     if not app:
@@ -84,6 +91,7 @@ def list_urls(db: Session = Depends(get_db, scope="function"), current_user: Use
 
 @router.post(
     "/urls",
+    dependencies=[Depends(require_rule_manager)],
     response_model=ScreenshotUrlCreatedResponse,
     summary="Add a website rule, optionally switching it on for all members or chosen members",
     description="As `POST /applications`: `apply_to` is optional and, when present, administrators only.",
@@ -103,7 +111,7 @@ def create_url(req: ScreenshotUrlCreate, db: Session = Depends(get_db, scope="fu
     DesktopConfigRevisionService.bump(db, member_id=None, what="privacy_url_created")
     return ScreenshotUrlCreatedResponse.model_validate(url, from_attributes=True).model_copy(update={"applied_to_count": applied})
 
-@router.put("/urls/{url_id}", response_model=ScreenshotUrlResponse)
+@router.put("/urls/{url_id}", response_model=ScreenshotUrlResponse, dependencies=[Depends(require_rule_manager)])
 def update_url(url_id: int, req: ScreenshotUrlUpdate, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     url = db.query(ScreenshotUrl).filter(ScreenshotUrl.id == url_id).first()
     if not url:
@@ -115,7 +123,7 @@ def update_url(url_id: int, req: ScreenshotUrlUpdate, db: Session = Depends(get_
     DesktopConfigRevisionService.bump(db, member_id=None, what="privacy_url_updated")
     return url
 
-@router.delete("/urls/{url_id}")
+@router.delete("/urls/{url_id}", dependencies=[Depends(require_rule_manager)])
 def delete_url(url_id: int, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     url = db.query(ScreenshotUrl).filter(ScreenshotUrl.id == url_id).first()
     if not url:
@@ -129,12 +137,17 @@ def delete_url(url_id: int, db: Session = Depends(get_db, scope="function"), cur
 
 @router.get("/users/{user_id}/screenshot-exclusions", response_model=List[ScreenshotExclusionResponse])
 def list_user_exclusions(user_id: int, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
+    # Whose exclusions these are is that person's business and their administrators': anyone else is refused.
+    if user_id != current_user.id:
+        ScreenshotPrivacyService.require_rule_manager(current_user)
+        ScreenshotPrivacyService.member_in_caller_organization(db, current_user, user_id)
     return db.query(ScreenshotExclusion).filter(ScreenshotExclusion.user_id == user_id).all()
 
-@router.post("/users/{user_id}/screenshot-exclusions", response_model=ScreenshotExclusionResponse)
+@router.post("/users/{user_id}/screenshot-exclusions", response_model=ScreenshotExclusionResponse, dependencies=[Depends(require_rule_manager)])
 def create_exclusion(user_id: int, req: ScreenshotExclusionCreate, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
     if req.user_id != user_id:
         raise HTTPException(status_code=400, detail="User ID mismatch")
+    ScreenshotPrivacyService.member_in_caller_organization(db, current_user, user_id)
     
     # Optional: check if one already exists
     query = db.query(ScreenshotExclusion).filter(
@@ -161,8 +174,9 @@ def create_exclusion(user_id: int, req: ScreenshotExclusionCreate, db: Session =
     DesktopConfigRevisionService.bump(db, member_id=user_id, what="privacy_exclusion_created")
     return excl
 
-@router.put("/users/{user_id}/screenshot-exclusions/{exclusion_id}", response_model=ScreenshotExclusionResponse)
+@router.put("/users/{user_id}/screenshot-exclusions/{exclusion_id}", response_model=ScreenshotExclusionResponse, dependencies=[Depends(require_rule_manager)])
 def update_exclusion(user_id: int, exclusion_id: int, req: ScreenshotExclusionUpdate, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
+    ScreenshotPrivacyService.member_in_caller_organization(db, current_user, user_id)
     excl = db.query(ScreenshotExclusion).filter(ScreenshotExclusion.id == exclusion_id, ScreenshotExclusion.user_id == user_id).first()
     if not excl:
         raise HTTPException(status_code=404, detail="Exclusion not found")
@@ -172,8 +186,9 @@ def update_exclusion(user_id: int, exclusion_id: int, req: ScreenshotExclusionUp
     DesktopConfigRevisionService.bump(db, member_id=user_id, what="privacy_exclusion_updated")
     return excl
 
-@router.delete("/users/{user_id}/screenshot-exclusions/{exclusion_id}")
+@router.delete("/users/{user_id}/screenshot-exclusions/{exclusion_id}", dependencies=[Depends(require_rule_manager)])
 def delete_exclusion(user_id: int, exclusion_id: int, db: Session = Depends(get_db, scope="function"), current_user: User = Depends(get_current_user)):
+    ScreenshotPrivacyService.member_in_caller_organization(db, current_user, user_id)
     excl = db.query(ScreenshotExclusion).filter(ScreenshotExclusion.id == exclusion_id, ScreenshotExclusion.user_id == user_id).first()
     if not excl:
         raise HTTPException(status_code=404, detail="Exclusion not found")
