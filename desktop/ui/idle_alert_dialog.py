@@ -64,6 +64,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.logging_setup import get_logger
+from core.text_safety import plain_tooltip
 from ui import native_window
 from ui.reassign_time_dialog import ReassignTimeDialog
 from ui.styles import (
@@ -805,7 +806,7 @@ class IdleAlertDialog(QDialog):
         laid_out = label.width()
         available = laid_out if laid_out > self.NAME_COLUMN_MIN_WIDTH else self.NAME_COLUMN_WIDTH
         label.setText(metrics.elidedText(text, Qt.TextElideMode.ElideRight, available))
-        label.setToolTip(text)
+        label.setToolTip(plain_tooltip(text))
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt naming
         self._was_shown = True

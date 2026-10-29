@@ -43,7 +43,10 @@ def test_error_detail_flattens_a_schema_validation_body():
 def test_error_detail_never_raises_on_an_unexpected_body():
     assert error_detail(None, "fallback") == "fallback"
     assert error_detail("", "fallback") == "fallback"
-    assert error_detail("<html>502 Bad Gateway</html>") == "<html>502 Bad Gateway</html>"
+    # A gateway's page is not something the backend wrote for a person: it is never shown (it used to be
+    # passed through, and a label then rendered its markup). Short plain text still is.
+    assert error_detail("<html>502 Bad Gateway</html>", "fallback") == "fallback"
+    assert error_detail("502 Bad Gateway") == "502 Bad Gateway"
     assert error_detail(json.dumps({"error": "nope"}), "fallback") == "fallback"
 
 

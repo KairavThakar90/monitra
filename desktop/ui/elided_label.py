@@ -13,6 +13,8 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QLabel, QWidget
 
+from core.text_safety import plain_tooltip
+
 
 class ElidedLabel(QLabel):
     """QLabel that elides text with an ellipsis (...) if it exceeds widget width.
@@ -32,11 +34,11 @@ class ElidedLabel(QLabel):
         self._full_text = text
         self._align = align
         if text:
-            self.setToolTip(text)
+            self.setToolTip(plain_tooltip(text))
 
     def setText(self, text: str) -> None:
         self._full_text = text
-        self.setToolTip(text)
+        self.setToolTip(plain_tooltip(text))
         super().setText(text)
         self.update()
 

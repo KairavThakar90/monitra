@@ -5,6 +5,11 @@ import socket
 import ssl
 from typing import Optional
 
+#: What a body that is not the backend's own JSON must not contain to be shown to a person: an HTML/XML
+#: tag (a gateway's error page) or a control character.
+_MARKUP_OR_CONTROL = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(\s[^<>]*)?/?>|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
 
 def error_detail(response_body: Optional[str], fallback: str = "") -> str:
     """
@@ -25,8 +30,13 @@ def error_detail(response_body: Optional[str], fallback: str = "") -> str:
     try:
         payload = json.loads(response_body)
     except (ValueError, TypeError):
+        # Not the backend's own JSON, so not something it wrote for a person: a gateway's or proxy's page.
+        # Plain one-line text is kept (it may be a short real message); anything that reads as markup, or
+        # holds control characters, is not shown -- the caller's friendly fallback is.
         text = str(response_body).strip()
-        return text[:300] if text else fallback
+        if not text or _MARKUP_OR_CONTROL.search(text):
+            return fallback
+        return text[:300]
 
     detail = payload.get("detail") if isinstance(payload, dict) else None
     if isinstance(detail, str) and detail.strip():
