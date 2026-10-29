@@ -4,7 +4,7 @@ import { ErrorNote, Spinner } from "../member/MemberUi";
 import { useFeedback } from "../../components/FeedbackProvider";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
 import { formatApiError } from "../../api/utils";
-import { FieldError, validateEmail } from "../../validation";
+import { EMAIL_MAX_LENGTH, FieldError, validateEmail } from "../../validation";
 import {
   useGetEmailCcQuery,
   useUpdateEmailCcMutation,
@@ -253,7 +253,7 @@ export const AdminEmailManagement: React.FC = () => {
                 noValidate
               >
                 <div className="min-w-[260px] flex-1 sm:max-w-md">
-                  <input
+                  <input maxLength={EMAIL_MAX_LENGTH}
                     type="email"
                     aria-label="New CC address"
                     placeholder="name@company.com"

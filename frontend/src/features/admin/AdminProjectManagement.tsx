@@ -248,7 +248,7 @@ export const AssigneeSelector: React.FC<{
           >
             <div className="mb-2 px-1 text-[11px] font-black uppercase tracking-wider text-slate-500">{label}</div>
             <div className="mb-3 px-1">
-              <input 
+              <input maxLength={SEARCH_MAX_LENGTH} 
                 type="text" 
                 placeholder="Search members..." 
                 value={searchTerm}

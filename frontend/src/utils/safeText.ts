@@ -1,4 +1,4 @@
-import { looksLikeJsonDocument } from '../validation/validators';
+import { looksLikeJsonDocument, validateSearchTerm } from '../validation/validators';
 
 /**
  * The text to show for a stored label -- a member's name or designation, a project or task name --
@@ -36,4 +36,14 @@ export const neutraliseSpreadsheetFormula = (cell: string | number): string => {
   if (!/^[=+\-@\t\r]/.test(text)) return text;
   if (text === '-' || /^[+-]?\d+(?:[.,]\d+)*$/.test(text)) return text;
   return `'${text}`;
+};
+
+/**
+ * A search box's text, ready to send as a query parameter: the validated term, or nothing at all when it
+ * is refused (markup, control characters, too long). A refused term is never sent -- the list simply is not
+ * narrowed -- and what the person typed stays in the box so they can see and correct it.
+ */
+export const searchQuery = (term: string): string => {
+  const checked = validateSearchTerm(term);
+  return checked.ok ? checked.value : '';
 };

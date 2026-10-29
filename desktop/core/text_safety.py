@@ -23,6 +23,8 @@ from __future__ import annotations
 import html
 from typing import Optional
 
+from core.validation import validate_search_term
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import Qt as _GuiQt   # `mightBeRichText` lives in the QtGui namespace
 
@@ -49,3 +51,12 @@ def set_plain(label, text: Optional[str]) -> None:
     moment at which it could be read as rich text."""
     label.setTextFormat(Qt.TextFormat.PlainText)
     label.setText("" if text is None else str(text))
+
+
+def clean_search_text(text: Optional[str]) -> str:
+    """What a local search box filters on: the shared SEARCH rule's value, or "" if it refuses the text
+    (markup, control characters, too long) -- the list is then simply not narrowed. Used by the filters that only
+    compare a term with names already on screen (task list, project list, pickers); a term that goes to the server is
+    validated by the caller that sends it."""
+    result = validate_search_term(text or "")
+    return (result.value or "") if result.ok else ""

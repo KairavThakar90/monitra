@@ -26,7 +26,7 @@ import type { DateRange } from "../dashboard/v2/filters";
 import { formatHMS, formatISTDate, formatISTTime, istTodayISO, istWallClockToUtcISO } from "../../utils/duration";
 import { series } from "../dashboard/v2/theme";
 import { formatApiError } from '../../api/utils';
-import { validateDescription } from '../../validation';
+import { DESCRIPTION_MAX_LENGTH, validateDescription } from '../../validation';
 
 /**
  * The member's own time tracking.
@@ -901,7 +901,7 @@ export const MemberTimeTracking: React.FC = () => {
 
                 <div>
                   <label className="text-[11px] font-bold uppercase tracking-wider text-[#94A3B8]">Reason</label>
-                  <textarea
+                  <textarea maxLength={DESCRIPTION_MAX_LENGTH}
                     value={formReason}
                     onChange={(event) => setFormReason(event.target.value)}
                     rows={3}

@@ -74,10 +74,11 @@ describe('descriptions and reasons', () => {
 
 describe('other fields', () => {
   it('refuses a malformed or control-character email', () => {
-    for (const value of ['a@b.com\u0000', 'no-at-sign', 'two@@example.com', 'a b@example.com', 'a@b']) {
+    for (const value of ['a@b.com\u0000', 'no-at-sign', 'two@@example.com', 'a b@example.com', 'a@b', '{"mail":"x@y.z"}', '<b>a@b.co</b>']) {
       expect(validateEmail(value).ok).toBe(false);
     }
     expect(validateEmail('Ravi@Example.COM').ok).toBe(true);
+    expect(validateEmail("o'brien+tag@example.co.uk").ok).toBe(true);
   });
   it('refuses script URLs and accepts http(s) ones', () => {
     for (const value of ['javascript:alert(1)', 'data:text/html,<b>x</b>', 'file:///etc/passwd', '//evil.example', 'ftp://x.y']) {

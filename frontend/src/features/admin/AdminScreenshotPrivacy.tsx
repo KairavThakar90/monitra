@@ -14,7 +14,7 @@ import { useFeedback } from '../../components/FeedbackProvider';
 import { MemberMultiSelect } from '../dashboard/v2/filters';
 import { V2Shell } from './../dashboard/v2/V2Shell';
 import { PrivacyRuleCatalogue } from './PrivacyRuleCatalogue';
-import { validateName, validatePlainText } from '../../validation';
+import { NAME_MAX_LENGTH, PLAIN_TEXT_MAX_LENGTH, SEARCH_MAX_LENGTH, validateName, validatePlainText } from '../../validation';
 import { formatApiError } from '../../api/utils';
 
 /**
@@ -109,7 +109,7 @@ const RuleSection: React.FC<{
       </header>
 
       <div className="border-b border-[#F1F5F9] px-5 py-3">
-        <input
+        <input maxLength={SEARCH_MAX_LENGTH}
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -534,7 +534,7 @@ export const AdminScreenshotPrivacy: React.FC<{ embedded?: boolean }> = ({ embed
             <div className="space-y-5">
               {field(
                 'Display Name',
-                <input
+                <input maxLength={NAME_MAX_LENGTH}
                   type="text"
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -546,7 +546,7 @@ export const AdminScreenshotPrivacy: React.FC<{ embedded?: boolean }> = ({ embed
               {drawerType === 'application' &&
                 field(
                   'Process Name',
-                  <input
+                  <input maxLength={PLAIN_TEXT_MAX_LENGTH}
                     type="text"
                     value={form.process_name}
                     onChange={(e) => setForm({ ...form, process_name: e.target.value })}
@@ -559,7 +559,7 @@ export const AdminScreenshotPrivacy: React.FC<{ embedded?: boolean }> = ({ embed
                 <>
                   {field(
                     'Domain',
-                    <input
+                    <input maxLength={PLAIN_TEXT_MAX_LENGTH}
                       type="text"
                       value={form.domain}
                       onChange={(e) => setForm({ ...form, domain: e.target.value })}
@@ -569,7 +569,7 @@ export const AdminScreenshotPrivacy: React.FC<{ embedded?: boolean }> = ({ embed
                   )}
                   {field(
                     'URL Pattern',
-                    <input
+                    <input maxLength={PLAIN_TEXT_MAX_LENGTH}
                       type="text"
                       value={form.url_pattern}
                       onChange={(e) => setForm({ ...form, url_pattern: e.target.value })}
@@ -582,7 +582,7 @@ export const AdminScreenshotPrivacy: React.FC<{ embedded?: boolean }> = ({ embed
 
               {field(
                 'Category',
-                <input
+                <input maxLength={NAME_MAX_LENGTH}
                   type="text"
                   value={form.category}
                   onChange={(e) => setForm({ ...form, category: e.target.value })}

@@ -61,11 +61,12 @@ describe('Members page: stored records that are not names', () => {
       row(12, '{"first": "Ravi", "last": "Acharya"}', '{"title": "Engineer", "level": 3}'),
       row(13, '<img src=x onerror=alert(1)>Mallory', '<script>alert(1)</script>'),
       row(14, { first: 'Object', last: 'Name' }, ['Not', 'text']),
+      { ...row(15, 'Mail Holder', 'Dev'), email: '{"mail": "x@y.z"}' },
     ];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = input instanceof Request ? input.url : String(input);
       if (url.includes('/members/access-summary')) {
-        return json({ add_task_allowed: 4, login_allowed: 4, active_members: 4, add_nonbillable_task_allowed: 0 });
+        return json({ add_task_allowed: 4, login_allowed: 4, active_members: 5, add_nonbillable_task_allowed: 0 });
       }
       if (url.includes('/members')) return json({ items, page: 1, limit: 20, total: items.length, pages: 1 });
       if (url.includes('metadata')) return json({ roles: [] });
@@ -103,6 +104,7 @@ describe('Members page: stored records that are not names', () => {
     const text = container.textContent ?? '';
     expect(text).not.toContain('"first"');
     expect(text).not.toContain('"title"');
+    expect(text).not.toContain('"mail"');                       // an email column that holds a JSON document
     expect(text).not.toContain('[object Object]');
     expect(text).not.toContain('Not,text');
   });
@@ -114,6 +116,6 @@ describe('Members page: stored records that are not names', () => {
   });
 
   it('keeps every record listed, so the administrator can still find and correct it', () => {
-    expect(rows()).toHaveLength(4);
+    expect(rows()).toHaveLength(5);
   });
 });

@@ -4,17 +4,7 @@ import { Card, EmptyState, ErrorNote, Spinner } from "../member/MemberUi";
 import { useFeedback } from "../../components/FeedbackProvider";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
 import { formatApiError } from "../../api/utils";
-import {
-  FieldError,
-  FormErrorBanner,
-  type ValidationResult,
-  validateDescription,
-  validateInteger,
-  validatePlainText,
-  validateSha256,
-  validateUrl,
-  validateVersion,
-} from "../../validation";
+import { DESCRIPTION_MAX_LENGTH, FieldError, FormErrorBanner, SHA256_LENGTH, URL_MAX_LENGTH, VERSION_MAX_LENGTH, type ValidationResult, validateDescription, validateInteger, validatePlainText, validateSha256, validateUrl, validateVersion } from "../../validation";
 import {
   AUDIT_ACTION_LABELS,
   PLATFORM_LABELS,
@@ -245,7 +235,7 @@ const ReleaseDialog: React.FC<{ editing: Editing; onClose: () => void }> = ({ ed
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label htmlFor="release-version" className={labelClass}>Version</label>
-              <input
+              <input maxLength={VERSION_MAX_LENGTH}
                 id="release-version" value={version} disabled={Boolean(existing)}
                 onChange={(event) => setVersion(event.target.value)} placeholder="1.4.0"
                 aria-invalid={errors.version ? true : undefined} className={inputClass}
@@ -265,7 +255,7 @@ const ReleaseDialog: React.FC<{ editing: Editing; onClose: () => void }> = ({ ed
 
           <div>
             <label htmlFor="release-notes" className={labelClass}>Release notes</label>
-            <textarea
+            <textarea maxLength={DESCRIPTION_MAX_LENGTH}
               id="release-notes" value={notes} rows={4}
               onChange={(event) => setNotes(event.target.value)}
               placeholder={"New features:\n- ...\nBug fixes:\n- ..."}
@@ -306,7 +296,7 @@ const ReleaseDialog: React.FC<{ editing: Editing; onClose: () => void }> = ({ ed
             </div>
             <div>
               <label htmlFor="release-grace" className={labelClass}>Grace period (hours)</label>
-              <input
+              <input maxLength={6}
                 id="release-grace" value={graceHours} inputMode="numeric"
                 onChange={(event) => setGraceHours(event.target.value)}
                 aria-invalid={errors.grace ? true : undefined} className={inputClass}
@@ -315,7 +305,7 @@ const ReleaseDialog: React.FC<{ editing: Editing; onClose: () => void }> = ({ ed
             </div>
             <div>
               <label htmlFor="release-floor" className={labelClass}>Required minimum version</label>
-              <input
+              <input maxLength={32}
                 id="release-floor" value={floor} onChange={(event) => setFloor(event.target.value)}
                 placeholder={mandatory ? "defaults to this version" : "optional"}
                 aria-invalid={errors.floor ? true : undefined} className={inputClass}
@@ -351,7 +341,7 @@ const ReleaseDialog: React.FC<{ editing: Editing; onClose: () => void }> = ({ ed
                       <div className="grid gap-3 sm:grid-cols-2">
                         <div className="sm:col-span-2">
                           <label htmlFor={`artifact-${slot.key}-url`} className={labelClass}>Download URL</label>
-                          <input
+                          <input maxLength={URL_MAX_LENGTH}
                             id={`artifact-${slot.key}-url`} value={artifacts[slot.key].download_url}
                             onChange={(event) => setArtifact(slot.key, { download_url: event.target.value })}
                             aria-invalid={errors[`artifact.${slot.key}.url`] ? true : undefined} className={inputClass}
@@ -360,7 +350,7 @@ const ReleaseDialog: React.FC<{ editing: Editing; onClose: () => void }> = ({ ed
                         </div>
                         <div className="sm:col-span-2">
                           <label htmlFor={`artifact-${slot.key}-sha`} className={labelClass}>SHA-256</label>
-                          <input
+                          <input maxLength={SHA256_LENGTH}
                             id={`artifact-${slot.key}-sha`} value={artifacts[slot.key].sha256}
                             onChange={(event) => setArtifact(slot.key, { sha256: event.target.value })}
                             aria-invalid={errors[`artifact.${slot.key}.sha256`] ? true : undefined} className={inputClass}
@@ -369,7 +359,7 @@ const ReleaseDialog: React.FC<{ editing: Editing; onClose: () => void }> = ({ ed
                         </div>
                         <div>
                           <label htmlFor={`artifact-${slot.key}-size`} className={labelClass}>Size (bytes)</label>
-                          <input
+                          <input maxLength={16}
                             id={`artifact-${slot.key}-size`} value={artifacts[slot.key].file_size} inputMode="numeric"
                             onChange={(event) => setArtifact(slot.key, { file_size: event.target.value })}
                             aria-invalid={errors[`artifact.${slot.key}.size`] ? true : undefined} className={inputClass}

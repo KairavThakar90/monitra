@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { V2Shell } from '../dashboard/v2/V2Shell';
 import { Card, EmptyState, ErrorNote, Spinner } from '../member/MemberUi';
 import { useGetAllProjectsQuery } from '../../store/api/projectsApi';
-import { SEARCH_MAX_LENGTH } from '../../validation';
+import { EMAIL_MAX_LENGTH, SEARCH_MAX_LENGTH } from '../../validation';
 import {
   DEFAULT_CLIENT_PERMISSIONS,
   useCreateClientInvitationMutation,
@@ -300,7 +300,7 @@ const AddClientModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             <label className="block text-xs font-semibold text-[#94A3B8] tracking-wider uppercase mb-1">
               Client Email Address
             </label>
-            <input
+            <input maxLength={EMAIL_MAX_LENGTH}
               type="email"
               required
               value={email}

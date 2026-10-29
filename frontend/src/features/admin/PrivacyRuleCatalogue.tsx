@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import type { ScreenshotApplication, ScreenshotUrl } from '../../api/screenshotPrivacy';
 import { PillTabs } from '../feedback/feedbackFilters';
 import { formatISTDate } from '../../utils/duration';
+import { SEARCH_MAX_LENGTH } from '../../validation';
 
 /**
  * Every privacy rule that has been added, as Applications and Websites tabs.
@@ -149,7 +150,7 @@ export const PrivacyRuleCatalogue: React.FC<{
       </header>
 
       <div className="border-b border-[#F1F5F9] px-5 py-3">
-        <input
+        <input maxLength={SEARCH_MAX_LENGTH}
           type="text"
           value={search}
           onChange={(event) => setSearch(event.target.value)}

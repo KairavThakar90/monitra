@@ -137,7 +137,7 @@ export const MAX_LIST_PARAM_ITEMS = 200;
  * implementing: it accepts addresses no provider issues, and the real proof an
  * address exists is a delivered message.
  */
-export const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export const EMAIL_PATTERN = /^[^\s@<>(){}\[\]\x22\\,;:]+@[^\s@<>(){}\[\]\x22\\,;:]+\.[^\s@<>(){}\[\]\x22\\,;:]+$/;
 
 /** Canonical hyphenated UUID, any version. */
 export const UUID_PATTERN =

@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QMenu, QStackedWidget, QToolButton, QProxyStyle, QStyle
 )
 from background_services.public_api import BreakStatus
-from core.text_safety import plain_tooltip
+from core.text_safety import clean_search_text, plain_tooltip
 from core.time_format import format_hms, ist_greeting
 from core.validation import SEARCH_MAX_LENGTH
 from ui import icons
@@ -1334,7 +1334,7 @@ class SidebarWidget(QWidget):
         self.project_selected.emit(project)
 
     def _on_search_changed(self, text: str) -> None:
-        self._search_text = text
+        self._search_text = clean_search_text(text)
         self._current_page = 1
         self._rebuild_project_list()
         self._scroll_to_top()

@@ -249,7 +249,7 @@ const SearchablePicker: React.FC<{
       {open && (
         <div className="absolute left-0 right-0 top-full z-40 mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
           <div className="border-b border-slate-100 p-2.5">
-            <input
+            <input maxLength={SEARCH_MAX_LENGTH}
               autoFocus
               value={query}
               onChange={(event) => setQuery(event.target.value)}

@@ -333,8 +333,11 @@ An audit of every free-text input and every place text is shown found the framew
   lists are the same on purpose.
 * **Known and left alone:** search boxes are bounded and escaped (`like_pattern`) but not markup-checked -- a search term is
   filtered on, never stored. Desktop local-filter search boxes (task, project, picker) only have a max length.
-  `routes under /api/v1/screenshot` have no administrator check (a TODO in the router) -- an authorisation gap, not a
-  validation one, reported to the owner.
+  The routes under `/api/v1/screenshot` used to have no role check at all; changing a privacy rule or any member's exclusions
+  is now for administrators and HR (`ScreenshotPrivacyService.require_rule_manager`), inside the caller's own organization, with
+  the role matrix in `backend/tests/test_screenshot_privacy_authorization.py`.
+* **Email** is now `[^\s@<>(){}[\]"\,;:]+@...`: the old pattern (no whitespace, an `@`, a dot) accepted `{"mail":"x@y.z"}`, which the
+  Members page then showed as an address. Apostrophes and `+` are still fine. All three catalogues changed together.
 
 ## 5. Error messages
 

@@ -20,18 +20,6 @@ re-grant a permission.
 
 ## [Unreleased]
 
-### Fixed
-
-- **Names and messages from other people can no longer be mistaken for formatting.** A task or
-  project named with HTML in it, or an error page from a gateway, used to be interpreted by the
-  window it appeared in (a name in bold, a hover tip that fetched a picture). Every name, hover tip
-  and server message is now shown as exactly the text it is.
-- **"Duplicate task" checks the new name** before sending it, and says so if the copy's name would
-  be too long, instead of sending a name the server then refuses.
-- **A server error that is really a web page is no longer shown to you.** If a proxy or gateway
-  answers with an HTML error page, Monitra shows its own "could not reach the server" message
-  instead of the page's text.
-
 ## [1.3.4]
 
 A corrective release for 1.3.2 and 1.3.3; nothing else changes. The installer

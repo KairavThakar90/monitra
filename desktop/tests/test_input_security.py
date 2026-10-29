@@ -89,8 +89,9 @@ def test_code_is_refused_where_the_field_must_be_prose(value):
 
 
 def test_email_url_and_search_rules():
-    for bad in ("a@b.com\x00", "no-at-sign", "two@@example.com", "a b@example.com"):
+    for bad in ("a@b.com\x00", "no-at-sign", "two@@example.com", "a b@example.com", '{"mail":"x@y.z"}', "<b>a@b.co</b>"):
         assert validate_email(bad).ok is False
+    assert validate_email("o'brien+tag@example.co.uk").ok is True
     for bad in ("javascript:alert(1)", "data:text/html,<b>x</b>", "file:///etc/passwd", "//evil.example"):
         assert validate_url(bad).ok is False
     assert validate_url("https://example.com/notes?a=1&b=2").ok is True
@@ -195,3 +196,15 @@ def test_a_duplicate_whose_name_the_rules_refuse_is_explained_and_not_sent(qapp)
 
     service.create_task.assert_not_called()
     assert api.notify.called and "cannot be duplicated" in api.notify.call_args.args[0]
+
+
+def test_a_local_search_box_filters_on_the_validated_term_or_not_at_all():
+    from core.text_safety import clean_search_text
+
+    assert clean_search_text("  Ravi  ") == "Ravi"
+    assert clean_search_text("R&D #4") == "R&D #4"
+    assert clean_search_text("રવિ") == "રવિ"
+    assert clean_search_text("100%") == "100%"
+    for refused in ("<script>alert(1)</script>", "a\x00b", "x" * 101):
+        assert clean_search_text(refused) == ""
+    assert clean_search_text(None) == ""

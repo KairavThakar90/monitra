@@ -243,7 +243,7 @@ const MemberProfileView: React.FC<{ member: Member }> = ({ member }) => {
             <div className="mt-8 divide-y divide-slate-100 border-t border-slate-100 text-left">
               <div className="py-3 flex justify-between items-center">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Email</span>
-                <span className="text-sm font-semibold text-slate-700">{memberDetails.email}</span>
+                <span className="text-sm font-semibold text-slate-700">{safeLabel(memberDetails.email)}</span>
               </div>
               <div className="py-3 flex justify-between items-center">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Floor</span>
@@ -1173,7 +1173,7 @@ export const AdminMembers: React.FC = () => {
                           </div>
                           <div className="min-w-0">
                             <div className="font-bold text-slate-800 truncate cursor-pointer hover:text-blue-600 hover:underline transition" onClick={() => setSelectedProfileId(member.id)}>{safeLabel(member.name)}</div>
-                            <div className="text-xs text-slate-500 truncate mt-0.5">{member.email || '-'}</div>
+                            <div className="text-xs text-slate-500 truncate mt-0.5">{safeLabel(member.email)}</div>
                           </div>
                         </div>
                       </td>

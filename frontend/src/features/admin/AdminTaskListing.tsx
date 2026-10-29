@@ -15,7 +15,7 @@ import { formatHMS } from "../../utils/duration";
 import { PaginationArrow } from '../../components/PaginationArrow';
 import { DateRangeFilter, MemberMultiSelect, ProjectMultiSelect, rangeFor, DEFAULT_RANGE, type DateRange } from '../dashboard/v2/filters';
 import { useGetAllMembersQuery } from '../../store/api/membersApi';
-import { FieldError, useFormValidation } from '../../validation';
+import { FieldError, SEARCH_MAX_LENGTH, useFormValidation } from '../../validation';
 import { useAuth } from '../auth/authContext';
 import { usageColor } from '../dashboard/v2/theme';
 import { billingTypeLabel, billingTypesFor, type BillingKind, type BillingScope } from '../../utils/billing';
@@ -141,7 +141,7 @@ export const ProjectPicker: React.FC<{
       {open && (
         <div className="absolute left-0 right-0 top-full z-30 mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
           <div className="border-b border-slate-100 p-2.5">
-            <input
+            <input maxLength={SEARCH_MAX_LENGTH}
               autoFocus
               value={query}
               onChange={(event) => setQuery(event.target.value)}

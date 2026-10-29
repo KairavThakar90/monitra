@@ -59,7 +59,7 @@ from core.task_marker import (
     NON_BILLABLE_SUFFIX, split_non_billable, with_non_billable_suffix,
 )
 from core.logging_setup import get_logger
-from core.text_safety import plain_tooltip
+from core.text_safety import clean_search_text, plain_tooltip
 from core.time_format import format_hms, ist_today
 
 #: What the user is told when an administrator has switched Add Task off for
@@ -2327,7 +2327,7 @@ class TaskSection(QWidget):
         than in a widget of this card's own, so there is exactly one filter
         state and no way for two search boxes to disagree.
         """
-        text = text or ""
+        text = clean_search_text(text)
         if text == self._search_text:
             return
         self._search_text = text

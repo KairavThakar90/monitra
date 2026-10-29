@@ -11,6 +11,8 @@ import {
 import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { PaginationArrow } from '../../components/PaginationArrow';
+import { SEARCH_MAX_LENGTH } from '../../validation';
+import { searchQuery } from '../../utils/safeText';
 
 // Stat card icons (Heroicons outline, inline so no new dependency)
 type IconProps = { className?: string };
@@ -195,7 +197,7 @@ const LeadersView: React.FC<{ onOpen: (leaderId: string) => void }> = ({ onOpen 
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search);
   const { data: summary, isLoading: isLoadingSummary } = useGetTeamSummaryQuery();
-  const { data: leadersData, isLoading: isLoadingLeaders, isFetching: isFetchingLeaders } = useGetTeamLeadersQuery({ search: debouncedSearch, limit: 100 });
+  const { data: leadersData, isLoading: isLoadingLeaders, isFetching: isFetchingLeaders } = useGetTeamLeadersQuery({ search: searchQuery(debouncedSearch), limit: 100 });
 
   // Only the very first load replaces the page. Returning a spinner while
   // refetching used to unmount the search box mid-word, so a search could not
@@ -233,7 +235,7 @@ const LeadersView: React.FC<{ onOpen: (leaderId: string) => void }> = ({ onOpen 
           <h2 className="text-xl font-bold tracking-tight text-[#0F172A]">Leadership Team</h2>
           <InlineRefreshIndicator active={isFetchingLeaders && !!leadersData} />
         </div>
-        <input
+        <input maxLength={SEARCH_MAX_LENGTH}
           type="text"
           placeholder="Search leaders..."
           value={search}
@@ -329,7 +331,7 @@ const LeaderProjectsView: React.FC<{ leaderId: number; onOpen: (projectId: strin
 
   const { data: leaderData, isLoading: isLoadingLeader } = useGetTeamLeaderByIdQuery(leaderId);
   // Using Server-Side pagination to properly load all 900+ projects
-  const { data: projectsData, isLoading: isLoadingProjects, isFetching: isFetchingProjects } = useGetLeaderProjectsQuery({ leaderId, page, limit, search: debouncedSearch });
+  const { data: projectsData, isLoading: isLoadingProjects, isFetching: isFetchingProjects } = useGetLeaderProjectsQuery({ leaderId, page, limit, search: searchQuery(debouncedSearch) });
 
   // As above: only a genuinely empty screen gets the blocking spinner.
   if ((isLoadingLeader && !leaderData) || (isLoadingProjects && !projectsData)) return <LoadingSpinner />;
@@ -363,7 +365,7 @@ const LeaderProjectsView: React.FC<{ leaderId: number; onOpen: (projectId: strin
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-4 rounded-xl bg-slate-50 p-4 border border-slate-200">
-        <input
+        <input maxLength={SEARCH_MAX_LENGTH}
           type="text"
           placeholder="Search projects..."
           value={search}
