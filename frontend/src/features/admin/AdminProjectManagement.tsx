@@ -29,6 +29,7 @@ import { formatApiError } from '../../api/utils';
 import { billingTypeLabel, billingTypesFor, type BillingKind, type BillingScope, type BillingType } from '../../utils/billing';
 import { PROJECT_CATEGORY_OPTIONS, projectCategoryLabel, type ProjectCategory } from '../../utils/projectCategory';
 import { ProjectExportDialog } from './ProjectExportDialog';
+import { safeLabel } from '../../utils/safeText';
 
 const GRADIENT_CYAN_PURPLE = 'bg-gradient-to-r from-[#0ea5e9] via-[#3b82f6] to-[#8b5cf6]';
 
@@ -1183,7 +1184,7 @@ export const AdminProjectManagement: React.FC = () => {
                       />
                     </td>}
                     {visibleColumns.project && <td className="px-6 py-4">
-                      <div className="font-bold text-slate-800">{proj.project_name}</div>
+                      <div className="font-bold text-slate-800">{safeLabel(proj.project_name)}</div>
                       {/* {proj.description && <div className="text-xs text-slate-500 truncate max-w-[200px]">{proj.description}</div>} */}
                     </td>}
                     {visibleColumns.wfpmId && <td className="px-6 py-4" data-testid="wfpm-id-cell">
@@ -1311,7 +1312,7 @@ export const AdminProjectManagement: React.FC = () => {
             <div className="flex items-start justify-between border-b border-slate-100 bg-slate-50 px-6 py-5">
               <div>
                 <div className="flex items-center gap-3">
-                  <h2 className="text-xl font-black text-slate-800">{viewingProject.project_name}</h2>
+                  <h2 className="text-xl font-black text-slate-800">{safeLabel(viewingProject.project_name)}</h2>
                   <span className="rounded-md px-2.5 py-1 text-xs font-bold" style={{ color: viewingProject.status?.color, backgroundColor: `${viewingProject.status?.color || '#64748b'}15` }}>
                     {viewingProject.status?.name || 'Unknown'}
                   </span>
@@ -1378,7 +1379,7 @@ export const AdminProjectManagement: React.FC = () => {
                   {viewingProject.tasks?.length ? viewingProject.tasks.map((task) => (
                     <div key={task.id} className="flex items-center justify-between gap-4 bg-white px-4 py-3">
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-bold text-slate-800">{task.name}</div>
+                        <div className="truncate text-sm font-bold text-slate-800">{safeLabel(task.name)}</div>
                         <div className="mt-1 text-xs font-medium text-slate-500">{task.assignee?.name || 'Unassigned'}</div>
                       </div>
                       <span className="shrink-0 rounded-md px-2 py-1 text-[10px] font-bold" style={{ color: task.status?.color, backgroundColor: `${task.status?.color || '#64748b'}15` }}>

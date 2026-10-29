@@ -20,6 +20,7 @@ import { useAuth } from '../auth/authContext';
 import { usageColor } from '../dashboard/v2/theme';
 import { billingTypeLabel, billingTypesFor, type BillingKind, type BillingScope } from '../../utils/billing';
 import { formatApiError } from '../../api/utils';
+import { safeLabel } from '../../utils/safeText';
 
 const formatDate = (dateStr: string | null) => {
   if (!dateStr) return "-";
@@ -169,7 +170,7 @@ export const ProjectPicker: React.FC<{
                 className={`block w-full truncate rounded-lg px-3 py-2 text-left text-sm transition hover:bg-slate-50 ${project.id === value ? "bg-blue-50 font-bold text-blue-700" : "font-semibold text-slate-700"}`}
                 title={project.project_name}
               >
-                {project.project_name}
+                {safeLabel(project.project_name)}
               </button>
             )) : (
               <p className="px-3 py-5 text-center text-xs font-semibold text-slate-400">{emptyText}</p>

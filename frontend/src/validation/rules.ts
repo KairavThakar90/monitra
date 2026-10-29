@@ -195,6 +195,10 @@ export const ALLOWED_URL_SCHEMES: readonly string[] = ['http', 'https'];
 /** An HTML/XML tag: `<p>`, `</div>`, `<img src=x>`, `<br/>`. */
 export const HTML_TAG_PATTERN = /<\/?[A-Za-z][A-Za-z0-9-]*(\s[^<>]*)?\/?>/;
 
+/** Text that *starts* as a JSON object or array: `{ "key":` or `[ "item",`. A document cut short by a length limit is not
+ *  valid JSON, so `looksLikeJsonDocument` cannot see it; this does. Same source in all three catalogues. */
+export const JSON_FRAGMENT_PATTERN = /^\s*(?:\{\s*"[^"\n]{0,200}"\s*:|\[\s*"[^"\n]{0,200}"\s*[,\]]|\{\s*\[|\[\s*\{\s*"[^"\n]{0,200}"\s*:)/;
+
 /** An HTML entity that could reconstitute a tag after decoding. */
 export const ENCODED_MARKUP_PATTERN = /&(?:lt|gt|#0*(?:60|62)|#[xX]0*3[cCeE]);/;
 

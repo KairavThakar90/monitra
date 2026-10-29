@@ -29,6 +29,7 @@ import {
   ENCODED_MARKUP_PATTERN,
   EVENT_HANDLER_PATTERN,
   HTML_TAG_PATTERN,
+  JSON_FRAGMENT_PATTERN,
   IDENTIFIER_MAX,
   IDENTIFIER_MIN,
   NAME_MAX_LENGTH,
@@ -77,11 +78,12 @@ export function looksLikeJsonDocument(value: string): boolean {
   const wrapped =
     (text.startsWith('{') && text.endsWith('}')) ||
     (text.startsWith('[') && text.endsWith(']'));
-  if (!wrapped) return false;
+  // Not a whole document may still be the start of one that a length limit cut short.
+  if (!wrapped) return JSON_FRAGMENT_PATTERN.test(text);
   try {
     JSON.parse(text);
   } catch {
-    return false;
+    return JSON_FRAGMENT_PATTERN.test(text);
   }
   return true;
 }

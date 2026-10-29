@@ -250,6 +250,9 @@ export function useFormValidation<S extends FormSpec>(spec: S) {
       const fieldSpec = specRef.current[field];
       if (!fieldSpec) return { ok: true, value };
       const result = validateBySpec(value, fieldSpec);
+      // Errors are only shown for touched fields; a field the user has just left has been touched, so a blur
+      // check must reveal its error now rather than only after the next submit.
+      setTouchedState((current) => (current[field] ? current : { ...current, [field]: true }));
       setErrors((current) => {
         const next = { ...current };
         if (result.ok) delete next[field];

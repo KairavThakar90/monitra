@@ -11,6 +11,7 @@ import { series } from "../dashboard/v2/theme";
 import { formatISTDate } from "../../utils/duration";
 import { billingTypeLabel } from "../../utils/billing";
 import { FieldError, SEARCH_MAX_LENGTH, validateSearchTerm } from "../../validation";
+import { safeLabel } from '../../utils/safeText';
 
 /**
  * The member's project management view.
@@ -47,7 +48,7 @@ const ProjectCard: React.FC<{ project: Project; onOpenTeam: () => void }> = ({ p
     <div className="flex flex-col rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
       <div className="flex items-start justify-between gap-3">
         <h3 className="min-w-0 flex-1 truncate text-[15px] font-bold text-[#0F172A]" title={project.project_name}>
-          {project.project_name}
+          {safeLabel(project.project_name)}
         </h3>
         <StatusPill status={project.status} />
       </div>

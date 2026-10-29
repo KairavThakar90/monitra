@@ -35,6 +35,11 @@ HOSTILE_NAMES = {
     "nul byte": "Ravi\x00Acharya",
     "bell control char": "Ravi\x07Acharya",
     "only punctuation": "!!!",
+    # A long JSON object pasted into a 150-character box arrives cut short: not valid JSON, so the whole-document check
+    # missed it, and it was stored as a member's designation and a project's name.
+    "json cut short by a length limit": '{ "id": 42, "name": "RandomUser", "active": true, "score": 87, "tags": ["alpha", "beta", "gamma"], "meta": { "createdAt": "2026-09-22T',
+    "json array cut short": '["alpha", "beta", "gam',
+    "json key start": '{"id":',
 }
 
 #: And each of these is somebody's real name, or a real label, and must be accepted.

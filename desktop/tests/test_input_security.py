@@ -39,6 +39,10 @@ HOSTILE = [
     "Ravi\x00Acharya",
     "Ravi\x07Acharya",
     "!!!",
+    # pasted into a 150-character box: cut short, so not valid JSON, and the whole-document check missed it
+    '{ "id": 42, "name": "RandomUser", "active": true, "score": 87, "tags": ["alpha", "beta", "gamma"], "meta": { "createdAt": "2026-09-22T',
+    '["alpha", "beta", "gam',
+    '{"id":',
 ]
 
 LEGITIMATE = [

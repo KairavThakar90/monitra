@@ -26,6 +26,10 @@ const HOSTILE = [
   'Ravi\u0000Acharya',
   'Ravi\u0007Acharya',
   '!!!',
+  // pasted into a 150-character box: cut short, so not valid JSON, and the whole-document check missed it
+  '{ "id": 42, "name": "RandomUser", "active": true, "score": 87, "tags": ["alpha", "beta", "gamma"], "meta": { "createdAt": "2026-09-22T',
+  '["alpha", "beta", "gam',
+  '{"id":',
 ];
 
 const LEGITIMATE = [
@@ -122,10 +126,13 @@ describe('a stored label is never raw JSON on screen', () => {
   it('shows ordinary text as it is', () => {
     expect(safeLabel('Ravi Acharya')).toBe('Ravi Acharya');
     expect(safeLabel('Uses {braces} mid-sentence')).toBe('Uses {braces} mid-sentence');
+    expect(safeLabel('[Internal] Plan')).toBe('[Internal] Plan');
+    expect(safeLabel('{ref} cleanup')).toBe('{ref} cleanup');
   });
   it('replaces a whole JSON document, an object, or nothing with the fallback', () => {
     expect(safeLabel('{"first": "Ravi", "last": "Acharya"}')).toBe('-');
     expect(safeLabel('["a"]', 'Unnamed')).toBe('Unnamed');
+    expect(safeLabel('{ "id": 42, "name": "RandomUser", "active": true, "score": 87, "tags": ["alpha", "beta", "gamma"], "meta": { "createdAt": "2026-09-22T')).toBe('-');                 // a stored document that was cut short
     expect(safeLabel({ first: 'Ravi' })).toBe('-');
     expect(safeLabel(null)).toBe('-');
     expect(safeLabel('   ')).toBe('-');
