@@ -1,11 +1,12 @@
 # Monitra 1.3.4 -- release preparation and verification (2026-10-29)
 
 Branch `smit`. The session started from `99cb9c1` (= `origin/smit`, 11 commits ahead of
-`origin/main`, clean tree) and built it in CI; the release candidate is now **`a968dba`**
-(`99cb9c1` + the toolkit-pin move of section 5), committed locally and **not pushed** (the
-push was refused by this session's permission policy). Written for the owner and whoever runs
-the release. Nothing was tagged, published, registered, deployed or changed in production by
-this session; one CI build was dispatched with publishing off and its failed jobs re-run once.
+`origin/main`, clean tree), built it in CI (run 42), diagnosed the macOS failure in two steps
+(section 5) and built the fix; the release commit is **`38a1c97`** (`0c4c35e` = the fix, plus
+one workflow change: the Apple Silicon job runs on `macos-15`), pushed and built as run 45.
+Written for the owner and whoever runs the release. Nothing was tagged, registered, deployed or
+changed in production by this session; four CI builds were dispatched with publishing off (runs
+42-45), and the withdrawn `v1.3.3` GitHub release was marked a pre-release (section 9).
 
 ## 1. Release summary
 
@@ -14,7 +15,7 @@ this session; one CI build was dispatched with publishing off and its failed job
 | Target version | 1.3.4 (`desktop/version.py`, `PRERELEASE = ""`); changelog `## [1.3.4]` present, `[Unreleased]` empty |
 | Why 1.3.4 | 1.3.3 (built from `44b143f`) shipped Qt 6.12.0 through an unpinned PySide6 and draws the Request dialog's Start/End Time fields one pixel wide. The `v1.3.3` tag already exists, so the corrective release is 1.3.4 (1.3.3 report, section 9). |
 | Changes since `v1.3.3` | 16 commits, 73 files, +1 889 / -220: the Qt 6.12 fix and the PySide6 pin, the 2026-10-29 input-security work in all three layers, screenshot-privacy authorisation, and the 1.3.3 report. **No new Alembic migration** (63 revisions, head `a1c4e8b2d6f0`, unchanged since 1.3.3). |
-| CI build | run **42** = [40878108382](https://github.com/KairavThakar90/monitra/actions/runs/40878108382), `workflow_dispatch` on `smit` at `99cb9c1`, *Attach the artifacts* OFF: **Windows green and uploaded; both macOS jobs failed** the same layout test on the 6.11.2 pin, twice. Fixed in `a968dba`; **run 43 of `a968dba` is still to be built** -- see section 5 |
+| CI build | run **45** = [40895074130](https://github.com/KairavThakar90/monitra/actions/runs/40895074130), `workflow_dispatch` on `smit` at `38a1c97`, *Attach the artifacts* OFF: **all three jobs green, three artifacts uploaded and verified (section 5.5)**. Runs 42-43 are the diagnosis; run 44 proved the fix on Windows and macOS x86_64 but its arm64 job never got a `macos-14` runner. |
 | Release tag / GitHub release / backend rows | **none created** |
 | Decision | see section 10 |
 
@@ -73,7 +74,9 @@ machine; the file passes alone (22/22) and the whole suite passed on the immedia
 `v1.3.3`). The desktop count differs from the 1.3.3 report's 191 modules because the 20 E2E
 modules were run separately against the rig instead of being counted as skipped.
 
-## 5. CI build -- run 42 (`40878108382`), and why a run 43 is needed
+## 5. CI builds -- runs 42, 43 and 44
+
+### 5.1 Run 42 (`99cb9c1`, 6.11.2 pin) -- the failure
 
 Dispatched by this session at 13:00 UTC on `smit` = `99cb9c1` with *Attach the artifacts* OFF
 (the publish job was skipped: no tag, no GitHub release, no backend registration).
@@ -93,33 +96,92 @@ expires 2026-11-28), downloaded and checked on this machine:
 | `Monitra-Setup-1.3.4.exe` | 32 445 830 B | `733b7c21ca935841ff27f7acfb47c6fadd11c3291c5504828df4a5fb3795e1fa` | FileVersion 1.3.4, ProductVersion 1.3.4, Product Monitra, Company Monitra; `Get-AuthenticodeSignature`: **NotSigned**; `signature.json`: `signed: false`, `WinVerifyTrust` |
 | `Monitra-Portable-1.3.4.zip` | 45 374 343 B | `93f86981c2597334d84912479de51f64b0dd412071859ba6f560acff2ff7c572` | unpacked `Monitra.exe` FileVersion 1.3.4; bundled `Qt6Core.dll` **6.11.2.0**; launched under an isolated `MONITRA_DATA_DIR` with the offscreen platform: "Monitra 1.3.4 starting ... frozen=True portable=True", storage ready, services started, still running after 15 s |
 
-**Root cause of the macOS failures -- the toolkit pin, not the layout code.** No file the
-failing test exercises changed since the green 1.3.3 build except tooltip text handling. What
-changed is the toolkit: run 41 (the `v1.3.3` tag build, every macOS test green) installed
-PySide6 **6.12.0** on both Macs (bare requirement, newest of the day); run 42 installed the new
-pin **6.11.2**. The macOS suite had never run on 6.11.2. On macOS Qt 6.11.2 the Activity panel's
-`minimumSizeHint().width()` is 973-978 px and moves 1-3 px with the length of the names in it
-(`assert 978 == 976`); the test's other claim -- the content is exactly as wide as the viewport,
-no horizontal scroll bar -- held on every width and tab. On Windows the floor is name-independent
-on both toolkits (measured: 1498 px for both panels under the offscreen platform).
+The failing assertion was the panel's *floor*: `section.minimumSizeHint().width()` (973-978 px
+on macOS) differed by 1-3 px between two panels that differ only in the length of their names
+(`assert 978 == 976`). The test's other claim -- content exactly as wide as the viewport, no
+horizontal scroll bar -- held on every width and tab.
 
-**Fix (commit `a968dba`, this session): the pin moves to `PySide6==6.12.0`,** the version every
-builder has actually been green on: macOS arm64, macOS x86_64 and Windows all passed the full
-suite on 6.12.0 in runs 40 and 41 (with the old time-field rule), and the full Windows suite with
-the time-field fix passes on 6.12.0 on this machine (**173/173 modules, 4311 passed, 4 skipped**,
-the only failure being `test_dependency_pins`'s "installed ≠ pinned" guard before the pin was
-moved -- exactly what it is for). The time-field geometry test passes on both toolkits, so the
-Request-dialog defect stays fixed either way. The project `.venv` was upgraded to 6.12.0 to
-match; `requirements.txt` and `DO_NOT_DO.md` record the evidence and the lesson (a pin is only as
-proven as the platforms that have run the suite on it). After the change, on this machine:
-`test_dependency_pins`, `test_manual_time_entry_dialog`, `test_layout_stability`,
-`test_changelog` -- 165 passed; architecture OK; changelog OK.
+### 5.2 Run 43 (`b279381`, 6.12.0 pin) -- the first diagnosis was wrong
 
-**`a968dba` is committed but NOT pushed:** `git push origin smit` was refused by this
-session's permission policy (External System Writes), as in the 1.3.3 session. The macOS builds
-therefore do not exist yet. **Run 43 = dispatch `desktop-release.yml` on `smit` after the push,
-*Attach the artifacts* OFF.** The run-42 Windows artifact is a 6.11.2 build and is superseded by
-run 43's; do not host it.
+The first diagnosis blamed the toolkit: run 41 (the green `v1.3.3` tag build) had installed
+PySide6 **6.12.0** on the Macs (bare requirement, newest of the day) and run 42 the new pin
+**6.11.2**, on which the macOS suite had never run. Commit `a968dba` moved the pin to 6.12.0
+(the full Windows suite passes on it: 4311 passed) and run 43 built it: the **arm64 job failed
+the same 22 cases on 6.12.0**. The toolkit was not the variable. Run 43 was cancelled once that
+was known (its Windows artifact is a 6.12.0 build and must not be used).
+
+### 5.3 The real cause, and the fix (`0c4c35e`)
+
+Measured on this machine with the test's own fixture: `ActivitySection(api=MagicMock(), ...)`
+shows the header's screenshot-status label **visible, 816 px wide, with the text
+`<MagicMock name='mock.screenshot_status().get()' id='2065605343376'>`**. The 2026-10-29
+input-security work had switched that label to `PlainText` (a headline is somebody else's
+words and must read literally) -- and on `AutoText` the same string had been read as an empty
+rich-text tag and drawn as nothing. The mock id differs per instance, so two otherwise identical
+panels had floors a few pixels apart. On macOS that label *is* the panel's minimum width; on
+Windows a wider floor (1498 px) hid it, which is why only the Macs failed and why the count
+wobbled (21-24 of 27). The layout code never changed.
+
+Fix: `set_screenshot_status` ignores anything that is not a status dict (a host without a real
+status shows nothing, as its own docstring promised), a regression test keeps a `MagicMock` host
+hidden (`tests/test_screenshot_status_line.py::TestAHostWithoutARealStatus`), `DO_NOT_DO.md`
+records the label lesson and the misdiagnosis, and **the pin returns to `PySide6==6.11.2`** --
+the owner's choice, the version the suite, the local builds and the real-window checks run on;
+the project `.venv` is back on it. Full desktop suite on `0c4c35e`, this machine: **173/173
+modules, 4313 passed, 0 failed, 4 skipped**; architecture OK; changelog OK.
+
+### 5.4 Run 44 (`0c4c35e`, 6.11.2 pin) -- the release build
+
+| Job | Attempt 1 | Attempt 2 |
+|---|---|---|
+| Windows package | **success** -- regression suite green, built, smoke-tested, attested (unsigned), uploaded | -- |
+| macOS package (x86_64) | **success** -- 193 modules green **including `test_layout_stability`**, built, smoke-tested, attested, uploaded | -- |
+| macOS package (arm64) | **cancelled by GitHub**: "The job was not acquired by Runner of type hosted even after multiple attempts" (arm64 capacity notices) -- never started | re-queued by `rerun-failed-jobs`; result below |
+| Publish release | skipped (no tag, publishing off) | |
+
+Artifacts of run 44, downloaded and checked on this machine (expire 2026-11-28):
+
+| Artifact | File | Size | SHA-256 (sidecar = recomputed) | Checks |
+|---|---|---|---|---|
+| `Monitra-Windows-1.3.4` (id 12903804413, 77 042 171 B zip) | `Monitra-Setup-1.3.4.exe` | 32 444 901 B | `c2be6a944bfada4ee2b83e51129a157ac012668a57c2c44af2a6fe5d1ca8aa9d` | FileVersion 1.3.4, ProductVersion 1.3.4, Product Monitra, Company Monitra; `Get-AuthenticodeSignature`: **NotSigned**; `signature.json` `signed: false` (`WinVerifyTrust`) |
+| | `Monitra-Portable-1.3.4.zip` | 45 374 204 B | `8c19c280a217c9d733c2055bb1a7f75cd79b47880b5339a3615185e0ec94d004` | `Monitra.exe` FileVersion 1.3.4; bundled `Qt6Core.dll` **6.11.2.0**; launched under an isolated `MONITRA_DATA_DIR` (offscreen): "Monitra 1.3.4 starting ... frozen=True portable=True", services up, still running after 15 s. It reused the session in the shared Qt settings store and got a clean 401 from the production API (observation also made for 1.3.3; read-only requests, handled) |
+| `Monitra-macOS-x86_64-1.3.4` (id 12904444596, 58 533 189 B zip) | `Monitra-macOS-x86_64-1.3.4.dmg` | 61 434 292 B | `87cdff0c0bb4b5872148ed7bebf920139faa88cd835648ce86758441a6bf999e` | UDIF (`koly` trailer), GPT + one `Apple_APFS` volume (161 349 632 B); inside it `Monitra.app/Contents/Info.plist`: `com.monitra.desktop`, `CFBundleShortVersionString` 1.3.4, `CFBundleVersion` 1.3.4, `LSMinimumSystemVersion` 11.0; Qt frameworks 6.11.2, no 6.12 marker; `signature.json` `signed: false` ("code object is not signed at all"). Not mounted or launched (no Mac here) |
+| `Monitra-macOS-arm64-1.3.4` | `Monitra-macOS-arm64-1.3.4.dmg` | -- | -- | never built: the re-queued job stayed `queued` on `macos-14` (14:35-14:50 UTC) and run 44 was cancelled in favour of run 45 |
+
+### 5.5 Run 45 (`38a1c97`) -- the release build
+
+Run 44's arm64 job waited 35 minutes on `macos-14`, was cancelled by GitHub ("The job was not
+acquired by Runner of type hosted even after multiple attempts", arm64 capacity notices), and
+sat queued again after the re-run while GitHub's status page showed Actions operational.
+Commit `38a1c97` moves only the arm64 matrix entry to **`macos-15`** (same architecture, the
+current default image; the suite runs there before anything is packaged, as on every runner);
+nothing in the application changes. Run 45 acquired all three runners within seconds.
+
+| Job | Result |
+|---|---|
+| Windows package (`windows-latest`) | **success**, 14:48-15:10 UTC |
+| macOS package (arm64, `macos-15`) | **success**, 14:48-15:00 UTC -- regression suite green including `test_layout_stability` |
+| macOS package (x86_64, `macos-15-intel`) | **success**, 14:48-15:11 UTC |
+| Publish release | skipped (publishing off, no tag) |
+
+**The 1.3.4 release artifacts** (run 45, expire 2026-11-28), downloaded and checked on this
+machine; `python tools/verify_release_artifacts.py --artifacts <dir> --tag v1.3.4` prints
+"Monitra 1.3.4: every required artifact is present, intact. (Signatures were not required for
+this run.)":
+
+| Artifact | File | Size | SHA-256 (sidecar = recomputed) | Checks |
+|---|---|---|---|---|
+| `Monitra-Windows-1.3.4` (id 12907299251, 77 035 895 B zip) | `Monitra-Setup-1.3.4.exe` | 32 438 229 B | `4f7ee34d63fa3fe6253a75c0348e8a3eea506e458d9fb6814d99d43d2f9f0e60` | FileVersion 1.3.4, ProductVersion 1.3.4, Product Monitra, Company Monitra; **NotSigned**; `signature.json` `signed: false` |
+| | `Monitra-Portable-1.3.4.zip` | 45 374 317 B | `256c4701e597c33510322f82bf4b93c2fa73628122e787dfad11ca93fd7a954c` | `Monitra.exe` FileVersion 1.3.4; `Qt6Core.dll` 6.11.2.0; launched under an isolated `MONITRA_DATA_DIR` (offscreen): "Monitra 1.3.4 starting", still running after 12 s |
+| `Monitra-macOS-arm64-1.3.4` (id 12907751254, 52 479 138 B zip) | `Monitra-macOS-arm64-1.3.4.dmg` | 54 373 610 B | `3be98f5d10fffa8814ed8a141c2020640c22973c0fe4a0a1c9e69d23ce59a014` | UDIF (`koly`), APFS volume; `Monitra.app` `Info.plist`: `com.monitra.desktop`, 1.3.4 / 1.3.4, `LSMinimumSystemVersion` 11.0; Qt 6.11.2, no 6.12 marker; `signature.json` `signed: false` ("not signed at all"). Not mounted or launched (no Mac here) |
+| `Monitra-macOS-x86_64-1.3.4` (id 12908526279, 58 103 952 B zip) | `Monitra-macOS-x86_64-1.3.4.dmg` | 60 092 172 B | `3b6da84b876ba58ffad38957aa5894e8387a9201fb56a2fcf17af02526f89c8f` | same checks as arm64: `com.monitra.desktop`, 1.3.4 / 1.3.4, min 11.0, Qt 6.11.2, unsigned |
+
+**Hosted in the repository** (final commit of this session): the three installers above replace
+the 1.3.3 files in `frontend/public/download_app_files/`, `DOWNLOAD_VERSION = '1.3.4'`, the
+download-page test updated (18 passed), `npm run build` and `npm run lint` clean. They reach the
+website on the next frontend deploy -- after the server-side 500 fix (section 9, item 1).
+
+The run-42, run-43 and run-44 artifacts are superseded and are not to be hosted.
 
 ## 6. Critical functionality -- evidence
 
@@ -187,17 +249,20 @@ on any Mac other than the builder.
    log, typically *500.19*: the `staticContent` section locked at site level, or the
    `<remove>` of an extension not defined above). Until it is fixed **no installer can be
    downloaded from the website, no client can self-update, and the download page's buttons
-   are dead.** Verify with `desktop/tools/verify_download_urls.py` after the fix.
-2. **The download folder in the repository holds the withdrawn 1.3.3 installers** (`b1842f2`,
-   owner, 2026-10-29 12:53 IST) while `DOWNLOAD_VERSION` is still `1.3.2`: deployed as is,
-   the download page would link to files that are not there, and the files that are there
-   are the build with the Request-dialog defect. Replace them with the run-43 1.3.4 files and
-   set `DOWNLOAD_VERSION = '1.3.4'` (and the three pinned paths in
-   `desktopRelease.test.ts`) in the same commit.
-3. **`v1.3.3` is a public, non-draft GitHub release** (published 2026-10-29 07:46 UTC by the
-   owner, 14 assets, 1 download each) -- the build that is withdrawn. The workflow files
-   releases as drafts; this one was published by hand. Mark it a pre-release or delete it so
-   nobody installs it; its tag can stay (the version is spent).
+   are dead.** **Repository side done (`b2fb0f4`):** the folder `web.config` is removed and the
+   runbook (§8.7) and hosting notes now say to set `.dmg` at the site level. **Server side
+   still open (owner):** delete `download_app_files\web.config` from the deployed folder, add
+   `.dmg` = `application/x-apple-diskimage` in IIS Manager on the site node, deploy the
+   frontend, then `verify_download_urls.py --version 1.3.4` must print three OK lines.
+2. **The download folder in the repository held the withdrawn 1.3.3 installers** (`b1842f2`,
+   owner) while `DOWNLOAD_VERSION` was `1.3.2`. **Done in this session's final commit:** the
+   run-44 `Monitra-Setup-1.3.4.exe` and `Monitra-macOS-x86_64-1.3.4.dmg` (and the arm64 DMG once
+   its job has run) replace them; `DOWNLOAD_VERSION = '1.3.4'`; the three pinned paths in
+   `desktopRelease.test.ts` updated (18 passed). Takes effect on the next frontend deploy.
+3. **`v1.3.3` was a public, non-draft GitHub release** (published 2026-10-29 07:46 UTC by the
+   owner, 14 assets) -- the build that is withdrawn. **Done:** it is now a *pre-release* named
+   "Monitra v1.3.3 (withdrawn)" with a do-not-install note at the top of its body pointing at
+   1.3.4; assets and tag untouched (the version is spent). Delete it outright if preferred.
 4. **The `v1.3.3` tag run (41) failed at backend registration** (`register_release.py`,
    expected: `MONITRA_RELEASE_CREDENTIAL` still answers 401 in production). The same will
    happen on a `v1.3.4` tag until the credential is rotated (runbook §8.8).
@@ -206,9 +271,10 @@ on any Mac other than the builder.
    macOS minutes free. If it is made private again before run 43, the 500 MB quota refuses the
    upload exactly as on 2026-10-21 and 2026-10-29 -- delete the 1.3.2 and 1.3.3 artifacts
    first, or keep it public for the build.
-6. **The 6.11.2 pin fails the macOS suite** (section 5). Fixed in `a968dba`; needs the push and
-   run 43 to be proven on the Macs. Attempts to understand *why* the macOS floor is
-   name-dependent on 6.11.2 are not possible without a Mac and were not made.
+6. **The macOS layout failure of runs 42/43** -- a `MagicMock` host's repr drawn by the
+   now-plain-text status label (section 5.3). Fixed in `0c4c35e` and proven on both macOS
+   runners (run 44 x86_64, run 45 arm64 and x86_64). The arm64 job now runs on `macos-15`
+   (`38a1c97`) after `macos-14` could not supply a runner for 50 minutes.
 
 **Carried forward from 1.3.3, still open:**
 
@@ -229,31 +295,28 @@ on any Mac other than the builder.
 `a1c4e8b2d6f0`, `at_head: true`); the heartbeat backoff fix is in; the Request-dialog defect is
 fixed on both toolkits with geometry tests; the toolkit is pinned.
 
-**Blocked checks in this session:** the push (and therefore the macOS builds); real-device
-installation and upgrade; Google Drive upload; the macOS activity path; the website download
-(500).
+**Blocked checks in this session:** real-device installation and upgrade; Google Drive upload; the macOS activity path; the website
+download (500, server-side); IIS cannot be reproduced on this machine (no admin rights to install
+IIS Express).
 
 ## 10. Decision
 
 **BLOCKED.**
 
-What is proven: the 1.3.4 source (`a968dba`) passes every automated gate on this machine --
-backend 3414, frontend 1549 with a clean build and lint, desktop 4312 on 6.11.2 and 4311 on
-6.12.0, architecture, changelog, 10/10 launch cycles, the soak, and 110 real-backend
-end-to-end tests on a throwaway PostgreSQL -- and the Windows package of `99cb9c1` builds,
-smoke-tests and launches as 1.3.4. Production needs no migration for it.
+What is proven: the 1.3.4 source (`38a1c97`) passes every automated gate on this machine --
+backend 3414, frontend 1549 with a clean build and lint, desktop 4313 (173 modules), architecture,
+changelog, 10/10 launch cycles, the soak, and 110 real-backend end-to-end tests on a throwaway
+PostgreSQL -- and in CI all three packages pass their full suites, build, smoke-test, and verify
+as 1.3.4 with matching checksums (section 5.5). Production needs no migration for it.
 
 What blocks a release decision, in order of what must happen next:
 
-1. `git push origin smit` (refused here) and dispatch `desktop-release.yml` on `smit` with
-   *Attach the artifacts* OFF -- run 43 must be green on all three runners and produce the
-   three 1.3.4 artifacts; verify them with `tools/verify_release_artifacts.py --tag v1.3.4`
-   and record their checksums in this report.
-2. Fix the website folder's 500 (item 1) and prove the three URLs with
-   `verify_download_urls.py`, then host the run-43 files and bump `DOWNLOAD_VERSION` (item 2).
-3. Mark or delete the public `v1.3.3` GitHub release (item 3).
-4. Pilot ring on real devices (item 8), including an upgrade over an installed 1.3.3.
-5. Rotate `MONITRA_RELEASE_CREDENTIAL`, merge to `main`, tag `v1.3.4`, let the tag build
+1. The website folder's 500 (item 1, server side), then deploy the frontend (which now carries
+   the 1.3.4 files and `DOWNLOAD_VERSION = '1.3.4'`) and prove the three URLs with
+   `verify_download_urls.py --version 1.3.4 --artifacts frontend/public/download_app_files`.
+2. Pilot ring on real devices (item 8), including an upgrade over an installed 1.3.3; the macOS
+   DMGs have never been mounted.
+3. Rotate `MONITRA_RELEASE_CREDENTIAL`, merge to `main`, tag `v1.3.4`, let the tag build
    register draft rows, `GET /desktop/releases/versions/1.3.4/readiness`, publish.
 
 The installers remain unsigned, so even after 1-5 the outcome is at best **READY WITH
