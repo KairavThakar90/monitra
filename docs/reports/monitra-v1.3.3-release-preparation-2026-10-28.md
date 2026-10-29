@@ -13,15 +13,19 @@ tagged, published, registered or deployed. Written for the owner and whoever run
 | Changes since v1.3.2 | 105 commits, 417 files, +53 920 / -2 125 lines (backend 99 files in `app/`, frontend 79, desktop 30 service files + 65 test files, 9 migrations) |
 | Release commit | `4a90fc5` on `smit`, 3 commits ahead of `origin/smit` |
 | Release tag | **not created** |
-| CI build | **not run** -- `git push` was refused by this session's permission policy ("External System Writes"), and the workflow cannot be dispatched for a commit GitHub does not have |
+| CI build | **done, 2026-10-29**: run 40688614331 attempt 3 of **`44b143f`** (the release candidate commit; the commits after it are the report only), all three jobs green, artifacts uploaded and verified -- section 5.2. The first push had been refused by this session's permission policy; the owner allowed it the same day. |
 | Publication | **nothing published**; production still serves 1.1.1 rows |
 
-**Verdict: BLOCKED -- NOT READY FOR PRODUCTION.** Every gate that can be evaluated from this
-machine passed, including the real end-to-end suites and a local Windows candidate build of the
-exact commit, but the three mandatory CI artifacts do not exist, nothing was installed on a
-clean machine, the upgrade from an installed 1.3.2 was not exercised, the installers are
-unsigned, and the Drive-backed screenshot E2E is blocked here. Section 8 lists exactly what the
-owner has to run; sections 2-7 are the evidence.
+**Three verdicts, kept apart.** *Build:* **SUCCESS** -- every test passed on every runner and all
+three packages built and smoke-tested. *Artifact upload:* **SUCCESS** (attempt 3, after two
+quota refusals) -- `Monitra-Windows-1.3.3`, `Monitra-macOS-arm64-1.3.3`,
+`Monitra-macOS-x86_64-1.3.3` are downloadable and verified. *Production-release readiness:*
+**BLOCKED -- NOT READY FOR PRODUCTION.** Every gate that can be evaluated from this machine
+passed, including the real end-to-end suites, but nothing was installed on a clean machine, the
+upgrade from an installed 1.3.2 was not exercised, no DMG was mounted on a Mac, the installers
+are unsigned, the backend behind the new features is not deployed, and the Drive-backed
+screenshot E2E is blocked here. Section 8 lists exactly what the owner has to run; sections 2-7
+are the evidence.
 
 ## 2. What was done in this session
 
