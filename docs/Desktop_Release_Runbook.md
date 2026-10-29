@@ -491,14 +491,20 @@ committed file); both `.dmg` files answer an IIS `404 text/html` page although
 the files are in the folder. IIS serves a static file only when its extension
 has a MIME type, and `.dmg` has none by default.
 
-**Repository fix (shipped with every frontend deploy):**
-`frontend/public/download_app_files/web.config` -- a directory-scoped IIS
-configuration that maps `.dmg` to `application/x-apple-diskimage` (and
-`.sha256` to `text/plain`) for that folder only. Vite copies `public/`
-verbatim, so the file is deployed at `/download_app_files/web.config`; it adds
-nothing to the site root, so the site's own configuration (URL rewrite rules
-and the like) is untouched. It `remove`s before it `mimeMap`s, so a mapping
-already present higher up cannot turn into a duplicate-key error.
+**Repository fix that was tried and withdrawn (2026-10-27 to 2026-10-29):** a
+directory-scoped `frontend/public/download_app_files/web.config` mapping `.dmg`
+(and `.sha256`) for that folder only. After the frontend deploy that carried it,
+**every** URL under `/download_app_files/` -- the `.exe`, both `.dmg`, the
+sidecars, a missing file, the folder itself -- answered IIS's generic `500` page
+while the site root and `/download` answered `200` (measured 2026-10-29). A
+folder `web.config` that IIS cannot apply fails the whole folder, and the folder
+had served the `.exe` without one two days earlier, so the file was removed from
+the repository (commit after `b279381`). The exact IIS complaint is only visible
+on the server (IIS detailed error, usually `500.19`); the two usual causes are
+the `staticContent` section being locked for override below the site, and a
+`<remove>` of an extension the parent does not define. **The MIME type is set at
+the site level instead, by hand (step 1 below), and the deployed folder must not
+contain a `web.config`.**
 
 **Second finding:** a *missing* installer URL under that folder answers
 `200 text/html` with the site's index page (a single-page-application rewrite),
@@ -511,10 +517,14 @@ copy the installers **before** publishing, and prove them (below).
 **Administrator steps on the server, after the next frontend deploy** (or by
 hand before it):
 
-1. IIS Manager → Sites → the `staff.peakworkos.com` site → open the
-   `download_app_files` folder → **MIME Types**. If `.dmg` is not listed, add
-   `.dmg` = `application/x-apple-diskimage`. (The deployed `web.config` does this;
-   check that the deploy really copied it: the folder must contain `web.config`.)
+1. On the server, **delete `download_app_files\web.config`** from the deployed
+   site if it is there (a deploy made between 2026-10-27 and 2026-10-29 carried
+   it), then IIS Manager → Sites → the `staff.peakworkos.com` site (the site
+   node, not the folder) → **MIME Types** → add `.dmg` =
+   `application/x-apple-diskimage` if it is not listed (optionally `.sha256` =
+   `text/plain`). Re-check `curl -sI .../download_app_files/Monitra-Setup-<v>.exe`
+   answers `200`; a `500` means a folder `web.config` is still present or the
+   site-level change did not take.
 2. From any machine outside the server:
    ```
    curl -sI https://staff.peakworkos.com/download_app_files/Monitra-macOS-arm64-1.3.2.dmg
@@ -530,9 +540,10 @@ hand before it):
    python desktop/tools/verify_download_urls.py --base-url https://staff.peakworkos.com/download_app_files/ --version 1.3.2 --artifacts frontend/public/download_app_files
    ```
    must print three `OK` lines and exit 0. Keep the output with the release record.
-4. If the folder answers `500` after the deploy, the server already maps `.dmg`
-   at a higher level **and** the deployed `web.config` was edited to drop its
-   `<remove>` line; restore the file as committed.
+4. If the folder answers `500`, a `web.config` is present in the deployed
+   `download_app_files` folder: delete it (step 1). The repository no longer
+   ships one; do not add one back without first proving it on the server with
+   `curl -sI` against the `.exe`.
 
 ### 8.8 The release credential (`MONITRA_RELEASE_CREDENTIAL`)
 
