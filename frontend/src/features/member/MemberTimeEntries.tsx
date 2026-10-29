@@ -12,6 +12,8 @@ import { useAuth } from "../auth/authContext";
 import { useFeedback } from "../../components/FeedbackProvider";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
 import { formatHMS, formatISTTime, istTodayISO } from "../../utils/duration";
+import { formatApiError } from '../../api/utils';
+import { validateDescription } from '../../validation';
 
 /**
  * Time Entries: one day's individually recorded sessions, each movable to a
@@ -101,17 +103,24 @@ const TransferEntryModal: React.FC<{
       setError("That is the project and task this entry already has.");
       return;
     }
+    // The reason is prose another person reads: the same rule the backend enforces, checked here so a
+    // refused value is explained at the field instead of arriving as a rejected request.
+    const checkedReason = validateDescription(reason, { fieldLabel: 'Reason' });
+    if (!checkedReason.ok) {
+      setError(checkedReason.error);
+      return;
+    }
     try {
       await transfer({
         id: entry.id,
         to_project_id: Number(toProjectId),
         to_task_id: Number(toTaskId),
-        reason: reason.trim() || undefined,
+        reason: checkedReason.value || undefined,
       }).unwrap();
       showToast("Time entry transferred.", "success");
       onClose();
     } catch (err: any) {
-      setError(err?.data?.detail || "Could not transfer this time entry.");
+      setError(formatApiError(err?.data, "Could not transfer this time entry."));
     }
   };
 

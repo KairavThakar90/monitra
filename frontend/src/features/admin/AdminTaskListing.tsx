@@ -19,6 +19,7 @@ import { FieldError, useFormValidation } from '../../validation';
 import { useAuth } from '../auth/authContext';
 import { usageColor } from '../dashboard/v2/theme';
 import { billingTypeLabel, billingTypesFor, type BillingKind, type BillingScope } from '../../utils/billing';
+import { formatApiError } from '../../api/utils';
 
 const formatDate = (dateStr: string | null) => {
   if (!dateStr) return "-";
@@ -214,7 +215,7 @@ const TaskBudgetCell: React.FC<{ projectId: number; task: ProjectTaskSummaryTask
       setSaved(value);
       setEditing(false);
     } catch (err: any) {
-      showToast(err?.data?.detail || 'Could not save the estimated hours.', 'error');
+      showToast(formatApiError(err?.data, 'Could not save the estimated hours.'), 'error');
     }
   };
 
@@ -531,7 +532,7 @@ export const AdminTaskListing: React.FC = () => {
       // changing a filter.
     } catch (err: any) {
       console.error(err);
-      const errorMsg = err?.data?.detail || err?.data?.message || "Unable to create task. Please try again.";
+      const errorMsg = formatApiError(err?.data, typeof err?.data?.message === 'string' ? err.data.message : "Unable to create task. Please try again.");
       setFormError(errorMsg);
       showToast(errorMsg, "error");
     }

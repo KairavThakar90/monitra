@@ -18,6 +18,7 @@ import type { DateRange } from "../dashboard/v2/filters";
 import { formatHMS, secondsOf } from "../../utils/duration";
 import { series } from "../dashboard/v2/theme";
 import { FieldError, SEARCH_MAX_LENGTH, validateSearchTerm } from "../../validation";
+import { formatApiError } from '../../api/utils';
 
 /**
  * The member's task list.
@@ -298,7 +299,7 @@ export const MemberTasks: React.FC = () => {
     } catch (error: any) {
       // A member may update tasks in their own projects; anything else is the
       // server's call, and its reason is more useful than a generic message.
-      showToast(error?.data?.detail || "Could not update this task.", "error");
+      showToast(formatApiError(error?.data, "Could not update this task."), "error");
     }
   };
 

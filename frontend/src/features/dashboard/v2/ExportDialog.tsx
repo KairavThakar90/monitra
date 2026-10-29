@@ -14,6 +14,7 @@ import {
   dailyHeaders,
   datesInRange,
 } from "./timesheetExport";
+import { formatApiError } from '../../../api/utils';
 
 /**
  * Export dialog for the Reports page.
@@ -148,8 +149,10 @@ export const ExportDialog: React.FC<{
       onClose();
     } catch (caught) {
       setError(
-        (caught as { data?: { detail?: string } })?.data?.detail ||
+        formatApiError(
+          (caught as { data?: unknown })?.data,
           "Export failed. Please check your connection and try again.",
+        ),
       );
     } finally {
       setBusy(false);

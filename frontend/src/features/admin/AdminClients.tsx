@@ -14,6 +14,7 @@ import {
   type ClientPermissions,
   type ClientProjectRef,
 } from '../../store/api/clientsApi';
+import { formatApiError } from '../../api/utils';
 
 const STATUS_STYLES: Record<ClientListItem['status'], string> = {
   pending: 'bg-amber-50 text-amber-700 border border-amber-200',
@@ -274,7 +275,7 @@ const AddClientModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       await createInvitation({ email: email.trim(), project_ids: Array.from(selectedIds), permissions }).unwrap();
       onClose();
     } catch (err: any) {
-      setError(err?.data?.detail || 'Could not send the invitation. Please try again.');
+      setError(formatApiError(err?.data, 'Could not send the invitation. Please try again.'));
     }
   };
 
@@ -362,7 +363,7 @@ const EditAccessModal: React.FC<{ client: ClientListItem; onClose: () => void }>
       await updateAccess({ id: client.id, project_ids: Array.from(selectedIds), permissions }).unwrap();
       onClose();
     } catch (err: any) {
-      setError(err?.data?.detail || 'Could not update access. Please try again.');
+      setError(formatApiError(err?.data, 'Could not update access. Please try again.'));
     }
   };
 

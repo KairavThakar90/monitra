@@ -23,17 +23,23 @@ export function formatApiError(errorData: any, defaultMessage: string = "Request
   }
 
   if (Array.isArray(detail)) {
-    return detail
+    const lines = detail
       .map((err: any) => {
-        const field = err.loc ? err.loc.slice(1).join(".") : "";
-        const fieldPrefix = field ? `${field}: ` : "";
-        return `${fieldPrefix}${err.msg}`;
+        if (typeof err === "string") return err;
+        if (!err || typeof err.msg !== "string") return "";
+        const field = Array.isArray(err.loc) ? err.loc.slice(1).join(".") : "";
+        return `${field ? `${field}: ` : ""}${err.msg}`;
       })
-      .join("; ");
+      .filter(Boolean);
+    return lines.length ? lines.join("; ") : defaultMessage;
   }
 
   if (typeof detail === "object" && detail !== null) {
-    return detail.message || detail.error || JSON.stringify(detail);
+    // Only a sentence the server wrote for a person is shown. An object with no
+    // such field used to be `JSON.stringify`-ed onto the screen -- raw JSON in a toast
+    // or a banner -- and is now the caller's default message instead.
+    const text = [detail.message, detail.error].find((value) => typeof value === "string" && value.trim());
+    return (text as string | undefined) ?? defaultMessage;
   }
 
   return defaultMessage;

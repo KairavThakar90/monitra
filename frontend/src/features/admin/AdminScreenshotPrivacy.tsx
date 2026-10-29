@@ -14,6 +14,8 @@ import { useFeedback } from '../../components/FeedbackProvider';
 import { MemberMultiSelect } from '../dashboard/v2/filters';
 import { V2Shell } from './../dashboard/v2/V2Shell';
 import { PrivacyRuleCatalogue } from './PrivacyRuleCatalogue';
+import { validateName, validatePlainText } from '../../validation';
+import { formatApiError } from '../../api/utils';
 
 /**
  * Screenshot Privacy: which applications and websites are blurred/skipped in
@@ -296,6 +298,22 @@ export const AdminScreenshotPrivacy: React.FC<{ embedded?: boolean }> = ({ embed
 
   const handleCreateRule = async () => {
     if (!formValid || saving) return;
+    // The same rules the server applies (NAME for labels, single-line text for the patterns the desktop
+    // matches against): markup, whole JSON and control characters are refused here with a reason rather
+    // than coming back as a rejected request. The values sent are the normalised ones.
+    const checked = {
+      name: validateName(form.name, { fieldLabel: 'Name' }),
+      category: validateName(form.category, { fieldLabel: 'Category' }),
+      process_name: validatePlainText(form.process_name, { fieldLabel: 'Process name', required: drawerType === 'application' }),
+      domain: validatePlainText(form.domain, { fieldLabel: 'Domain', required: drawerType === 'url' }),
+      url_pattern: validatePlainText(form.url_pattern, { fieldLabel: 'URL pattern', required: drawerType === 'url' }),
+    };
+    const refused = Object.values(checked).find((result) => !result.ok);
+    if (refused && !refused.ok) {
+      setSaveError(refused.error);
+      return;
+    }
+    const value = (result: typeof checked.name) => (result.ok ? result.value : '');
     const applyTo: ScreenshotRuleScope =
       ruleMemberIds.length === 0
         ? { scope: 'all' }
@@ -307,17 +325,17 @@ export const AdminScreenshotPrivacy: React.FC<{ embedded?: boolean }> = ({ embed
       const created =
         drawerType === 'application'
           ? await createApplication({
-              name: form.name,
-              process_name: form.process_name,
-              category: form.category,
+              name: value(checked.name),
+              process_name: value(checked.process_name),
+              category: value(checked.category),
               is_active: true,
               apply_to: applyTo,
             }).unwrap()
           : await createUrl({
-              name: form.name,
-              domain: form.domain,
-              url_pattern: form.url_pattern,
-              category: form.category,
+              name: value(checked.name),
+              domain: value(checked.domain),
+              url_pattern: value(checked.url_pattern),
+              category: value(checked.category),
               is_active: true,
               apply_to: applyTo,
             }).unwrap();
@@ -331,11 +349,11 @@ export const AdminScreenshotPrivacy: React.FC<{ embedded?: boolean }> = ({ embed
       closeDrawer();
     } catch (err) {
       // Kept open, with what was typed, so a refusal costs nothing.
-      const data = (err as { data?: { detail?: unknown } } | null)?.data;
       setSaveError(
-        typeof data?.detail === 'string'
-          ? data.detail
-          : 'Could not save the rule. Nothing was changed — please try again.',
+        formatApiError(
+          (err as { data?: unknown } | null)?.data,
+          'Could not save the rule. Nothing was changed — please try again.',
+        ),
       );
     } finally {
       setSaving(false);
