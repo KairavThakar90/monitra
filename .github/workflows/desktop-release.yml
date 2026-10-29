@@ -254,9 +254,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Apple Silicon. macos-14 and later are arm64 runners.
+          # Apple Silicon. macos-14 and later are arm64 runners. This was
+          # macos-14 until 2026-10-29: the first 1.3.4 release build queued for
+          # 35 minutes on that label, was cancelled by GitHub ("not acquired by
+          # Runner of type hosted even after multiple attempts", with arm64
+          # capacity notices) and queued again on the re-run. macos-15 is the
+          # same architecture on the current default image; the suite runs on it
+          # before anything is packaged, as on every runner.
           - arch: arm64
-            runner: macos-14
+            runner: macos-15
           # Intel. This was macos-13, which GitHub retired on 2025-12-04. A
           # workflow asking for a retired label does not fail -- it queues for
           # a runner that will never exist, and because the release job needs
