@@ -1858,6 +1858,13 @@ class ActivitySection(QWidget):
     def set_screenshot_status(self, status: Optional[dict]) -> None:
         """Render one `ScreenshotStatus` dict, or hide the line."""
         label = self._shot_status
+        if not isinstance(status, dict):
+            # Only a real status dict is shown. The label is plain text (a headline is somebody
+            # else's words and must read literally), so anything else handed in -- a test
+            # double's stand-in object, say -- would be drawn as its repr, hundreds of pixels
+            # wide, and become the panel's minimum width. A host without a real status shows
+            # nothing, which is what the docstring of _connect_screenshot_status promises.
+            status = None
         headline = (status or {}).get("headline") or ""
         if not headline or (status or {}).get("state") == "inactive":
             label.setVisible(False)
