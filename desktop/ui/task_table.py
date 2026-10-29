@@ -997,7 +997,6 @@ class ManualTimeEntryDialog(QDialog):
                 background-color: #FFFFFF;
             }}
             QTimeEdit#TimeEditInner {{
-                border: none;
                 background: transparent;
                 font-size: 13px;
                 color: #0F172A;

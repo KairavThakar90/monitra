@@ -978,6 +978,31 @@ A `StrongFocus` handle takes focus when clicked, and a ring drawn for any focus 
 on the divider after every drag. **Instead:** draw it only for `TabFocusReason`,
 `BacktabFocusReason` and `ShortcutFocusReason`.
 
+### ❌ Do not name a `border` in a stylesheet rule on a button-less `QTimeEdit`
+
+```python
+time_edit.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+time_edit.setFrame(False)
+# ...and in the dialog's sheet:
+QTimeEdit#TimeEditInner { border: none; background: transparent; ... }
+```
+
+**What it caused:** v1.3.2 and v1.3.3 shipped with Start Time and End Time in
+the Request dialog drawn empty -- no custom time could be entered. Measured on
+2026-10-29: on Qt 6.11.2 the rule is harmless (inner line edit 252 px wide); on
+Qt 6.12.0 the same rule, with no spin buttons, lays the inner line edit out
+**1 px wide** (`QLineEdit` geometry `0,0,1,19`). Colour, font and background
+rules do not trigger it; any `border` does (`none`, `1px solid transparent`,
+with or without `::up-button` rules), and with the buttons left on the edit is
+237 px. The time was still held -- Duration read "1h 0m" -- which is why it
+read as a save problem rather than a drawing one. Nothing caught it because
+every test and every local run used 6.11.2 (see "Do not leave the GUI toolkit
+unpinned" under Updater and release).
+
+**Instead:** `setFrame(False)` already removes the frame; the rule carries no
+`border`. `tests/test_manual_time_entry_dialog.py` shows the dialog and reads
+the fields' geometry back, and reads the rule itself.
+
 ---
 
 ## Memory
@@ -2216,3 +2241,24 @@ transient failure, never parked.
 only when the version *running now* satisfies it (`_load_requirement`), or
 when a successful check no longer states it. A relaunch of the old version
 after a failed installer must still be blocked.
+
+### ❌ Do not leave the GUI toolkit unpinned
+
+```
+PySide6          # requirements.txt
+```
+
+**What it caused:** the release job installs whatever is newest on the day of
+the build. PySide6 6.12.0 was published on 2026-10-08; v1.3.2 was built on
+2026-10-09 and v1.3.3 on 2026-10-29, so both shipped Qt 6.12 while every test,
+every local run and the local `dist/` build used 6.11.2 -- and the Request
+dialog's time fields (see "Do not name a `border` in a stylesheet rule on a
+button-less `QTimeEdit`") collapsed only on the shipped toolkit. A green suite
+proved nothing about the installer. `requirements-build.txt` had pinned
+PyInstaller for exactly this reason and stopped one line short.
+
+**Instead:** `PySide6==<version>` in `requirements.txt`, moved deliberately:
+install the new version, run the suite on it, then change the line.
+`tests/test_dependency_pins.py` fails when the pin is missing and when the
+PySide6 under test differs from the pinned one, so a developer's environment
+and the build are the same toolkit.
