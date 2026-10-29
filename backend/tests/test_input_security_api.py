@@ -115,7 +115,8 @@ class MemberRouteTests(_Api):
                 update.assert_not_called()
 
     def test_an_email_with_a_control_character_or_no_shape_is_refused(self):
-        for email in ("a@b.com\x00", "no-at-sign", "two@@example.com", "a b@example.com", "a@b", "a@b.c\nBcc: x@y.z"):
+        for email in ("a@b.com\x00", "no-at-sign", "two@@example.com", "a b@example.com", "a@b", "a@b.c\nBcc: x@y.z",
+                      '{"mail":"x@y.z"}', "<b>a@b.co</b>", '"quoted"@example.com', "a,b@example.com"):
             with self.subTest(email), patch("app.api.members.MemberService.create") as create:
                 self.assert_refused(self.client.post("/members", json={**self.BASE, "name": "Ravi", "email": email}), email)
                 create.assert_not_called()

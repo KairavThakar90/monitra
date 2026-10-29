@@ -152,11 +152,12 @@ MAX_LIST_PARAM_ITEMS = 200
 # Patterns
 # ---------------------------------------------------------------------------
 
-#: Email. Deliberately the same shape the member schema already used, so this
-#: refactor does not silently start rejecting addresses that used to work.
+#: Email. The shape the member schema already used, minus the characters no mailbox provider issues and that turn
+#: a JSON document or a tag into an "address" (`{"mail": "x@y.z"}` matched the old pattern: no whitespace, an @, a dot):
+#: `< > ( ) { } [ ] " \ , ; :`. Apostrophes, plus signs and the rest of the local-part punctuation are still accepted.
 #: Full RFC 5322 is not worth implementing: it accepts addresses no provider
 #: issues, and the real proof an address exists is a delivered message.
-EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+EMAIL_PATTERN = re.compile(r"^[^\s@<>(){}\[\]\x22\\,;:]+@[^\s@<>(){}\[\]\x22\\,;:]+\.[^\s@<>(){}\[\]\x22\\,;:]+$")
 
 #: Canonical hyphenated UUID, any version.
 UUID_PATTERN = re.compile(
