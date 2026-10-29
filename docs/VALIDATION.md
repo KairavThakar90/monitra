@@ -300,6 +300,42 @@ Use `useFormValidation` for per-field errors, or call a `validate*` function
 directly. Mirror the limit into the input's `maxLength`, and wire
 `aria-invalid`/`aria-describedby` so the error is announced.
 
+## 4a. What changed on 2026-10-29 (the input-security audit)
+
+An audit of every free-text input and every place text is shown found the framework sound and its
+*coverage* incomplete. What was closed, and why each item is a rule for the next change:
+
+* **Members, projects, tasks, WFPM and screenshot-privacy rules were length-only.** `MemberCreate` /
+  `MemberUpdate` name and designation, `ProjectCreate` / `ProjectUpdate` and `TaskCreate` / `TaskUpdate`
+  names, every `Wfpm*` name and description, and the `ScreenshotApplication*` / `ScreenshotUrl*` fields
+  were `str` with a strip and a cap, so `{"a": 1}` and `<script>` were stored as somebody's name -- and the
+  Members page showed that JSON as the name. They now use the shared `NAME` / `PLAIN_TEXT` / plain-description
+  rules. **A `*Response` model must never inherit validated input fields**: screenshot-privacy re-declares them on
+  the `*Create` / `*Update` classes so a row stored earlier is still returned.
+* **Text an identity provider sends is untrusted.** `AuthService._profile_text` runs a provider's name and
+  designation through `NAME` (a dict used to become the text `{...}` via `str()`); a refused value never
+  overwrites the account's own, and a new account with no usable name is refused as an invalid provider response.
+* **Bounded, not content-checked, on purpose:** machine telemetry (`window_title`, `page_title`, `application_name`,
+  `reason` on an unwanted-activity adjustment) -- a key name can legitimately be `<`. They have length caps; do not
+  add a content rule without reading why.
+* **Display is the other half.** Validation reduces what can be stored; it does not make rendering safe, and rows stored
+  before a rule are never rewritten. Web: React escapes, and `utils/safeText.ts` `safeLabel()` shows a stored name that
+  is a whole JSON document (or not text at all) as a fallback instead of raw JSON. `formatApiError` never `JSON.stringify`s a
+  response any more -- an object error with no sentence in it is the caller's default message. CSV exports prefix a cell that
+  starts with `=`, `+`, `-`, `@`, tab or CR (`neutraliseSpreadsheetFormula`). The release-notes link is only rendered for
+  an http(s) URL. Desktop: Qt decides on its own whether a string is rich text, so `core/text_safety.plain_tooltip` (every tooltip
+  that shows a name or a URL; `ElidedLabel` covers the common ones) and `setTextFormat(PlainText)` (labels whose content is server
+  or validator text) are the two ways to show somebody else's text; a label that genuinely needs rich text around a message
+  (the task list's Retry link) `html.escape`s the message. A non-JSON error body that contains markup is not shown.
+* **Tests:** `backend/tests/test_input_security_api.py` (hostile payloads posted to the real routes with the clients out of
+  the picture), `frontend/src/validation/__tests__/inputSecurity.test.ts` and
+  `features/admin/__tests__/membersLegacyRecords.test.tsx`, `desktop/tests/test_input_security.py`. The three hostile/legitimate
+  lists are the same on purpose.
+* **Known and left alone:** search boxes are bounded and escaped (`like_pattern`) but not markup-checked -- a search term is
+  filtered on, never stored. Desktop local-filter search boxes (task, project, picker) only have a max length.
+  `routes under /api/v1/screenshot` have no administrator check (a TODO in the router) -- an authorisation gap, not a
+  validation one, reported to the owner.
+
 ## 5. Error messages
 
 Client messages are written for the person who typed the value:
