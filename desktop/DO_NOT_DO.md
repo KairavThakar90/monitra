@@ -2262,3 +2262,13 @@ install the new version, run the suite on it, then change the line.
 `tests/test_dependency_pins.py` fails when the pin is missing and when the
 PySide6 under test differs from the pinned one, so a developer's environment
 and the build are the same toolkit.
+
+**And pin the toolkit every builder is green on, not the one one machine is green
+on.** The first 1.3.4 build pinned 6.11.2 because that was what the Windows
+suite and the local runs used -- and both macOS runners then failed
+`tests/test_layout_stability.py` deterministically (the Activity panel's floor
+moved 1-3 px with the length of its names on macOS Qt 6.11.2; run 40878108382,
+two attempts). The suite had never run on 6.11.2 on macOS; every green macOS
+run had been on 6.12.0. A pin is only as proven as the platforms that have
+run the suite on it: move it, then let CI run on every builder before calling
+it moved.

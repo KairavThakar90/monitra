@@ -1,13 +1,22 @@
-# The GUI toolkit is pinned to the exact version the suite, the local builds
-# and the real-window checks run on. Left bare, the release job installed
-# whatever was newest on the day: v1.3.2 (built 2026-10-09) and v1.3.3
+# The GUI toolkit is pinned to one exact version. Left bare, the release job
+# installed whatever was newest on the day: v1.3.2 (built 2026-10-09) and v1.3.3
 # (2026-10-29) shipped Qt 6.12.0, published the day before the first of them,
 # while everything had been verified on 6.11.2 -- and on 6.12 the Request
-# dialog's time fields were drawn one pixel wide. Move this pin on purpose:
-# install the new version, run `python -m pytest tests/ -q` on it, then change
-# it. tests/test_dependency_pins.py fails on a bare line and on a PySide6 under
-# test that is not this one.
-PySide6==6.11.2
+# dialog's time fields were drawn one pixel wide (ui/task_table.py has the fix,
+# and tests/test_manual_time_entry_dialog.py reads the geometry back).
+#
+# Why 6.12.0 and not 6.11.2: the first 1.3.4 build (run 40878108382, 2026-10-29)
+# pinned 6.11.2, and on BOTH macOS runners tests/test_layout_stability.py failed
+# deterministically (23 cases, two attempts): on macOS the Activity panel's
+# minimum width moved by 1-3 px with the length of the names in it. The same
+# module, and the whole suite, had passed on every macOS and Windows run that
+# used 6.12.0 (runs 40 and 41), and the full Windows suite with the time-field
+# fix passes on 6.12.0 (4311 passed, 2026-10-29). So 6.12.0 is the toolkit every
+# platform has been green on; 6.11.2 was only ever green on Windows. Move this
+# pin on purpose: install the new version, run `python -m pytest tests/ -q`
+# on it (and let CI run it on macOS), then change it. tests/test_dependency_pins.py
+# fails on a bare line and on a PySide6 under test that is not this one.
+PySide6==6.12.0
 httpx
 python-dotenv
 
