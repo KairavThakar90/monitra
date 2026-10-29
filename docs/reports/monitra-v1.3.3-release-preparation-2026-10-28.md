@@ -146,9 +146,42 @@ consumed the month's allowance, which deleting more artifacts cannot restore. Th
 succeeded only after the owner made the repository public for the upload. Rebuilding again without
 changing the account state is pointless; see section 8.
 
-**Downloadable CI artifacts: none yet.** The required three (`Monitra-Windows-1.3.3`,
-`Monitra-macOS-arm64-1.3.3`, `Monitra-macOS-x86_64-1.3.3`) exist only on the runners that
-built them, which are gone; a re-run of the failed jobs rebuilds them from the same commit.
+### 5.2 The build that uploaded: run 40688614331, attempt 3 (2026-10-29)
+
+The owner made the repository public for the upload (as on 2026-10-21); the failed jobs were
+re-run from the same commit. **All three jobs succeeded; the publish job was skipped** (no tag,
+no GitHub release, no backend registration). Windows 4246 passed / 118 skipped in the single
+process (13 min 45 s); macOS arm64 and x86_64 191 modules, 4206 passed, 0 failed, 157 skipped;
+the packaged smoke test passed on every runner ("started, ran for 12s, shut down cleanly").
+Artifacts expire on 2026-11-28; verified copies are in
+`dist-release-1.3.3/ci-build-2026-10-29-44b143f/` (git-ignored).
+
+| Artifact (GitHub Actions) | File | Size | SHA-256 (sidecar = recomputed locally) | Signed |
+|---|---|---|---|---|
+| `Monitra-Windows-1.3.3` (id 12874112698, 77 730 271 B zip) | `Monitra-Setup-1.3.3.exe` | 32 650 355 B | `56695132fd2de212ad8d0b81d7fbfc5f386361309d87395075e215a968bdf2c7` | No (`WinVerifyTrust`: not signed) |
+| | `Monitra-Portable-1.3.3.zip` | 45 855 032 B | `70442b237ee069f112d95ddd803332178034e792914219ee29d6118195378187` | n/a |
+| `Monitra-macOS-arm64-1.3.3` (id 12874256325, 53 351 817 B zip) | `Monitra-macOS-arm64-1.3.3.dmg` | 55 424 268 B | `3805fb5a68c9541cecee08066175cd634e9698d5694e11f6f315b31d68ee4a8f` | No (codesign: not signed at all) |
+| `Monitra-macOS-x86_64-1.3.3` (id 12874970267, 59 480 531 B zip) | `Monitra-macOS-x86_64-1.3.3.dmg` | 62 478 007 B | `ce5ac46e66bae776650229cfb3e54dfdf67c10f3454724ecb18f3ab83a9c31b6` | No (codesign: not signed at all) |
+
+Verification of the downloaded set, on this machine:
+
+* every `.sha256` sidecar matches the file; the digests equal the ones the runners printed;
+* `python tools/verify_release_artifacts.py --artifacts <dir> --tag v1.3.3`: "Monitra 1.3.3:
+  every required artifact is present, intact" (signatures not required for this run);
+* `Monitra-Setup-1.3.3.exe`: FileVersion 1.3.3, ProductVersion 1.3.3, "Monitra Setup",
+  Company Monitra, Inno Setup stub, `NotSigned`;
+* `Monitra-Portable-1.3.3.zip`: `Monitra.exe` FileVersion 1.3.3; launched from the unpacked
+  folder under an isolated `MONITRA_DATA_DIR` and the offscreen platform it logged "Monitra 1.3.3
+  starting ... frozen=True portable=True", brought every service up, and was still running after
+  15 s (the backend it was pointed at did not exist, by design);
+* both DMGs: UDIF (`koly` trailer); Monitra's `Info.plist` reads `com.monitra.desktop`,
+  `CFBundleShortVersionString` 1.3.3, `CFBundleVersion` 1.3.3, `LSMinimumSystemVersion` 11.0; the
+  bundled module archive holds the 1.3.3 modules (`activity.input_probe`,
+  `activity.mac_input_tap`, `activity.input_access`, ...). Not mounted or launched (no Mac here).
+
+**Not done on a real device:** install of the `.exe` on a clean Windows machine, upgrade over an
+installed 1.3.2, mounting and first launch of either DMG, Gatekeeper and Input Monitoring on a
+real Mac. The artifacts are **candidates for the pilot ring**, not a release.
 
 Local Windows candidate build of `4a90fc5` (same scripts the Windows job runs; in
 `desktop/dist/`, git-ignored; **not a release artifact** -- the CI build is):
@@ -208,18 +241,11 @@ Qt settings, which the local backend correctly refused with 401. macOS: nothing 
 ## 8. What the owner has to run, in order
 
 ```
-# 1. get the upload past the storage quota, then re-run the failed jobs of run 40688614331
-#    (commit 44b143f, already pushed; no tag, no release, no registration). Deleting artifacts did not
-#    help (181 MB live, still refused twice). One of, owner's choice -- read Settings -> Billing ->
-#    Usage first, it names the exhausted figure:
-#      a) make the repository public for the duration of the upload, as on 2026-10-21, re-run the
-#         failed jobs, download the artifacts, make it private again;
-#      b) Settings -> Billing -> Spending limits -> Actions: allow overage, then re-run;
-#      c) wait for the billing cycle / the 6-12 h recalculation, then re-run.
-#    Each re-run rebuilds and re-tests from the same commit (about 25 minutes).
+# 1. DONE 2026-10-29: run 40688614331 attempt 3 (repository made public for the upload; make it
+#    private again now). Artifacts verified -- section 5.2. The next build will hit the same quota
+#    refusal while the repository is private: decide on a spending limit or the public window first.
 
-# 2. verify the three artifacts from the run (from desktop/)
-python tools/verify_release_artifacts.py --artifacts <dir with the three jobs' files> --tag v1.3.3
+# 2. DONE: python tools/verify_release_artifacts.py --artifacts dist-release-1.3.3/ci-build-2026-10-29-44b143f --tag v1.3.3
 
 # 3. host them (runbook §3 step 1): copy the three installers under their built names into
 #    frontend/public/download_app_files/, set DOWNLOAD_VERSION = '1.3.3' in
