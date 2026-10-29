@@ -20,6 +20,23 @@ re-grant a permission.
 
 ## [Unreleased]
 
+## [1.3.4]
+
+A corrective release for 1.3.2 and 1.3.3; nothing else changes. The installer
+and the macOS bundles are still unsigned (see 1.3.2 below for what that means
+on first run).
+
+### Fixed
+
+- **The Start Time and End Time boxes in the Request dialog were empty and could
+  not be typed into**, so no time could be requested by hand. The times were
+  there -- the duration under them was right -- but the boxes were drawn one
+  pixel wide. The installer had been built on a newer version of the toolkit
+  Monitra draws its windows with than the one it was tested on, and that version
+  drew those two boxes that way. The boxes are drawn correctly on both versions
+  now, and the toolkit Monitra is built with is fixed to the one it is tested
+  on, so a build can no longer pick up a different one by itself.
+
 ## [1.3.3]
 
 The installer and the macOS bundles are still unsigned (see 1.3.2 below for
