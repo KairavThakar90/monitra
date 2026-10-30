@@ -288,6 +288,9 @@ These are **unimplemented features**, deliberately left out of the stability wor
 8. **Desktop release management — implemented (2026-10-27), nothing published.** A release is a
    version record (`desktop_release_versions`: targets, mandatory, grace hours, floor, effective time,
    lifecycle, audit) over the artifact rows; Admin → Settings → Desktop Releases manages it.
+   **Since 2026-10-30 the only 426 gate is `desktop_version_enforcement`** (product-wide minimum
+   version, no grace); `desktop_update_policy` no longer refuses requests, so the grace deadline
+   described next is informational only — see the note in the runbook §8.
    **The grace period is the server's** (`desktop_update_requirements`: one row per user, platform and
    floor, filed by `get_current_user` on the first request below an active floor, never moved); past
    the deadline every protected desktop route answers **426** except the recovery and upload paths
