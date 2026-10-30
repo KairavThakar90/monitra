@@ -28,6 +28,7 @@ from app.core.permissions import ROLE_PERMISSIONS
 from app.models.activity_log import ActivityLog
 from app.models.client import Client
 from app.models.client_project import ClientProject
+from app.models.desktop_client_version import DesktopClientVersion
 from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.task import Task
@@ -62,7 +63,7 @@ def _database() -> Session:
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
     )
     tables = [model.__table__ for model in
-              (User, Project, ProjectMember, Task, Client, ClientProject, ActivityLog)]
+              (User, Project, ProjectMember, Task, Client, ClientProject, ActivityLog, DesktopClientVersion)]
     stripped = []
     for table in tables:
         for column in table.columns:

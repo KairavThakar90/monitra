@@ -199,6 +199,11 @@ class MemberResponse(BaseModel):
     screenshots_enabled: bool = True
     notifications_enabled: bool = True
     activity_tracking_enabled: bool = True
+    #: The Monitra desktop version this member's desktop last reported, and its OS family
+    #: (`win32`, `darwin`, `linux`). From the desktop's own update check (about every ten hours),
+    #: so just after an upgrade it can show the previous version. None: never reported one.
+    desktop_version: Optional[str] = None
+    desktop_platform: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

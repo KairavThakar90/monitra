@@ -3,6 +3,7 @@ import { V2Shell } from '../dashboard/v2/V2Shell';
 import { 
   useGetMembersQuery, 
   useGetMemberAccessSummaryQuery,
+  useGetDesktopVersionOptionsQuery,
   useCreateMemberMutation, 
   useUpdateMemberMutation, 
   useUpdateMemberAccessMutation,
@@ -16,12 +17,11 @@ import { isTeamScoped } from '../../utils/roles';
 import { MemberLogModal } from './MemberLogModal';
 import { useFeedback } from '../../components/FeedbackProvider';
 import { InlineRefreshIndicator } from '../../components/InlineRefreshIndicator';
-import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { Pagination } from '../../components/Pagination';
 import { useAuth } from '../auth/authContext';
 import { DateRangeFilter, DEFAULT_RANGE, type DateRange } from '../dashboard/v2/filters';
 import { AppIcon } from "../../components/AppIcon";
-import { FieldError, SEARCH_MAX_LENGTH, useFormValidation, validateSearchTerm } from '../../validation';
+import { FieldError, useFormValidation } from '../../validation';
 import { safeLabel } from '../../utils/safeText';
 
 /**
@@ -103,6 +103,10 @@ const ROLE_TONES: Record<string, string> = {
   // the projects it was given access to.
   client: 'text-teal-600',
 };
+
+/** `sys.platform` as an administrator reads it; anything else is shown as the desktop sent it. */
+const desktopPlatformLabel = (platform: string | null | undefined) =>
+  platform === 'win32' ? 'Windows' : platform === 'darwin' ? 'macOS' : platform === 'linux' ? 'Linux' : platform || '';
 
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   if ((status || '').toLowerCase() === 'active') {
@@ -476,27 +480,16 @@ export const AdminMembers: React.FC = () => {
   const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null);
   const [logMember, setLogMember] = useState<{ id: number; name: string } | null>(null);
 
-  const [search, setSearch] = useState('');
-  const [searchError, setSearchError] = useState<string | null>(null);
   const [filterRole, setFilterRole] = useState('All');
   // Who is allowed to add tasks / to log in -- the two switches the columns show.
   const [filterAddTask, setFilterAddTask] = useState<AccessFilter>('All');
   const [filterLogin, setFilterLogin] = useState<AccessFilter>('All');
   const [filterBillableTask, setFilterBillableTask] = useState<AccessFilter>('All');
   const [filterFloor, setFilterFloor] = useState<MemberFloor | 'All'>('All');
+  /** `All`, a reported desktop version, or `none` (the desktop never reported one). */
+  const [filterVersion, setFilterVersion] = useState<string>('All');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-
-  // One request for the finished search term instead of one per keystroke.
-  const debouncedSearch = useDebouncedValue(search);
-
-  /**
-   * A rejected search term is held back from the query rather than sent: the
-   * box says why, and the last good result set stays on screen instead of the
-   * table blanking out behind an error the user cannot see.
-   */
-  const searchCheck = validateSearchTerm(debouncedSearch, { fieldLabel: 'Search' });
-  const searchTerm = searchCheck.ok ? searchCheck.value : '';
 
   // The set of roles is the server's to define. `/project-management/metadata`
   // returns it, so a role added there reaches both pickers with no frontend
@@ -509,15 +502,23 @@ export const AdminMembers: React.FC = () => {
     limit: pageSize,
     role: filterRole,
     status: 'All',
-    search: searchTerm,
     can_add_tasks: filterAddTask,
     can_login: filterLogin,
     can_add_nonbillable_tasks: filterBillableTask,
     floor: filterFloor,
+    desktop_version: filterVersion,
   });
 
+  // What the Version filter offers: every version some desktop last reported, newest first, with how many
+  // members are on it. A failure just leaves "All" and "Not reported" -- the filter still works.
+  const { data: versionOptions } = useGetDesktopVersionOptionsQuery();
+  const versions = useMemo(
+    () => Object.entries(versionOptions?.counts ?? {}).sort(([a], [b]) => b.localeCompare(a, undefined, { numeric: true })),
+    [versionOptions],
+  );
+
   // The headcounts beside Add Task and Login. Deliberately not derived from
-  // `data` above: that is one page, filtered by search and role, and these
+  // `data` above: that is one page, filtered by role and the other filters, and these
   // numbers must not move when the table is narrowed. An error or a first load
   // shows no number at all rather than a made-up zero.
   const { data: accessSummary } = useGetMemberAccessSummaryQuery(undefined, {
@@ -756,7 +757,7 @@ export const AdminMembers: React.FC = () => {
   };
 
   // "Select all N": the header box only knows the rows on screen, so this walks
-  // the same filtered list (role, search, Add Task, Login) page by page -- the
+  // the same filtered list (role, Add Task, Login) page by page -- the
   // API caps a page at 100 -- and selects every id in it. It must carry every
   // filter: with Login set to "Not allowed", selecting the whole directory and
   // pressing Allow would otherwise change people the screen never showed.
@@ -772,10 +773,11 @@ export const AdminMembers: React.FC = () => {
         // eslint-disable-next-line no-await-in-loop
         const result = await fetchMembersPage(
           {
-            page: pageNumber, limit: 100, role: filterRole, status: 'All', search: searchTerm,
+            page: pageNumber, limit: 100, role: filterRole, status: 'All',
             can_add_tasks: filterAddTask, can_login: filterLogin,
             can_add_nonbillable_tasks: filterBillableTask,
             floor: filterFloor,
+            desktop_version: filterVersion,
           },
           true,
         ).unwrap();
@@ -861,7 +863,7 @@ export const AdminMembers: React.FC = () => {
   const totalPages = data?.pages || 1;
 
   // The header box is about the whole directory (every page of the current
-  // role / search filter), not the 20 rows on screen.
+  // role filter), not the 20 rows on screen.
   const totalMembers = data?.total ?? 0;
   const allSelected = totalMembers > 0 && selectedIds.size >= totalMembers;
   const someSelected = selectedIds.size > 0 && !allSelected;
@@ -883,7 +885,7 @@ export const AdminMembers: React.FC = () => {
       return on !== target;
     });
   // Placeholder rows span every column, including the optional ones.
-  const columnCount = 8 + (canManageAccess ? 1 : 0) + (canManageMembers ? 1 : 0);
+  const columnCount = 9 + (canManageAccess ? 1 : 0) + (canManageMembers ? 1 : 0);
 
 
   const selectedMember = selectedProfileId ? data?.items?.find(m => m.id === selectedProfileId) : null;
@@ -936,35 +938,6 @@ export const AdminMembers: React.FC = () => {
       {/* No side padding of its own on a phone: the shell's <main> already gives 16px. */}
       <div className="w-full px-0 sm:px-6 lg:px-8 pt-2 sm:pt-6 space-y-6 pb-20">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 lg:border-0 lg:bg-transparent lg:p-0 lg:px-2">
-            <svg className="h-5 w-5 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-            <input
-              type="text"
-              placeholder="Search members by name or email..."
-              value={search}
-              maxLength={SEARCH_MAX_LENGTH}
-              aria-invalid={searchError ? true : undefined}
-              aria-describedby={searchError ? 'member-search-error' : undefined}
-              onChange={(e) => {
-                const next = e.target.value;
-                setSearch(next);
-                const result = validateSearchTerm(next, { fieldLabel: 'Search' });
-                setSearchError(result.ok ? null : result.error);
-                setPage(1);
-              }}
-              className="flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400 text-slate-700"
-            />
-          </div>
-          {searchError && (
-            <div className="px-2">
-              <FieldError id="member-search-error" message={searchError} />
-            </div>
-          )}
-          
-          <div className="h-8 w-px bg-slate-200 hidden lg:block"></div>
-
           {/* Phone: a two-column grid, each filter with its label above it so the
               dropdowns line up (inline labels of different widths left them
               ragged). From `sm` up it is the original wrapping row. */}
@@ -1024,6 +997,27 @@ export const AdminMembers: React.FC = () => {
                 >
                   <option value="All">All Floors</option>
                   {MEMBER_FLOORS.map((floor) => <option key={floor} value={floor}>{floor}</option>)}
+                </select>
+                <svg className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+                </svg>
+              </div>
+            </div>
+            <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+              <label htmlFor="member-version-filter" className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Version:</label>
+              <div className="relative">
+                <select
+                  id="member-version-filter"
+                  aria-label="Filter by desktop version"
+                  value={filterVersion}
+                  onChange={(e) => { setFilterVersion(e.target.value); setPage(1); }}
+                  className="w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm font-semibold text-slate-700 outline-none shadow-sm transition hover:bg-slate-50 focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15"
+                >
+                  <option value="All">All Versions</option>
+                  {versions.map(([version, count]) => (
+                    <option key={version} value={version}>v{version} ({count})</option>
+                  ))}
+                  <option value="none">Not reported</option>
                 </select>
                 <svg className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
@@ -1125,6 +1119,7 @@ export const AdminMembers: React.FC = () => {
                   <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Status</th>
                   <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Designation</th>
                   <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">Floor</th>
+                  <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]" title="The Monitra desktop version this member's desktop last reported">Desktop</th>
                   <th className="px-4 py-4 font-bold uppercase tracking-wider text-[11px]">
                     Add Task<HeaderCount value={accessSummary?.add_task_allowed} meaning="allowed to add tasks" />
                   </th>
@@ -1191,6 +1186,18 @@ export const AdminMembers: React.FC = () => {
                       </td>
                       <td className="px-4 py-4 font-medium text-slate-600">{safeLabel(member.designation)}</td>
                       <td className="px-4 py-4 font-medium text-slate-600">{member.floor || '-'}</td>
+                      <td className="whitespace-nowrap px-4 py-4" data-testid="member-desktop">
+                        {member.desktop_version ? (
+                          <div title={`Monitra desktop ${member.desktop_version}. The desktop reports its version about every ten hours, so right after an upgrade this can still show the previous one.`}>
+                            <div className="font-semibold text-slate-800">v{member.desktop_version}</div>
+                            {desktopPlatformLabel(member.desktop_platform) && (
+                              <div className="text-[11px] text-slate-500">{desktopPlatformLabel(member.desktop_platform)}</div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-slate-400" title="This member's desktop has not reported its version yet (an older Monitra, or it has not checked for updates).">&mdash;</span>
+                        )}
+                      </td>
                       <td className="px-4 py-4">
                         <AddTaskSwitch
                           allowed={member.can_add_tasks !== false}

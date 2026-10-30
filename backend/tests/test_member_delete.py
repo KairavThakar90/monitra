@@ -33,6 +33,7 @@ from app.main import app
 from app.models.activity_log import ActivityLog, ActivityLogAction, ActivityLogModule
 from app.models.client import Client
 from app.models.client_invitation import ClientInvitation
+from app.models.desktop_client_version import DesktopClientVersion
 from app.models.manual_time_entry import ManualTimeEntry
 from app.models.project import Project
 from app.models.project_status import ProjectStatus, TaskStatus
@@ -67,7 +68,7 @@ TABLES = [
     Base.metadata.tables["organizations"], User.__table__, Project.__table__, ProjectStatus.__table__,
     TaskStatus.__table__, Task.__table__, TaskAssignee.__table__, TimeEntry.__table__,
     TimeEntryAdjustment.__table__, ManualTimeEntry.__table__, ScreenshotExclusion.__table__,
-    Client.__table__, ClientInvitation.__table__, RefreshToken.__table__, ActivityLog.__table__,
+    Client.__table__, ClientInvitation.__table__, RefreshToken.__table__, ActivityLog.__table__, DesktopClientVersion.__table__,
 ]
 
 

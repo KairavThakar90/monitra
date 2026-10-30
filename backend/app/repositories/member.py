@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.models.client import Client
 from app.models.client_invitation import ClientInvitation
+from app.models.desktop_client_version import DesktopClientVersion
 from app.models.manual_time_entry import ManualTimeEntry
 from app.models.project import Project
 from app.models.screenshot_exclusion import ScreenshotExclusion
@@ -13,6 +14,10 @@ from app.models.task_assignee import TaskAssignee
 from app.models.time_entry import TimeEntry
 from app.models.user import User
 from app.core.validation import LIKE_ESCAPE_CHARACTER, like_pattern
+
+
+#: The `desktop_version` filter value for members whose desktop has never reported a version.
+NO_DESKTOP_VERSION = "none"
 
 
 class MemberRepository:
@@ -38,6 +43,7 @@ class MemberRepository:
         db: Session, organization_id: int, search: Optional[str], role: Optional[str], status: Optional[str], page: int, limit: int,
         member_ids: Optional[set[int]] = None, *, can_login: Optional[bool] = None, can_add_tasks: Optional[bool] = None,
         can_add_nonbillable_tasks: Optional[bool] = None, floor: Optional[str] = None,
+        desktop_version: Optional[str] = None,
     ):
         """One page of the directory.
 
@@ -68,6 +74,14 @@ class MemberRepository:
             filters.append(or_(User.status == "inactive", User.is_active.is_(False)))
         if floor is not None:
             filters.append(User.floor == floor)
+        if desktop_version is not None:
+            # The version each member's desktop last reported (`desktop_client_versions`, one row per
+            # user). "none" is the members whose desktop has never reported one.
+            reported = select(DesktopClientVersion.user_id)
+            if desktop_version == NO_DESKTOP_VERSION:
+                filters.append(User.id.not_in(reported))
+            else:
+                filters.append(User.id.in_(reported.where(DesktopClientVersion.app_version == desktop_version)))
         for column, wanted in ((User.can_login, can_login), (User.can_add_tasks, can_add_tasks)):
             if wanted is not None:
                 filters.append(column.is_not(False) if wanted else column.is_(False))
