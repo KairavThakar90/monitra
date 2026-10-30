@@ -1,6 +1,5 @@
 import React, { useMemo, useState } from "react";
 import { MemberShell } from "./MemberShell";
-import { TransferEntryModal } from "./TransferEntryModal";
 import { Card, EmptyState, ErrorNote, Spinner, StatusPill } from "./MemberUi";
 import {
   useGetTimeTrackingQuery,
@@ -13,8 +12,6 @@ import {
   useGetManualTimeEntryRequestsQuery,
   useDeleteManualTimeEntryRequestMutation,
 } from "../../store/api/manualTimeEntryApi";
-import { useGetTimeEntriesQuery } from "../../store/api/timeEntryApi";
-import type { TimeEntry } from "../../store/api/timeEntryApi";
 import { useAuth } from "../auth/authContext";
 import { useFeedback } from "../../components/FeedbackProvider";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
@@ -61,25 +58,6 @@ const initialsOf = (name: string) =>
     .map((word) => word[0]?.toUpperCase() ?? "")
     .join("") || "?";
 
-/** The calendar day after `iso` (`YYYY-MM-DD`) — `getTimeEntries`'s
- * `end_date` is exclusive, so a single day's entries need the next day as
- * the upper bound, not the day itself. */
-const nextDayIso = (iso: string) => {
-  const [year, month, day] = iso.split("-").map(Number);
-  const next = new Date(Date.UTC(year, month - 1, day + 1));
-  return next.toISOString().slice(0, 10);
-};
-
-const projectNameById = (projects: { id: number; project_name: string }[], id: number) =>
-  projects.find((project) => project.id === id)?.project_name ?? `Project #${id}`;
-
-const taskNameById = (
-  projects: { id: number; tasks: { id: number; name: string }[] | null }[],
-  projectId: number,
-  taskId: number
-) => projects.find((project) => project.id === projectId)?.tasks?.find((task) => task.id === taskId)?.name
-  ?? `Task #${taskId}`;
-
 /**
  * One day of the log, and — once opened — that day's project/to-do rows.
  *
@@ -94,27 +72,14 @@ const DayRow: React.FC<{
   employeeId: number;
   open: boolean;
   onToggle: () => void;
-  /** The full project/task catalogue, for the transfer modal's destination
-   * picker -- distinct from this row's own `projects` below, which is this
-   * one day's *aggregated totals*, not a pickable list. */
-  projects: { id: number; project_name: string; tasks: { id: number; name: string }[] | null }[];
-}> = ({ entry, employeeId, open, onToggle, projects: allProjects }) => {
+}> = ({ entry, employeeId, open, onToggle }) => {
   const { data, isFetching } = useGetTimeTrackingDetailsQuery(
     { employeeId, start_date: entry.date, end_date: entry.date },
     { skip: !open }
   );
-  const { data: rawEntries = [], isFetching: isFetchingRaw } = useGetTimeEntriesQuery(
-    { start_date: entry.date, end_date: nextDayIso(entry.date), user_id: employeeId },
-    { skip: !open }
-  );
-  const [transferring, setTransferring] = useState<TimeEntry | null>(null);
 
   const projects = data?.projects ?? [];
   const todoCount = projects.reduce((sum, project) => sum + (project.tasks?.length ?? 0), 0);
-  // Only completed entries can be transferred -- a still-running one has
-  // nothing recorded yet, and would in any case belong to a different day
-  // by the time it stops.
-  const completedEntries = rawEntries.filter((row) => !row.is_running);
 
   return (
     <>
@@ -254,54 +219,6 @@ const DayRow: React.FC<{
           ))
         )}
 
-      {/* Individual recorded sessions, each with its own real start/end and
-          id -- the project/task rows above are totals and can fold several
-          sessions together, so a specific hour tracked against the wrong
-          project has to be picked from here, not from there. */}
-      {open && !isFetchingRaw && completedEntries.length > 0 && (
-        <tr className="border-b border-[#F1F5F9] bg-[#FAFBFD]">
-          <td colSpan={6} className="px-3 pt-3 pb-1 text-[10.5px] font-bold uppercase tracking-wider text-[#94A3B8]">
-            Recorded time entries
-          </td>
-        </tr>
-      )}
-      {open &&
-        !isFetchingRaw &&
-        completedEntries.map((row) => (
-          <tr key={row.id} className="border-b border-[#F1F5F9] bg-[#FAFBFD] text-[12.5px]">
-            <td className="px-3 py-2" />
-            <td className="px-3 py-2 text-[#334155]" colSpan={2}>
-              {projectNameById(allProjects, row.project_id)} / {taskNameById(allProjects, row.project_id, row.task_id)}
-            </td>
-            <td className="px-3 py-2 text-[#64748B]">{formatISTTime(row.start_time)}</td>
-            <td className="px-3 py-2 text-[#64748B]">{formatISTTime(row.end_time)}</td>
-            <td className="px-3 py-2 text-right">
-              <div className="flex items-center justify-end gap-3">
-                <span className="font-mono font-semibold text-[#0F172A]">
-                  {row.elapsed_time || formatHMS(row.total_seconds)}
-                </span>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setTransferring(row);
-                  }}
-                  className="rounded-md border border-[#E2E8F0] px-2 py-1 text-[11px] font-bold text-[#2563EB] hover:bg-[#EFF6FF]"
-                >
-                  Change Project
-                </button>
-              </div>
-            </td>
-          </tr>
-        ))}
-
-      {transferring && (
-        <TransferEntryModal
-          entry={transferring}
-          projects={allProjects}
-          onClose={() => setTransferring(null)}
-        />
-      )}
     </>
   );
 };
@@ -543,7 +460,6 @@ export const MemberTimeTracking: React.FC = () => {
                             employeeId={currentUser.id}
                             open={openDays.has(row.date)}
                             onToggle={() => toggleDay(row.date)}
-                            projects={projects}
                           />
                         ))}
                     </tbody>
