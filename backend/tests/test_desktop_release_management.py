@@ -37,6 +37,11 @@ from app.models.desktop_release_version import (
     DesktopReleaseVersion, DesktopUpdateReport, DesktopUpdateRequirement,
     ReleaseVersionStatus,
 )
+from app.models.desktop_version_enforcement import (
+    DEFAULT_DOWNLOAD_URL,
+    DEFAULT_MESSAGE,
+    DesktopVersionEnforcement,
+)
 from app.models.email_notification import EmailNotification
 from app.models.user import User
 from app.schemas.desktop_release import (
@@ -44,6 +49,10 @@ from app.schemas.desktop_release import (
     UpdateReportCreate,
 )
 from app.services import desktop_update_policy as update_policy
+from app.services.desktop_version_enforcement import (
+    UPGRADE_REQUIRED_CODE,
+    DesktopVersionEnforcementService,
+)
 from app.services.desktop_release import (
     DesktopReleaseService, ReleaseConflict, ReleasePolicyViolation,
 )
@@ -962,33 +971,47 @@ class GateOverHttpTests(_Base):
             "X-Monitra-Arch": "AMD64",
         }
 
-    def test_an_outdated_desktop_past_its_deadline_cannot_start_a_timer(self):
-        with patch.object(update_policy, "now_utc", return_value=T0 + timedelta(hours=25)):
-            response = self.client.post(
-                "/time-entries/start", headers=self._headers(),
-                json={"project_id": 1, "task_id": 1},
-            )
+    def _enforce_minimum(self, minimum):
+        """The one gate: desktop_version_enforcement's product-wide minimum."""
+        setting = DesktopVersionEnforcement(
+            id=1, minimum_version=minimum,
+            download_url=DEFAULT_DOWNLOAD_URL, message=DEFAULT_MESSAGE, is_active=True,
+        )
+        patcher = patch.object(
+            DesktopVersionEnforcementService, "get_setting", return_value=setting,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_an_outdated_desktop_below_the_minimum_cannot_start_a_timer(self):
+        self._enforce_minimum("1.4.0")
+        response = self.client.post(
+            "/time-entries/start", headers=self._headers(),
+            json={"project_id": 1, "task_id": 1},
+        )
         self.assertEqual(response.status_code, 426, response.text)
-        self.assertEqual(response.json()["detail"]["code"], "desktop_update_required")
+        self.assertEqual(response.json()["detail"]["code"], UPGRADE_REQUIRED_CODE)
 
-    def test_the_same_desktop_may_still_read_its_policy_and_stop_its_timer(self):
+    def test_a_published_release_alone_never_gates_a_request(self):
+        # desktop_update_policy is informational: the mandatory 1.4.0 release
+        # and an expired grace period must not add a second 426 beside the
+        # version-enforcement minimum.
+        self._enforce_minimum("1.3.3")
         with patch.object(update_policy, "now_utc", return_value=T0 + timedelta(hours=25)):
-            policy = self.client.get("/desktop/update-policy", headers=self._headers())
-            self.assertEqual(policy.status_code, 200, policy.text)
-            self.assertTrue(policy.json()["blocked"])
-            self.assertEqual(policy.json()["required_version"], "1.4.0")
-            me = self.client.get("/auth/me", headers=self._headers())
-            self.assertEqual(me.status_code, 200, me.text)
-            stop = self.client.post("/time-entries/99/stop", headers=self._headers(), json={})
-            self.assertNotEqual(stop.status_code, 426)
-
-    def test_inside_the_grace_the_same_request_is_answered_normally(self):
-        with patch.object(update_policy, "now_utc", return_value=T0 + timedelta(hours=2)):
             response = self.client.post(
                 "/time-entries/start", headers=self._headers(),
                 json={"project_id": 1, "task_id": 1},
             )
         self.assertNotEqual(response.status_code, 426, response.text)
+
+    def test_an_outdated_desktop_may_still_read_its_policy_and_stop_its_timer(self):
+        with patch.object(update_policy, "now_utc", return_value=T0 + timedelta(hours=25)):
+            policy = self.client.get("/desktop/update-policy", headers=self._headers())
+            self.assertEqual(policy.status_code, 200, policy.text)
+            self.assertTrue(policy.json()["blocked"])
+            self.assertEqual(policy.json()["required_version"], "1.4.0")
+            stop = self.client.post("/time-entries/99/stop", headers=self._headers(), json={})
+            self.assertNotEqual(stop.status_code, 426)
 
     def test_a_web_session_of_the_same_user_is_untouched(self):
         with patch.object(update_policy, "now_utc", return_value=T0 + timedelta(hours=25)):

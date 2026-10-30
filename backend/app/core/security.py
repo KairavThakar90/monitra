@@ -88,25 +88,18 @@ def get_current_user(
 
     note_user(user.id)
 
-    # Independent Desktop Version Enforcement
-    # Product-wide minimum required version stored independently in the database.
+    # The one mandatory-update gate: the product-wide minimum desktop version
+    # stored in desktop_version_enforcement (HTTP 426). Here, and not per
+    # route, because this is the dependency every protected route already
+    # passes through; a web client or a service credential is never judged.
+    # The import is local because the service imports from modules that import
+    # this one. desktop_update_policy is informational only and must not add a
+    # second gate beside this one.
     from app.services.desktop_version_enforcement import (
         enforce as enforce_desktop_version,
     )
 
     enforce_desktop_version(db, user)
-
-    # The mandatory-update gate. A desktop client whose grace period for an
-    # active mandatory release has run out is refused every protected route
-    # except the handful it needs to finish its work and update (HTTP 426).
-    # Here, and not per route, because this is the one dependency every
-    # protected route already passes through; a web client or a service
-    # credential is never judged. The import is local for the same reason as
-    # the one above: the policy service imports from modules that import this
-    # one.
-    from app.services.desktop_update_policy import enforce as enforce_desktop_update_policy
-
-    enforce_desktop_update_policy(db, user)
     return user
 
 def forbid_service_principal(current_user: User = Depends(get_current_user)) -> User:

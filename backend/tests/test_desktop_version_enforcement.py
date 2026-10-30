@@ -51,6 +51,7 @@ from app.models.desktop_version_enforcement import (
     DesktopVersionEnforcement,
 )
 from app.models.user import User
+from app.schemas.user import UserRead
 from app.services.desktop_version_enforcement import (
     UPGRADE_REQUIRED_CODE,
     compare_versions,
@@ -357,6 +358,7 @@ class DesktopVersionEnforcementIntegrationTests(unittest.TestCase):
                 "access_token": "new-access-token",
                 "refresh_token": "new-refresh-token",
                 "token_type": "bearer",
+                "user": UserRead.model_validate(self.member),
             }
 
             # Outdated desktop client refresh attempt -> 426

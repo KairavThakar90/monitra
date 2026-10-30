@@ -76,7 +76,9 @@ _API_PREFIX = "/api/v1"
 EXEMPT_PATH_PATTERNS: Tuple[re.Pattern, ...] = tuple(
     re.compile(p)
     for p in (
-        r"^/auth(/|$)",
+        # Sign-out only. Login/refresh/SSO are judged by enforce_request, and
+        # every other /auth route (e.g. /auth/me) is an ordinary protected one.
+        r"^/auth/logout$",
         r"^/health(/|$)",
         r"^/desktop/latest-version$",
         r"^/desktop/update-policy$",

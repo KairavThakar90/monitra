@@ -442,6 +442,13 @@ desktop that names no supported platform is held to every platform's policy
 under the key `unknown`, and an existing deadline for the same floor under any
 platform is the deadline, so changing the claim cannot buy time.
 
+> **Superseded enforcement (2026-10-30).** The only gate that answers 426 is
+> `desktop_version_enforcement` (`detail.code = DESKTOP_VERSION_UPDATE_REQUIRED`,
+> a product-wide minimum version with no grace period; only `/auth/logout` of
+> `/auth/*` is exempt). `desktop_update_policy` still computes the grace
+> deadlines and serves `/desktop/update-policy`, but it no longer refuses
+> requests. The paragraph below describes the retired behaviour.
+
 Before the deadline the desktop shows the prompt with **Later** and a countdown
 read from the server's clock. After it, the backend refuses the client's
 protected routes with **HTTP 426** (`detail.code = desktop_update_required`,

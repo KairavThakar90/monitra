@@ -12,10 +12,9 @@ import importlib.util
 from pathlib import Path
 import unittest
 
-import alembic.op
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.pool import StaticPool
 
 # Dynamically import the migration file
@@ -38,6 +37,12 @@ class MigrationSafetyTests(unittest.TestCase):
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
         )
+        # The migration targets Postgres, whose now() SQLite lacks.
+        event.listen(
+            self.engine,
+            "connect",
+            lambda dbapi, _: dbapi.create_function("now", 0, lambda: "2026-01-01 00:00:00"),
+        )
         # Create users table stub so foreign key can bind
         with self.engine.connect() as conn:
             conn.execute(
@@ -59,11 +64,11 @@ class MigrationSafetyTests(unittest.TestCase):
         with self.engine.connect() as conn:
             ctx = MigrationContext.configure(conn)
             op = Operations(ctx)
-            alembic.op._forward = op
+            self.enterContext(Operations.context(ctx))
 
             # 1. UPGRADE
-            with op.get_context().autocommit_block():
-                migration.upgrade()
+            migration.upgrade()
+            conn.commit()
 
             # Verify table was created
             inspector = inspect(self.engine)
@@ -93,8 +98,8 @@ class MigrationSafetyTests(unittest.TestCase):
             self.assertTrue(bool(row["is_active"]))
 
             # 2. DOWNGRADE / ROLLBACK
-            with op.get_context().autocommit_block():
-                migration.downgrade()
+            migration.downgrade()
+            conn.commit()
 
             # Verify table was dropped cleanly
             inspector_after = inspect(self.engine)
@@ -102,8 +107,8 @@ class MigrationSafetyTests(unittest.TestCase):
             self.assertNotIn("desktop_version_enforcement", tables_after)
 
             # 3. RE-UPGRADE
-            with op.get_context().autocommit_block():
-                migration.upgrade()
+            migration.upgrade()
+            conn.commit()
 
             # Verify re-upgrade succeeds and table + seeded row exist
             inspector_re = inspect(self.engine)
