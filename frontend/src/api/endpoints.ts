@@ -194,6 +194,8 @@ export const ENDPOINTS = {
   // a versioned filename, which is what keeps the download button current
   // without the site being redeployed for every release.
   DESKTOP: {
+    // Which desktop version each user was last seen on, and how many users are on each.
+    CLIENT_VERSIONS: `${API_BASE_URL}/desktop/client-versions`,
     DOWNLOADS: `${API_BASE_URL}/desktop/releases/downloads`,
     LATEST: (platform: string, arch?: string) =>
       `${API_BASE_URL}/desktop/releases/latest?platform=${encodeURIComponent(platform)}` +

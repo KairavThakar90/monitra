@@ -11,7 +11,7 @@
  *   rows on screen.
  * - Changing a switch re-reads them from the server straight away.
  * - A change somebody else made turns up on the next poll.
- * - Searching or filtering the table does not move them.
+ * - Filtering the table does not move them.
  * - If the summary cannot be read, no number is shown (never a made-up zero).
  */
 import { act } from 'react';
@@ -201,23 +201,19 @@ describe('AdminMembers access headcounts', () => {
     expect(headerText('Login')).toBe('Login(12)');
   });
 
-  it('does not move when the table is searched or filtered', async () => {
+  it('does not move when the table is filtered', async () => {
     await render();
     const before = summaryRequests;
 
-    const search = container.querySelector('input[placeholder^="Search"]') as HTMLInputElement;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    const login = container.querySelector('select[aria-label="Filter by Login access"]') as HTMLSelectElement;
     await act(async () => {
-      setter.call(search, 'zed');
-      search.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(login, 'not_allowed');
+      login.dispatchEvent(new Event('change', { bubbles: true }));
     });
     await settle();
 
     // The list was asked again, narrowed; the headcount query was not touched.
-    expect(listUrls.some((url) => url.includes('search=zed'))).toBe(true);
+    expect(listUrls.some((url) => url.includes('can_login=false'))).toBe(true);
     expect(summaryRequests).toBe(before);
     expect(headerText('Add Task')).toBe('Add Task(20)');
   });

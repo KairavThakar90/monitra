@@ -33,6 +33,9 @@ export interface Member {
   notifications_enabled?: boolean;
   /** User Management's per-member switch for keyboard/mouse activity and application/website usage. Absent means on. */
   activity_tracking_enabled?: boolean;
+  /** The Monitra desktop version this member's desktop last reported (`1.3.4`) and its OS family (`win32`, `darwin`, `linux`). Null: never reported one. */
+  desktop_version?: string | null;
+  desktop_platform?: string | null;
   created_at?: string;
   updated_at?: string;
   organization?: { id: number; name: string };
@@ -63,6 +66,8 @@ export type GetMembersArgs = {
   can_add_tasks?: AccessFilter;
   can_add_nonbillable_tasks?: AccessFilter;
   floor?: MemberFloor | 'All';
+  /** A reported desktop version, `none` for members whose desktop never reported one, `All` for no filter. */
+  desktop_version?: string;
 };
 
 export interface MemberAccessArgs {
@@ -134,6 +139,18 @@ const reconcileRow = (draft: GetMembersResponse, index: number, arg: GetMembersA
   return true;
 };
 
+
+/** The version a member row reports. A reply that carries none (a bulk access change) keeps the one already on screen: it does not change when a switch does. */
+const keepDesktopVersion = (old: Member | undefined, fresh: Member): Member =>
+  fresh.desktop_version == null && old
+    ? { ...fresh, desktop_version: old.desktop_version, desktop_platform: old.desktop_platform }
+    : fresh;
+
+/** What the Version filter offers: every version some desktop last reported, with how many members are on it. */
+export interface DesktopVersionOptions {
+  latest_version: string | null;
+  counts: Record<string, number>;
+}
 
 export interface DailyActivity {
   date: string;
@@ -215,6 +232,7 @@ export const membersApi = baseApi.injectEndpoints({
         if (params.can_add_nonbillable_tasks === 'allowed') queryParams.append('can_add_nonbillable_tasks', 'true');
         else if (params.can_add_nonbillable_tasks === 'not_allowed') queryParams.append('can_add_nonbillable_tasks', 'false');
         if (params.floor && params.floor !== 'All') queryParams.append('floor', params.floor);
+        if (params.desktop_version && params.desktop_version !== 'All') queryParams.append('desktop_version', params.desktop_version);
 
         return { url: `${ENDPOINTS.MEMBERS.GET_ALL}?${queryParams.toString()}` };
       },
@@ -228,6 +246,10 @@ export const membersApi = baseApi.injectEndpoints({
     getMemberAccessSummary: builder.query<MemberAccessSummary, void>({
       query: () => ({ url: ENDPOINTS.MEMBERS.ACCESS_SUMMARY }),
       providesTags: [ACCESS_SUMMARY_TAG],
+    }),
+
+    getDesktopVersionOptions: builder.query<DesktopVersionOptions, void>({
+      query: () => ENDPOINTS.DESKTOP.CLIENT_VERSIONS,
     }),
 
     getAllMembers: builder.query<Member[], void>({
@@ -289,12 +311,12 @@ export const membersApi = baseApi.injectEndpoints({
           patchEveryCachedQuery({ dispatch, getState }, 'getMembers', (draft, arg) => {
             const index = draft.items?.findIndex((m: Member) => m.id === id) ?? -1;
             if (index < 0) return;
-            draft.items[index] = data;
+            draft.items[index] = keepDesktopVersion(draft.items[index], data);
             reconcileRow(draft, index, arg);
           });
           patchEveryCachedQuery({ dispatch, getState }, 'getAllMembers', (draft) => {
             const index = Array.isArray(draft) ? draft.findIndex((m: Member) => m.id === id) : -1;
-            if (index >= 0) draft[index] = data;
+            if (index >= 0) draft[index] = keepDesktopVersion(draft[index], data);
           });
         } catch {
           optimistic.undo();
@@ -335,7 +357,7 @@ export const membersApi = baseApi.injectEndpoints({
             for (let index = (draft.items?.length ?? 0) - 1; index >= 0; index -= 1) {
               const fresh = saved.get(draft.items[index].id);
               if (!fresh) continue;
-              draft.items[index] = fresh;
+              draft.items[index] = keepDesktopVersion(draft.items[index], fresh);
               if (reconcileRow(draft, index, arg)) leftAFilteredList = true;
             }
           });
@@ -380,6 +402,7 @@ export const {
   useGetMemberAccessSummaryQuery,
   useLazyGetMembersQuery,
   useGetAllMembersQuery,
+  useGetDesktopVersionOptionsQuery,
   useCreateMemberMutation,
   useUpdateMemberMutation,
   useUpdateMemberAccessMutation,

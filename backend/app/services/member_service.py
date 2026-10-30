@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.activity_log import ActivityLogAction, ActivityLogModule
 from app.models.user import User
+from app.repositories.desktop_client_version import DesktopClientVersionRepository
 from app.repositories.member import MemberRepository
 from app.core.security import has_permission
 from app.schemas.member import MemberAccessUpdate, MemberCreate, MemberUpdate
@@ -84,7 +85,21 @@ class MemberService:
         return created
 
     @staticmethod
-    def list(db: Session, current_user: User, search, role, member_status, page, limit, *, can_login=None, can_add_tasks=None, can_add_nonbillable_tasks=None, floor=None):
+    def _with_desktop_versions(db: Session, members):
+        """Put each member's last-reported desktop version on the row, from one grouped read.
+
+        Plain attributes, not columns: the response model reads them off the object. A member whose
+        desktop has never reported one carries None.
+        """
+        reported = DesktopClientVersionRepository.for_users(db, [member.id for member in members])
+        for member in members:
+            row = reported.get(member.id)
+            member.desktop_version = row.app_version if row else None
+            member.desktop_platform = row.platform if row else None
+        return members
+
+    @staticmethod
+    def list(db: Session, current_user: User, search, role, member_status, page, limit, *, can_login=None, can_add_tasks=None, can_add_nonbillable_tasks=None, floor=None, desktop_version=None):
         # A leader's directory is their own team plus the clients an
         # administrator shared their projects with -- not the organization;
         # every other role with `view_employees` gets None here and is
@@ -93,8 +108,9 @@ class MemberService:
             db, current_user.organization_id, search, role, member_status, page, limit,
             visible_directory_ids(db, current_user),
             can_login=can_login, can_add_tasks=can_add_tasks, can_add_nonbillable_tasks=can_add_nonbillable_tasks,
-            floor=floor,
+            floor=floor, desktop_version=desktop_version,
         )
+        items = MemberService._with_desktop_versions(db, items)
         return {"items": items, "page": page, "limit": limit, "total": total, "pages": math.ceil(total / limit) if total else 0}
 
     @staticmethod
