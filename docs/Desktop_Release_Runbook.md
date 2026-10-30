@@ -503,8 +503,18 @@ the repository (commit after `b279381`). The exact IIS complaint is only visible
 on the server (IIS detailed error, usually `500.19`); the two usual causes are
 the `staticContent` section being locked for override below the site, and a
 `<remove>` of an extension the parent does not define. **The MIME type is set at
-the site level instead, by hand (step 1 below), and the deployed folder must not
-contain a `web.config`.**
+the site level instead, by hand (step 1 below), and the folder's `web.config` must
+carry no settings.**
+
+**Why the repository now ships an empty `web.config` there (2026-10-30).** Removing the
+file from the repository did not remove it from the server: copying a build over a
+deployed folder only adds and replaces, so the broken file stayed, the folder kept
+answering `500`, and every installer download failed in the browser ("Site wasn't
+available"). `frontend/public/download_app_files/web.config` is therefore an *empty*
+`<configuration>`, there only so the next copy of the build overwrites the broken one
+with something IIS can always read. It must never gain a setting
+(`frontend/src/api/__tests__/downloadFolder.test.ts` fails if it does). Deleting the
+file on the server, as step 1 says, remains the cleanest fix and is still correct.
 
 **Second finding:** a *missing* installer URL under that folder answers
 `200 text/html` with the site's index page (a single-page-application rewrite),
