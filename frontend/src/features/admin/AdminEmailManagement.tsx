@@ -35,6 +35,15 @@ import {
 const inputClass =
   "w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-[#38bdf8] focus:ring-2 focus:ring-[#38bdf8]/15";
 
+/**
+ * A heading cell pinned to the top of the table's scroll area. Opaque, so rows scrolling under it do
+ * not show through, and its bottom line is an inset shadow: a real border on a sticky cell in a
+ * collapsed table stays behind when the rows move.
+ */
+const HEAD_CELL = "sticky top-0 z-10 bg-slate-50 shadow-[inset_0_-1px_0_#e2e8f0]";
+/** The same, for an address column, which also has a line on its left. */
+const HEAD_CELL_LEFT_LINE = "sticky top-0 z-10 bg-slate-50 shadow-[inset_1px_0_0_#e2e8f0,inset_0_-1px_0_#e2e8f0]";
+
 const errorData = (error: unknown) => (error as { data?: unknown } | undefined)?.data;
 
 /** One address's ticks, as a set of email keys. */
@@ -205,14 +214,17 @@ export const AdminEmailManagement: React.FC = () => {
 
   return (
     <V2Shell title="Settings" subtitle="Email Management">
-      <div className="flex w-full flex-col gap-6 pb-24">
+      {/* The page fills the space under the header and does not scroll itself: the cards stay put and
+          only the table scrolls (both ways, with its heading row pinned). `min-h` keeps the table
+          usable on a short window, where the shell's own scroll takes over instead. */}
+      <div className="flex h-full min-h-[34rem] w-full flex-col gap-6" data-testid="email-management-page">
         {query.isLoading ? (
           <Spinner label="Loading emails…" />
         ) : query.isError || !data ? (
           <ErrorNote message="Could not load email management." onRetry={() => void query.refetch()} />
         ) : (
           <>
-            <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 text-sm leading-6 text-slate-600 shadow-sm">
+            <div className="shrink-0 rounded-xl border border-[#E2E8F0] bg-white p-5 text-sm leading-6 text-slate-600 shadow-sm">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="font-semibold text-slate-800">Choose who is copied on each email.</p>
@@ -232,7 +244,7 @@ export const AdminEmailManagement: React.FC = () => {
               </div>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid shrink-0 gap-4 sm:grid-cols-3">
               <Stat label="Emails" value={String(triggers.length)} hint={`${copyable.length} can be copied`} />
               <Stat label="CC addresses" value={String(draft.length)} hint={`up to ${data.max_addresses}`} />
               <Stat
@@ -242,7 +254,7 @@ export const AdminEmailManagement: React.FC = () => {
               />
             </div>
 
-            <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-sm">
+            <div className="shrink-0 rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-sm">
               <h2 className="mb-3 text-[13px] font-bold uppercase tracking-wider text-[#64748B]">CC addresses</h2>
               <form
                 className="flex flex-wrap items-start gap-3"
@@ -281,24 +293,27 @@ export const AdminEmailManagement: React.FC = () => {
               </p>
             </div>
 
-            <div className="rounded-xl border border-[#E2E8F0] bg-white shadow-sm">
-              <div className="overflow-x-auto">
+            <div className="flex min-h-[16rem] flex-1 flex-col overflow-hidden rounded-xl border border-[#E2E8F0] bg-white shadow-sm">
+              {/* The one scrolling area on this page. The heading row is pinned to its top: each cell
+                  is sticky and carries its own bottom and left lines as inset shadows, because a border
+                  on a sticky cell in a collapsed table scrolls away with the rows. */}
+              <div className="min-h-0 flex-1 overflow-auto" data-testid="email-table-scroll">
                 <table className="w-full min-w-[900px] border-collapse text-left text-sm">
-                  <thead className="border-b border-slate-200 bg-slate-50 text-slate-500">
+                  <thead className="text-slate-500">
                     <tr>
-                      <th className="w-12 px-4 py-3 text-[11px] font-bold uppercase tracking-wider">#</th>
-                      <th className="min-w-[260px] px-4 py-3 text-[11px] font-bold uppercase tracking-wider">Email</th>
-                      <th className="min-w-[200px] px-4 py-3 text-[11px] font-bold uppercase tracking-wider">
+                      <th className={`w-12 px-4 py-3 text-[11px] font-bold uppercase tracking-wider ${HEAD_CELL}`}>#</th>
+                      <th className={`min-w-[260px] px-4 py-3 text-[11px] font-bold uppercase tracking-wider ${HEAD_CELL}`}>Email</th>
+                      <th className={`min-w-[200px] px-4 py-3 text-[11px] font-bold uppercase tracking-wider ${HEAD_CELL}`}>
                         Goes to
                       </th>
-                      <th className="min-w-[220px] px-4 py-3 text-[11px] font-bold uppercase tracking-wider">
+                      <th className={`min-w-[220px] px-4 py-3 text-[11px] font-bold uppercase tracking-wider ${HEAD_CELL}`}>
                         When it is sent
                       </th>
-                      <th className="w-20 px-3 py-3 text-center text-[11px] font-bold uppercase tracking-wider">
+                      <th className={`w-20 px-3 py-3 text-center text-[11px] font-bold uppercase tracking-wider ${HEAD_CELL}`}>
                         All
                       </th>
                       {draft.map((d) => (
-                        <th key={d.email} className="min-w-[150px] border-l border-slate-200 px-3 py-3 align-top">
+                        <th key={d.email} className={`min-w-[150px] px-3 py-3 align-top ${HEAD_CELL_LEFT_LINE}`}>
                           <div className="flex items-start justify-between gap-2">
                             <span
                               className="break-all text-[12px] font-bold normal-case tracking-normal text-slate-700"
@@ -390,7 +405,7 @@ export const AdminEmailManagement: React.FC = () => {
             </div>
 
             {data.version > 0 && data.updated_by_username && (
-              <p className="text-xs text-slate-500">
+              <p className="shrink-0 text-xs text-slate-500">
                 Last changed by <span className="font-semibold text-slate-700">{data.updated_by_username}</span>
                 {data.updated_at ? ` on ${formatWhen(data.updated_at)}` : ""}.
               </p>
@@ -398,7 +413,7 @@ export const AdminEmailManagement: React.FC = () => {
 
             <div
               className={
-                "sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-xl border px-5 py-3 shadow-lg transition " +
+                "sticky bottom-4 z-10 flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-xl border px-5 py-3 shadow-lg transition " +
                 (dirty ? "border-blue-200 bg-white" : "border-[#E2E8F0] bg-white/90")
               }
               role="region"

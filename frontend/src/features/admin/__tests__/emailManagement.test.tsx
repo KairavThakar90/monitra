@@ -375,6 +375,55 @@ describe('AdminEmailManagement', () => {
     expect(container.textContent).toContain('grace');
   });
 
+  describe('where the scrolling happens', () => {
+    // jsdom does no layout, so what is pinned is the structure that makes the browser scroll the
+    // table and not the page; a real browser measures the result (the page's own scroll stays at 0
+    // while the table scrolls both ways with its heading row pinned).
+    it('keeps the table in its own scrolling area, so the page does not have to scroll', async () => {
+      await mount();
+      const page = container.querySelector('[data-testid="email-management-page"]') as HTMLElement;
+      const scroller = container.querySelector('[data-testid="email-table-scroll"]') as HTMLElement;
+
+      // The page fills the space it is given instead of growing with its content...
+      expect(page.className).toContain('h-full');
+      expect(page.className).toContain('flex-col');
+      // ...the table's area takes whatever is left, and scrolls in both directions.
+      expect(scroller.className).toContain('flex-1');
+      expect(scroller.className).toContain('min-h-0');
+      expect(scroller.className).toContain('overflow-auto');
+      expect(scroller.querySelector('table')).toBeTruthy();
+      // Nothing else wraps the table in a second scroller.
+      expect(page.querySelectorAll('.overflow-x-auto, .overflow-y-auto')).toHaveLength(0);
+    });
+
+    it('pins every heading cell, the address columns included, to the top of the table', async () => {
+      await mount();
+      const heads = Array.from(container.querySelectorAll('thead th')) as HTMLElement[];
+
+      expect(heads.length).toBeGreaterThanOrEqual(5);
+      heads.forEach((th) => {
+        expect(th.className, th.textContent ?? '').toContain('sticky');
+        expect(th.className).toContain('top-0');
+        // Opaque, so the rows scrolling beneath it do not show through.
+        expect(th.className).toContain('bg-slate-50');
+      });
+    });
+
+    it('keeps the cards above the table at their natural height', async () => {
+      await mount();
+      const page = container.querySelector('[data-testid="email-management-page"]') as HTMLElement;
+      const scroller = container.querySelector('[data-testid="email-table-scroll"]') as HTMLElement;
+      const tableCard = scroller.parentElement as HTMLElement;
+      const others = Array.from(page.children).filter((child) => child !== tableCard) as HTMLElement[];
+
+      expect(others.length).toBeGreaterThanOrEqual(4);
+      others.forEach((child) => expect(child.className).toContain('shrink-0'));
+      // The table is the only part that gives way, and it keeps a floor so a short window cannot squeeze it away.
+      expect(tableCard.className).toContain('flex-1');
+      expect(tableCard.className).toMatch(/min-h-\[\d+rem\]/);
+    });
+  });
+
   it('says it could not load, and offers a retry', async () => {
     loadStatus = 500;
     await mount();
