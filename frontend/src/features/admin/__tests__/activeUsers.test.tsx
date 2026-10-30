@@ -296,6 +296,90 @@ describe('AdminActiveUsers', () => {
     });
   });
 
+  describe('Desktop column', () => {
+    const desktopCell = (name: string) =>
+      rows().find((row) => row.textContent!.includes(name))!.querySelector('[data-testid="active-user-desktop"]') as HTMLElement;
+
+    it("shows the desktop version and system each member's desktop last reported", async () => {
+      respond = () =>
+        json({
+          items: [
+            item({ name: 'Asha Patel', desktop_version: '1.3.2', desktop_platform: 'win32', desktop_version_seen_at: '2026-10-01T03:00:00Z' }),
+            item({ time_entry_id: 502, employee_id: 12, name: 'Ravi Shah', desktop_version: '1.3.3', desktop_platform: 'darwin', desktop_version_seen_at: '2026-10-01T04:00:00Z' }),
+            item({ time_entry_id: 503, employee_id: 13, name: 'Meera Rao', desktop_version: '1.2.0', desktop_platform: 'linux' }),
+          ],
+          total: 3,
+          server_time: '2026-10-01T05:00:00Z',
+        });
+      await mount();
+
+      const headers = Array.from(container.querySelectorAll('th')).map((th) => th.textContent!.trim());
+      expect(headers).toContain('Desktop');
+      expect(desktopCell('Asha Patel').textContent).toBe('v1.3.2Windows');
+      expect(desktopCell('Ravi Shah').textContent).toBe('v1.3.3macOS');
+      expect(desktopCell('Meera Rao').textContent).toBe('v1.2.0Linux');
+    });
+
+    it('says when it was reported, and that it can lag an upgrade', async () => {
+      respond = () =>
+        json({
+          items: [item({ desktop_version: '1.3.2', desktop_platform: 'win32', desktop_version_seen_at: '2026-10-01T03:00:00Z' })],
+          total: 1,
+          server_time: '2026-10-01T05:00:00Z',
+        });
+      await mount();
+      const hint = desktopCell('Asha Patel').querySelector('[title]')!.getAttribute('title')!;
+      expect(hint).toContain('Monitra desktop 1.3.2');
+      expect(hint).toContain('reported 8:30 am'); // 03:00 UTC
+      expect(hint).toContain('about every ten hours');
+    });
+
+    it('shows a dash, never a guessed version, for a desktop that has not reported one', async () => {
+      respond = () =>
+        json({
+          items: [
+            item({ name: 'Asha Patel', desktop_version: null, desktop_platform: null, desktop_version_seen_at: null }),
+            item({ time_entry_id: 502, employee_id: 12, name: 'Ravi Shah' }), // an older backend sends no such fields
+          ],
+          total: 2,
+          server_time: '2026-10-01T05:00:00Z',
+        });
+      await mount();
+      expect(desktopCell('Asha Patel').textContent).toBe('—');
+      expect(desktopCell('Ravi Shah').textContent).toBe('—');
+    });
+
+    it('shows an unfamiliar system name as the desktop sent it, and no system line when there is none', async () => {
+      respond = () =>
+        json({
+          items: [
+            item({ name: 'Asha Patel', desktop_version: '1.3.2', desktop_platform: 'freebsd' }),
+            item({ time_entry_id: 502, employee_id: 12, name: 'Ravi Shah', desktop_version: '1.3.2', desktop_platform: null }),
+          ],
+          total: 2,
+          server_time: '2026-10-01T05:00:00Z',
+        });
+      await mount();
+      expect(desktopCell('Asha Patel').textContent).toBe('v1.3.2freebsd');
+      expect(desktopCell('Ravi Shah').textContent).toBe('v1.3.2');
+    });
+
+    it('does not disturb the other columns', async () => {
+      respond = () =>
+        json({
+          items: [item({ desktop_version: '1.3.2', desktop_platform: 'win32' })],
+          total: 1,
+          server_time: '2026-10-01T05:00:00Z',
+        });
+      await mount();
+      const row = rows()[0].textContent!;
+      expect(row).toContain('Build login screen');
+      expect(row).toContain('Alpha Portal');
+      expect(row).toContain('74%');
+      expect(row).toContain('01:02:05');
+    });
+  });
+
   it('says "1 member" in the singular', async () => {
     respond = () => json({ items: [item()], total: 1, server_time: '2026-10-01T05:00:00Z' });
     await mount();

@@ -63,6 +63,10 @@ const sinceLabel = (iso: string, serverIso: string | undefined) => {
   return day && day !== formatISTDate(serverIso) ? `${day.replace(/ \d{4}$/, "")}, ${time}` : time;
 };
 
+/** `sys.platform` as an administrator reads it: "win32" is Windows. Anything else is shown as sent. */
+const platformLabel = (platform: string | null | undefined) =>
+  platform === "win32" ? "Windows" : platform === "darwin" ? "macOS" : platform === "linux" ? "Linux" : platform || "";
+
 /** A row whose desktop has stopped reporting in. */
 const isNoSignal = (item: ActiveTimeTrackingItem) => item.liveness === "stale";
 
@@ -189,12 +193,18 @@ export const AdminActiveUsers: React.FC = () => {
                 className={`overflow-x-auto transition-opacity duration-200 ${refreshingStale ? "opacity-50" : ""}`}
                 data-stale={refreshingStale ? "true" : "false"}
               >
-                <table className="w-full min-w-[720px] text-left text-[13px]">
+                <table className="w-full min-w-[820px] text-left text-[13px]">
                   <thead>
                     <tr className="border-b border-[#E2E8F0] text-[11px] font-bold uppercase tracking-wider text-[#94A3B8]">
                       <th className="px-3 py-2.5">Member</th>
                       <th className="px-3 py-2.5">Task</th>
                       <th className="px-3 py-2.5">Project</th>
+                      <th
+                        className="px-3 py-2.5"
+                        title="The Monitra desktop version this member's desktop last reported"
+                      >
+                        Desktop
+                      </th>
                       <th
                         className="px-3 py-2.5"
                         aria-sort={startedOrder === "asc" ? "ascending" : "descending"}
@@ -244,6 +254,31 @@ export const AdminActiveUsers: React.FC = () => {
                           <div className="truncate text-[#64748B]" title={item.project_name}>
                             {item.project_name}
                           </div>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3" data-testid="active-user-desktop">
+                          {item.desktop_version ? (
+                            <div
+                              title={
+                                `Monitra desktop ${item.desktop_version}` +
+                                (item.desktop_version_seen_at
+                                  ? `, reported ${sinceLabel(item.desktop_version_seen_at, data?.server_time)}. `
+                                  : ". ") +
+                                "The desktop reports its version about every ten hours, so right after an upgrade this can still show the previous one."
+                              }
+                            >
+                              <div className="font-semibold text-[#0F172A]">v{item.desktop_version}</div>
+                              {platformLabel(item.desktop_platform) && (
+                                <div className="text-[11px] text-[#64748B]">{platformLabel(item.desktop_platform)}</div>
+                              )}
+                            </div>
+                          ) : (
+                            <span
+                              className="text-[#94A3B8]"
+                              title="This member's desktop has not reported its version yet (an older Monitra, or it has not checked for updates)."
+                            >
+                              —
+                            </span>
+                          )}
                         </td>
                         <td className="whitespace-nowrap px-3 py-3 text-[#64748B]">
                           {startedLabel(item.start_time, data?.server_time)}

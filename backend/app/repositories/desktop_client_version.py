@@ -4,7 +4,7 @@ Repositories here own SQL and nothing else: no HTTP concepts, no policy about
 which version is "latest". That decision lives in
 `app.services.desktop_release`.
 """
-from typing import List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -19,6 +19,18 @@ class DesktopClientVersionRepository:
         return db.execute(
             select(DesktopClientVersion).where(DesktopClientVersion.user_id == user_id)
         ).scalar_one_or_none()
+
+    @staticmethod
+    def for_users(db: Session, user_ids: Iterable[int]) -> Dict[int, DesktopClientVersion]:
+        """`{user_id: row}` for the given members, in one query. A member whose desktop
+        has never reported a version is simply absent."""
+        ids = sorted({int(user_id) for user_id in user_ids})
+        if not ids:
+            return {}
+        rows = db.execute(
+            select(DesktopClientVersion).where(DesktopClientVersion.user_id.in_(ids))
+        ).scalars()
+        return {row.user_id: row for row in rows}
 
     @staticmethod
     def upsert(

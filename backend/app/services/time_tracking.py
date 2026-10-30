@@ -12,6 +12,7 @@ from app.models.time_entry import TimeEntry
 from app.models.user import User
 from app.core.time_format import format_hms, ist_day_end_utc, ist_day_start_utc, ist_today
 from app.core.timer_policy import TimerPolicy, effective_end as _effective_end, liveness as _liveness
+from app.repositories.desktop_client_version import DesktopClientVersionRepository
 from app.repositories.time_entry_activity import TimeEntryActivityRepository
 from app.repositories.time_entry_liveness import TimeEntryLivenessRepository
 from app.repositories.time_tracking import TimeTrackingRepository
@@ -193,7 +194,9 @@ class TimeTrackingService:
         # Today's activity per listed member, in one grouped query -- not one
         # per row. Skipped when nobody is running.
         day_totals = {}
+        versions = {}
         if rows:
+            versions = DesktopClientVersionRepository.for_users(db, {member.id for _, member, _, _, _ in rows})
             today = ist_today()
             day_totals = TimeEntryActivityRepository.get_day_totals_for_users(
                 db,
@@ -211,6 +214,7 @@ class TimeTrackingService:
         for entry, member, project, task, elapsed in rows:
             elapsed_seconds = max(0, int(elapsed or 0))
             weighted, measured = day_totals.get(member.id, (0.0, 0))
+            reported = versions.get(member.id)
             activity = (
                 int(round(weighted_activity_percentage(weighted, measured))) if measured > 0 else None
             )
@@ -235,6 +239,9 @@ class TimeTrackingService:
                 "liveness": _liveness(None, entry.last_seen_at, now_utc, policy),
                 "last_seen_at": entry.last_seen_at,
                 "measured_until": _effective_end(entry.start_time, None, entry.last_seen_at, now_utc, policy),
+                "desktop_version": reported.app_version if reported else None,
+                "desktop_platform": reported.platform if reported else None,
+                "desktop_version_seen_at": reported.last_seen_at if reported else None,
             })
         return {
             "items": items,

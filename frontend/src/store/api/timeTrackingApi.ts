@@ -89,6 +89,15 @@ export interface ActiveTimeTrackingItem {
   last_seen_at?: string | null;
   /** The instant `elapsed_seconds` is measured to (UTC). */
   measured_until?: string | null;
+  /**
+   * The Monitra desktop version this member's desktop last reported (`1.3.2`), its OS family
+   * (`win32`, `darwin`, `linux`) and when it said so (UTC). Reported by the desktop's own update
+   * check, about every ten hours, so just after an upgrade it can still show the previous
+   * version. Null when that desktop has never reported one; absent from an older backend.
+   */
+  desktop_version?: string | null;
+  desktop_platform?: string | null;
+  desktop_version_seen_at?: string | null;
 }
 
 export interface ActiveTimeTrackingResponse {

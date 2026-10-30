@@ -64,6 +64,14 @@ class ActiveTimeTrackingItem(BaseModel):
     #: for a live or unknown row, the last instant the evidence supports for a
     #: stale one.
     measured_until: Optional[datetime] = None
+    #: The Monitra desktop version this member's desktop last reported (`1.3.2`), the OS
+    #: family it reported with (`win32`, `darwin`, `linux`) and when. These come from the
+    #: desktop's own update check, which runs about every ten hours, so right after an
+    #: upgrade they can show the previous version until the next check. All `None` when
+    #: that desktop has never reported one (an older desktop, or the web).
+    desktop_version: Optional[str] = None
+    desktop_platform: Optional[str] = None
+    desktop_version_seen_at: Optional[datetime] = None
 
 
 class ActiveTimeTrackingResponse(BaseModel):
