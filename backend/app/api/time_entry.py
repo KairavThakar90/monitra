@@ -8,6 +8,7 @@ from app.models.user import User
 from app.schemas.time_entry import (
     ActiveTimeEntryRead, HeartbeatRead, TimeEntryStart, TimeEntryStop, TimeEntryRead,
     TimeEntryTransferRequest, TimeEntryTransferRead,
+    TimeEntrySplitRequest, TimeEntrySplitRead,
 )
 from app.services.time_entry import TimeEntryService
 from app.services.time_entry_liveness import TimeEntryLivenessService
@@ -218,6 +219,40 @@ def transfer_time_entry(
         current_user=current_user,
     )
     return _one(db, entry)
+
+
+@router.post(
+    "/{id}/split",
+    response_model=TimeEntrySplitRead,
+    responses={
+        400: {"description": "Same project/task, or more time than can be moved."},
+        404: {"description": "Entry, destination project or destination task not found."},
+        409: {"description": "Running, manual or idle-reassigned entry, or it changed meanwhile."},
+    },
+)
+def split_time_entry(
+    id: int,
+    payload: TimeEntrySplitRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db, scope="function")
+):
+    """Divide an already-recorded entry between two projects/tasks.
+
+    The entry keeps the earlier part of its interval and a new entry takes the
+    later `move_seconds` on the destination. The two together cover exactly the
+    original interval, so the total tracked duration cannot change.
+    """
+    original, created = TimeEntryService.split_entry(
+        db=db,
+        entry_id=id,
+        to_project_id=payload.to_project_id,
+        to_task_id=payload.to_task_id,
+        move_seconds=payload.move_seconds,
+        reason=payload.reason,
+        current_user=current_user,
+    )
+    first, second = TimeEntryService.to_read(db, [original, created])
+    return {"original": first, "created": second}
 
 
 @router.get("/{id}/transfers", response_model=List[TimeEntryTransferRead])

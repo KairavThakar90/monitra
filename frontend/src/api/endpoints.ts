@@ -142,6 +142,8 @@ export const ENDPOINTS = {
     BASE: `${API_BASE_URL}/time-entries`,
     TRANSFER: (id: string | number) => `${API_BASE_URL}/time-entries/${id}/transfer`,
     TRANSFERS: (id: string | number) => `${API_BASE_URL}/time-entries/${id}/transfers`,
+    // Divide an entry between two projects/tasks (the earlier part stays, the later part moves).
+    SPLIT: (id: string | number) => `${API_BASE_URL}/time-entries/${id}/split`,
   },
   MANUAL_TIME_ENTRY_REQUESTS: {
     BASE: `${API_BASE_URL}/manual-time-entry-requests`,

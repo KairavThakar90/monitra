@@ -228,6 +228,72 @@ class TimeEntryRepository:
         return time_entry
 
     @staticmethod
+    def split(
+        db: Session,
+        time_entry: TimeEntry,
+        boundary: datetime,
+        head_total: int,
+        tail_total: int,
+        to_project_id: int,
+        to_task_id: int,
+    ) -> Optional[TimeEntry]:
+        """Cut a completed entry at `boundary` and return the new later half.
+
+        The original keeps `[start, boundary)` and the new entry takes
+        `[boundary, original end]`, so the pair covers exactly the interval the
+        original did. Both totals are passed in already derived from their own
+        two columns (`elapsed_seconds`); nothing is counted here.
+
+        A compare-and-set, like `stop`: the UPDATE is conditioned on the entry
+        still having the end and total it was read with, so two splits racing
+        for the same entry cannot both cut it. Returns None when the entry
+        changed underneath -- the caller rolls back and asks the user to
+        reload. Flushes only; the caller commits it together with the audit row.
+        """
+        original_end = time_entry.end_time
+        result = db.execute(
+            update(TimeEntry)
+            .where(
+                TimeEntry.id == time_entry.id,
+                TimeEntry.end_time == original_end,
+                TimeEntry.total_seconds == time_entry.total_seconds,
+            )
+            .values(end_time=boundary, total_seconds=head_total)
+        )
+        if result.rowcount == 0:
+            return None
+        tail = TimeEntry(
+            organization_id=time_entry.organization_id,
+            user_id=time_entry.user_id,
+            project_id=to_project_id,
+            task_id=to_task_id,
+            start_time=boundary,
+            end_time=original_end,
+            total_seconds=tail_total,
+            status=time_entry.status,
+            # Manual time stays manual: the dashboard and the activity log classify a row by this
+            # flag, and a manual half that became "tracked" would count as active working time.
+            is_manual=time_entry.is_manual,
+            is_billable=time_entry.is_billable,
+            description=time_entry.description,
+            # A new session of its own: no client key (the original keeps its),
+            # and nothing for the liveness reconciler to look at.
+            client_op=None,
+            last_seen_at=None,
+        )
+        db.add(tail)
+        db.flush()
+        db.refresh(time_entry)
+        return tail
+
+    @staticmethod
+    def has_reassigned_idle_period(db: Session, entry_id: int) -> bool:
+        """True when this entry was created by reassigning idle time to another task."""
+        return bool(db.scalar(
+            select(exists().where(TimeEntryIdlePeriod.reassigned_time_entry_id == entry_id))
+        ))
+
+    @staticmethod
     def list_by_filters(
         db: Session,
         organization_id: int,

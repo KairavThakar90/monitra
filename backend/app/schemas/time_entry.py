@@ -4,7 +4,9 @@ from pydantic import BaseModel, ConfigDict, computed_field
 
 from app.core.time_format import elapsed_seconds as _elapsed_seconds, format_hms
 from app.core.timer_policy import effective_end as _effective_end, liveness as _liveness
-from app.core.validation import Identifier, OptionalDescription, OptionalIdempotencyKey
+from typing import Annotated
+
+from app.core.validation import Identifier, OptionalDescription, OptionalIdempotencyKey, integer_field
 
 
 # ── The timestamp contract ───────────────────────────────────────────────────
@@ -165,6 +167,32 @@ class TimeEntryTransferRequest(BaseModel):
     to_project_id: Identifier
     to_task_id: Identifier
     reason: OptionalDescription = None
+
+
+#: How much of an entry is moved, in whole seconds. The upper bound depends on the
+#: entry (it can never be all of it), so the service enforces that one.
+SplitSeconds = Annotated[int, integer_field(label="Time to move", minimum=1)]
+
+
+class TimeEntrySplitRequest(BaseModel):
+    """Move part of an already-recorded entry to a different project/task.
+
+    `move_seconds` is how long the new entry is. The entry keeps the earlier
+    part of its interval; the later `move_seconds` become a new entry on the
+    destination. Like a transfer, nothing here can create tracked time: the two
+    entries together span exactly the original interval (see
+    `TimeEntryService.split_entry`).
+    """
+    to_project_id: Identifier
+    to_task_id: Identifier
+    move_seconds: SplitSeconds
+    reason: OptionalDescription = None
+
+
+class TimeEntrySplitRead(BaseModel):
+    """Both halves of a split: the entry that was cut, and the one it produced."""
+    original: TimeEntryRead
+    created: TimeEntryRead
 
 
 class TimeEntryTransferRead(BaseModel):
