@@ -419,6 +419,12 @@ carried — a version identifies exactly one build.
 **Current status: all builds are unsigned. Signing is required before public
 distribution.** No certificate is committed, and none is fabricated.
 
+Until they are signed, the public download page (`frontend/src/features/download/DownloadPage.tsx`)
+tells visitors exactly what to click past on first launch -- Windows' "Windows protected your PC" and
+the browser's "isn't commonly downloaded", and macOS's "cannot check it for malicious software" and
+"is damaged" (Open Anyway, or `xattr -dr com.apple.quarantine`). Remove those two boxes when the
+builds are signed and notarized; they would then describe warnings that no longer appear.
+
 ### Windows
 
 Unsigned installers trigger a SmartScreen warning on first run ("Windows

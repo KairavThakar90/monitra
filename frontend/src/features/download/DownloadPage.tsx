@@ -269,27 +269,96 @@ export function DownloadPage() {
             legitimate install or learns to click past warnings without reading
             them, and the second habit is worse than the first.
           */}
-          <div className="mx-auto mt-5 max-w-2xl rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] p-4 text-left">
-            <p className="text-sm font-semibold text-[#0F172A]">
-              Windows security warning — “Windows protected your PC”
-            </p>
-            <p className="mt-1 text-sm text-[#64748B]">
-              Windows may show this message the first time you run the
-              installer. It is expected. To continue:
-            </p>
-            <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-[#64748B]">
-              <li>
-                You may see the “Windows protected your PC” message.
-              </li>
-              <li>
-                Click <span className="font-semibold text-[#0F172A]">More info</span>.
-              </li>
-              <li>
-                Then click{' '}
-                <span className="font-semibold text-[#0F172A]">Run anyway</span>{' '}
-                to proceed with the application installation or execution.
-              </li>
-            </ol>
+          {/*
+            The macOS equivalent. An unsigned, un-notarized build is refused by
+            Gatekeeper the first time it is opened ("cannot be opened because
+            Apple cannot check it for malicious software"), and one that carries
+            the download quarantine flag can be reported as "damaged". Neither
+            is a bad file -- the bytes match the CI build -- but a Mac user who
+            meets either with no instructions concludes the download is broken.
+            Both go away when the builds are signed and notarized
+            (desktop/BUILD.md section 11); until then this says what to click.
+          */}
+          <div className="mx-auto mt-5 grid max-w-5xl gap-4 text-left md:grid-cols-2">
+            <div
+              data-testid="windows-security-help"
+              className="rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] p-4"
+            >
+              <p className="text-sm font-semibold text-[#0F172A]">
+                Windows security warning — “Windows protected your PC”
+              </p>
+              <p className="mt-1 text-sm text-[#64748B]">
+                Windows may show this message the first time you run the
+                installer. It is expected. To continue:
+              </p>
+              <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-[#64748B]">
+                <li>
+                  If your browser says the file “isn&rsquo;t commonly downloaded”,
+                  choose <span className="font-semibold text-[#0F172A]">Keep</span>{' '}
+                  (in Edge: <span className="font-semibold text-[#0F172A]">Keep</span>, then{' '}
+                  <span className="font-semibold text-[#0F172A]">Show more</span> →{' '}
+                  <span className="font-semibold text-[#0F172A]">Keep anyway</span>).
+                </li>
+                <li>
+                  You may see the “Windows protected your PC” message.
+                </li>
+                <li>
+                  Click <span className="font-semibold text-[#0F172A]">More info</span>.
+                </li>
+                <li>
+                  Then click{' '}
+                  <span className="font-semibold text-[#0F172A]">Run anyway</span>{' '}
+                  to proceed with the application installation or execution.
+                </li>
+              </ol>
+            </div>
+
+            <div
+              data-testid="macos-security-help"
+              className="rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] p-4"
+            >
+              <p className="text-sm font-semibold text-[#0F172A]">
+                macOS security message — “cannot check it for malicious software”
+              </p>
+              <p className="mt-1 text-sm text-[#64748B]">
+                macOS may refuse to open Monitra the first time, because this
+                build is not yet signed by Apple. It is expected, and the file
+                is not damaged. To continue:
+              </p>
+              <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-[#64748B]">
+                <li>
+                  Open the downloaded file and drag{' '}
+                  <span className="font-semibold text-[#0F172A]">Monitra</span> into{' '}
+                  <span className="font-semibold text-[#0F172A]">Applications</span>.
+                </li>
+                <li>
+                  Open Monitra from Applications. If macOS refuses, click{' '}
+                  <span className="font-semibold text-[#0F172A]">Done</span> (not
+                  “Move to Trash”).
+                </li>
+                <li>
+                  <span className="font-semibold text-[#0F172A]">macOS 15 (Sequoia) or later:</span>{' '}
+                  open <span className="font-semibold text-[#0F172A]">System Settings → Privacy &amp; Security</span>,
+                  scroll to <span className="font-semibold text-[#0F172A]">Security</span>, click{' '}
+                  <span className="font-semibold text-[#0F172A]">Open Anyway</span> beside
+                  Monitra and confirm.{' '}
+                  <span className="font-semibold text-[#0F172A]">macOS 14 or earlier:</span>{' '}
+                  Control-click Monitra, choose{' '}
+                  <span className="font-semibold text-[#0F172A]">Open</span>, then{' '}
+                  <span className="font-semibold text-[#0F172A]">Open</span> again.
+                </li>
+              </ol>
+              <p className="mt-2 text-sm text-[#64748B]">
+                If macOS says Monitra{' '}
+                <span className="font-semibold text-[#0F172A]">“is damaged and can&rsquo;t be opened”</span>,
+                it is only marking a file that came from the internet. In
+                Terminal, run{' '}
+                <code className="rounded bg-[#F1F5F9] px-1 text-xs">
+                  xattr -dr com.apple.quarantine /Applications/Monitra.app
+                </code>{' '}
+                and open it again.
+              </p>
+            </div>
           </div>
           {/* The version the buttons below serve — known from the links
               themselves, so it is right even while the release service is
