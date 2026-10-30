@@ -34,6 +34,8 @@ async def login(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db, scope="function"),
 ):
+    from app.services.desktop_version_enforcement import enforce_request
+    enforce_request(db)
     try:
         return await AuthService.login_exchange(
             db, payload.username, payload.password, payload.login_for,
@@ -67,6 +69,8 @@ async def sso_token_login(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db, scope="function"),
 ):
+    from app.services.desktop_version_enforcement import enforce_request
+    enforce_request(db)
     try:
         return await AuthService.sso_exchange(
             db, payload.token, background_tasks=background_tasks
@@ -116,6 +120,8 @@ def sso_handoff(
     },
 )
 def refresh(payload: RefreshRequest, db: Session = Depends(get_db, scope="function")):
+    from app.services.desktop_version_enforcement import enforce_request
+    enforce_request(db)
     return AuthService.refresh_session(db, payload.refresh_token)
 
 

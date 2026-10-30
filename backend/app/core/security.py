@@ -88,6 +88,14 @@ def get_current_user(
 
     note_user(user.id)
 
+    # Independent Desktop Version Enforcement
+    # Product-wide minimum required version stored independently in the database.
+    from app.services.desktop_version_enforcement import (
+        enforce as enforce_desktop_version,
+    )
+
+    enforce_desktop_version(db, user)
+
     # The mandatory-update gate. A desktop client whose grace period for an
     # active mandatory release has run out is refused every protected route
     # except the handful it needs to finish its work and update (HTTP 426).

@@ -27,6 +27,7 @@ from app.api.desktop_release import router as desktop_release_router
 from app.api.feedback import router as feedback_router
 from app.api.email_notifications import router as email_notifications_router
 from app.api.system import router as system_router
+from app.api.desktop_version_enforcement import router as desktop_version_enforcement_router
 from app.api.activity_rollup import router as activity_rollup_router
 from app.api.clients import router as clients_router, public_router as clients_public_router
 from app.react_apis.reports import router as reports_router
@@ -172,6 +173,7 @@ app.include_router(idle_period_router)
 app.include_router(desktop_release_router)
 app.include_router(feedback_router)
 app.include_router(system_router)
+app.include_router(desktop_version_enforcement_router)
 app.include_router(desktop_notifications_router)
 app.include_router(activity_rollup_router)
 # Registered once, without the /api/v1 prefix: its routes are a scheduler
@@ -201,6 +203,7 @@ app.include_router(idle_period_router, prefix=api_prefix)
 app.include_router(desktop_release_router, prefix=api_prefix)
 app.include_router(feedback_router, prefix=api_prefix)
 app.include_router(system_router, prefix=api_prefix)
+app.include_router(desktop_version_enforcement_router, prefix=api_prefix)
 app.include_router(desktop_notifications_router, prefix=api_prefix)
 app.include_router(activity_rollup_router, prefix=api_prefix)
 

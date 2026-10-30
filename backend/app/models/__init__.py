@@ -30,6 +30,7 @@ from app.models.feedback_attachment import FeedbackAttachment
 from app.models.sso_handoff_token import SsoHandoffToken
 from app.models.service_credential import ServiceCredential
 from app.models.system_setting import SystemSetting
+from app.models.desktop_version_enforcement import DesktopVersionEnforcement
 from app.models.activity_log import ActivityLog
 from app.models.daily_activity_summary import DailyActivitySummary
 from app.models.screenshot_application import ScreenshotApplication
@@ -76,6 +77,7 @@ __all__ = [
     "SsoHandoffToken",
     "ServiceCredential",
     "SystemSetting",
+    "DesktopVersionEnforcement",
     "ActivityLog",
     "ProjectBudgetAlert",
     "DailyActivitySummary",
