@@ -1,19 +1,13 @@
 import React, { useMemo, useState } from "react";
-import { createPortal } from "react-dom";
 import { MemberShell } from "./MemberShell";
+import { TransferEntryModal } from "./TransferEntryModal";
 import { Card, EmptyState, ErrorNote, Spinner } from "./MemberUi";
 import { useGetAllProjectsQuery } from "../../store/api/projectsApi";
-import {
-  useGetTimeEntriesQuery,
-  useTransferTimeEntryMutation,
-} from "../../store/api/timeEntryApi";
+import { useGetTimeEntriesQuery } from "../../store/api/timeEntryApi";
 import type { TimeEntry } from "../../store/api/timeEntryApi";
 import { useAuth } from "../auth/authContext";
-import { useFeedback } from "../../components/FeedbackProvider";
 import { InlineRefreshIndicator } from "../../components/InlineRefreshIndicator";
 import { formatHMS, formatISTTime, istTodayISO } from "../../utils/duration";
-import { formatApiError } from '../../api/utils';
-import { validateDescription } from '../../validation';
 
 /**
  * Time Entries: one day's individually recorded sessions, each movable to a
@@ -64,162 +58,6 @@ const projectNameById = (projects: ProjectOption[], id: number) =>
 const taskNameById = (projects: ProjectOption[], projectId: number, taskId: number) =>
   projects.find((project) => project.id === projectId)?.tasks?.find((task) => task.id === taskId)?.name
   ?? `Task #${taskId}`;
-
-/**
- * Reassign one already-recorded entry to a different project/task.
- *
- * Nothing here can touch the entry's start time, end time or duration --
- * `useTransferTimeEntryMutation`'s payload has no field for any of them, so
- * the total tracked time is unaffected by construction, not by convention.
- */
-const TransferEntryModal: React.FC<{
-  entry: TimeEntry;
-  projects: ProjectOption[];
-  onClose: () => void;
-}> = ({ entry, projects, onClose }) => {
-  const { showToast } = useFeedback();
-  const [transfer, { isLoading }] = useTransferTimeEntryMutation();
-
-  const [toProjectId, setToProjectId] = useState("");
-  const [toTaskId, setToTaskId] = useState("");
-  const [reason, setReason] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  const toTasks = useMemo(
-    () => projects.find((project) => project.id === Number(toProjectId))?.tasks ?? [],
-    [projects, toProjectId]
-  );
-
-  const currentProjectName = projectNameById(projects, entry.project_id);
-  const currentTaskName = taskNameById(projects, entry.project_id, entry.task_id);
-
-  const submit = async () => {
-    setError(null);
-    if (!toProjectId || !toTaskId) {
-      setError("Choose a destination project and task.");
-      return;
-    }
-    if (Number(toProjectId) === entry.project_id && Number(toTaskId) === entry.task_id) {
-      setError("That is the project and task this entry already has.");
-      return;
-    }
-    // The reason is prose another person reads: the same rule the backend enforces, checked here so a
-    // refused value is explained at the field instead of arriving as a rejected request.
-    const checkedReason = validateDescription(reason, { fieldLabel: 'Reason' });
-    if (!checkedReason.ok) {
-      setError(checkedReason.error);
-      return;
-    }
-    try {
-      await transfer({
-        id: entry.id,
-        to_project_id: Number(toProjectId),
-        to_task_id: Number(toTaskId),
-        reason: checkedReason.value || undefined,
-      }).unwrap();
-      showToast("Time entry transferred.", "success");
-      onClose();
-    } catch (err: any) {
-      setError(formatApiError(err?.data, "Could not transfer this time entry."));
-    }
-  };
-
-  return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-      <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
-        <h3 className="text-lg font-bold text-slate-800">Change Project</h3>
-        <p className="mt-1 text-[13px] text-[#64748B]">
-          Moves this {entry.elapsed_time || formatHMS(entry.total_seconds)} entry
-          ({formatISTTime(entry.start_time)}–{formatISTTime(entry.end_time)}) to a
-          different project or task. The recorded time and duration do not change.
-        </p>
-
-        <div className="mt-4 rounded-lg bg-[#F8FAFC] px-3 py-2 text-[12.5px] text-[#475569]">
-          Currently: <span className="font-semibold text-[#0F172A]">{currentProjectName}</span>
-          {" / "}
-          <span className="font-semibold text-[#0F172A]">{currentTaskName}</span>
-        </div>
-
-        <div className="mt-4 space-y-4">
-          <div>
-            <label className="text-[11px] font-bold uppercase tracking-wider text-[#94A3B8]">
-              Destination project
-            </label>
-            <select
-              value={toProjectId}
-              onChange={(event) => {
-                setToProjectId(event.target.value);
-                setToTaskId("");
-              }}
-              className="mt-1.5 w-full rounded-lg border border-[#E2E8F0] px-3 py-2.5 text-[13px] font-semibold text-[#0F172A] outline-none focus:border-[#2563EB]"
-            >
-              <option value="">Select a project…</option>
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.project_name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="text-[11px] font-bold uppercase tracking-wider text-[#94A3B8]">
-              Destination task
-            </label>
-            <select
-              value={toTaskId}
-              onChange={(event) => setToTaskId(event.target.value)}
-              disabled={!toProjectId}
-              className="mt-1.5 w-full rounded-lg border border-[#E2E8F0] px-3 py-2.5 text-[13px] font-semibold text-[#0F172A] outline-none focus:border-[#2563EB] disabled:bg-[#F8FAFC]"
-            >
-              <option value="">{toProjectId ? "Select a task…" : "Pick a project first"}</option>
-              {toTasks.map((task) => (
-                <option key={task.id} value={task.id}>
-                  {task.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="text-[11px] font-bold uppercase tracking-wider text-[#94A3B8]">
-              Reason (optional)
-            </label>
-            <input
-              type="text"
-              value={reason}
-              maxLength={500}
-              onChange={(event) => setReason(event.target.value)}
-              placeholder="e.g. tracked against the wrong project by mistake"
-              className="mt-1.5 w-full rounded-lg border border-[#E2E8F0] px-3 py-2.5 text-[13px] text-[#0F172A] outline-none focus:border-[#2563EB]"
-            />
-          </div>
-        </div>
-
-        {error && <p className="mt-3 text-[12.5px] font-semibold text-rose-600">{error}</p>}
-
-        <div className="mt-6 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg border border-[#E2E8F0] px-4 py-2 text-[13px] font-bold text-[#475569] hover:bg-[#F8FAFC]"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => void submit()}
-            disabled={isLoading}
-            className="rounded-lg bg-[#2563EB] px-4 py-2 text-[13px] font-bold text-white hover:bg-[#1D4ED8] disabled:opacity-60"
-          >
-            {isLoading ? "Transferring…" : "Confirm transfer"}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body
-  );
-};
 
 const EntryRow: React.FC<{ entry: TimeEntry; projects: ProjectOption[]; onTransfer: () => void }> = ({
   entry,

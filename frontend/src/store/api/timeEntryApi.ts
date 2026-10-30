@@ -62,6 +62,21 @@ export interface TransferTimeEntryArgs {
   reason?: string;
 }
 
+export interface SplitTimeEntryArgs {
+  id: number;
+  to_project_id: number;
+  to_task_id: number;
+  /** How long the new entry is, in whole seconds. The entry keeps the rest, at the front. */
+  move_seconds: number;
+  reason?: string;
+}
+
+/** Both halves of a split: the entry that was cut and the one it produced. */
+export interface SplitTimeEntryResult {
+  original: TimeEntry;
+  created: TimeEntry;
+}
+
 /**
  * Reaches every screen that reports tracked time, the same tag
  * `manualTimeEntryApi` invalidates on a mutation -- a transfer moves seconds
@@ -109,6 +124,24 @@ export const timeEntryApi = baseApi.injectEndpoints({
         ...TRACKED_TIME_CHANGED,
       ],
     }),
+
+    /** Divides an already-recorded entry between two projects/tasks. The payload says only
+     * how much moves (`move_seconds`): the backend cuts the interval, so the two halves
+     * add up to exactly the original and no start/end/duration is ever sent. */
+    splitTimeEntry: builder.mutation<SplitTimeEntryResult, SplitTimeEntryArgs>({
+      query: ({ id, ...body }) => ({
+        url: ENDPOINTS.TIME_ENTRIES.SPLIT(id),
+        method: 'POST',
+        body,
+      }),
+      invalidatesTags: (result, _error, { id }) => [
+        { type: 'TimeEntry' as const, id },
+        ...(result ? [{ type: 'TimeEntry' as const, id: result.created.id }] : []),
+        { type: 'TimeEntry' as const, id: 'LIST' },
+        { type: 'TimeEntry' as const, id: `${id}-transfers` },
+        ...TRACKED_TIME_CHANGED,
+      ],
+    }),
   }),
 });
 
@@ -116,4 +149,5 @@ export const {
   useGetTimeEntriesQuery,
   useGetTimeEntryTransfersQuery,
   useTransferTimeEntryMutation,
+  useSplitTimeEntryMutation,
 } = timeEntryApi;

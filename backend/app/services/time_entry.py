@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 from app.models.time_entry import TimeEntry
 from app.models.user import User
-from app.core.time_format import elapsed_seconds
+from app.core.time_format import elapsed_seconds, format_hms
 from app.repositories.time_entry import TimeEntryRepository
 from app.repositories.time_entry_liveness import TimeEntryLivenessRepository
 from app.services.task import TaskService
@@ -686,6 +686,164 @@ class TimeEntryService:
             "project_id": to_project_id, "task_id": to_task_id, "entity_id": updated.id,
         })
         return updated
+
+    # ── Split ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _split_point(entry: TimeEntry, move_seconds: int) -> Tuple[datetime, int, int]:
+        """Where to cut `entry`, and the two totals that result.
+
+        The new entry is the last `move_seconds` of the interval, so it is
+        exactly that long and keeps the original end. The cut is therefore
+        `end - move_seconds`; the earlier half's total is whatever
+        `elapsed_seconds` says of *its* two columns, like every other entry.
+
+        The two halves must add up to the original's `total_seconds` -- a split
+        must neither create nor lose a second. Rounding each half on its own
+        can differ from rounding the whole by one second only when an instant
+        falls exactly half-way (`x.5`), so in that case the cut is moved by a
+        microsecond, which changes neither half's meaning but picks the side of
+        the half-way point that makes them agree.
+        """
+        start = entry.start_time if entry.start_time.tzinfo else entry.start_time.replace(tzinfo=timezone.utc)
+        end = entry.end_time if entry.end_time.tzinfo else entry.end_time.replace(tzinfo=timezone.utc)
+        for nudge_us in (0, -1, 1):
+            boundary = end - timedelta(seconds=move_seconds) + timedelta(microseconds=nudge_us)
+            head = elapsed_seconds(start, boundary)
+            tail = elapsed_seconds(boundary, end)
+            if head + tail == entry.total_seconds and head >= 1 and tail >= 1:
+                return boundary, head, tail
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This entry cannot be split at that point. Try a slightly different amount.",
+        )
+
+    @staticmethod
+    def split_entry(
+        db: Session,
+        entry_id: int,
+        to_project_id: int,
+        to_task_id: int,
+        move_seconds: int,
+        reason: Optional[str],
+        current_user: User,
+    ) -> Tuple[TimeEntry, TimeEntry]:
+        """Move part of an already-recorded entry to a different project/task.
+
+        The entry's owner only, and a completed entry only -- the same rules as
+        `transfer_entry`, for the same reasons. The entry keeps the earlier part
+        of its interval and a new entry takes the later `move_seconds` on the
+        destination, so:
+
+        * the two together span exactly the original start and end, and their
+          `total_seconds` add up to the original's: tracked time is divided,
+          never created or lost (`docs/TIMING_MODEL.md`);
+        * both totals are derived from their own persisted columns;
+        * everything that hangs off the original (activity windows, screenshots,
+          idle periods, deductions) stays with it -- those rows are keyed on the
+          entry, not on a clock time, and re-homing them would be guessing.
+          A deduction therefore keeps reducing the earlier half, which is why
+          the amount moved is capped at the entry's *net* time.
+
+        Refused (409) for a running entry and for an entry made by reassigning idle
+        time (a copy would escape the rule that excludes those from "already
+        recorded"). A manual entry can be split like any other: once approved it
+        cannot be edited or withdrawn, reports read the mirrored `time_entries` row
+        itself, and a transfer already changes it; the new half stays manual.
+        """
+        time_entry = TimeEntryRepository.get_by_id(db, entry_id)
+        if not time_entry or time_entry.user_id != current_user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Time entry not found")
+        if time_entry.end_time is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A running time entry cannot be split. Stop it first.",
+            )
+        if TimeEntryRepository.has_reassigned_idle_period(db, time_entry.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This entry was created from reassigned idle time and cannot be split. "
+                       "Change its project instead.",
+            )
+
+        TaskService.get_task(db, to_project_id, to_task_id, current_user)
+
+        from_project_id, from_task_id = time_entry.project_id, time_entry.task_id
+        if from_project_id == to_project_id and from_task_id == to_task_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Choose a different project or task to move that time to.",
+            )
+
+        from app.repositories.time_entry_adjustment import TimeEntryAdjustmentRepository
+        from app.repositories.time_entry_transfer import TimeEntryTransferRepository
+
+        total = int(time_entry.total_seconds)
+        adjustment = TimeEntryAdjustmentRepository.sum_for_entry(db, time_entry.id)
+        most = min(total - 1, total + adjustment)
+        if most < 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This entry is too short to split.",
+            )
+        if move_seconds > most:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Choose a time shorter than the entry: at most {format_hms(most)} can be moved "
+                       "and some time must stay on the original.",
+            )
+
+        boundary, head_total, tail_total = TimeEntryService._split_point(time_entry, move_seconds)
+        if head_total + adjustment < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Time already deducted from this entry would leave it with less than nothing. "
+                       "Move less.",
+            )
+
+        tail = TimeEntryRepository.split(
+            db, time_entry, boundary, head_total, tail_total, to_project_id, to_task_id,
+        )
+        if tail is None:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This entry changed while you were splitting it. Reload and try again.",
+            )
+        note = f"Split from entry #{time_entry.id}"
+        TimeEntryTransferRepository.create(
+            db,
+            organization_id=current_user.organization_id,
+            time_entry_id=tail.id,
+            user_id=tail.user_id,
+            transferred_by_user_id=current_user.id,
+            from_project_id=from_project_id,
+            from_task_id=from_task_id,
+            to_project_id=to_project_id,
+            to_task_id=to_task_id,
+            reason=f"{note}: {reason}" if reason else note,
+        )
+        TimeEntryService.refresh_task_rollup(db, from_task_id)
+        TimeEntryService.refresh_task_rollup(db, to_task_id)
+        db.commit()
+        db.refresh(time_entry)
+        db.refresh(tail)
+
+        TimeEntryService._log(
+            "split", tail, current_user,
+            note=f"from entry={time_entry.id} project={from_project_id} task={from_task_id} "
+                 f"to project={to_project_id} task={to_task_id} seconds={tail_total}",
+        )
+        ActivityLogService.capture(db, lambda: {
+            "actor": current_user,
+            "module": ActivityLogModule.TIMER, "action": ActivityLogAction.ENTRY_TRANSFERRED,
+            "description": f"Split {format_hms(tail_total)} off a recorded time entry from "
+                           + ActivityLogService.describe_project_task(db, from_project_id, from_task_id)
+                           + " to "
+                           + ActivityLogService.describe_project_task(db, to_project_id, to_task_id),
+            "project_id": to_project_id, "task_id": to_task_id, "entity_id": tail.id,
+        })
+        return time_entry, tail
 
     @staticmethod
     def list_transfers(db: Session, entry_id: int, current_user: User):

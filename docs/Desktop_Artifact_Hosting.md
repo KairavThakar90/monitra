@@ -250,8 +250,10 @@ inventory.
    2026-10-29 the repository shipped the mapping itself as a folder-scoped
    `frontend/public/download_app_files/web.config`; after the deploy that carried
    it the whole folder -- `.exe` included -- answered `500`, so the file was
-   removed again and must also be deleted from the deployed folder (runbook
-   §8.7, step 1). Note also that a *missing* file under that folder answers
+   removed again, and the repository now ships an *empty* `web.config` in that folder so
+   the next deploy overwrites the broken one on the server (a copy never deletes a file
+   that is already there). It must stay empty; the broken file may also simply be
+   deleted from the deployed folder (runbook §8.7, step 1). Note also that a *missing* file under that folder answers
    `200 text/html` (the site's index page), not `404`; the desktop refuses such
    an answer and so does the tool below. Then prove it:
    `python desktop/tools/verify_download_urls.py --base-url https://staff.peakworkos.com/download_app_files/ --version <v> --artifacts <ci outputs>`

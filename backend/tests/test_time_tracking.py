@@ -127,6 +127,40 @@ class ActiveTimeTrackingTests(unittest.TestCase):
         )
         self.day_totals = patcher.start()
         self.addCleanup(patcher.stop)
+        # The desktop version each member last reported; no database here either.
+        patcher = patch(
+            "app.services.time_tracking.DesktopClientVersionRepository.for_users",
+            return_value={},
+        )
+        self.versions = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_each_item_carries_the_desktop_version_that_member_reported(self):
+        seen = datetime(2026, 10, 30, 6, 0, tzinfo=timezone.utc)
+        self.versions.return_value = {
+            11: SimpleNamespace(app_version="1.3.2", platform="win32", last_seen_at=seen),
+        }
+        rows = [self._row(entry_id=501, member_id=11), self._row(entry_id=502, member_id=12)]
+        with patch("app.services.time_tracking.TimeTrackingRepository.list_active", return_value=rows):
+            validated = ActiveTimeTrackingResponse.model_validate(TimeTrackingService.list_active(None, self.user))
+        known, unknown = validated.items
+        self.assertEqual((known.desktop_version, known.desktop_platform, known.desktop_version_seen_at),
+                         ("1.3.2", "win32", seen))
+        # A member whose desktop never reported one is unknown, not a made-up version.
+        self.assertEqual((unknown.desktop_version, unknown.desktop_platform, unknown.desktop_version_seen_at),
+                         (None, None, None))
+
+    def test_versions_are_looked_up_once_for_all_listed_members(self):
+        rows = [self._row(entry_id=501, member_id=11), self._row(entry_id=502, member_id=12)]
+        with patch("app.services.time_tracking.TimeTrackingRepository.list_active", return_value=rows):
+            TimeTrackingService.list_active(None, self.user)
+        self.versions.assert_called_once()
+        self.assertEqual(set(self.versions.call_args.args[1]), {11, 12})
+
+    def test_nobody_running_means_no_version_lookup(self):
+        with patch("app.services.time_tracking.TimeTrackingRepository.list_active", return_value=[]):
+            TimeTrackingService.list_active(None, self.user)
+        self.versions.assert_not_called()
 
     @staticmethod
     def _row(entry_id=501, member_id=11, elapsed=3725.4):

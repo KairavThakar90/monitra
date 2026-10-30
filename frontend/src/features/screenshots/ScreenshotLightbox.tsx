@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ENDPOINTS } from '../../api/endpoints';
 import { AuthedImage } from '../../components/AuthedImage';
 import { formatHMS, formatISTDate, formatISTTime12 } from '../../utils/duration';
@@ -18,7 +18,237 @@ import type { ScreenshotTimelineWindow, ScreenshotView } from '../../store/api/s
  * screen it is. Nothing is carried over from the image the viewer opened at,
  * which is the failure mode this has to avoid: a caption that keeps saying
  * 71% while the picture moves is a false statement about a person.
+ *
+ * Zoom (`ZoomableImage`) is for reading small text on a captured screen. It is
+ * the same for everyone who can open a screenshot -- an administrator, a member
+ * looking at their own day, a client -- because it only changes how the picture
+ * is drawn, never what is fetched. It starts at "fit" (100%) for every
+ * screenshot: the next capture never inherits the previous one's zoom or
+ * position, for the reason the caption never inherits anything either.
  */
+
+/** Fit-to-screen is the smallest zoom: "zoom out" returns to the whole picture. */
+export const MIN_ZOOM = 1;
+export const MAX_ZOOM = 5;
+export const ZOOM_STEP = 0.25;
+/** What a double-click zooms to from fit. */
+const DOUBLE_CLICK_ZOOM = 2;
+
+// Three decimals, not two: a trackpad sends wheel deltas of 1-3, each worth well under a
+// hundredth, and rounding every one of them back to where it started would make it
+// impossible to zoom with one.
+const clampZoom = (value: number) => Math.round(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value)) * 1000) / 1000;
+const clamp = (value: number, limit: number) => Math.min(limit, Math.max(-limit, value));
+
+type Point = { x: number; y: number };
+
+const ZoomButton: React.FC<{
+  label: string;
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}> = ({ label, disabled = false, onClick, children }) => (
+  <button
+    type="button"
+    aria-label={label}
+    title={label}
+    disabled={disabled}
+    onClick={onClick}
+    className={
+      'flex h-8 min-w-8 items-center justify-center rounded-lg border border-white/20 px-2 text-sm font-bold transition ' +
+      (disabled ? 'cursor-not-allowed bg-white/5 text-white/25' : 'bg-white/10 text-white hover:bg-white/25')
+    }
+  >
+    {children}
+  </button>
+);
+
+/**
+ * The picture, with zoom: buttons, the keyboard (+ / - / 0), the mouse wheel
+ * (anchored on the pointer), double-click, and drag to move once zoomed.
+ *
+ * Zoom is drawn with a CSS transform on a wrapper, so the image is fetched once
+ * and never re-requested. The picture can be moved only as far as its edges:
+ * dragging it out of the viewport would leave nothing to look at.
+ */
+const ZoomableImage: React.FC<{ url: string; alt: string }> = ({ url, alt }) => {
+  const [zoom, setZoom] = useState(MIN_ZOOM);
+  const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+
+  const viewport = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  // The values the native listeners (wheel, keyboard) and the drag read. State
+  // is only what is drawn; these are what is true *now*, between renders.
+  const current = useRef<{ zoom: number; pan: Point }>({ zoom: MIN_ZOOM, pan: { x: 0, y: 0 } });
+  const drag = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
+
+  /** How far the picture may move from centre at a given zoom, per axis. */
+  const limits = useCallback((atZoom: number): Point => {
+    const frame = viewport.current;
+    const box = content.current;
+    if (!frame || !box) return { x: 0, y: 0 };
+    const picture = (box.querySelector('img') as HTMLElement | null) ?? box;
+    const bounds = frame.getBoundingClientRect();
+    return {
+      x: Math.max(0, (picture.offsetWidth * atZoom - bounds.width) / 2),
+      y: Math.max(0, (picture.offsetHeight * atZoom - bounds.height) / 2),
+    };
+  }, []);
+
+  const commit = useCallback((nextZoom: number, nextPan: Point) => {
+    current.current = { zoom: nextZoom, pan: nextPan };
+    setZoom(nextZoom);
+    setPan(nextPan);
+  }, []);
+
+  /** Zoom to `target`, keeping the point under `anchor` (relative to the centre) where it is. */
+  const zoomTo = useCallback(
+    (target: number, anchor?: Point) => {
+      const { zoom: before, pan: from } = current.current;
+      const next = clampZoom(target);
+      if (next === before) return;
+      if (next === MIN_ZOOM) {
+        commit(MIN_ZOOM, { x: 0, y: 0 });
+        return;
+      }
+      const scale = next / before;
+      const wanted = anchor
+        ? { x: anchor.x - (anchor.x - from.x) * scale, y: anchor.y - (anchor.y - from.y) * scale }
+        : { x: from.x * scale, y: from.y * scale };
+      const room = limits(next);
+      commit(next, { x: clamp(wanted.x, room.x), y: clamp(wanted.y, room.y) });
+    },
+    [commit, limits],
+  );
+
+  // The frame grows to fill the screen once zoomed, which changes how far the
+  // picture may move; settle the position after the layout has.
+  useLayoutEffect(() => {
+    const room = limits(zoom);
+    const { pan: held } = current.current;
+    const settled = { x: clamp(held.x, room.x), y: clamp(held.y, room.y) };
+    if (settled.x !== held.x || settled.y !== held.y) commit(zoom, settled);
+  }, [zoom, limits, commit]);
+
+  const anchorOf = (clientX: number, clientY: number): Point => {
+    const bounds = viewport.current?.getBoundingClientRect();
+    if (!bounds) return { x: 0, y: 0 };
+    return { x: clientX - (bounds.left + bounds.width / 2), y: clientY - (bounds.top + bounds.height / 2) };
+  };
+
+  // Wheel: a native, non-passive listener, because the page behind the viewer
+  // must not scroll while the picture is being zoomed and React's own wheel
+  // handler is passive.
+  useEffect(() => {
+    const frame = viewport.current;
+    if (!frame) return undefined;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+      zoomTo(current.current.zoom * Math.exp(-delta * 0.002), anchorOf(event.clientX, event.clientY));
+    };
+    frame.addEventListener('wheel', onWheel, { passive: false });
+    return () => frame.removeEventListener('wheel', onWheel);
+  }, [zoomTo]);
+
+  // Keyboard, bound to the document like the arrows are: the viewer has not
+  // necessarily clicked inside it. Ctrl/Cmd/Alt chords are left to the browser.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key === '+' || event.key === '=') zoomTo(current.current.zoom + ZOOM_STEP);
+      else if (event.key === '-' || event.key === '_') zoomTo(current.current.zoom - ZOOM_STEP);
+      else if (event.key === '0') zoomTo(MIN_ZOOM);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [zoomTo]);
+
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (current.current.zoom <= MIN_ZOOM || event.button !== 0) return;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    drag.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: current.current.pan.x,
+      originY: current.current.pan.y,
+    };
+    setDragging(true);
+  };
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const grab = drag.current;
+    if (!grab) return;
+    const room = limits(current.current.zoom);
+    commit(current.current.zoom, {
+      x: clamp(grab.originX + event.clientX - grab.startX, room.x),
+      y: clamp(grab.originY + event.clientY - grab.startY, room.y),
+    });
+  };
+  const endDrag = () => {
+    drag.current = null;
+    setDragging(false);
+  };
+
+  const zoomedIn = zoom > MIN_ZOOM;
+
+  return (
+    <div>
+      <div
+        ref={viewport}
+        data-testid="zoom-viewport"
+        className={
+          'relative mx-auto flex w-full items-center justify-center overflow-hidden rounded-lg ' +
+          (zoomedIn ? 'h-[74vh] ' + (dragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-zoom-in')
+        }
+        style={{ touchAction: 'none' }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onDoubleClick={(event) =>
+          zoomTo(zoomedIn ? MIN_ZOOM : DOUBLE_CLICK_ZOOM, anchorOf(event.clientX, event.clientY))
+        }
+      >
+        <div
+          ref={content}
+          data-testid="zoom-content"
+          className="w-full"
+          style={{
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            transformOrigin: 'center',
+            transition: dragging ? 'none' : 'transform 120ms ease-out',
+          }}
+        >
+          <AuthedImage
+            url={url}
+            alt={alt}
+            className="mx-auto max-h-[74vh] w-auto select-none rounded-lg object-contain shadow-2xl"
+            frameClassName="h-[60vh] w-full rounded-lg"
+          />
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Zoom">
+        <ZoomButton label="Zoom out" disabled={zoom <= MIN_ZOOM} onClick={() => zoomTo(zoom - ZOOM_STEP)}>
+          &minus;
+        </ZoomButton>
+        <span className="min-w-[3.5rem] text-center text-xs font-bold tabular-nums text-white" aria-live="polite">
+          {Math.round(zoom * 100)}%
+        </span>
+        <ZoomButton label="Zoom in" disabled={zoom >= MAX_ZOOM} onClick={() => zoomTo(zoom + ZOOM_STEP)}>
+          +
+        </ZoomButton>
+        <ZoomButton label="Reset zoom" disabled={!zoomedIn} onClick={() => zoomTo(MIN_ZOOM)}>
+          Fit
+        </ZoomButton>
+        <span className="hidden text-[11px] font-medium text-[#94A3B8] sm:inline">
+          Scroll or +/&minus; to zoom &middot; drag to move &middot; double-click to zoom
+        </span>
+      </div>
+    </div>
+  );
+};
 
 export interface LightboxItem {
   shot: ScreenshotView;
@@ -151,14 +381,12 @@ export const ScreenshotLightbox: React.FC<{
         </div>
 
         {/* Keyed on the screenshot id so moving to the next capture remounts
-            the fetch instead of leaving the previous image under a new
-            caption. */}
-        <AuthedImage
+            the fetch -- and the zoom -- instead of leaving the previous image
+            under a new caption, or at the previous image's magnification. */}
+        <ZoomableImage
           key={shot.id}
           url={viewUrl(shot.id)}
           alt={`Screen of ${subjectName} captured at ${formatISTTime12(shot.captured_at)}`}
-          className="mx-auto max-h-[74vh] w-auto rounded-lg object-contain shadow-2xl"
-          frameClassName="h-[60vh] w-full rounded-lg"
         />
 
         <div className="mt-3 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 text-xs font-semibold text-[#CBD5E1]">

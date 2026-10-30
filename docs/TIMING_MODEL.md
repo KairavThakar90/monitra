@@ -696,3 +696,43 @@ entry in the incident: `docs/TIMER_ENTRY_5958_RECONCILIATION_PLAN.md`
   entry. That is the owner's cap, applied consistently with crash recovery.
 * The staging order and everything a rollout must prove first:
   `docs/TIMER_ABANDONMENT_ROLLOUT.md`.
+
+## 10. Moving recorded time between projects
+
+A finished entry's time can be attributed to a different project/task in two ways. Neither
+creates, extends or shortens tracked time.
+
+* **Transfer** (`POST /time-entries/{id}/transfer`) changes only `project_id`/`task_id`. The
+  columns that measure the time are not in the request.
+* **Split** (`POST /time-entries/{id}/split`, `{to_project_id, to_task_id, move_seconds, reason}`)
+  divides one entry between two projects, e.g. 1 h on A becomes 30 min on A and 30 min on B.
+  The client says only **how much** moves; the backend cuts the interval:
+  * the entry keeps the **earlier** part, `[start, end - move_seconds]`; a **new entry** on the
+    destination takes the **later** part, `[end - move_seconds, end]` and the original's end;
+  * the two entries are back to back and cover exactly the original interval, so no instant is
+    counted twice and none is lost;
+  * each half keeps the one duration rule, `total_seconds == round(end_time - start_time)`
+    (`elapsed_seconds`), and **their totals add up to the original's**. Rounding each half on
+    its own can disagree with rounding the whole by one second only when an instant lies
+    exactly half-way between two seconds, so the cut is moved by a microsecond in that case
+    (`TimeEntryService._split_point`; tested across whole, fractional and half-way durations);
+  * everything keyed on the original entry (activity windows, screenshots, idle periods,
+    deductions) **stays with it**. Re-homing those would be a guess, so the amount that can move
+    is capped at the entry's *net* time (`total_seconds` plus its adjustments) less one second,
+    and some time always stays on the original;
+  * the new entry is an ordinary finished entry: no `client_op`, no `last_seen_at`; it keeps the
+    original's manual, billable and description settings (a manual half stays manual, because the
+    dashboard and the activity log classify time by that flag). Its audit row in `time_entry_transfers` reads
+    `Split from entry #<id>` (plus the reason), and the activity log records the move;
+  * both tasks' `time_tracked_seconds` are recomputed in the same transaction;
+  * the write is a compare-and-set on the entry's end and total, so two racing splits cannot both
+    cut it (the loser gets 409 and reloads).
+
+Refused: a running entry (409), somebody else's entry (404, even for an administrator), an entry
+made by reassigning idle time (409: a copy would escape `latest_end_covering`'s rule that ignores
+those), the same
+project/task (400), zero seconds (422), and more than can move (400, with the amount in the
+message). A split can be repeated, so an entry can be divided between three or more projects.
+
+The web client offers both in one dialog ("Change Project": *Move whole entry* / *Split
+between projects*), on Time Entries and on My Time Tracking.
